@@ -1264,12 +1264,6 @@ public final class OresEvalRootNode extends RootNode {
                 boolean optional =
                         function.parameters().stream()
                                 .anyMatch(Ast.Param::omittable);
-                if (!optional
-                        && inputs.stream()
-                                .noneMatch(slot -> slot.label() != null)) {
-                    return values;
-                }
-
                 if (optional) {
                     OptionalCallPlan plan = OptionalCallPlan.bind(
                             function.parameters().stream()
@@ -4836,19 +4830,22 @@ public final class OresEvalRootNode extends RootNode {
                                 values.add(value);
                                 inputs.add(
                                         FixedProductCallPlan.InputSlot.named(
-                                                sourceLabel));
+                                                sourceLabel, index));
                             } else if (sourceSpread) {
                                 if (value instanceof ReadonlyRecordValue record) {
                                     if (record.isEmpty()) {
                                         throw new IllegalArgumentException(
                                                 "record argument spread requires a nonempty closed record");
                                     }
+                                    int projectionIndex = 0;
                                     for (Map.Entry<String, Object> field
                                             : record.entrySet()) {
                                         values.add(field.getValue());
                                         inputs.add(
-                                                FixedProductCallPlan.InputSlot.named(
-                                                        field.getKey()));
+                                                FixedProductCallPlan.InputSlot.namedProjection(
+                                                        field.getKey(),
+                                                        index,
+                                                        projectionIndex++));
                                     }
                                 } else if (value instanceof MutableStructValue
                                         || value instanceof Map<?, ?>) {
@@ -4856,18 +4853,24 @@ public final class OresEvalRootNode extends RootNode {
                                             "record argument spread accepts readonly record values only; "
                                                     + "structs and Maps are not named argument packs");
                                 } else {
-                                    for (Object item : expandArgumentSequence(
+                                    List<?> expanded = expandArgumentSequence(
                                             value,
-                                            "argument spread")) {
-                                        values.add(item);
+                                            "argument spread");
+                                    for (int projectionIndex = 0;
+                                            projectionIndex < expanded.size();
+                                            projectionIndex++) {
+                                        values.add(expanded.get(projectionIndex));
                                         inputs.add(
-                                                FixedProductCallPlan.InputSlot.positional());
+                                                FixedProductCallPlan.InputSlot.positionalProjection(
+                                                        index,
+                                                        projectionIndex));
                                     }
                                 }
                             } else {
                                 values.add(value);
                                 inputs.add(
-                                        FixedProductCallPlan.InputSlot.positional());
+                                        FixedProductCallPlan.InputSlot.positional(
+                                                index));
                             }
                         } catch (RuntimeException | Error expansionFailure) {
                             continuation.accept(
@@ -7486,12 +7489,15 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> values = new ArrayList<>();
             ArrayList<FixedProductCallPlan.InputSlot> inputs =
                     new ArrayList<>();
-            for (Ast.Expr argument : arguments) {
+            for (int callItemIndex = 0;
+                    callItemIndex < arguments.size();
+                    callItemIndex++) {
+                Ast.Expr argument = arguments.get(callItemIndex);
                 if (argument instanceof Ast.NamedArgExpr named) {
                     values.add(eval(named.value(), env));
                     inputs.add(
                             FixedProductCallPlan.InputSlot.named(
-                                    named.name()));
+                                    named.name(), callItemIndex));
                     continue;
                 }
 
@@ -7502,12 +7508,15 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "record argument spread requires a nonempty closed record");
                         }
+                        int projectionIndex = 0;
                         for (Map.Entry<String, Object> field
                                 : record.entrySet()) {
                             values.add(field.getValue());
                             inputs.add(
-                                    FixedProductCallPlan.InputSlot.named(
-                                            field.getKey()));
+                                    FixedProductCallPlan.InputSlot.namedProjection(
+                                            field.getKey(),
+                                            callItemIndex,
+                                            projectionIndex++));
                         }
                         continue;
                     }
@@ -7521,16 +7530,22 @@ public final class OresEvalRootNode extends RootNode {
                             expandArgumentSequence(
                                     aggregate,
                                     "argument spread");
-                    for (Object value : expanded) {
-                        values.add(value);
+                    for (int projectionIndex = 0;
+                            projectionIndex < expanded.size();
+                            projectionIndex++) {
+                        values.add(expanded.get(projectionIndex));
                         inputs.add(
-                                FixedProductCallPlan.InputSlot.positional());
+                                FixedProductCallPlan.InputSlot.positionalProjection(
+                                        callItemIndex,
+                                        projectionIndex));
                     }
                     continue;
                 }
 
                 values.add(eval(argument, env));
-                inputs.add(FixedProductCallPlan.InputSlot.positional());
+                inputs.add(
+                        FixedProductCallPlan.InputSlot.positional(
+                                callItemIndex));
             }
             return new DirectArguments(values, inputs);
         }
