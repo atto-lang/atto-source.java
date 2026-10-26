@@ -50,6 +50,23 @@ final class EffectGraphAdmissionBoundaryTest {
         assertFalse(graph.infer().containsKey("hostile"));
     }
 
+    @Test void checkedEffectRowsUnionByCategoryWithoutErasure() {
+        var throwA = new dev.oreslang.types.Types.Named("ThrowA", List.of());
+        var throwB = new dev.oreslang.types.Types.Named("ThrowB", List.of());
+        var raiseA = new dev.oreslang.types.Types.Named("RaiseA", List.of());
+        var panicA = new dev.oreslang.types.Types.Named("PanicA", List.of());
+
+        var left = new dev.oreslang.types.Types.CheckedEffects(
+                List.of(throwA), List.of(raiseA), List.of());
+        var right = new dev.oreslang.types.Types.CheckedEffects(
+                List.of(throwA, throwB), List.of(), List.of(panicA));
+        var union = left.union(right);
+
+        assertEquals(Set.of(throwA, throwB), Set.copyOf(union.throwsTypes()));
+        assertEquals(Set.of(raiseA), Set.copyOf(union.raisesTypes()));
+        assertEquals(Set.of(panicA), Set.copyOf(union.panicsTypes()));
+    }
+
     @Test void oversizedOrMalformedSymbolsAreRejectedBeforeInference() {
         assertThrows(IllegalArgumentException.class, () ->
                 EffectContracts.Call.direct("x".repeat(257)));
