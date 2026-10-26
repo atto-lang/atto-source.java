@@ -1038,7 +1038,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
+            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr, NamedValueArgumentExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
@@ -1089,6 +1089,15 @@ public final class Ast {
 
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
+
+    /** Source-order named value argument. Never evaluate this wrapper as an ordinary expression. */
+    public record NamedValueArgumentExpr(String label, Expr expression) implements Expr {
+        public NamedValueArgumentExpr {
+            if (label == null || label.isBlank() || expression == null) {
+                throw new IllegalArgumentException("named argument requires a label and expression");
+            }
+        }
+    }
 
     /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
     public enum CallOrigin {
