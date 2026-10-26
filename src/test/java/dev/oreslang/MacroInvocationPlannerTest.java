@@ -602,6 +602,113 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void constDivisionUsesRuntimeCompatibleFloatTypeProof() {
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const 4 / 2);
+                        }
+                        """));
+        assertTrue(mismatch.getMessage().contains("compile-time type float"),
+                mismatch::toString);
+        assertTrue(mismatch.getMessage().contains("Const<int>"),
+                mismatch::toString);
+
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<float> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> float {
+                            return literal!(const 4 / 2);
+                        }
+                        """));
+        Ast.FunctionDecl fn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned =
+                assertInstanceOf(Ast.ReturnStmt.class, fn.body().getFirst());
+        Ast.LiteralExpr emitted =
+                assertInstanceOf(Ast.LiteralExpr.class, returned.value());
+        assertEquals(2.0d, emitted.value());
+    }
+
+    @Test
+    void emittedConstSyntaxCarriesCompilerOnlyProvenance() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const 40 + 2);
+                        }
+                        """));
+
+        Ast.FunctionDecl fn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned =
+                assertInstanceOf(Ast.ReturnStmt.class, fn.body().getFirst());
+
+        List<MacroSyntaxProvenance.Origin> origins =
+                MacroSyntaxProvenance.lookup(returned.value());
+        assertEquals(1, origins.size());
+        MacroSyntaxProvenance.Origin origin = origins.getFirst();
+        assertEquals(
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE,
+                origin.emissionKind());
+        assertEquals(Parser.ROOT_MODULE, origin.hygiene().module());
+        assertEquals("literal", origin.hygiene().macroName());
+        assertEquals(0, origin.hygiene().expansionOrdinal());
+        assertTrue(origin.hygiene().invocationSite().line() > 0);
+    }
+
+    @Test
+    void nestedExpansionPreservesInnerAndOuterProvenanceChain() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return identity!(
+                                syntax expr literal!(const 40 + 2)
+                            );
+                        }
+                        """));
+
+        Ast.FunctionDecl fn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned =
+                assertInstanceOf(Ast.ReturnStmt.class, fn.body().getFirst());
+        List<MacroSyntaxProvenance.Origin> origins =
+                MacroSyntaxProvenance.lookup(returned.value());
+
+        assertEquals(2, origins.size());
+        assertEquals(
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE,
+                origins.get(0).emissionKind());
+        assertEquals("literal", origins.get(0).hygiene().macroName());
+        assertEquals(
+                MacroSyntaxProvenance.EmissionKind.CALL_SITE_SPLICE,
+                origins.get(1).emissionKind());
+        assertEquals("identity", origins.get(1).hygiene().macroName());
+        assertNotEquals(
+                origins.get(0).hygiene(),
+                origins.get(1).hygiene(),
+                "nested expansions must retain distinct exact hygiene identities");
+    }
+
+    @Test
     void runtimeDependentConstStillFailsClosedWithoutEarlyExecution() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
