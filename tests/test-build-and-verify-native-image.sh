@@ -18,6 +18,8 @@ done
 
 # Compile a native fixture with programmable behavior to exercise validation.
 cat > "$tmp/mock.c" <<'C_SOURCE'
+#define _POSIX_C_SOURCE 200809L
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +30,11 @@ static const char *env_or(const char *key, const char *fallback) {
 }
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--build-info") == 0) {
+        const char *signal_parent = getenv("MOCK_SIGNAL_PARENT");
+        if (signal_parent) {
+            int sig = strcmp(signal_parent, "HUP") == 0 ? SIGHUP : SIGTERM;
+            if (kill(getppid(), sig) != 0) return 97;
+        }
         const char *mode = env_or("MOCK_EMBEDDED_MODE", "aot");
         const char *refs = env_or("MOCK_EMBEDDED_REFS", "compressed32");
         const char *guest = strcmp(mode, "aot") == 0
@@ -372,6 +379,8 @@ assert_case() {
       'mktemp failure at allocation '*)
         expected_status=39
         expected_diagnostic="mock mktemp refused allocation ${name##* }" ;;
+      'termination during build-info cleans temporary files') expected_status=143 ;;
+      'hangup during build-info cleans temporary files') expected_status=129 ;;
       'invalid offline mode denied') expected_status=2; expected_diagnostic='ORES_NATIVE_IMAGE_OFFLINE must be 0 or 1' ;;
       'invalid mode') expected_status=2; expected_diagnostic='invalid image mode: invalid' ;;
       'invalid refs') expected_status=2; expected_diagnostic='invalid reference mode: invalid' ;;
@@ -476,6 +485,10 @@ assert_case 'mktemp failure at allocation 5' failure aot compressed32 MOCK_MKTEM
 assert_case 'mktemp failure at allocation 6' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=6
 assert_case 'mktemp failure at allocation 7' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=7
 assert_case 'mktemp failure at allocation 8' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=8
+# SIGTERM/SIGHUP must invoke cleanup through the EXIT trap, not leave the
+# three mktemp files already allocated when native --build-info is invoked.
+assert_case 'termination during build-info cleans temporary files' failure aot compressed32 MOCK_SIGNAL_PARENT=TERM
+assert_case 'hangup during build-info cleans temporary files' failure aot compressed32 MOCK_SIGNAL_PARENT=HUP
 assert_case 'invalid offline mode denied' failure aot compressed32 ORES_NATIVE_IMAGE_OFFLINE=sometimes
 assert_case 'invalid mode' failure invalid compressed32
 assert_case 'invalid refs' failure aot invalid
