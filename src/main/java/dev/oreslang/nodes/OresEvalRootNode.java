@@ -7672,7 +7672,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
-            if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
+            if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name, env);
             if (receiver instanceof OresMutex.Guard<?> guard) {
                 return switch (name) {
                     case "release" -> (Invokable) args -> { requireZero(args, "MutexGuard.release"); guard.release(); return null; };
@@ -7953,7 +7953,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @SuppressWarnings("unchecked")
-        private Object mutexMember(OresMutex.Lock<?> rawLock, String name) {
+        private Object mutexMember(
+                OresMutex.Lock<?> rawLock,
+                String name,
+                Env env) {
             if (rawLock instanceof OresMutex.Shared<?>) {
                 context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex." + name);
             }
@@ -7972,7 +7975,10 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("Mutex.with_lock expects a one-argument lambda/function");
                     }
                     return lock.withLock(value -> {
-                        Object result = invoke(invokableInvocation(callback, List.of(value)));
+                        Object result = invoke(
+                                invokableInvocation(callback, List.of(value)),
+                                env == null ? null : env.taskScope,
+                                env == null ? null : env.taskScopeParent);
                         if (result != null) {
                             throw new IllegalArgumentException(
                                     "Mutex.with_lock callback must return void");
@@ -7992,7 +7998,10 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("SharedMutex.recover expects a one-argument lambda/function");
                         }
                         return shared.recover(value -> {
-                            Object result = invoke(invokableInvocation(callback, List.of(value)));
+                            Object result = invoke(
+                                invokableInvocation(callback, List.of(value)),
+                                env == null ? null : env.taskScope,
+                                env == null ? null : env.taskScopeParent);
                             if (result != null) {
                                 throw new IllegalArgumentException(
                                         "SharedMutex.recover callback must return void");
