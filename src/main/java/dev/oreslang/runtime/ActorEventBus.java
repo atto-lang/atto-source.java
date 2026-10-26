@@ -246,6 +246,11 @@ public final class ActorEventBus implements AutoCloseable {
         requireOpen();
         ActorRuntime.ActorId subscriber =
                 group.requireCurrentMember("subscribe to ActorGroup events");
+        ActorRuntime.ActorRef<?> subscriberRef = ActorRuntime.currentActorRef();
+        if (subscriberRef == null || !subscriberRef.id().equals(subscriber)) {
+            throw new SecurityException(
+                    "event subscription requires the exact current actor incarnation");
+        }
         if (ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.SHARED) {
             throw new SecurityException(
                     "private/isolated actors cannot subscribe to the zero-copy ActorGroup event bus yet; "
@@ -269,13 +274,18 @@ public final class ActorEventBus implements AutoCloseable {
                 Subscription<T> existing =
                         (Subscription<T>) topic.subscriptions.get(subscriber);
                 if (existing != null) {
+                    if (existing.subscriberRef != subscriberRef) {
+                        topic.subscriptions.remove(subscriber, existing);
+                        existing.closeChannelOnly();
+                        continue;
+                    }
                     if (!existing.closed()) return existing;
                     topic.subscriptions.remove(subscriber, existing);
                     continue;
                 }
 
                 Subscription<T> created =
-                        new Subscription<>(topic, subscriber, capacity);
+                        new Subscription<>(topic, subscriberRef, capacity);
                 Subscription<?> raced =
                         topic.subscriptions.putIfAbsent(subscriber, created);
                 if (raced != null) {
@@ -702,6 +712,7 @@ public final class ActorEventBus implements AutoCloseable {
 
     public final class Subscription<T> implements AutoCloseable {
         private final TopicState topic;
+        private final ActorRuntime.ActorRef<?> subscriberRef;
         private final ActorRuntime.ActorId subscriber;
         private final ChannelRuntime.Channel<Event<T>> channel;
         private final Object latestLock = new Object();
@@ -713,10 +724,11 @@ public final class ActorEventBus implements AutoCloseable {
 
         private Subscription(
                 TopicState topic,
-                ActorRuntime.ActorId subscriber,
+                ActorRuntime.ActorRef<?> subscriberRef,
                 int capacity) {
             this.topic = topic;
-            this.subscriber = subscriber;
+            this.subscriberRef = Objects.requireNonNull(subscriberRef, "subscriberRef");
+            this.subscriber = subscriberRef.id();
             this.channel = new ChannelRuntime.Channel<>(capacity);
             this.pendingReadLimit = ActorRuntime.currentActorPolicy().maxMailboxMessages();
             long bounded = Math.max((long) capacity + 1L, (long) capacity * 2L);
@@ -887,20 +899,20 @@ public final class ActorEventBus implements AutoCloseable {
 
         private void requireReadable() {
             if (subscriptionClosed.get()) throw new IllegalStateException("event subscription is closed");
-            ActorRuntime.ActorId current = group.requireCurrentMember("read ActorGroup events");
-            if (!current.equals(subscriber)) {
-                throw new SecurityException("an actor may only read its own ActorGroup event subscription");
+            group.requireCurrentMember("read ActorGroup events");
+            if (ActorRuntime.currentActorRef() != subscriberRef) {
+                throw new SecurityException(
+                        "an actor may only read its own exact-incarnation ActorGroup event subscription");
             }
         }
 
         @Override
         public void close() {
-            ActorRuntime.ActorId current =
-                    group.requireCurrentMember(
-                            "close ActorGroup event subscriptions");
-            if (!current.equals(subscriber)) {
+            group.requireCurrentMember(
+                    "close ActorGroup event subscriptions");
+            if (ActorRuntime.currentActorRef() != subscriberRef) {
                 throw new SecurityException(
-                        "an actor may only close its own ActorGroup event subscription");
+                        "an actor may only close its own exact-incarnation ActorGroup event subscription");
             }
             synchronized (topic.deliveryLock) {
                 if (topic.subscriptions.remove(subscriber, this)) {
