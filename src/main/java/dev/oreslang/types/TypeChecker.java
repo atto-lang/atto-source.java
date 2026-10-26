@@ -707,6 +707,12 @@ public final class TypeChecker {
 
         for (Ast.InterfaceMember member : iface.members()) {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                if (fn.parameters().stream().anyMatch(Ast.Param::omittable)) {
+                    throw new IllegalArgumentException(
+                            "omittable interface parameters remain fail-closed until "
+                                    + "interface dispatch carries explicit presence metadata: "
+                                    + iface.name() + "." + fn.name());
+                }
                 String key = CallableSelector.instance(fn.name(), fn.parameters().size()).mangledName();
                 if (!memberKeys.add(key)) throw new IllegalArgumentException("duplicate interface method '" + iface.name() + "." + fn.name() + "' with arity " + fn.parameters().size());
                 Set<String> all = new HashSet<>(generics);
@@ -1380,6 +1386,20 @@ public final class TypeChecker {
         // This scope is local to klass; inherited initializers are validated
         // against their own declaring class and cannot capture child params.
         Ast.ConstructorDecl constructor = klass.constructor();
+        if (constructor != null
+                && constructor.parameters().stream().anyMatch(Ast.Param::omittable)) {
+            throw new IllegalArgumentException(
+                    "omittable constructor parameters are parsed but remain fail-closed "
+                            + "until constructor call binding consumes OptionalCallPlan");
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.parameters().stream().anyMatch(Ast.Param::omittable)) {
+                throw new IllegalArgumentException(
+                        "omittable method/static-function parameters are parsed but remain fail-closed "
+                                + "until member dispatch consumes OptionalCallPlan: "
+                                + klass.name() + "." + method.name());
+            }
+        }
         Env fieldInitializerEnv = new Env(null);
         if (constructor != null) {
             // The field-initializer ownership checker does not yet prove
