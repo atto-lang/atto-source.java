@@ -342,6 +342,22 @@ public final class IncrementalCompiler {
         StringBuilder abi = new StringBuilder("ores-abi-v3\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
+        // Explicit source exports are part of the incremental source ABI even
+        // when the underlying declaration is default-private. Alias, scope,
+        // local identity, kind, origin, and the exported family signature must
+        // invalidate dependents. This metadata is not a host/native export table.
+        for (ExportMetadataCollector.Entry export : ExportMetadataCollector.collect(program)) {
+            abi.append("source-export ")
+                    .append(export.ownerNamespaceId()).append(' ')
+                    .append(export.localSymbolId()).append(' ')
+                    .append(export.localKind()).append(' ')
+                    .append(export.externalName()).append(' ')
+                    .append(export.scope()).append(' ')
+                    .append(export.origin()).append(' ')
+                    .append(export.signatureAbiSha256())
+                    .append('\n');
+        }
+
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
             for (String contract : module.contracts().stream()
