@@ -120,6 +120,12 @@ Backends without proven RT admission must explicitly deny #hard.
 - Dedicated kernel readiness reactors and explicit user-owned
   `OresScheduler(N)` carriers are separate resources and are not included in
   the execution-carrier budget.
+- Current-main Java physical STOP revokers use one bounded VM-owned **virtual-thread**
+  executor. Those tasks are lifecycle work, not dedicated VM-owned platform
+  execution carriers, so they do not consume `OresCarrierPermitPool` permits.
+  If that executor is ever changed to dedicated platform/native workers, those
+  workers MUST either join the shared permit authority or be called out as a
+  separate topology resource rather than hidden beneath the global-budget claim.
 - The LIFECYCLE permit domain currently accounts the transient NIO
   bootstrap/completion helper. This branch does not implement #1100's separate
   lifecycle-observer/terminal-journal subsystem.
