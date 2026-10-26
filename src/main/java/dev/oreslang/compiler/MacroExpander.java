@@ -34,6 +34,7 @@ public final class MacroExpander {
     private static final int MAX_TEMPLATE_NODES = 2_048;
 
     private final Map<String, Ast.MacroDecl> macros = new HashMap<>();
+    private final Map<String, List<Ast.Decl>> declarationsByModule = new HashMap<>();
     private final Set<String> active = new HashSet<>();
     private int expansions;
 
@@ -74,6 +75,7 @@ public final class MacroExpander {
 
     private void index(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            declarationsByModule.put(module.name(), module.declarations());
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.MacroDecl macro)) continue;
                 macros.put(module.name() + "." + macro.name(), macro);
@@ -87,12 +89,15 @@ public final class MacroExpander {
                 if (!(declaration instanceof Ast.MacroDecl macro)) continue;
                 if (!isSyntaxExprPassthrough(macro)
                         && !isConstLiteralQuote(macro)
-                        && !isSyntaxExprTemplateQuote(macro)) {
+                        && !isSyntaxExprTemplateQuote(macro)
+                        && !isIdentifierIntrinsic(macro, "hygienic")
+                        && !isIdentifierIntrinsic(macro, "capture_fnc")) {
                     throw unsupported(
                             macro.name(),
                             "the first evaluator slice only admits Syntax<Expr> identity, "
-                                    + "bounded Const<T> quotation, or identifier-free "
-                                    + "Syntax<Expr> quote/unquote templates");
+                                    + "bounded Const<T> quotation, identifier-free "
+                                    + "Syntax<Expr> quote/unquote templates, generated hygienic "
+                                    + "Identifier emission, or checked module-function capture");
                 }
             }
         }
@@ -357,6 +362,57 @@ public final class MacroExpander {
                         + expression.getClass().getSimpleName());
     }
 
+    private boolean isIdentifierIntrinsic(Ast.MacroDecl macro, String intrinsic) {
+        if (macro.resultKind().list()
+                || macro.resultKind().syntaxKind() != Ast.MacroSyntaxKind.EXPR
+                || macro.parameters().size() != 1
+                || macro.body().size() != 1
+                || macro.parameters().getFirst().type().kind()
+                        != Ast.MacroParamKind.IDENTIFIER) {
+            return false;
+        }
+        if (!(macro.body().getFirst() instanceof Ast.ReturnStmt returned)
+                || !(returned.value() instanceof Ast.CallExpr call)
+                || !(call.callee() instanceof Ast.NameExpr callee)
+                || !callee.name().equals(intrinsic)
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent()
+                || call.arguments().size() != 1
+                || !(call.arguments().getFirst() instanceof Ast.NameExpr argument)) {
+            return false;
+        }
+        return argument.name().equals(macro.parameters().getFirst().name());
+    }
+
+    private List<Ast.FunctionDecl> resolveCapturedFunctions(
+            String callerModule,
+            String macroOwnerModule,
+            Ast.MacroIdentifierArgument identifier) {
+        List<Ast.FunctionDecl> matches = declarationsByModule
+                .getOrDefault(callerModule, List.of())
+                .stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals(identifier.name()))
+                .toList();
+        if (matches.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "checked capture_fnc could not resolve module-level function '"
+                            + identifier.name() + "' at call site "
+                            + identifier.site().line() + ":" + identifier.site().column()
+                            + " in module '" + callerModule + "'");
+        }
+        if (!macroOwnerModule.equals(callerModule)
+                && matches.stream().anyMatch(
+                        function -> function.visibility() != Ast.Visibility.PUBLIC)) {
+            throw new IllegalArgumentException(
+                    "checked capture_fnc cannot capture private function family '"
+                            + identifier.name() + "' across module boundary from '"
+                            + callerModule + "' into macro owner '" + macroOwnerModule + "'");
+        }
+        return matches;
+    }
+
     private IllegalArgumentException unsupported(String name, String detail) {
         return new IllegalArgumentException(
                 "define macro '" + name + "' is compile-time-only, but " + detail
@@ -414,7 +470,10 @@ public final class MacroExpander {
         boolean syntaxIdentity = isSyntaxExprPassthrough(macro);
         boolean constQuote = isConstLiteralQuote(macro);
         boolean templateQuote = isSyntaxExprTemplateQuote(macro);
-        if (!syntaxIdentity && !constQuote && !templateQuote) {
+        boolean hygienicIdentifier = isIdentifierIntrinsic(macro, "hygienic");
+        boolean checkedFunctionCapture = isIdentifierIntrinsic(macro, "capture_fnc");
+        if (!syntaxIdentity && !constQuote && !templateQuote
+                && !hygienicIdentifier && !checkedFunctionCapture) {
             throw unsupported(
                     invocation.name(),
                     "this invocation requires an evaluator feature not enabled "
@@ -446,6 +505,30 @@ public final class MacroExpander {
                         invocation.name(),
                         "Const<T> quotation failed deterministic evaluation: "
                                 + failure.getMessage());
+            }
+        } else if (hygienicIdentifier || checkedFunctionCapture) {
+            if (invocation.arguments().size() != 1
+                    || !(invocation.arguments().getFirst()
+                    instanceof Ast.MacroIdentifierArgument identifier)) {
+                throw new IllegalArgumentException(
+                        "macro '" + invocation.name() + "' requires one Identifier");
+            }
+            String owner = macroOwnerModule(module, invocation.name());
+            MacroSyntaxProvenance.HygieneIdentity hygiene =
+                    new MacroSyntaxProvenance.HygieneIdentity(
+                            module,
+                            owner,
+                            macro.name(),
+                            invocation.site(),
+                            expansionOrdinal);
+            if (hygienicIdentifier) {
+                emitted = MacroIdentifierHygiene.generated(
+                        hygiene, identifier.name(), 0);
+            } else {
+                List<Ast.FunctionDecl> captured =
+                        resolveCapturedFunctions(module, owner, identifier);
+                emitted = MacroIdentifierHygiene.capturedFunction(
+                        module, owner, identifier, captured);
             }
         } else {
             if (invocation.arguments().size() != macro.parameters().size()) {
@@ -503,9 +586,10 @@ public final class MacroExpander {
                             + "'; runtime fallback is forbidden");
         }
         try {
-            // Emits deterministic compiler-owned constant AST or caller-owned
-            // syntax: no generated source strings, newly introduced identifiers,
-            // ambient authority, or runtime evaluation.
+            // Emits deterministic compiler-owned AST or caller-owned syntax.
+            // Newly generated identifiers are compiler-unspellable and exact-marked;
+            // caller binding access exists only through checked capture_fnc.
+            // No generated source strings, ambient authority or runtime evaluation.
             Ast.Expr expanded = rewriteExpression(module, emitted, depth + 1);
             MacroSyntaxProvenance.Origin origin =
                     new MacroSyntaxProvenance.Origin(
@@ -520,7 +604,11 @@ public final class MacroExpander {
                                     ? MacroSyntaxProvenance.EmissionKind.CONST_QUOTE
                                     : templateQuote
                                             ? MacroSyntaxProvenance.EmissionKind.TEMPLATE_QUOTE
-                                            : MacroSyntaxProvenance.EmissionKind.CALL_SITE_SPLICE);
+                                            : hygienicIdentifier
+                                                    ? MacroSyntaxProvenance.EmissionKind.HYGIENIC_IDENTIFIER
+                                                    : checkedFunctionCapture
+                                                            ? MacroSyntaxProvenance.EmissionKind.CHECKED_CAPTURE
+                                                            : MacroSyntaxProvenance.EmissionKind.CALL_SITE_SPLICE);
             // Publish provenance only after the complete subtree expansion has
             // succeeded. Failed/partial expansions leave no visible metadata.
             MacroSyntaxProvenance.recordTree(expanded, origin);
