@@ -20,9 +20,9 @@ below is independently satisfied.
 | Carrier numeric repository ID | `1323598177` |
 | Carrier visibility observed | `private` |
 | Carrier PR | `opto-sync-test/go-java-validation#25` |
-| Carrier PR head | `b64ba33bd86cde3a434b76278c196694c543adaa` |
+| Carrier PR head | `6e63603f104b65d1d949295ec01154900a8414a1` |
 | Carrier workflow blob | `4cfef14d5976b193a16c02a574c406defaeac874` |
-| PR #2033 test-plan blob | `7612dee74280443ef95a99890c057ae7938c65a8` |
+| PR #2033 test-plan blob | `99719a8e764705829601fc53ad64c6e9f268a8cf` |
 
 The carrier test plan pins the current PR #2033 production/test blobs and runs a
 focused ActorGroup cleanup/pipe/supervisor suite followed by the full Maven
