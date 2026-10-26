@@ -1670,6 +1670,12 @@ public final class OwnershipChecker {
                         kindOfType(callResult),
                         null);
             }
+            if (functions.containsKey(name.name())
+                    || ambiguousFunctions.contains(name.name())) {
+                throw error(
+                        "function " + name.name()
+                                + " has no overload accepting the supplied fixed argument shape");
+            }
         }
 
         if (call.callee() instanceof Ast.MemberExpr qualified
