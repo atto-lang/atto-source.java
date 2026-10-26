@@ -115,11 +115,19 @@ public final class FuturePipelineTypingCheck {
                 || !typedABPlan.stageEffects().isEmpty()
                 || !typedABPlan.cumulativeEffects().isEmpty()
                 || typedABPlan.inputOwnership()
-                        != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM
+                        != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD
                 || typedABPlan.producedFutureOwnership()
                         != TypeChecker.PipelineStageFutureOwnership.NONE) {
             throw new AssertionError("typed A -> B pipeline plan metadata is incomplete");
         }
+
+        rejected("""
+                fnc discard(Box<int> value): int { return 1; }
+                fnc main(Future<Box<int>> source): void {
+                  val Future<int> pending = source |> discard();
+                  return;
+                }
+                """, "borrowed Future pipeline input requires a Send + Share payload");
 
         Ast.Program syncFutureStage = TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
