@@ -1502,7 +1502,19 @@ public final class TreeShaker {
                         declarations.add(declaration);
                     }
                 }
-                if (!declarations.isEmpty()) {
+                boolean exportedModule = false;
+                if (options.preservePublicApi() && !module.name().equals(Parser.ROOT_MODULE)) {
+                    Ast.ModuleDecl root = program.modules().stream()
+                            .filter(candidate -> candidate.name().equals(Parser.ROOT_MODULE))
+                            .findFirst().orElse(null);
+                    if (root != null) {
+                        ExportResolver.Resolution exports = ExportResolver.resolve(program);
+                        exportedModule = exports.bindingsFor(ExportResolver.namespaceId(program, root)).stream()
+                                .anyMatch(binding -> binding.localKind() == Ast.ExportKind.MODULE
+                                        && binding.localName().equals(module.name()));
+                    }
+                }
+                if (!declarations.isEmpty() || exportedModule) {
                     modules.add(new Ast.ModuleDecl(
                             module.name(), module.annotations(), module.contracts(), module.exports(), declarations));
                 }
