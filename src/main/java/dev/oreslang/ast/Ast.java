@@ -193,8 +193,10 @@ public final class Ast {
     }
 
     /**
-     * Explicit call-site capture request. The parser stores spelling + site;
-     * semantic macro binding must resolve identity/visibility before expansion.
+     * Hygienic identifier syntax input. The parser stores spelling and call-site
+     * provenance only. Referencing an existing caller binding remains a separate
+     * checked expansion operation that must resolve identity, declaration kind,
+     * and visibility before generated syntax can use that binding.
      */
     public record MacroIdentifierArgument(String name, SourceSite site) implements MacroArgument {
         public MacroIdentifierArgument {
