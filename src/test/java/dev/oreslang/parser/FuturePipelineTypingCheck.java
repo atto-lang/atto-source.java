@@ -9,7 +9,7 @@ public final class FuturePipelineTypingCheck {
 
     public static void main(String[] args) {
         check();
-        System.out.println("5 pipeline typing boundary checks passed (frontend only).");
+        System.out.println("restricted pipeline typing boundary checks passed (frontend only).");
     }
 
     static void check() {
@@ -28,14 +28,163 @@ public final class FuturePipelineTypingCheck {
                 fnc main(): int { return observe(source()); }
                 """));
 
-        rejected("""
+        // A restricted, pure scalar chain is checked as Future<int> and
+        // produces immutable identity-bound lowering proofs at both stages.
+        Ast.Program lifted = TypeChecker.check(Parser.parse("""
+                async fnc source(): int { return 21; }
+                fnc save(int value): int { return value + 1; }
+                fnc twice(int value): int { return value * 2; }
+                fnc main(): void {
+                  val Future<int> pending = source() |> save() |> twice();
+                  val Option<int> result = trap await (pending);
+                  return;
+                }
+                """));
+        Ast.FunctionDecl liftedMain = (Ast.FunctionDecl)
+                lifted.modules().get(0).declarations().get(3);
+        Ast.BindingStmt pending = (Ast.BindingStmt) liftedMain.body().get(0);
+        Ast.CallExpr second = (Ast.CallExpr) pending.initializer();
+        Ast.CallExpr first = (Ast.CallExpr) second.arguments().getFirst();
+        if (!TypeChecker.CheckedPureFuturePipe.lookup(first)
+                || !TypeChecker.CheckedPureFuturePipe.lookup(second)) {
+            throw new AssertionError("checked Future chain lost a stage proof");
+        }
+        if (TypeChecker.CheckedPureFuturePipe.target(first)
+                != lifted.modules().get(0).declarations().get(1)
+                || TypeChecker.CheckedPureFuturePipe.target(second)
+                != lifted.modules().get(0).declarations().get(2)) {
+            throw new AssertionError("checked Future stage bound to the wrong declaration identity");
+        }
+        // A later bad declaration must invalidate the entire compilation
+        // rather than leak a proof for an earlier successfully visited pipe.
+        Ast.Program invalidWholeProgram = Parser.parse("""
                 async fnc source(): int { return 21; }
                 fnc save(int value): int { return value + 1; }
                 fnc main(): void {
-                  val Option<int> result = trap await (source() |> save());
+                  val Future<int> pending = source() |> save();
                   return;
                 }
-                """, "argument 1 has type Named[name=Future", "but expected INT");
+                fnc invalid(): bool { return 123; }
+                """);
+        Ast.FunctionDecl partlyCheckedMain = (Ast.FunctionDecl)
+                invalidWholeProgram.modules().getFirst().declarations().get(2);
+        Ast.CallExpr unsafeEarlierPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) partlyCheckedMain.body().getFirst()).initializer();
+        try {
+            TypeChecker.checkTypes(invalidWholeProgram);
+            throw new AssertionError("later invalid declaration unexpectedly type-checked");
+        } catch (IllegalArgumentException expected) {
+            if (TypeChecker.CheckedPureFuturePipe.lookup(unsafeEarlierPipe)) {
+                throw new AssertionError(
+                        "failed compilation published a partially checked Future proof");
+            }
+        }
+
+        // Host code must not have a public proof-minting capability,
+        // even if it constructs a matching function declaration and CallExpr.
+        try {
+            TypeChecker.CheckedPureFuturePipe.class.getMethod(
+                    "record", Ast.CallExpr.class, Ast.FunctionDecl.class);
+            throw new AssertionError("pipeline proof minting is publicly accessible");
+        } catch (NoSuchMethodException expected) {
+            // The compiler is the only permitted issuer.
+        }
+
+        if (TypeChecker.CheckedPureFuturePipe.lookup(
+                second.rewrite(second.callee(), second.typeArguments(),
+                        second.typeArgumentsPresent(), second.arguments()))) {
+            throw new AssertionError("rewritten Future stage inherited stale lowering proof");
+        }
+
+        Ast.Program becomesAsync = TypeChecker.check(Parser.parse("""
+                async fnc start_async(int value): int {
+                  rt cooperate;
+                  return value + 1;
+                }
+                fnc twice(int value): int { return value * 2; }
+                fnc main(): void {
+                  val Future<int> pending = 21 |> start_async() |> twice();
+                  val int result = await pending;
+                  return;
+                }
+                """));
+        Ast.FunctionDecl becomesAsyncMain = (Ast.FunctionDecl)
+                becomesAsync.modules().getFirst().declarations().get(2);
+        Ast.CallExpr liftedAfterAsync = (Ast.CallExpr)
+                ((Ast.BindingStmt) becomesAsyncMain.body().getFirst()).initializer();
+        if (!TypeChecker.CheckedPureFuturePipe.lookup(liftedAfterAsync)) {
+            throw new AssertionError("pipeline did not lift after scalar prefix became async");
+        }
+        Ast.CallExpr eagerAsyncPrefix = (Ast.CallExpr)
+                liftedAfterAsync.arguments().getFirst();
+        if (TypeChecker.CheckedPureFuturePipe.lookup(eagerAsyncPrefix)) {
+            throw new AssertionError("scalar prefix was incorrectly converted into a deferred stage");
+        }
+
+        Ast.Program asyncLifted = TypeChecker.check(Parser.parse("""
+                async fnc source(): int { return 21; }
+                async fnc delayed_identity(int value): int {
+                  rt cooperate;
+                  return value;
+                }
+                async fnc save(int value): int {
+                  return (await delayed_identity(value)) + 1;
+                }
+                fnc main(): void {
+                  val Future<int> pending = source() |> save();
+                  val int result = await pending;
+                  return;
+                }
+                """));
+        Ast.FunctionDecl asyncMain = (Ast.FunctionDecl)
+                asyncLifted.modules().getFirst().declarations().get(3);
+        Ast.CallExpr asyncPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) asyncMain.body().getFirst()).initializer();
+        if (!TypeChecker.CheckedPureFuturePipe.lookup(asyncPipe)
+                || !TypeChecker.CheckedPureFuturePipe.target(asyncPipe).async()) {
+            throw new AssertionError("checked async Future stage lost its lowering proof");
+        }
+
+        rejected("""
+                async fnc source(): int { return 21; }
+                async fnc save(int value): int {
+                  stdio.println(value);
+                  return value + 1;
+                }
+                fnc main(): void {
+                  val Future<int> pending = source() |> save();
+                  return;
+                }
+                """, "pure int -> int sync/async stage");
+
+        rejected("""
+                async fnc source(): int { return 21; }
+                fnc save(int value, int extra): int { return value + extra; }
+                fnc main(): void {
+                  val Future<int> pending = source() |> save(5);
+                  return;
+                }
+                """, "named unary stage with no extra arguments");
+
+        rejected("""
+                async fnc source(): int { return 21; }
+                fnc save(int value): int {
+                  let int other = value;
+                  return other;
+                }
+                fnc main(): void {
+                  val Future<int> pending = source() |> save();
+                  return;
+                }
+                """, "pure int -> int sync/async stage");
+
+        // Scalar call-shaped producers do not incur speculative Future
+        // type checking or acquire a checked Future pipeline proof.
+        TypeChecker.check(Parser.parse("""
+                fnc source(): int { return 21; }
+                fnc save(int value): int { return value + 1; }
+                fnc main(): int { return source() |> save(); }
+                """));
 
         TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
