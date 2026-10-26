@@ -3742,7 +3742,10 @@ public final class TypeChecker {
             if (sumReceiver instanceof Named channelType
                     && channelType.name().equals("Channel")
                     && channelType.arguments().size() == 1) {
+                Type element = channelType.arguments().getFirst();
                 return switch (member.member()) {
+                    case "input" -> new Named("WriteChannel", List.of(element));
+                    case "output" -> new Named("ReadChannel", List.of(element));
                     case "close" -> new Function(List.of(), Primitive.VOID);
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
                     default -> throw new IllegalArgumentException(
@@ -5453,7 +5456,10 @@ public final class TypeChecker {
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
         // their stricter rule and continue to reject Channel<T> entirely.
-        if (type instanceof Named named && named.name().equals("Channel")
+        if (type instanceof Named named
+                && (named.name().equals("Channel")
+                    || named.name().equals("ReadChannel")
+                    || named.name().equals("WriteChannel"))
                 && named.arguments().size() == 1
                 && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
             return;
