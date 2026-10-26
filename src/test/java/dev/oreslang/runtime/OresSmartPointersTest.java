@@ -233,6 +233,74 @@ final class OresSmartPointersTest {
     }
 
     @Test
+    void rcWeakUpgradeKeepsPayloadAliveUntilItsOwnDrop() {
+        var owner = OresSmartPointers.rc(42);
+        var first = owner.downgrade();
+        var second = owner.downgrade();
+        assertEquals(2, owner.weakCount());
+
+        var upgraded = first.upgrade().orElseThrow();
+        assertEquals(2, owner.strongCount());
+        owner.close();
+        assertEquals(42, upgraded.value().intValue());
+        assertEquals(1, second.strongCount());
+
+        upgraded.close();
+        assertEquals(0, second.strongCount());
+        assertTrue(first.upgrade().isEmpty());
+        assertTrue(second.upgrade().isEmpty());
+        assertEquals(2, second.weakCount());
+        first.close();
+        assertEquals(1, second.weakCount());
+        second.close();
+        assertThrows(IllegalStateException.class, first::upgrade);
+    }
+
+    @Test
+    void rcWeakCannotUpgradeOnForeignCarrier() throws Exception {
+        var owner = OresSmartPointers.rc(42);
+        var weak = owner.downgrade();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread foreign = new Thread(() -> {
+            try {
+                weak.upgrade();
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            }
+        });
+        foreign.start();
+        foreign.join();
+        assertInstanceOf(IllegalStateException.class, failure.get());
+        assertEquals(1, owner.strongCount(),
+                "foreign carrier must not increment local Rc strong count");
+        weak.close();
+        owner.close();
+    }
+
+    @Test
+    void refCellGuardsReleaseOneBorrowAndCannotBeReused() {
+        var cell = OresSmartPointers.refCell(5);
+        var read = cell.borrow();
+        assertEquals(5, read.value().intValue());
+        assertThrows(IllegalStateException.class, cell::borrowMut);
+        read.close();
+        read.close();
+        assertThrows(IllegalStateException.class, read::value);
+
+        var write = cell.borrowMut();
+        assertEquals(5, write.value().intValue());
+        write.set(6);
+        assertThrows(IllegalStateException.class, cell::borrow);
+        write.close();
+        write.close();
+        assertThrows(IllegalStateException.class, write::value);
+        assertThrows(IllegalStateException.class, () -> write.set(7));
+        try (var finalRead = cell.borrow()) {
+            assertEquals(6, finalRead.value().intValue());
+        }
+    }
+
+    @Test
     void refCellEnforcesDynamicBorrowExclusivity() {
         var cell = OresSmartPointers.refCell(1);
 
