@@ -18,7 +18,7 @@ import java.util.Map;
  */
 public final class MacroSourceUnitIdentity {
     public static final String MEMORY_UNIT = "<memory>";
-    private static final int MAX_UNIT_ID_CHARS = 4096;
+    static final int MAX_UNIT_ID_CHARS = 4_096;
 
     private static final ReferenceQueue<Ast.Program> CLEARED = new ReferenceQueue<>();
     private static final Map<IdentityKey, String> UNIT_IDS = new HashMap<>();
