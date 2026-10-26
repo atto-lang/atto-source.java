@@ -38,14 +38,16 @@ public final class MacroExpander {
 
     public static Ast.Program expand(Ast.Program program) {
         MacroExpansionPlanner.Plan plan = MacroExpansionPlanner.plan(program);
-        if (!plan.hasInvocations()) {
-            // Preserve the existing fail-closed behavior for parser-only macro
-            // declarations until at least one supported expansion is requested.
-            return program;
-        }
+        boolean hasMacroDeclarations = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .anyMatch(Ast.MacroDecl.class::isInstance);
+        if (!plan.hasInvocations() && !hasMacroDeclarations) return program;
 
         MacroExpander expander = new MacroExpander();
         expander.index(program);
+        // A compile-time declaration must be validated even when unused.
+        // Supported macros are then erased from executable AST; unsupported
+        // bodies fail closed instead of becoming inert runtime metadata.
         expander.requireSupportedDeclarations(program);
 
         List<Ast.ModuleDecl> modules = new ArrayList<>(program.modules().size());
