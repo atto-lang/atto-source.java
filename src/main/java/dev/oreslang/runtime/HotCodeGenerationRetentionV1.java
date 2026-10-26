@@ -22,6 +22,36 @@ final class HotCodeGenerationRetentionV1 {
     record Status(int maxImages, long maxBytes, long heldBytes,
                   List<Blocker> retained) { }
 
+    /**
+     * Trusted-loader cleanup evidence. This is intentionally tied to one
+     * retention owner + exact Ticket identity, generation and image digest.
+     * It is one-shot and cannot be replayed for another retained image.
+     */
+    static final class CleanupReceipt {
+        private final HotCodeGenerationRetentionV1 owner;
+        private final Ticket ticket;
+        private final long imageGeneration;
+        private final String imageSha256;
+        private final String loaderResourceId;
+        private boolean consumed;
+
+        private CleanupReceipt(HotCodeGenerationRetentionV1 owner, Ticket ticket,
+                               String loaderResourceId) {
+            this.owner = owner;
+            this.ticket = ticket;
+            this.imageGeneration = ticket.generation;
+            this.imageSha256 = ticket.imageSha256;
+            if (loaderResourceId == null || loaderResourceId.isBlank()
+                    || loaderResourceId.length() > 256)
+                throw new IllegalArgumentException("bounded loader resource identity required");
+            this.loaderResourceId = loaderResourceId;
+        }
+
+        long imageGeneration() { return imageGeneration; }
+        String imageSha256() { return imageSha256; }
+        String loaderResourceId() { return loaderResourceId; }
+    }
+
     static final class Ticket {
         private final HotCodeGenerationRetentionV1 owner;
         private final long generation;
@@ -88,6 +118,17 @@ final class HotCodeGenerationRetentionV1 {
         ticket.phase = Phase.DRAINING;
     }
 
+    /**
+     * Mint cleanup evidence only at the trusted loader boundary AFTER that
+     * loader has physically released/revoked this exact image resource.
+     * Package-private host infrastructure only; never surface this to guest.
+     */
+    synchronized CleanupReceipt physicalCleanupCompleted(
+            Ticket ticket, String loaderResourceId) {
+        require(ticket);
+        return new CleanupReceipt(this, ticket, loaderResourceId);
+    }
+
     /** Failed image cleanup consumes budget and is NEVER silently discarded. */
     synchronized void quarantine(Ticket ticket) {
         require(ticket);
@@ -106,19 +147,37 @@ final class HotCodeGenerationRetentionV1 {
      * A false proof deliberately leaves the image charged/quarantined.
      */
     synchronized void acknowledgePhysicalCleanup(
-            Ticket ticket, HttpGenerationDrainV1 http, boolean loaderConfirmed) {
+            Ticket ticket,
+            long expectedRouteEpoch,
+            HttpGenerationDrainV1 http,
+            CleanupReceipt receipt) {
         require(ticket);
-        if (!loaderConfirmed)
-            throw new IllegalStateException("physical code-image cleanup has not completed");
+        if (expectedRouteEpoch < 1)
+            throw new IllegalArgumentException("valid route epoch required");
+        if (receipt == null || receipt.owner != this || receipt.ticket != ticket
+                || receipt.imageGeneration != ticket.generation
+                || !receipt.imageSha256.equals(ticket.imageSha256)
+                || receipt.consumed)
+            throw new IllegalStateException(
+                    "stale, foreign, replayed or mismatched physical cleanup receipt");
         if (ticket.phase == Phase.SERVING)
             throw new IllegalStateException("cannot reclaim serving code");
+
+        // STAGED images were never published and therefore may have no HTTP
+        // generation. DRAINING/QUARANTINED images must prove the separately
+        // versioned route epoch is physically drained; image generation is
+        // deliberately NOT compared to route epoch.
         if (ticket.phase != Phase.STAGED) {
-            if (http == null || http.generation() != ticket.generation
+            if (http == null || http.generation() != expectedRouteEpoch
                     || !http.readyToRetire())
-                throw new IllegalStateException("HTTP generation still pinned or mismatched");
+                throw new IllegalStateException("HTTP route generation still pinned or mismatched");
+        } else if (http != null && http.generation() != expectedRouteEpoch) {
+            throw new IllegalStateException("staged HTTP route generation mismatched");
         }
+
         retained.remove(ticket.generation);
         heldBytes -= ticket.reservedBytes;
+        receipt.consumed = true;
     }
 
     synchronized Status status() {
