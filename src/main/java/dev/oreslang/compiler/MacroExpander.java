@@ -180,6 +180,7 @@ public final class MacroExpander {
                     "macro expansion count exceeds " + MAX_EXPANSIONS
                             + "; runtime fallback is forbidden");
         }
+        int expansionOrdinal = expansions - 1;
 
         Ast.MacroDecl macro = resolve(module, invocation.name());
         boolean syntaxIdentity = isSyntaxExprPassthrough(macro);
@@ -231,7 +232,21 @@ public final class MacroExpander {
             // Emits deterministic compiler-owned constant AST or caller-owned
             // syntax: no generated source strings, newly introduced identifiers,
             // ambient authority, or runtime evaluation.
-            return rewriteExpression(module, emitted, depth + 1);
+            Ast.Expr expanded = rewriteExpression(module, emitted, depth + 1);
+            MacroSyntaxProvenance.Origin origin =
+                    new MacroSyntaxProvenance.Origin(
+                            new MacroSyntaxProvenance.HygieneIdentity(
+                                    module,
+                                    invocation.name(),
+                                    invocation.site(),
+                                    expansionOrdinal),
+                            constQuote
+                                    ? MacroSyntaxProvenance.EmissionKind.CONST_QUOTE
+                                    : MacroSyntaxProvenance.EmissionKind.CALL_SITE_SPLICE);
+            // Publish provenance only after the complete subtree expansion has
+            // succeeded. Failed/partial expansions leave no visible metadata.
+            MacroSyntaxProvenance.recordTree(expanded, origin);
+            return expanded;
         } finally {
             active.remove(activeKey);
         }
