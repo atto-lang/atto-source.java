@@ -346,6 +346,28 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void expandedSyntaxCannotBypassActorCapabilityAdmission() {
+        SecurityException failure = assertThrows(
+                SecurityException.class,
+                () -> OresCompiler.validateForIsolate("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+
+                        define actor Worker as
+                            receive(ActorMail<String> mail): void {
+                                identity!(syntax expr std.process.exit(0));
+                                self.end();
+                                return;
+                            }
+                        end
+                        """, IsolatePolicy.developer()));
+
+        assertTrue(failure.getMessage().contains("PROCESS_EXIT"),
+                failure::toString);
+    }
+
+    @Test
     void nestedPassthroughExpansionTerminatesAndEliminatesAllInvocations() {
         Ast.Program checked = assertDoesNotThrow(
                 () -> OresCompiler.parseAndTypeCheck("""
