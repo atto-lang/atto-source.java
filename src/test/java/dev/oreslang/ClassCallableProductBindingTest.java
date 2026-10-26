@@ -110,6 +110,30 @@ final class ClassCallableProductBindingTest {
     }
 
     @Test
+    void instanceMethodOverloadSelectionUsesExpandedTupleArity()
+            throws Exception {
+        String code = """
+                define class Codec as
+                    pub choose(int a): int {
+                        return a;
+                    }
+
+                    pub choose(int a, int b): int {
+                        return a + b;
+                    }
+                end
+
+                pub routine main(): void {
+                    const codec = new Codec();
+                    stdio.stdout.write(codec.choose(...(19, 23)));
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
     void explicitConstructorNamedArgumentsEvaluateOnceBeforeAbiPermutation()
             throws Exception {
         String code = """
