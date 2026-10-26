@@ -2726,43 +2726,45 @@ public final class OresEvalRootNode extends RootNode {
                                 try {
                                     if (destructure.kind()
                                             == Ast.DestructureKind.SEQUENCE) {
-                                        List<?> items = asSequence(value);
-                                        if (items.size()
-                                                != destructure.bindings().size()) {
-                                            throw new IllegalArgumentException(
-                                                    "destructure arity mismatch");
-                                        }
-                                        for (int i = 0; i < items.size(); i++) {
-                                            Ast.DestructureBinding binding =
-                                                    destructure.bindings().get(i);
-                                            if (!binding.isDiscard()) {
-                                                env.define(
-                                                        binding.name(),
-                                                        items.get(i),
-                                                        binding.kind());
-                                            }
-                                        }
+                                        bindSequenceDestructure(
+                                                iterableValues(value, env),
+                                                destructure.bindings(),
+                                                env,
+                                                "destructure");
                                     } else {
+                                        Set<String> selectedMembers =
+                                                new LinkedHashSet<>();
                                         for (Ast.DestructureBinding binding :
                                                 destructure.bindings()) {
-                                            if (!binding.isDiscard()) {
-                                                Object bound = destructureMember(
-                                                        value,
-                                                        binding.name(),
-                                                        env);
-                                                Ast.ClassDecl staticView =
-                                                        binding.rest()
-                                                                ? null
-                                                                : objectDestructureStaticClassView(
-                                                                        destructure.initializer(),
-                                                                        binding.name(),
-                                                                        env);
-                                                env.define(
-                                                        binding.name(),
-                                                        bound,
-                                                        binding.kind(),
-                                                        staticView);
+                                            if (!binding.isDiscard()
+                                                    && !binding.rest()) {
+                                                selectedMembers.add(
+                                                        binding.name());
                                             }
+                                        }
+                                        for (Ast.DestructureBinding binding :
+                                                destructure.bindings()) {
+                                            if (binding.isDiscard()) continue;
+                                            Object bound = binding.rest()
+                                                    ? destructureRestObject(
+                                                            value,
+                                                            selectedMembers)
+                                                    : destructureMember(
+                                                            value,
+                                                            binding.name(),
+                                                            env);
+                                            Ast.ClassDecl staticView =
+                                                    binding.rest()
+                                                            ? null
+                                                            : objectDestructureStaticClassView(
+                                                                    destructure.initializer(),
+                                                                    binding.name(),
+                                                                    env);
+                                            env.define(
+                                                    binding.name(),
+                                                    bound,
+                                                    binding.kind(),
+                                                    staticView);
                                         }
                                     }
                                     continuation.accept(
