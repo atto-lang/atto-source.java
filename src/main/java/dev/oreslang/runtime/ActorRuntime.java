@@ -7333,6 +7333,10 @@ public final class ActorRuntime implements AutoCloseable {
 
     @Override
     public void close() {
+        if (inActorRetirementCallback()) {
+            throw new IllegalStateException(
+                    "ActorRuntime.close cannot block from inside an actor retirement callback");
+        }
         requireSupervisorContext("close an ActorRuntime");
         sealShutdownAdmission();
 
@@ -8165,14 +8169,11 @@ public final class ActorRuntime implements AutoCloseable {
                             || failure instanceof LinkageError)) fatal = failure;
                 }
 
-                // Physical retirement is complete before any lifecycle receipt
-                // becomes terminal. Mark it under the monitor, then publish all
-                // callback-capable Futures after releasing the monitor.
-                synchronized (lifecycleLock) {
-                    finalized = true;
-                    lifecycleLock.notifyAll();
-                }
-
+                // Physical resources are retired, but the stronger internal
+                // finalized barrier remains pending until lifecycle receipt
+                // callbacks and structured-parent release have fully returned.
+                // Public host stop observes the ActorRef-owned DONE state;
+                // ActorRuntime.close() continues to wait for finalized.
                 Throwable terminal = ref.terminationCause.get();
                 if (!ref.readyFuture.isDone()) {
                     ref.readyFuture.failFromRuntime(
@@ -8194,6 +8195,11 @@ public final class ActorRuntime implements AutoCloseable {
                                 || failure instanceof ThreadDeath
                                 || failure instanceof LinkageError)) fatal = failure;
                     }
+                }
+
+                synchronized (lifecycleLock) {
+                    finalized = true;
+                    lifecycleLock.notifyAll();
                 }
 
                 if (fatal instanceof VirtualMachineError vm) throw vm;
