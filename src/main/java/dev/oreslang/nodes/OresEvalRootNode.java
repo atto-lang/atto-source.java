@@ -5630,6 +5630,7 @@ public final class OresEvalRootNode extends RootNode {
 
             if (receiver instanceof OptionValue option
                     && member.member().equals("unwrap_all")) {
+                args = directArgs.requireUnlabeled("Option.unwrap_all");
                 int depth = checkedOptionDepth(call);
                 return invokableInvocation(
                         values -> {
@@ -5641,6 +5642,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
+                    args = directArgs.requireUnlabeled("self.end");
                     if (!args.isEmpty()) {
                         throw new IllegalArgumentException(
                                 "self.end expects no arguments; use self.endWithCleanup(...) for final cleanup");
@@ -5655,6 +5657,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("endWithCleanup")) {
+                    args = directArgs.requireUnlabeled("self.endWithCleanup");
                     Runnable cleanup =
                             object.owner.actorEndCleanup(args);
                     return object.owner.invokableInvocation(
@@ -5667,6 +5670,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("send")) {
+                    args = directArgs.requireUnlabeled("self.send");
                     if (args.size() != 1) {
                         throw new IllegalArgumentException(
                                 "self.send expects exactly one outbound value");
@@ -7420,6 +7424,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
+                    args = directArgs.requireUnlabeled("Option.unwrap_all");
                     int depth = checkedOptionDepth(call);
                     return invokableInvocation(
                             values -> {
@@ -7431,6 +7436,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
+                        args = directArgs.requireUnlabeled("self.end");
                         if (!args.isEmpty()) {
                             throw new IllegalArgumentException(
                                     "self.end expects no arguments; use self.endWithCleanup(...) for final cleanup");
@@ -7445,6 +7451,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("endWithCleanup")) {
+                        args = directArgs.requireUnlabeled("self.endWithCleanup");
                         Runnable cleanup =
                                 object.owner.actorEndCleanup(args);
                         return object.owner.invokableInvocation(
@@ -7457,6 +7464,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("send")) {
+                        args = directArgs.requireUnlabeled("self.send");
                         if (args.size() != 1) {
                             throw new IllegalArgumentException(
                                     "self.send expects exactly one outbound value");
