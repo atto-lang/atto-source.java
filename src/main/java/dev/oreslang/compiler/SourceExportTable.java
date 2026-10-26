@@ -211,7 +211,12 @@ public final class SourceExportTable {
         if (family.isEmpty()) return false;
 
         return switch (imported) {
-            case FUNCTION -> family.stream().anyMatch(declaration ->
+            // Importing a function as a value must not admit only the
+            // reifiable subset of an overloaded family: doing so lets the
+            // external binding resolve, then fail or select a different
+            // hidden/generic overload at runtime. Reject the entire family
+            // unless every overload is a monomorphic, ordinary fnc.
+            case FUNCTION -> family.stream().allMatch(declaration ->
                     declaration instanceof Ast.FunctionDecl fn
                             && fn.kind() == Ast.CallableKind.FNC
                             && fn.actorKind() == Ast.ActorKind.NONE
