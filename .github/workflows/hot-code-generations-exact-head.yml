@@ -6,8 +6,15 @@ on:
       - '.github/workflows/hot-code-generations-exact-head.yml'
       - 'src/main/java/dev/oreslang/runtime/HttpGenerationDrainV1.java'
       - 'src/main/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1.java'
+      - 'src/main/java/dev/oreslang/runtime/HttpActorGenerationCoordinatorV1.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttpRollingDispatchV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
       - 'src/test/java/dev/oreslang/runtime/HttpGenerationDrainV1Test.java'
       - 'src/test/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/HttpActorGenerationCoordinatorV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRoutePublicationV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeHttpTest.java'
       - 'pom.xml'
   workflow_dispatch:
 
@@ -40,12 +47,20 @@ jobs:
           java-version: '25'
           distribution: graalvm
           cache: maven
-      - name: Execute both host-only retention JUnit suites
-        run: mvn -B -ntp -Dtest=HotCodeGenerationRetentionV1Test,HttpGenerationDrainV1Test -DfailIfNoTests=true test
+      - name: Execute host-only route and retention JUnit suites
+        run: >-
+          mvn -B -ntp
+          -Dtest=ActorRoutePublicationV1Test,HotCodeGenerationRetentionV1Test,HttpGenerationDrainV1Test,HttpActorGenerationCoordinatorV1Test
+          -DfailIfNoTests=true test
+      - name: Execute real NativeHttp actor-finalization regression
+        run: >-
+          mvn -B -ntp
+          -Dtest=NativeHttpTest#completionSurvivesMoveAndIncludesActorFinalization
+          -DfailIfNoTests=true test
       - name: Check real JUnit XML and zero skipped tests
         run: |
           set -euo pipefail
-          for name in HotCodeGenerationRetentionV1Test HttpGenerationDrainV1Test; do
+          for name in ActorRoutePublicationV1Test HotCodeGenerationRetentionV1Test HttpGenerationDrainV1Test HttpActorGenerationCoordinatorV1Test NativeHttpTest; do
             report="target/surefire-reports/TEST-dev.oreslang.runtime.${name}.xml"
             test -s "$report"
             head -c 800 "$report" | grep -Eq 'tests="[1-9][0-9]*"'
