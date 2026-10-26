@@ -5775,6 +5775,7 @@ public final class OresEvalRootNode extends RootNode {
                 return klass.owner().staticFunctionInvocation(
                         method,
                         directArgs.inAbiOrder(
+                                call,
                                 method.parameters(),
                                 "static function "
                                         + klass.klass().name()
