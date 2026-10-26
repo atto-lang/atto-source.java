@@ -9305,7 +9305,8 @@ public final class TypeChecker {
 
         // Defaults are checked against specialized parameter types but are
         // never input evidence for inference or source effects/borrows.
-        if (optional) {
+        // Omission follows the canonical plan, not a stale ad-hoc boolean.
+        if (plan.omittedCount() > 0) {
             for (int formalIndex = 0; formalIndex < params.size(); formalIndex++) {
                 if (abiToSource.get(formalIndex) >= 0) continue;
                 Ast.Param param = params.get(formalIndex);
