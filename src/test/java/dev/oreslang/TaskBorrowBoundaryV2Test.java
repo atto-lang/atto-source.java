@@ -102,6 +102,21 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void futurePayloadTypesCannotHideLexicalBorrows() {
+        rejectsWith("""
+                pub fnc bad(borrow Box view): Future<borrow Box> {
+                  return;
+                }
+                """, "future", "borrow", "owned");
+
+        rejectsWith("""
+                pub fnc badNested(borrow Box view): Future<Option<borrow Box>> {
+                  return;
+                }
+                """, "future", "borrow", "owned");
+    }
+
+    @Test
     void ordinaryImmutableBorrowCannotEscapeIntoEagerTask() {
         rejectsWith("""
                 pub async fnc main(): void {
