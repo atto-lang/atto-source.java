@@ -1294,9 +1294,22 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return java.util.Collections.unmodifiableList(ordered);
                 }
+                return inAbiOrder(
+                        function.parameters(),
+                        "function " + function.name());
+            }
 
+            private List<Object> inAbiOrder(
+                    List<Ast.Param> parameters,
+                    String label) {
+                if (parameters.stream().anyMatch(Ast.Param::omittable)) {
+                    throw new IllegalArgumentException(
+                            label
+                                    + " omittable member/constructor parameters remain "
+                                    + "fail-closed at runtime");
+                }
                 FixedProductCallPlan plan = FixedProductCallPlan.bind(
-                        function.parameters().stream()
+                        parameters.stream()
                                 .map(Ast.Param::name)
                                 .toList(),
                         inputs);
@@ -1306,6 +1319,24 @@ public final class OresEvalRootNode extends RootNode {
                     ordered.add(values.get(source));
                 }
                 return java.util.Collections.unmodifiableList(ordered);
+            }
+
+            private List<Object> requireUnlabeled(String label) {
+                if (inputs.stream().anyMatch(slot -> slot.label() != null)) {
+                    throw new IllegalArgumentException(
+                            label + " does not support named/record-spread arguments");
+                }
+                return values;
+            }
+
+            private List<Object> requirePlainPositional(String label) {
+                for (FixedProductCallPlan.InputSlot slot : inputs) {
+                    if (slot.label() != null || slot.projectionIndex() >= 0) {
+                        throw new IllegalArgumentException(
+                                label + " accepts positional scalar arguments only");
+                    }
+                }
+                return values;
             }
         }
 
