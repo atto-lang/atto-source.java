@@ -253,30 +253,8 @@ def checked_policy_fingerprint(root, repository):
     """Compatibility wrapper returning the reviewed policy fingerprint."""
     return checked_policy_approval(root, repository)[0]
 
-def verify_protected_origin(repository, expected_policy_digest, expected_repository_id=None):
-    """Fail closed unless local policy matches CODEOWNER-controlled protected main.
-
-    An unreviewed test checkout can add its own allowlist line; consulting
-    only the local file is not authorization. Always pin the remote policy
-    lookup to the HEAD commit of the official protected origin/main. A
-    GitHub "protected: false" branch is explicitly insufficient even when
-    CODEOWNERS exists (without branch protection, its review is optional).
-    """
-    origin = gh_api(f"repos/{SOURCE_REPO}")
-    if (origin.get("full_name") != SOURCE_REPO
-            or origin.get("id") != SOURCE_REPOSITORY_ID
-            or origin.get("private") is not True):
-        raise Denied("cannot attest identity and privacy of source origin")
-    branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
-    if (branch.get("name") != SOURCE_PROTECTED_BRANCH
-            or branch.get("protected") is not True):
-        raise Denied("source main is not protected; CODEOWNER approval is unenforced")
-    # A "protected" branch might enforce only status checks, without
-    # mandatory CODEOWNER approval, or allow administrators to bypass review.
-    # Require the actual classic branch-protection settings to be readable.
-    # On plans/credentials where GitHub denies this API, fail closed.
-    protection = gh_api(
-        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
+def _require_strict_source_protection(protection):
+    """Validate the security-relevant classic branch-protection contract."""
     reviews = protection.get("required_pull_request_reviews")
     checks = protection.get("required_status_checks")
     administrators = protection.get("enforce_admins")
@@ -315,6 +293,35 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
                        or bypasses.get(category)
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
+
+
+def verify_protected_origin(repository, expected_policy_digest, expected_repository_id=None):
+    """Fail closed unless local policy matches CODEOWNER-controlled protected main.
+
+    An unreviewed test checkout can add its own allowlist line; consulting
+    only the local file is not authorization. Always pin the remote policy
+    lookup to the HEAD commit of the official protected origin/main. A
+    GitHub "protected: false" branch is explicitly insufficient even when
+    CODEOWNERS exists (without branch protection, its review is optional).
+    The branch head and security-relevant protection contract are re-read
+    before success so movement or weakening during attestation fails closed.
+    """
+    origin = gh_api(f"repos/{SOURCE_REPO}")
+    if (origin.get("full_name") != SOURCE_REPO
+            or origin.get("id") != SOURCE_REPOSITORY_ID
+            or origin.get("private") is not True):
+        raise Denied("cannot attest identity and privacy of source origin")
+    branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
+    if (branch.get("name") != SOURCE_PROTECTED_BRANCH
+            or branch.get("protected") is not True):
+        raise Denied("source main is not protected; CODEOWNER approval is unenforced")
+    # A "protected" branch might enforce only status checks, without
+    # mandatory CODEOWNER approval, or allow administrators to bypass review.
+    # Require the actual classic branch-protection settings to be readable.
+    # On plans/credentials where GitHub denies this API, fail closed.
+    protection = gh_api(
+        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
+    _require_strict_source_protection(protection)
     commit_sha = valid_sha(branch.get("commit", {}).get("sha"))
     policy = gh_api(f"repos/{SOURCE_REPO}/contents/{POLICY_PATH}?ref={commit_sha}")
     if (policy.get("path") != POLICY_PATH or policy.get("type") != "file"
@@ -358,6 +365,20 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
     except (ValueError, base64.binascii.Error) as exc:
         raise Denied("protected CODEOWNERS has invalid base64") from exc
     require_security_codeowners(codeowners_contents)
+
+    # Close the attestation-internal TOCTOU window: main or its enforcement
+    # may change while the pinned policy/CODEOWNERS objects are being read.
+    final_branch = gh_api(
+        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
+    if (final_branch.get("name") != SOURCE_PROTECTED_BRANCH
+            or final_branch.get("protected") is not True
+            or valid_sha(final_branch.get("commit", {}).get("sha")) != commit_sha):
+        raise Denied("source main changed during protected-origin attestation")
+    final_protection = gh_api(
+        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
+    _require_strict_source_protection(final_protection)
+    if final_protection != protection:
+        raise Denied("source main protection changed during protected-origin attestation")
     return commit_sha
 
 
