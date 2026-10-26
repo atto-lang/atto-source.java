@@ -4769,20 +4769,23 @@ public final class TypeChecker {
         }
         if (stage == null || stage.kind() != Ast.CallableKind.FNC
                 || stage.actorKind() != Ast.ActorKind.NONE
-                || stage.async() || stage.suspends() || stage.generator()
+                || stage.suspends() || stage.generator()
                 || stage.trapped() || stage.nonLexical()
                 || !stage.genericParameters().isEmpty() || !stage.annotations().isEmpty()
                 || stage.parameters().size() != 1 || stage.parameters().getFirst().mutable()) {
             throw new IllegalArgumentException(
-                    "Future value-pipe stage requires a pure synchronous non-generic unary function");
+                    "Future value-pipe stage requires a pure sync/async non-generic unary function");
         }
         Ast.Param param = stage.parameters().getFirst();
         Type input = resolveParam(param, generics, self);
         Type output = resolve(stage.returnType(), generics, self);
         if (input != Primitive.INT || output != Primitive.INT
-                || !isPurePipeIntFunctionBody(stage, param.name())) {
+                || !isPurePipeIntFunctionBody(
+                        stage,
+                        param.name(),
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
             throw new IllegalArgumentException(
-                    "Future value-pipe currently requires a pure int -> int stage");
+                    "Future value-pipe currently requires a pure int -> int sync/async stage");
         }
         requireAssignable(pending.arguments().getFirst(), input,
                 "Future pipeline stage " + name.name() + " input");
@@ -4797,27 +4800,91 @@ public final class TypeChecker {
         return new Named("Future", List.of(output));
     }
 
-    private static boolean isPurePipeIntFunctionBody(
-            Ast.FunctionDecl stage, String inputName) {
-        return stage.body().size() == 1
-                && stage.body().getFirst() instanceof Ast.ReturnStmt ret
-                && isPurePipeIntExpression(ret.value(), inputName);
+    private boolean isPurePipeIntFunctionBody(
+            Ast.FunctionDecl stage,
+            String inputName,
+            Set<Ast.FunctionDecl> checking) {
+        if (!checking.add(stage)) return false;
+        try {
+            if (stage.body().isEmpty()) return false;
+            int last = stage.body().size() - 1;
+            for (int i = 0; i < last; i++) {
+                Ast.Stmt statement = stage.body().get(i);
+                if (!stage.async()
+                        || !(statement instanceof Ast.ExprStmt expr)
+                        || !(expr.expression() instanceof Ast.RuntimeCallExpr runtime)
+                        || !runtime.operation().equals("cooperate")
+                        || !runtime.arguments().isEmpty()) {
+                    return false;
+                }
+            }
+            return stage.body().get(last) instanceof Ast.ReturnStmt ret
+                    && isPurePipeIntExpression(ret.value(), inputName, checking);
+        } finally {
+            checking.remove(stage);
+        }
     }
 
-    private static boolean isPurePipeIntExpression(Ast.Expr expression, String inputName) {
+    private boolean isPurePipeIntExpression(
+            Ast.Expr expression,
+            String inputName,
+            Set<Ast.FunctionDecl> checking) {
         if (expression instanceof Ast.NameExpr name) return name.name().equals(inputName);
         if (expression instanceof Ast.LiteralExpr literal) return literal.value() instanceof Long;
         if (expression instanceof Ast.UnaryExpr unary) {
             return (unary.operator().equals("-") || unary.operator().equals("+"))
-                    && isPurePipeIntExpression(unary.operand(), inputName);
+                    && isPurePipeIntExpression(unary.operand(), inputName, checking);
         }
         if (expression instanceof Ast.BinaryExpr binary) {
             return (binary.operator().equals("+") || binary.operator().equals("-")
                             || binary.operator().equals("*"))
-                    && isPurePipeIntExpression(binary.left(), inputName)
-                    && isPurePipeIntExpression(binary.right(), inputName);
+                    && isPurePipeIntExpression(binary.left(), inputName, checking)
+                    && isPurePipeIntExpression(binary.right(), inputName, checking);
+        }
+        if (expression instanceof Ast.AwaitExpr awaited) {
+            return isPurePipeAwait(awaited.expression(), inputName, checking);
         }
         return false;
+    }
+
+    /**
+     * A pure async stage may itself await a same-module pure async int helper.
+     * This is deliberately structural and closed: no first-class callback,
+     * generic, actor, imported, trapped, explicitly-suspends, or effectful
+     * helper can acquire a pipeline proof through this path.
+     */
+    private boolean isPurePipeAwait(
+            Ast.Expr awaited,
+            String inputName,
+            Set<Ast.FunctionDecl> checking) {
+        if (!(awaited instanceof Ast.CallExpr call)
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent()
+                || call.arguments().size() != 1
+                || !(call.callee() instanceof Ast.NameExpr name)) {
+            return false;
+        }
+        if (!isPurePipeIntExpression(call.arguments().getFirst(), inputName, checking)) {
+            return false;
+        }
+        Ast.FunctionDecl helper = findFunction(name.name(), 1);
+        if (helper == null
+                || !java.util.Objects.equals(
+                        unqualifiedFunctionOwners.get(name.name()), currentLexicalModule)
+                || helper.kind() != Ast.CallableKind.FNC
+                || helper.actorKind() != Ast.ActorKind.NONE
+                || !helper.async() || helper.suspends() || helper.generator()
+                || helper.trapped() || helper.nonLexical()
+                || !helper.genericParameters().isEmpty() || !helper.annotations().isEmpty()
+                || helper.parameters().size() != 1 || helper.parameters().getFirst().mutable()
+                || !helper.parameters().getFirst().type().name().equals("int")
+                || !helper.returnType().name().equals("int")) {
+            return false;
+        }
+        return isPurePipeIntFunctionBody(
+                helper,
+                helper.parameters().getFirst().name(),
+                checking);
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Env env) {
