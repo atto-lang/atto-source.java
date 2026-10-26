@@ -1,0 +1,36 @@
+name: Explicit exports Java reference tests
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/**'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/compiler/**'
+      - 'src/test/java/dev/oreslang/ExplicitExport*Test.java'
+      - '.github/workflows/explicit-exports-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ github.token }}
+      - name: Execute parser, resolver and transform tests
+        run: >-
+          mvn -B -ntp
+          -Dtest=ExplicitExportSyntaxTest,ExplicitExportResolverTest,ExplicitExportTransformPreservationTest
+          test

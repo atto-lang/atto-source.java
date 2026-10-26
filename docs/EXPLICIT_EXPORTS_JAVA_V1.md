@@ -4,6 +4,42 @@ Status: draft implementation for the source-language contract in
 `oreslang-common-source#150`. This document describes Java compiler behavior
 on this branch; it is not a claim of cross-backend parity.
 
+Use the reconciled common-source #153 contract, revision
+`explicit-exports-v1.2026-10-25.4`, when resolving differences from the earlier
+#150 examples.
+
+## Overload and generic-scope hardening
+
+An implicit public callable export covers the complete local overload family,
+including overloads without explicit modifiers. Explicit-private provenance
+still rejects the entire exported family, whether publication is implicit or
+explicit. The same public/default family produces one idempotent binding when
+an explicit export is added. Scoped declaration visibility remains deferred.
+
+Leakage checks distinguish generic binders from nominal local types. Function,
+class, method, interface-member and type-alias generic names apply only to their
+own lexical signature scope. Method binders never hide a private type in a
+sibling signature. Function generic defaults are checked before introducing
+their binder; nested nominal arguments and declared effect types retain normal
+visibility checking. This is a local lexical check, not an imported-type
+authority proof or complete post-typechecking identity representation.
+
+Duplicate namespace entries cannot silently overwrite binding tables. Stable
+local symbol kind strings use `Locale.ROOT`, not the host's default locale.
+
+The dedicated source-local workflow runs `ExplicitExportSyntaxTest`,
+`ExplicitExportResolverTest` and `ExplicitExportTransformPreservationTest` on
+the exact source head using JDK25/GraalVM. A queued or zero-step workflow is
+still NOT_EXECUTED.
+
+Local audit evidence: an 18-case Java17 compatibility smoke exercised the real
+parser/resolver source and AST dependencies after mechanically substituting
+`List.getFirst()` with `List.get(0)` in private test copies. It reproduced the
+original incomplete-overload/false-generic-leak defects and passed the revised
+family, generic-scope, namespace, locale and four Symbol-form checks. It is
+not exact-source JDK25, JUnit, TypeChecker/OwnershipChecker, GraalVM, native
+image, import-linker or cross-backend execution. Those gates remain open.
+
 ## Pipeline
 
 The Java front end keeps export syntax separate from ordinary declarations:

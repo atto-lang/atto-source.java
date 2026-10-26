@@ -62,7 +62,9 @@ public final class ExplicitExportResolver {
         Objects.requireNonNull(program, "program");
         LinkedHashMap<String, List<ExportBinding>> resolved = new LinkedHashMap<>();
         for (Ast.ModuleDecl module : program.modules()) {
-            resolved.put(module.name(), resolveModule(module));
+            if (resolved.putIfAbsent(module.name(), resolveModule(module)) != null) {
+                throw semantic("duplicate export namespace '" + module.name() + "'");
+            }
         }
         return new Result(resolved);
     }
@@ -88,9 +90,16 @@ public final class ExplicitExportResolver {
         }
         for (List<Integer> family : publicFamilies.values()) {
             Ast.Decl first = declarations.get(family.getFirst());
+            Ast.ExportKind kind = declarationKind(first);
+            // A public overload publishes the logical family, including
+            // unmodified overloads. PRIVATE in this AST also means omitted
+            // visibility; only retained explicit-private provenance forbids it.
+            List<Integer> completeFamily = filterByKind(
+                    declarations, byName.get(declarationName(first)), kind);
+            validateFamily(module, completeFamily, kind, declarationName(first));
             addBinding(
                     external,
-                    bindingFor(module, declarations, family, declarationKind(first),
+                    bindingFor(module, declarations, completeFamily, kind,
                             declarationName(first), declarationName(first),
                             Ast.ExportScope.PUBLIC, Origin.IMPLICIT_PUB));
         }
@@ -149,19 +158,7 @@ public final class ExplicitExportResolver {
                     resolvedKind = declarationKind(declarations.get(candidates.getFirst()));
                 }
 
-                String privateKey = resolvedKind.name() + "\0" + item.localName();
-                if (module.explicitlyPrivateSymbols().contains(privateKey)) {
-                    throw semantic("explicitly private declaration '" + item.localName()
-                            + "' cannot be exported");
-                }
-
-                Ast.Visibility familyVisibility = declarationVisibility(declarations.get(candidates.getFirst()));
-                for (int index : candidates) {
-                    if (declarationVisibility(declarations.get(index)) != familyVisibility) {
-                        throw semantic("overload family '" + item.localName()
-                                + "' has incompatible declaration visibility");
-                    }
-                }
+                validateFamily(module, candidates, resolvedKind, item.localName());
 
                 String externalName = item.effectiveExternalName();
                 addBinding(
@@ -175,6 +172,21 @@ public final class ExplicitExportResolver {
         List<ExportBinding> bindings = List.copyOf(external.values());
         validateLocalApiVisibility(module, declarations, bindings);
         return bindings;
+    }
+
+    private static void validateFamily(
+            Ast.ModuleDecl module,
+            List<Integer> family, Ast.ExportKind kind, String name) {
+        if (module.explicitlyPrivateSymbols().contains(kind.name() + "\0" + name)) {
+            throw semantic("explicitly private declaration '" + name + "' cannot be exported");
+        }
+        if (family.size() > 1
+                && kind != Ast.ExportKind.FUNCTION && kind != Ast.ExportKind.ROUTINE) {
+            throw semantic("duplicate non-callable export target '" + name + "'");
+        }
+        // PUBLIC plus unmodified (AST PRIVATE) overloads is compatible.
+        // Scoped visibility remains rejected before this point; extending
+        // this AST requires checking all explicit scope provenance here too.
     }
 
     private static void validateLocalApiVisibility(
@@ -199,10 +211,10 @@ public final class ExplicitExportResolver {
             if (binding.scope() != Ast.ExportScope.PUBLIC) continue;
             for (int index : binding.declarationIndices()) {
                 Ast.Decl declaration = declarations.get(index);
-                for (Ast.TypeRef type : exportedSignatureTypes(declaration)) {
+                for (SignatureType type : exportedSignatureTypes(declaration)) {
                     validateTypeRefVisibility(
-                            module, type, localTypesByName, publicTypeSymbols,
-                            binding.externalName());
+                            module, type.type(), localTypesByName, publicTypeSymbols,
+                            binding.externalName(), type.genericNames());
                 }
             }
         }
@@ -219,53 +231,78 @@ public final class ExplicitExportResolver {
                 || kind == Ast.ExportKind.MODEL;
     }
 
-    private static List<Ast.TypeRef> exportedSignatureTypes(Ast.Decl declaration) {
-        ArrayList<Ast.TypeRef> result = new ArrayList<>();
+    private record SignatureType(Ast.TypeRef type, java.util.Set<String> genericNames) {
+        private SignatureType {
+            genericNames = java.util.Set.copyOf(genericNames);
+        }
+    }
+
+    private static java.util.Set<String> genericNames(
+            List<String> enclosing, List<String> local) {
+        java.util.Set<String> names = new java.util.HashSet<>(enclosing);
+        names.addAll(local);
+        return java.util.Set.copyOf(names);
+    }
+
+    private static void addSignature(
+            List<SignatureType> target, Ast.TypeRef type, java.util.Set<String> names) {
+        if (type != null) target.add(new SignatureType(type, names));
+    }
+
+    private static List<SignatureType> exportedSignatureTypes(Ast.Decl declaration) {
+        ArrayList<SignatureType> result = new ArrayList<>();
         if (declaration instanceof Ast.FunctionDecl d) {
+            java.util.Set<String> defaults = new java.util.HashSet<>();
             for (Ast.GenericParameter generic : d.genericSpecs()) {
-                if (generic.defaultType() != null) result.add(generic.defaultType());
+                addSignature(result, generic.defaultType(), defaults);
+                defaults.add(generic.name());
             }
-            for (Ast.Param parameter : d.parameters()) result.add(parameter.type());
-            result.add(d.returnType());
-            addEffectTypes(result, d.effects());
+            java.util.Set<String> names = java.util.Set.copyOf(d.genericParameters());
+            for (Ast.Param parameter : d.parameters()) addSignature(result, parameter.type(), names);
+            addSignature(result, d.returnType(), names);
+            addEffectTypes(result, d.effects(), names);
             return List.copyOf(result);
         }
         if (declaration instanceof Ast.FieldDecl d) {
-            result.add(d.type());
+            addSignature(result, d.type(), java.util.Set.of());
             return List.copyOf(result);
         }
         if (declaration instanceof Ast.TypeAliasDecl d) {
-            result.add(d.target());
+            addSignature(result, d.target(), java.util.Set.copyOf(d.genericParameters()));
             return List.copyOf(result);
         }
         if (declaration instanceof Ast.ClassDecl d) {
-            result.addAll(d.parents());
-            result.addAll(d.interfaces());
+            java.util.Set<String> names = java.util.Set.copyOf(d.genericParameters());
+            for (Ast.TypeRef type : d.parents()) addSignature(result, type, names);
+            for (Ast.TypeRef type : d.interfaces()) addSignature(result, type, names);
             for (Ast.FieldDecl field : d.fields()) {
-                if (field.visibility() == Ast.Visibility.PUBLIC) result.add(field.type());
+                if (field.visibility() == Ast.Visibility.PUBLIC) addSignature(result, field.type(), names);
             }
             if (d.constructor() != null
                     && d.constructor().visibility() == Ast.Visibility.PUBLIC) {
-                for (Ast.Param parameter : d.constructor().parameters()) result.add(parameter.type());
+                for (Ast.Param parameter : d.constructor().parameters()) addSignature(result, parameter.type(), names);
             }
             for (Ast.MethodDecl method : d.methods()) {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
-                if (method.explicitReceiverType() != null) result.add(method.explicitReceiverType());
-                for (Ast.Param parameter : method.parameters()) result.add(parameter.type());
-                result.add(method.returnType());
-                addEffectTypes(result, method.effects());
+                java.util.Set<String> methodNames = genericNames(d.genericParameters(), method.genericParameters());
+                addSignature(result, method.explicitReceiverType(), methodNames);
+                for (Ast.Param parameter : method.parameters()) addSignature(result, parameter.type(), methodNames);
+                addSignature(result, method.returnType(), methodNames);
+                addEffectTypes(result, method.effects(), methodNames);
             }
             return List.copyOf(result);
         }
         if (declaration instanceof Ast.InterfaceDecl d) {
-            result.addAll(d.parents());
+            java.util.Set<String> names = java.util.Set.copyOf(d.genericParameters());
+            for (Ast.TypeRef type : d.parents()) addSignature(result, type, names);
             for (Ast.InterfaceMember member : d.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                    for (Ast.Param parameter : fn.parameters()) result.add(parameter.type());
-                    result.add(fn.returnType());
-                    addEffectTypes(result, fn.effects());
+                    java.util.Set<String> memberNames = genericNames(d.genericParameters(), fn.genericParameters());
+                    for (Ast.Param parameter : fn.parameters()) addSignature(result, parameter.type(), memberNames);
+                    addSignature(result, fn.returnType(), memberNames);
+                    addEffectTypes(result, fn.effects(), memberNames);
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                    result.add(field.type());
+                    addSignature(result, field.type(), names);
                 }
             }
             return List.copyOf(result);
@@ -274,11 +311,11 @@ public final class ExplicitExportResolver {
     }
 
     private static void addEffectTypes(
-            List<Ast.TypeRef> target,
-            Ast.EffectSpec effects) {
-        target.addAll(effects.throwsTypes());
-        target.addAll(effects.raisesTypes());
-        target.addAll(effects.panicsTypes());
+            List<SignatureType> target,
+            Ast.EffectSpec effects, java.util.Set<String> names) {
+        for (Ast.TypeRef type : effects.throwsTypes()) addSignature(target, type, names);
+        for (Ast.TypeRef type : effects.raisesTypes()) addSignature(target, type, names);
+        for (Ast.TypeRef type : effects.panicsTypes()) addSignature(target, type, names);
     }
 
     private static void validateTypeRefVisibility(
@@ -286,11 +323,11 @@ public final class ExplicitExportResolver {
             Ast.TypeRef type,
             Map<String, List<Ast.ExportKind>> localTypesByName,
             java.util.Set<String> publicTypeSymbols,
-            String exportedName) {
+            String exportedName, java.util.Set<String> genericNames) {
         if (type == null) return;
 
         List<Ast.ExportKind> localKinds = localTypesByName.get(type.name());
-        if (localKinds != null && !localKinds.isEmpty()) {
+        if (!genericNames.contains(type.name()) && localKinds != null && !localKinds.isEmpty()) {
             long exposed = localKinds.stream()
                     .filter(kind -> publicTypeSymbols.contains(kind.name() + "\0" + type.name()))
                     .count();
@@ -307,7 +344,7 @@ public final class ExplicitExportResolver {
 
         for (Ast.TypeRef argument : type.arguments()) {
             validateTypeRefVisibility(
-                    module, argument, localTypesByName, publicTypeSymbols, exportedName);
+                    module, argument, localTypesByName, publicTypeSymbols, exportedName, genericNames);
         }
     }
 
@@ -332,7 +369,7 @@ public final class ExplicitExportResolver {
             String externalName,
             Ast.ExportScope scope,
             Origin origin) {
-        String localSymbolId = module.name() + "::" + kind.name().toLowerCase() + "::" + localName;
+        String localSymbolId = module.name() + "::" + kind.name().toLowerCase(java.util.Locale.ROOT) + "::" + localName;
         return new ExportBinding(
                 module.name(),
                 localSymbolId,

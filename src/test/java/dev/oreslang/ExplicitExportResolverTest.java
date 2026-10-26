@@ -20,6 +20,127 @@ final class ExplicitExportResolverTest {
     }
 
     @Test
+    void implicitPublicOverloadIncludesUnmodifiedFamilyMembersInEitherOrder() {
+        for (String source : List.of(
+                "pub fnc work(): int { return 1; } fnc work(int x): int { return x; }",
+                "fnc work(int x): int { return x; } pub fnc work(): int { return 1; }")) {
+            assertEquals(2, rootBindings(source).getFirst().declarationIndices().size());
+        }
+    }
+
+    @Test
+    void explicitExportOfMixedPublicAndUnmodifiedOverloadsIsIdempotent() {
+        var bindings = rootBindings("""
+                export fnc work;
+                pub fnc work(): int { return 1; }
+                fnc work(int x): int { return x; }
+                """);
+        assertEquals(1, bindings.size());
+        assertEquals(2, bindings.getFirst().declarationIndices().size());
+    }
+
+    @Test
+    void implicitPublicFamilyCannotPartiallyHideExplicitlyPrivateOverload() {
+        var failure = assertThrows(IllegalArgumentException.class, () -> resolve("""
+                pub fnc work(): int { return 1; }
+                private fnc work(int x): int { return x; }
+                """));
+        assertTrue(failure.getMessage().contains("explicitly private"), failure.getMessage());
+    }
+
+    @Test
+    void genericFunctionBinderShadowsPrivateLocalTypeForLeakageChecks() {
+        assertDoesNotThrow(() -> resolve("""
+                export fnc identity;
+                define type T = int;
+                fnc identity<T>(T value): T { return value; }
+                """));
+    }
+
+    @Test
+    void genericAliasAndInterfaceBindersShadowPrivateLocalType() {
+        assertDoesNotThrow(() -> resolve("""
+                export type Box;
+                define type T = int;
+                define type Box<T> = Array<T>;
+                """));
+        assertDoesNotThrow(() -> resolve("""
+                export interface Box;
+                define type T = int;
+                define interface Box<T> as
+                  fnc echo(T value): T;
+                end
+                """));
+    }
+
+    @Test
+    void genericClassAndMethodBindersAreScopedToTheirSignatures() {
+        assertDoesNotThrow(() -> resolve("""
+                export class Box;
+                define type T = int;
+                define type U = int;
+                define class Box<T> as
+                  pub echo(T value): T { return value; }
+                  pub local<U>(U value): U { return value; }
+                end
+                """));
+    }
+
+    @Test
+    void methodBinderDoesNotHidePrivateTypeInSiblingSignature() {
+        var failure = assertThrows(IllegalArgumentException.class, () -> resolve("""
+                export class Box;
+                define type T = int;
+                define class Box as
+                  pub local<T>(T value): T { return value; }
+                  pub exposed(): T { return 1; }
+                end
+                """));
+        assertTrue(failure.getMessage().contains("leaks non-public local type 'T'"), failure.getMessage());
+    }
+
+    @Test
+    void genericDefaultStillChecksNominalTypeVisibility() {
+        var failure = assertThrows(IllegalArgumentException.class, () -> resolve("""
+                export fnc identity;
+                define type Hidden = int;
+                fnc identity<T = Hidden>(T value): T { return value; }
+                """));
+        assertTrue(failure.getMessage().contains("leaks non-public local type 'Hidden'"), failure.getMessage());
+    }
+
+    @Test
+    void nestedGenericArgumentStillChecksNominalTypeVisibility() {
+        var failure = assertThrows(IllegalArgumentException.class, () -> resolve("""
+                export fnc expose;
+                define type Hidden = int;
+                fnc expose<T>(Array<Hidden> value): Array<Hidden> { return value; }
+                """));
+        assertTrue(failure.getMessage().contains("leaks non-public local type 'Hidden'"), failure.getMessage());
+    }
+
+    @Test
+    void localSymbolIdentityDoesNotDependOnDefaultLocale() {
+        java.util.Locale saved = java.util.Locale.getDefault();
+        try {
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"));
+            var binding = rootBindings("export fnc work; fnc work(): int { return 1; }").getFirst();
+            assertTrue(binding.localSymbolId().endsWith("::function::work"));
+        } finally {
+            java.util.Locale.setDefault(saved);
+        }
+    }
+
+    @Test
+    void duplicateNamespaceCannotOverwriteResolvedBindings() {
+        var parsed = Parser.parse("pub fnc work(): int { return 1; }");
+        var module = parsed.modules().getFirst();
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ExplicitExportResolver.resolve(new Ast.Program(List.of(module, module))));
+        assertTrue(failure.getMessage().contains("duplicate export namespace"), failure.getMessage());
+    }
+
+    @Test
     void defaultPrivateDeclarationMayBeExplicitlyExported() {
         List<ExplicitExportResolver.ExportBinding> bindings = rootBindings("""
                 export class X;

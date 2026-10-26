@@ -98,6 +98,7 @@ final class ExplicitExportSyntaxTest {
                 "export string ready as 'ready'; define class X as end",
                 "export const ready as 'ready'; const string ready = 'ready';",
                 "export symbol ready as #ready; define class X as end",
+                "export symbol ready as 'ready'; define class X as end",
                 "export symbol #ready as #other; define class X as end",
                 "export symbol #ready as Ready; define class X as end"
         );
