@@ -5090,11 +5090,6 @@ public final class OresEvalRootNode extends RootNode {
 
             List<Object> normalized = normalizeFunctionArguments(fn, args);
             if (fn.generator()) {
-                if (taskScope != null) {
-                    throw new IllegalStateException(
-                            "generator activation inside TaskScope is disabled until "
-                                    + "producer terminal/physical-retirement integration is proven");
-                }
                 if (fn.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalStateException(
                             "actor callables cannot expose generator activations across mailbox turns");
@@ -5103,15 +5098,32 @@ public final class OresEvalRootNode extends RootNode {
                 List<?> captured = fn.async()
                         ? detachAsyncArguments(normalized, fn.parameters())
                         : List.copyOf(normalized);
-                GeneratorRuntime.Producer<Object> producer = emitter -> {
-                    GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
-                            ? value -> emitter.emit(detachAsyncValue(value, new IdentityHashMap<>()))
-                            : emitter;
-                    callGeneratorBodyRaw(fn, captured, boundaryEmitter);
-                };
+                GeneratorRuntime.StructuredProducer<Object> producer =
+                        (emitter, producerRegistration) -> {
+                            GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
+                                    ? value -> emitter.emit(
+                                            detachAsyncValue(
+                                                    value,
+                                                    new IdentityHashMap<>()))
+                                    : emitter;
+                            callGeneratorBodyRaw(
+                                    fn,
+                                    captured,
+                                    boundaryEmitter,
+                                    taskScope,
+                                    producerRegistration);
+                        };
                 return fn.async()
-                        ? GeneratorRuntime.asyncGenerator(context.asyncRuntime(), producer)
-                        : GeneratorRuntime.generator(context.asyncRuntime(), producer);
+                        ? GeneratorRuntime.asyncGenerator(
+                                context.asyncRuntime(),
+                                producer,
+                                taskScope,
+                                taskScopeParent)
+                        : GeneratorRuntime.generator(
+                                context.asyncRuntime(),
+                                producer,
+                                taskScope,
+                                taskScopeParent);
             }
 
             if (fn.actorKind() == Ast.ActorKind.NONE) {
@@ -5460,8 +5472,12 @@ public final class OresEvalRootNode extends RootNode {
         private void callGeneratorBodyRaw(
                 Ast.FunctionDecl fn,
                 List<?> args,
-                GeneratorRuntime.Emitter<Object> emitter) {
+                GeneratorRuntime.Emitter<Object> emitter,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
+            env.taskScope = taskScope;
+            env.taskScopeParent = taskScopeParent;
             bindCallableArguments(env, fn.parameters(), args, "generator " + fn.name());
 
             GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
