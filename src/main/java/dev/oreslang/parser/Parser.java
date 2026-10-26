@@ -4452,10 +4452,24 @@ public final class Parser {
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
+        boolean seenNamed = false;
+        boolean seenSpread = false;
         do {
             boolean spread = match(ELLIPSIS);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            if (spread) {
+                if (seenNamed) throw error(peek(), "named arguments cannot be mixed with spreads");
+                seenSpread = true;
+                args.add(new Ast.SpreadExpr(parseExpression()));
+            } else if (check(IDENT) && checkNext(COLON)) {
+                if (seenSpread) throw error(peek(), "named arguments cannot be mixed with spreads");
+                String label = advance().lexeme();
+                consume(COLON, "expected ':' after named argument label");
+                seenNamed = true;
+                args.add(new Ast.NamedValueArgumentExpr(label, parseExpression()));
+            } else {
+                if (seenNamed) throw error(peek(), "positional argument after named argument");
+                args.add(parseExpression());
+            }
         } while (match(COMMA));
         return args;
     }
