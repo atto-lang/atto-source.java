@@ -7010,6 +7010,8 @@ public final class TypeChecker {
             case "onSuccess" -> new Function(
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
+            case "cancel", "is_cancelled", "is_done" ->
+                    new Function(List.of(), Primitive.BOOL);
             case "flatten" -> {
                 if (!(element instanceof Named inner)
                         || !inner.name().equals("Future")
