@@ -5257,7 +5257,7 @@ public final class TypeChecker {
         }
         if (source instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
-            if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
+            if (klass == null) throw new IllegalArgumentException("object destructuring requires a closed record/struct or statically known class-field value; Map<K,V> keys are runtime data");
             ResolvedField field = findFieldTarget(
                     klass, named, memberName, new LinkedHashSet<>());
             if (field == null) {
@@ -5277,7 +5277,7 @@ public final class TypeChecker {
             return Types.unionOf(alternatives);
         }
         if (source == Unknown.INSTANCE) return Unknown.INSTANCE;
-        throw new IllegalArgumentException("object destructuring requires a record/map-like value");
+        throw new IllegalArgumentException("object destructuring requires a closed record/struct or statically known class-field value; Map<K,V> keys are runtime data");
     }
 
     private Type objectDestructureRestType(Type source, Set<String> selectedMembers) {
