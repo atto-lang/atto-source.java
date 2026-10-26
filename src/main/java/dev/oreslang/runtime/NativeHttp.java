@@ -190,7 +190,9 @@ public final class NativeHttp implements AutoCloseable {
     private Object owner() {
         if (ActorRuntime.inActorExecution()) {
             if (ActorRuntime.currentActorRuntime() != context.actors()) throw new SecurityException("foreign actor runtime");
-            return ActorRuntime.currentActorId().orElseThrow();
+            ActorRuntime.ActorRef<?> ref = ActorRuntime.currentActorRef();
+            if (ref == null) throw new SecurityException("HTTP exchange requires an exact actor incarnation");
+            return ref;
         }
         return context;
     }
@@ -444,8 +446,8 @@ public final class NativeHttp implements AutoCloseable {
         }
         private void checkOwner() {
             if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
-            if (generation != state.generation || !owner.equals(state.owner)) throw new IllegalStateException("HTTP exchange has moved");
-            if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
+            if (generation != state.generation || owner != state.owner) throw new IllegalStateException("HTTP exchange has moved");
+            if (owner != NativeHttp.this.owner()) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
             synchronized (state) {
@@ -455,9 +457,9 @@ public final class NativeHttp implements AutoCloseable {
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
                 state.movedNanos = System.nanoTime();
-                state.generation++; state.owner = destination.id(); state.actor = destination;
+                state.generation++; state.owner = destination; state.actor = destination;
                 String token = UUID.randomUUID().toString(); state.ticket = token;
-                Exchange moved = new Exchange(state, destination.id(), state.generation);
+                Exchange moved = new Exchange(state, destination, state.generation);
                 transfers.put(token, moved);
                 if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
                 return token;
