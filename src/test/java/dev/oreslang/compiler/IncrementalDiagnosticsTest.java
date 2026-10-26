@@ -113,6 +113,31 @@ final class IncrementalDiagnosticsTest {
     }
 
     @Test
+    void independentSemanticFailuresInDifferentUnitsAreCollectedWithoutFabricatingSpans() {
+        var sources = new LinkedHashMap<String, String>();
+        sources.put("z.ores", """
+                define module zed as
+                  pub fnc value(): int { return "wrong"; }
+                end
+                """);
+        sources.put("a.ores", """
+                define module alpha as
+                  pub fnc value(): int { return "wrong"; }
+                end
+                """);
+        var failure = assertThrows(CompilationDiagnosticsException.class,
+                () -> new IncrementalCompiler().compileWithDiagnostics(sources, 5));
+        assertEquals(2, failure.diagnostics().size());
+        assertEquals(List.of("a.ores", "z.ores"),
+                failure.diagnostics().stream().map(d -> d.primary().unitId()).toList());
+        assertTrue(failure.diagnostics().stream().allMatch(d ->
+                d.phase() == DiagnosticCollector.Phase.CHECK
+                    && d.primary().line() == 1
+                    && d.message().contains("exact source span unavailable")));
+        assertFalse(failure.mayHaveMore());
+    }
+
+    @Test
     void rejectedCompilationNeverCommitsPartialCacheState() {
         var compiler = new IncrementalCompiler();
         assertThrows(CompilationDiagnosticsException.class,
