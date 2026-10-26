@@ -178,13 +178,17 @@ public final class InvertedColumnStore implements AutoCloseable {
      * issued capability follows its logical row through swap-delete; deleted
      * handles are revoked. Check a wide signed index BEFORE narrowing it.
      */
-    public synchronized Handle handleAt(long index) {
+    private int checkedDenseRow(long index) {
         open();
         if (index < 0 || index >= length) {
             throw new IndexOutOfBoundsException(
                     "inverted row index " + index + " outside [0, " + length + ")");
         }
-        int row = (int) index; // proven within the live int-indexed range
+        return (int) index; // checked before narrowing, capacity is never indexed
+    }
+
+    public synchronized Handle handleAt(long index) {
+        int row = checkedDenseRow(index);
         int slot = rowSlots[row];
         if (slot < 0 || slot >= slotCount || !live[slot] || slotRows[slot] != row) {
             throw new IllegalStateException("inverted dense row mapping is invalid");
@@ -328,6 +332,30 @@ public final class InvertedColumnStore implements AutoCloseable {
             generations[slot]++;
             reusable[freeCount++] = slot;
         }
+    }
+
+    /**
+     * Compiler's transposed field-read target for rows[index].field. Select
+     * the dense position and load the column under ONE lock: allocating a
+     * handle and releasing the lock in between could allow a swap-delete to
+     * change which row is selected. No RowView or name lookup on this path.
+     */
+    public synchronized Object getAt(long index, int field) {
+        int row = checkedDenseRow(index);
+        int i = column(field);
+        if (writers[i]) throw new IllegalStateException("mutably borrowed column");
+        return load(i, row);
+    }
+
+    /** Checked positional field write, atomic against row structural changes. */
+    public synchronized void setAt(long index, int field, Object value) {
+        int row = checkedDenseRow(index);
+        int i = column(field);
+        validateValue(specs[i], value);
+        if (readers[i] != 0 || writers[i]) {
+            throw new IllegalStateException("borrowed column");
+        }
+        store(i, row, value);
     }
 
     public synchronized Object get(Handle handle, int field) {
