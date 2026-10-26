@@ -77,6 +77,11 @@ public final class FuturePipelineTypingCheck {
         if (!typeOnly.pendingFutureStages().containsKey(typeOnlyPipe)) {
             throw new AssertionError("type-only analysis lost its staged pipeline plan");
         }
+        TypeChecker.check(typeOnly.program());
+        if (!TypeChecker.CheckedFuturePipe.lookup(typeOnlyPipe)) {
+            throw new AssertionError(
+                    "full ownership admission did not publish the staged pipeline plan");
+        }
 
         // Ownership rejection after successful typing must also leave the
         // staged pipeline unpublished.
