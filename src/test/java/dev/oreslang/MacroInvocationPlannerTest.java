@@ -5,6 +5,7 @@ import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
@@ -398,6 +399,28 @@ final class MacroInvocationPlannerTest {
                         """));
 
         assertTrue(failure.getMessage().toLowerCase().contains("moved"),
+                failure::toString);
+    }
+
+    @Test
+    void directCapabilityPassRejectsResidualMacroNodes() {
+        Ast.Program parsed = Parser.parse("""
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+                fnc blocked() -> void {
+                    identity!(syntax expr stdio.println("blocked"));
+                    return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> CapabilityChecker.check(parsed, IsolatePolicy.untrustedActor()));
+
+        assertTrue(failure.getMessage().contains("unexpanded macro"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("capability admission"),
                 failure::toString);
     }
 
