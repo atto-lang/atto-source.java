@@ -107,13 +107,13 @@ final class ProductValueBoundaryTest {
                 pub fnc main(): void {
                   const [tuple_number, tuple_label] = tuple_result();
                   const {x, label} = record_result();
-                  const {x: struct_x, label: struct_label} = struct_result();
+                  const {sx, slabel} = struct_result();
                   stdio.println(tuple_number);
                   stdio.println(tuple_label);
                   stdio.println(x);
                   stdio.println(label);
-                  stdio.println(struct_x);
-                  stdio.println(struct_label);
+                  stdio.println(sx);
+                  stdio.println(slabel);
                   return;
                 }
                 """;
@@ -158,13 +158,13 @@ final class ProductValueBoundaryTest {
                 pub fnc main(): void {
                   const [tuple_number, tuple_label] = tuple_result();
                   const {x, label} = record_result();
-                  const {x: struct_x, label: struct_label} = struct_result();
+                  const {sx, slabel} = struct_result();
                   stdio.println(tuple_number);
                   stdio.println(tuple_label);
                   stdio.println(x);
                   stdio.println(label);
-                  stdio.println(struct_x);
-                  stdio.println(struct_label);
+                  stdio.println(sx);
+                  stdio.println(slabel);
                   return;
                 }
                 """;
