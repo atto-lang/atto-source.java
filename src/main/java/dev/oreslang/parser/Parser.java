@@ -586,7 +586,7 @@ public final class Parser {
                 }
                 Ast.TypeRef valueType = parseTypeRef();
                 consume(GT, "expected '>' after Const<T> macro parameter type");
-                if (isCompilerOnlyMacroMetaType(valueType)) {
+                if (containsCompilerOnlyMacroMetaType(valueType)) {
                     throw error(previous(),
                             "Const<T> value type must be an ordinary compile-time-serializable type, not another macro meta type");
                 }
@@ -641,12 +641,18 @@ public final class Parser {
         };
     }
 
-    private boolean isCompilerOnlyMacroMetaType(Ast.TypeRef type) {
-        return type.name().equals("Type")
+    private boolean containsCompilerOnlyMacroMetaType(Ast.TypeRef type) {
+        if (type.name().equals("Type")
                 || type.name().equals("Const")
                 || type.name().equals("Identifier")
                 || type.name().equals("Syntax")
-                || type.name().equals("SyntaxList");
+                || type.name().equals("SyntaxList")) {
+            return true;
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsCompilerOnlyMacroMetaType(argument)) return true;
+        }
+        return false;
     }
 
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
