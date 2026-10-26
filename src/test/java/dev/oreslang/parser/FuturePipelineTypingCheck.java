@@ -114,11 +114,33 @@ public final class FuturePipelineTypingCheck {
                 || !typedABPlan.outputTypeRef().name().equals("String")
                 || !typedABPlan.stageEffects().isEmpty()
                 || !typedABPlan.cumulativeEffects().isEmpty()
+                || typedABPlan.effectProvenance()
+                        != TypeChecker.PipelineEffectProvenance.COMPLETE_STATIC
                 || typedABPlan.inputOwnership()
                         != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD
                 || typedABPlan.producedFutureOwnership()
                         != TypeChecker.PipelineStageFutureOwnership.NONE) {
             throw new AssertionError("typed A -> B pipeline plan metadata is incomplete");
+        }
+
+        Ast.Program unknownUpstreamEffects = TypeChecker.check(Parser.parse("""
+                fnc keep(int value): int { return value; }
+                fnc main(Future<int> source): void {
+                  val Future<int> pending = source |> keep();
+                  return;
+                }
+                """));
+        Ast.FunctionDecl unknownEffectsMain = (Ast.FunctionDecl)
+                unknownUpstreamEffects.modules().getFirst().declarations().get(1);
+        Ast.CallExpr unknownEffectsPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) unknownEffectsMain.body().getFirst()).initializer();
+        TypeChecker.PipelinePlan unknownEffectsPlan =
+                TypeChecker.CheckedFuturePipe.plan(unknownEffectsPipe);
+        if (unknownEffectsPlan == null
+                || unknownEffectsPlan.effectProvenance()
+                        != TypeChecker.PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN) {
+            throw new AssertionError(
+                    "Future binding incorrectly acquired complete upstream effect provenance");
         }
 
         rejected("""
