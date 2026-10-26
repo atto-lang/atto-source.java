@@ -546,4 +546,75 @@ final class ActorAsyncSendBackpressureTest {
         }
     }
 
+
+    @Test
+    void gracefulStopIncludesCreditTransferredButNotYetPublishedSend()
+            throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch creditTransferred = new CountDownLatch(1);
+        CountDownLatch publishTransferredCredit = new CountDownLatch(1);
+        List<Integer> processed = Collections.synchronizedList(new ArrayList<>());
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            runtime.asyncSendCreditTransferHookForTesting = () -> {
+                creditTransferred.countDown();
+                try {
+                    if (!publishTransferredCredit.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError(
+                                "credit-transfer publication hook timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            };
+
+            var ref = runtime.<Integer>spawnShared(
+                    oneMessagePolicy(),
+                    () -> (message, context) -> {
+                        if (message == 1) {
+                            firstEntered.countDown();
+                            if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError(
+                                        "held actor turn timed out");
+                            }
+                        }
+                        processed.add(message);
+                    });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+            OresFuture<Void> third = ref.sendAsync(3);
+            assertFalse(third.isDone());
+
+            releaseFirst.countDown();
+            assertTrue(
+                    creditTransferred.await(5, TimeUnit.SECONDS),
+                    "producer credit never transferred");
+
+            OresFuture<Void> done = ref.gracefulStop();
+            assertFalse(
+                    done.isDone(),
+                    "graceful stop must wait for the transferred pre-publication loan");
+            assertFalse(
+                    third.isDone(),
+                    "transferred send is still deliberately held before publication");
+
+            publishTransferredCredit.countDown();
+
+            third.get(5, TimeUnit.SECONDS);
+            done.get(5, TimeUnit.SECONDS);
+            assertEquals(
+                    List.of(1, 2, 3),
+                    processed,
+                    "graceful watermark must include the irrevocably transferred send");
+            assertFalse(ref.isAlive());
+        } finally {
+            publishTransferredCredit.countDown();
+            releaseFirst.countDown();
+        }
+    }
+
 }
