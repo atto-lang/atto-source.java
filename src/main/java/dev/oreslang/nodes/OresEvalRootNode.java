@@ -3887,42 +3887,34 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (t, channelValue, channelFailure) -> {
                         if (channelFailure != null) {
-                            continuation.accept(
-                                    t,
-                                    null,
-                                    channelFailure);
+                            continuation.accept(t, null, channelFailure);
                             return;
                         }
 
-                        ChannelRuntime.Channel<Object> channel;
+                        String channelOperation =
+                                operation.operation() == Ast.ChannelOperation.READ
+                                        ? "readch"
+                                        : "writech";
                         try {
-                            channel = requireChannel(
+                            requireChannelDirection(
                                     channelValue,
-                                    operation.operation() == Ast.ChannelOperation.READ
-                                            ? "readch"
-                                            : "writech",
+                                    channelOperation,
                                     operation.operation());
                         } catch (RuntimeException | Error failure) {
                             continuation.accept(t, null, failure);
                             return;
                         }
 
-                        if (operation.operation()
-                                == Ast.ChannelOperation.READ) {
-                            if (operation.mode()
-                                    == Ast.WaitMode.IMMEDIATE) {
+                        if (operation.operation() == Ast.ChannelOperation.READ) {
+                            if (operation.mode() == Ast.WaitMode.IMMEDIATE) {
                                 try {
                                     java.util.Optional<Object> result =
-                                            channel.tryRead();
+                                            tryReadChannel(channelValue, channelOperation);
                                     continuation.accept(
                                             t,
                                             result.isPresent()
-                                                    ? new OptionValue(
-                                                            true,
-                                                            result.get())
-                                                    : new OptionValue(
-                                                            false,
-                                                            null),
+                                                    ? new OptionValue(true, result.get())
+                                                    : new OptionValue(false, null),
                                             null);
                                 } catch (RuntimeException | Error failure) {
                                     continuation.accept(t, null, failure);
@@ -3939,26 +3931,18 @@ public final class OresEvalRootNode extends RootNode {
                                 return;
                             }
                             OresFuture<Object> future =
-                                    channel.readAsync();
-                            if (operation.mode()
-                                    == Ast.WaitMode.NONBLOCKING) {
+                                    readChannelAsync(channelValue, channelOperation);
+                            if (operation.mode() == Ast.WaitMode.NONBLOCKING) {
                                 if (ActorRuntime.inActorExecution()) {
-                                    context.actors().ownCurrentActorFuture(
-                                            future);
+                                    context.actors().ownCurrentActorFuture(future);
                                 }
-                                continuation.accept(
-                                        t,
-                                        future,
-                                        null);
+                                continuation.accept(t, future, null);
                                 return;
                             }
 
                             if (future.isDone()) {
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            future.join(),
-                                            null);
+                                    continuation.accept(t, future.join(), null);
                                 } catch (RuntimeException | Error failure) {
                                     continuation.accept(t, null, failure);
                                 }
@@ -3966,10 +3950,7 @@ public final class OresEvalRootNode extends RootNode {
                                 t.suspend(
                                         future,
                                         (t2, value, failure) ->
-                                                continuation.accept(
-                                                        t2,
-                                                        value,
-                                                        failure));
+                                                continuation.accept(t2, value, failure));
                             }
                             return;
                         }
@@ -3980,10 +3961,7 @@ public final class OresEvalRootNode extends RootNode {
                                 env,
                                 (t2, value, valueFailure) -> {
                                     if (valueFailure != null) {
-                                        continuation.accept(
-                                                t2,
-                                                null,
-                                                valueFailure);
+                                        continuation.accept(t2, null, valueFailure);
                                         return;
                                     }
 
@@ -3994,7 +3972,10 @@ public final class OresEvalRootNode extends RootNode {
                                                         "nb cb writech requires actor execution");
                                             }
                                             OresFuture<Void> completion =
-                                                    channel.writeAsync(value);
+                                                    writeChannelAsync(
+                                                            channelValue,
+                                                            value,
+                                                            channelOperation);
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
@@ -4018,28 +3999,24 @@ public final class OresEvalRootNode extends RootNode {
                                                             }
                                                         }
                                                     });
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
+                                            continuation.accept(t2, null, null);
                                         } catch (RuntimeException | Error failure) {
                                             continuation.accept(t2, null, failure);
                                         }
                                         return;
                                     }
 
-                                    if (operation.mode()
-                                            == Ast.WaitMode.IMMEDIATE) {
+                                    if (operation.mode() == Ast.WaitMode.IMMEDIATE) {
                                         try {
                                             continuation.accept(
                                                     t2,
-                                                    channel.tryWrite(value),
+                                                    tryWriteChannel(
+                                                            channelValue,
+                                                            value,
+                                                            channelOperation),
                                                     null);
                                         } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            continuation.accept(t2, null, failure);
                                         }
                                         return;
                                     }
@@ -4053,32 +4030,24 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
                                     OresFuture<Void> future =
-                                            channel.writeAsync(value);
-                                    if (operation.mode()
-                                            == Ast.WaitMode.NONBLOCKING) {
+                                            writeChannelAsync(
+                                                    channelValue,
+                                                    value,
+                                                    channelOperation);
+                                    if (operation.mode() == Ast.WaitMode.NONBLOCKING) {
                                         if (ActorRuntime.inActorExecution()) {
-                                            context.actors().ownCurrentActorFuture(
-                                                    future);
+                                            context.actors().ownCurrentActorFuture(future);
                                         }
-                                        continuation.accept(
-                                                t2,
-                                                future,
-                                                null);
+                                        continuation.accept(t2, future, null);
                                         return;
                                     }
 
                                     if (future.isDone()) {
                                         try {
                                             future.join();
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
+                                            continuation.accept(t2, null, null);
                                         } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            continuation.accept(t2, null, failure);
                                         }
                                     } else {
                                         t2.suspend(
@@ -5589,17 +5558,13 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.SelectArm arm : selected.arms()) {
                 switch (arm.operation()) {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
-                    case READ -> cases.add(ChannelRuntime.read(
-                            requireChannel(
-                                    eval(arm.channel(), env),
-                                    "readch select case",
-                                    Ast.ChannelOperation.READ)));
-                    case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(
-                                    eval(arm.channel(), env),
-                                    "writech select case",
-                                    Ast.ChannelOperation.WRITE),
-                            eval(arm.value(), env)));
+                    case READ -> cases.add(readSelectCase(
+                            eval(arm.channel(), env),
+                            "readch select case"));
+                    case WRITE -> cases.add(writeSelectCase(
+                            eval(arm.channel(), env),
+                            eval(arm.value(), env),
+                            "writech select case"));
                     case AWAIT -> {
                         Object future = eval(arm.channel(), env);
                         if (!(future instanceof OresFuture<?> typedFuture)) {
@@ -5679,25 +5644,32 @@ public final class OresEvalRootNode extends RootNode {
         private Object evalChannelOperation(
                 Ast.ChannelOpExpr operation,
                 Env env) {
-            ChannelRuntime.Channel<Object> channel = requireChannel(
-                    eval(operation.channel(), env),
+            Object channelValue = eval(operation.channel(), env);
+            String channelOperation =
                     operation.operation() == Ast.ChannelOperation.READ
                             ? "readch"
-                            : "writech",
+                            : "writech";
+            requireChannelDirection(
+                    channelValue,
+                    channelOperation,
                     operation.operation());
 
             if (operation.operation() == Ast.ChannelOperation.READ) {
                 return switch (operation.mode()) {
                     case IMMEDIATE -> {
-                        java.util.Optional<Object> value = channel.tryRead();
+                        java.util.Optional<Object> value =
+                                tryReadChannel(channelValue, channelOperation);
                         yield value.isPresent()
                                 ? new OptionValue(true, value.get())
                                 : new OptionValue(false, null);
                     }
                     case NONBLOCKING -> context.actors()
-                            .ownCurrentActorFuture(channel.readAsync());
+                            .ownCurrentActorFuture(
+                                    readChannelAsync(
+                                            channelValue,
+                                            channelOperation));
                     case BLOCKING -> awaitBlockingChannelFuture(
-                            channel.readAsync(),
+                            readChannelAsync(channelValue, channelOperation),
                             "readch");
                 };
             }
@@ -5708,7 +5680,11 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "nb cb writech can only execute inside an actor turn");
                 }
-                OresFuture<Void> completion = channel.writeAsync(value);
+                OresFuture<Void> completion =
+                        writeChannelAsync(
+                                channelValue,
+                                value,
+                                channelOperation);
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
                 Env callbackEnv = env.snapshot();
@@ -5736,12 +5712,23 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             return switch (operation.mode()) {
-                case IMMEDIATE -> channel.tryWrite(value);
+                case IMMEDIATE ->
+                        tryWriteChannel(
+                                channelValue,
+                                value,
+                                channelOperation);
                 case NONBLOCKING -> context.actors()
-                        .ownCurrentActorFuture(channel.writeAsync(value));
+                        .ownCurrentActorFuture(
+                                writeChannelAsync(
+                                        channelValue,
+                                        value,
+                                        channelOperation));
                 case BLOCKING -> {
                     awaitBlockingChannelFuture(
-                            channel.writeAsync(value),
+                            writeChannelAsync(
+                                    channelValue,
+                                    value,
+                                    channelOperation),
                             "writech");
                     yield null;
                 }
@@ -5769,22 +5756,17 @@ public final class OresEvalRootNode extends RootNode {
             return future.join();
         }
 
-        @SuppressWarnings("unchecked")
-        private ChannelRuntime.Channel<Object> requireChannel(
+        private void requireChannelDirection(
                 Object value,
                 String where,
                 Ast.ChannelOperation operation) {
-            if (value instanceof ChannelRuntime.Channel<?> channel) {
-                return (ChannelRuntime.Channel<Object>) channel;
-            }
-            if (operation == Ast.ChannelOperation.READ
-                    && value instanceof ChannelRuntime.ReadChannel<?> read) {
-                return (ChannelRuntime.Channel<Object>) read.backingChannel();
-            }
-            if (operation == Ast.ChannelOperation.WRITE
-                    && value instanceof ChannelRuntime.WriteChannel<?> write) {
-                return (ChannelRuntime.Channel<Object>) write.backingChannel();
-            }
+            boolean admitted =
+                    value instanceof ChannelRuntime.Channel<?>
+                            || operation == Ast.ChannelOperation.READ
+                                    && value instanceof ChannelRuntime.ReadChannel<?>
+                            || operation == Ast.ChannelOperation.WRITE
+                                    && value instanceof ChannelRuntime.WriteChannel<?>;
+            if (admitted) return;
             String required = operation == Ast.ChannelOperation.READ
                     ? "Channel<T> or ReadChannel<T>"
                     : "Channel<T> or WriteChannel<T>";
@@ -5792,7 +5774,82 @@ public final class OresEvalRootNode extends RootNode {
                     where + " requires " + required + "; got " + value);
         }
 
-        private ChannelRuntime.SelectSet asSelectSet(Object value) {
+        @SuppressWarnings("unchecked")
+        private java.util.Optional<Object> tryReadChannel(
+                Object value,
+                String where) {
+            requireChannelDirection(value, where, Ast.ChannelOperation.READ);
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return ((ChannelRuntime.Channel<Object>) channel).tryRead();
+            }
+            return ((ChannelRuntime.ReadChannel<Object>) value).tryRead();
+        }
+
+        @SuppressWarnings("unchecked")
+        private OresFuture<Object> readChannelAsync(
+                Object value,
+                String where) {
+            requireChannelDirection(value, where, Ast.ChannelOperation.READ);
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return ((ChannelRuntime.Channel<Object>) channel).readAsync();
+            }
+            return ((ChannelRuntime.ReadChannel<Object>) value).readAsync();
+        }
+
+        @SuppressWarnings("unchecked")
+        private boolean tryWriteChannel(
+                Object value,
+                Object payload,
+                String where) {
+            requireChannelDirection(value, where, Ast.ChannelOperation.WRITE);
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return ((ChannelRuntime.Channel<Object>) channel).tryWrite(payload);
+            }
+            return ((ChannelRuntime.WriteChannel<Object>) value).tryWrite(payload);
+        }
+
+        @SuppressWarnings("unchecked")
+        private OresFuture<Void> writeChannelAsync(
+                Object value,
+                Object payload,
+                String where) {
+            requireChannelDirection(value, where, Ast.ChannelOperation.WRITE);
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return ((ChannelRuntime.Channel<Object>) channel).writeAsync(payload);
+            }
+            return ((ChannelRuntime.WriteChannel<Object>) value).writeAsync(payload);
+        }
+
+        @SuppressWarnings("unchecked")
+        private ChannelRuntime.SelectCase readSelectCase(
+                Object value,
+                String where) {
+            requireChannelDirection(value, where, Ast.ChannelOperation.READ);
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return ChannelRuntime.read(
+                        (ChannelRuntime.Channel<Object>) channel);
+            }
+            return ChannelRuntime.read(
+                    (ChannelRuntime.ReadChannel<Object>) value);
+        }
+
+        @SuppressWarnings("unchecked")
+        private ChannelRuntime.SelectCase writeSelectCase(
+                Object value,
+                Object payload,
+                String where) {
+            requireChannelDirection(value, where, Ast.ChannelOperation.WRITE);
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return ChannelRuntime.write(
+                        (ChannelRuntime.Channel<Object>) channel,
+                        payload);
+            }
+            return ChannelRuntime.write(
+                    (ChannelRuntime.WriteChannel<Object>) value,
+                    payload);
+        }
+
+        private ChannelRuntime.SelectSet asSelectSet(private ChannelRuntime.SelectSet asSelectSet(Object value) {
             if (value instanceof ChannelRuntime.SelectSet set) return set;
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
