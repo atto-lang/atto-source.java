@@ -2408,6 +2408,18 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
+            // io is an implicit actor execution capability, not ordinary actor
+            // state and not a process-global namespace. It wins over lexical
+            // lookup inside actors so it cannot be accidentally redirected.
+            if (currentActorKind != Ast.ActorKind.NONE && name.name().equals("io")) {
+                return new Named("$ActorIO", List.of());
+            }
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && (name.name().equals("stdio") || name.name().equals("print"))) {
+                throw new IllegalArgumentException(
+                        "'" + name.name()
+                                + "' is process-level I/O and is unavailable inside actors; use io.*");
+            }
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
@@ -5575,6 +5587,40 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+
+        // Actor io is deliberately separate from process stdio. The first
+        // executable slice wires io.out to the existing bounded actor output
+        // transport. The remaining channel names are reserved now so source
+        // cannot accidentally acquire competing process descriptors while
+        // their actor-local routers are implemented.
+        if (named.name().equals("$ActorIO")) {
+            return switch (name) {
+                case "out" -> new Named("$ActorIOOut", List.of());
+                case "in" -> new Named("$ActorIOIn", List.of());
+                case "err" -> new Named("$ActorIOErr", List.of());
+                case "events" -> new Named("$ActorIOEvents", List.of());
+                case "meta" -> new Named("$ActorIOMeta", List.of());
+                default -> throw new IllegalArgumentException(
+                        "unknown actor io member '" + name + "'");
+            };
+        }
+        if (named.name().equals("$ActorIOOut")) {
+            if (name.equals("write")) {
+                return new Function(
+                        List.of(Unknown.INSTANCE),
+                        new Named("Future", List.of(Primitive.VOID)));
+            }
+            throw new IllegalArgumentException(
+                    "unknown io.out member '" + name + "'");
+        }
+        if (named.name().equals("$ActorIOIn")
+                || named.name().equals("$ActorIOErr")
+                || named.name().equals("$ActorIOEvents")
+                || named.name().equals("$ActorIOMeta")) {
+            throw new IllegalArgumentException(
+                    "actor-local " + named.name().substring("$ActorIO".length()).toLowerCase()
+                            + " channel is reserved but not implemented on this backend yet");
+        }
         if (named.name().equals("fs") || named.name().equals("File")) {
             Type string = Primitive.STRING;
             Type booleanType = Primitive.BOOL;
