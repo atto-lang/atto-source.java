@@ -10,10 +10,15 @@ on:
       - "src/main/java/dev/oreslang/ast/AnnotationExpander.java"
       - "src/main/java/dev/oreslang/parser/Parser.java"
       - "src/main/java/dev/oreslang/compiler/ExportResolver.java"
+      - "src/main/java/dev/oreslang/compiler/IncrementalCompiler.java"
+      - "src/main/java/dev/oreslang/compiler/ImportGraph.java"
+      - "src/main/java/dev/oreslang/compiler/SourceExportTable.java"
       - "src/main/java/dev/oreslang/compiler/ExportMetadataCollector.java"
       - "src/main/java/dev/oreslang/compiler/OresCompiler.java"
       - "src/main/java/dev/oreslang/compiler/TreeShaker.java"
+      - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
       - "src/test/java/dev/oreslang/ExplicitExportSyntaxTest.java"
+      - "src/test/java/dev/oreslang/ExplicitExportLinkedRuntimeTest.java"
       - "docs/grammar.ebnf"
       - ".github/workflows/explicit-exports-v1.yml"
   workflow_dispatch:
@@ -43,4 +48,4 @@ jobs:
       - name: Compile exact head
         run: mvn -B -ntp -DskipTests compile
       - name: Run explicit export regression
-        run: mvn -B -ntp -Dtest=ExplicitExportSyntaxTest test
+        run: mvn -B -ntp -Dtest=ExplicitExportSyntaxTest,ExplicitExportLinkedRuntimeTest test
