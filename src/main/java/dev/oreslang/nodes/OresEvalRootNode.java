@@ -8236,6 +8236,18 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, false, true);
                     };
+                    case "cancel" -> (Invokable) args -> {
+                        requireZero(args, "Future.cancel");
+                        return future.cancel(false);
+                    };
+                    case "is_cancelled" -> (Invokable) args -> {
+                        requireZero(args, "Future.is_cancelled");
+                        return future.isCancelled();
+                    };
+                    case "is_done" -> (Invokable) args -> {
+                        requireZero(args, "Future.is_done");
+                        return future.isDone();
+                    };
                     default -> throw new IllegalArgumentException(
                             "unknown Future instance member " + name);
                 };
