@@ -2361,9 +2361,15 @@ public final class TypeChecker {
         List<PipeEndpointContracts.Endpoint> endpoints = stageTypes.stream()
                 .map(this::pipeEndpointFor)
                 .toList();
+        // Preflight ALL adjacent endpoint/domain pairs before choosing a
+        // transport. A first valid but unsupported stream bridge must not
+        // hide a later type mismatch or missing directional port.
+        // No stage is evaluated or route published by this compiler pass.
+        List<PipeEndpointContracts.Link> links = new ArrayList<>(endpoints.size() - 1);
         for (int i = 0; i + 1 < endpoints.size(); i++) {
-            PipeEndpointContracts.Link link =
-                    PipeEndpointContracts.connect(endpoints.get(i), endpoints.get(i + 1));
+            links.add(PipeEndpointContracts.connect(endpoints.get(i), endpoints.get(i + 1)));
+        }
+        for (PipeEndpointContracts.Link link : links) {
             PipeEndpointContracts.requireExecutable(link);
         }
         throw new IllegalStateException(
