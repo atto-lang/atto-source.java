@@ -338,7 +338,13 @@ channel_wait_mode
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
-call_argument   = [ "..." ] expression ;
+call_argument   = "..." expression
+                | IDENT ":" expression
+                | expression ;
+(* Named arguments preserve lexical evaluation order and are rebound to
+   declaration-order parameters only on callable surfaces that explicitly
+   admit labeled products. Positional/spread arguments may not follow a named
+   argument. *)
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
