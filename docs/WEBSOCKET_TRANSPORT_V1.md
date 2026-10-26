@@ -86,7 +86,9 @@ that property.
 `readClientFrame(InputStream,...)` reads the two-byte header and canonical
 extended length before allocating a payload. The configured frame limit is
 therefore enforced before reading a masking key or payload for an oversized
-declaration. Short reads are handled explicitly and premature EOF fails closed.
+declaration. Frame/message configuration is hard-capped at 64 MiB at this
+primitive boundary. Short reads are handled explicitly, zero-progress reads
+are forced to make progress or fail, and premature EOF fails closed.
 
 `writeServerFrame(OutputStream,...)` writes the canonical header and payload
 directly without constructing a second complete wire array.
@@ -94,9 +96,12 @@ directly without constructing a second complete wire array.
 `WebSocketSessionState` separates protocol CONTROL from bounded USER delivery.
 Ping returns an immediate pong action, peer close returns an immediate close
 action, and neither consumes USER queue capacity. A completed USER message is
-queued only if capacity exists. USER overflow does not silently discard and
-continue: it transitions the connection to closing and emits close code 1013.
-Fragmented data consumes one USER slot only after complete reassembly.
+queued only if capacity exists; configured USER capacity is capped at 65,536.
+USER overflow does not silently discard and continue: it transitions the
+connection to closing and emits close code 1013. Locally generated close
+payloads are passed back through the codec's close-status validation so reserved
+codes cannot be emitted. Fragmented data consumes one USER slot only after
+complete reassembly.
 
 This state machine still owns no socket or actor. A future raw-socket transport
 must serialize returned CONTROL actions ahead of subsequent USER writes and
@@ -114,10 +119,11 @@ ownership contracts.
 ## Not yet implemented
 
 - Binding the validated upgrade to a dedicated native raw-socket listener.
-- Native socket/listener ownership and bounded incremental frame reads.
+- Native raw-socket listener ownership and scoped NET admission.
 - Source types such as `WebSocketServer`, `WebSocketConnection`, or actor
   dispatch/claim tokens.
-- CONTROL-vs-USER queue scheduling, close handshake deadlines and half-close.
+- Transport serialization that prioritizes returned CONTROL actions over USER
+  writes, plus close handshake deadlines and half-close.
 - Compression/extensions.
 - Java/Graal AOT execution evidence and LLVM parity.
 
