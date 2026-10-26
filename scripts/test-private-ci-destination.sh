@@ -60,6 +60,13 @@ printf 'trusted/ci 246810\r\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
+printf 'trusted/ci 1323575966\n' > "$policy"
+export MOCK_REPOSITORY_ID=1323575966
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_REPOSITORY_ID
+printf 'trusted/ci 246810\n' > "$policy"
+expect_ok trusted/ci
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
   expect_fail trusted/ci
