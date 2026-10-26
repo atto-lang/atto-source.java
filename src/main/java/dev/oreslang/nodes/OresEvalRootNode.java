@@ -9,8 +9,8 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.CheckedCallPlan;
 import dev.oreslang.types.FixedProductCallPlan;
-import dev.oreslang.types.OptionalCallPlan;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -515,24 +515,14 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.FunctionDecl exact = family.get(inputs.size());
             if (exact != null) {
-                if (exact.parameters().stream()
-                        .anyMatch(Ast.Param::omittable)) {
-                    OptionalCallPlan.bind(
-                            exact.parameters().stream()
-                                    .map(Ast.Param::name)
-                                    .toList(),
-                            exact.parameters().stream()
-                                    .map(Ast.Param::omittable)
-                                    .toList(),
-                            inputs);
-                } else if (inputs.stream()
-                        .anyMatch(slot -> slot.label() != null)) {
-                    FixedProductCallPlan.bind(
-                            exact.parameters().stream()
-                                    .map(Ast.Param::name)
-                                    .toList(),
-                            inputs);
-                }
+                CheckedCallPlan.bind(
+                        exact.parameters().stream()
+                                .map(Ast.Param::name)
+                                .toList(),
+                        exact.parameters().stream()
+                                .map(Ast.Param::omittable)
+                                .toList(),
+                        inputs);
                 return exact;
             }
 
@@ -544,7 +534,7 @@ public final class OresEvalRootNode extends RootNode {
                     continue;
                 }
                 try {
-                    OptionalCallPlan.bind(
+                    CheckedCallPlan.bind(
                             candidate.parameters().stream()
                                     .map(Ast.Param::name)
                                     .toList(),
@@ -1261,42 +1251,34 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private List<Object> inAbiOrder(Ast.FunctionDecl function) {
-                boolean optional =
+                CheckedCallPlan plan = CheckedCallPlan.bind(
                         function.parameters().stream()
-                                .anyMatch(Ast.Param::omittable);
-                if (optional) {
-                    OptionalCallPlan plan = OptionalCallPlan.bind(
-                            function.parameters().stream()
-                                    .map(Ast.Param::name)
-                                    .toList(),
-                            function.parameters().stream()
-                                    .map(Ast.Param::omittable)
-                                    .toList(),
-                            inputs);
-                    Map<String, Ast.TypeRef> defaults =
-                            defaultArgumentValues(function);
-                    ArrayList<Object> ordered =
-                            new ArrayList<>(function.parameters().size());
-                    for (int i = 0;
-                            i < function.parameters().size();
-                            i++) {
-                        int source = plan.abiToSource().get(i);
-                        if (source >= 0) {
-                            ordered.add(values.get(source));
-                        } else {
-                            ordered.add(runtimeDefaultValue(
-                                    function.parameters().get(i),
-                                    defaults.get(
-                                            function.parameters()
-                                                    .get(i)
-                                                    .name())));
-                        }
+                                .map(Ast.Param::name)
+                                .toList(),
+                        function.parameters().stream()
+                                .map(Ast.Param::omittable)
+                                .toList(),
+                        inputs);
+                Map<String, Ast.TypeRef> defaults =
+                        defaultArgumentValues(function);
+                ArrayList<Object> ordered =
+                        new ArrayList<>(function.parameters().size());
+                for (int i = 0;
+                        i < function.parameters().size();
+                        i++) {
+                    int source = plan.abiToSource().get(i);
+                    if (source >= 0) {
+                        ordered.add(values.get(source));
+                    } else {
+                        ordered.add(runtimeDefaultValue(
+                                function.parameters().get(i),
+                                defaults.get(
+                                        function.parameters()
+                                                .get(i)
+                                                .name())));
                     }
-                    return java.util.Collections.unmodifiableList(ordered);
                 }
-                return inAbiOrder(
-                        function.parameters(),
-                        "function " + function.name());
+                return java.util.Collections.unmodifiableList(ordered);
             }
 
             private List<Object> inAbiOrder(
@@ -1308,7 +1290,7 @@ public final class OresEvalRootNode extends RootNode {
                                     + " omittable member/constructor parameters remain "
                                     + "fail-closed at runtime");
                 }
-                FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                CheckedCallPlan plan = CheckedCallPlan.required(
                         parameters.stream()
                                 .map(Ast.Param::name)
                                 .toList(),
