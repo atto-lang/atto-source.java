@@ -13,15 +13,15 @@ final class WebSocketOpeningRequestTest {
 
     @Test
     void parsesBoundedCanonicalOpeningRequestAndPreservesOrigin() throws Exception {
-        String raw = "GET /chat?room=1 HTTP/1.1\\r\\n"
-                + "Host: example.test\\r\\n"
-                + "Upgrade: websocket\\r\\n"
-                + "Connection: keep-alive, Upgrade\\r\\n"
-                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\n"
-                + "Sec-WebSocket-Version: 13\\r\\n"
-                + "Origin: https://app.example.test\\r\\n"
-                + "Content-Length: 0\\r\\n"
-                + "\\r\\n";
+        String raw = "GET /chat?room=1 HTTP/1.1\r\n"
+                + "Host: example.test\r\n"
+                + "Upgrade: websocket\r\n"
+                + "Connection: keep-alive, Upgrade\r\n"
+                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                + "Sec-WebSocket-Version: 13\r\n"
+                + "Origin: https://app.example.test\r\n"
+                + "Content-Length: 0\r\n"
+                + "\r\n";
 
         var request = WebSocketOpeningRequest.read(
                 new ByteArrayInputStream(raw.getBytes(StandardCharsets.US_ASCII)),
@@ -52,15 +52,15 @@ final class WebSocketOpeningRequestTest {
 
     @Test
     void combinesRepeatableUpgradeAndConnectionTokenLists() throws Exception {
-        String raw = "GET /chat HTTP/1.1\\r\\n"
-                + "Host: example.test\\r\\n"
-                + "Upgrade: h2c\\r\\n"
-                + "Upgrade: websocket\\r\\n"
-                + "Connection: keep-alive\\r\\n"
-                + "Connection: Upgrade\\r\\n"
-                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\n"
-                + "Sec-WebSocket-Version: 13\\r\\n"
-                + "\\r\\n";
+        String raw = "GET /chat HTTP/1.1\r\n"
+                + "Host: example.test\r\n"
+                + "Upgrade: h2c\r\n"
+                + "Upgrade: websocket\r\n"
+                + "Connection: keep-alive\r\n"
+                + "Connection: Upgrade\r\n"
+                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                + "Sec-WebSocket-Version: 13\r\n"
+                + "\r\n";
         var request = WebSocketOpeningRequest.read(bytes(raw), 4096, 16);
         assertEquals("h2c,websocket", request.upgrade());
         assertEquals("keep-alive,Upgrade", request.connection());
@@ -154,16 +154,16 @@ final class WebSocketOpeningRequestTest {
         assertThrows(IllegalArgumentException.class, () ->
                 WebSocketOpeningRequest.read(bytes(baseHead()), 256, 32));
 
-        String count = "GET /chat HTTP/1.1\\r\\n"
-                + "Host: example.test\\r\\n"
-                + "X-1: a\\r\\n"
-                + "X-2: b\\r\\n"
-                + "X-3: c\\r\\n"
-                + "Upgrade: websocket\\r\\n"
-                + "Connection: Upgrade\\r\\n"
-                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\n"
-                + "Sec-WebSocket-Version: 13\\r\\n"
-                + "\\r\\n";
+        String count = "GET /chat HTTP/1.1\r\n"
+                + "Host: example.test\r\n"
+                + "X-1: a\r\n"
+                + "X-2: b\r\n"
+                + "X-3: c\r\n"
+                + "Upgrade: websocket\r\n"
+                + "Connection: Upgrade\r\n"
+                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                + "Sec-WebSocket-Version: 13\r\n"
+                + "\r\n";
         assertThrows(IllegalArgumentException.class, () ->
                 WebSocketOpeningRequest.read(bytes(count), 4096, 4));
     }
