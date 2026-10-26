@@ -15,6 +15,40 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorCapabilityIsolationTest {
 
     @Test
+    void capabilityScanTraversesPostTestLoopBodies() {
+        Ast.Program program = Parser.parse("""
+                fnc blocked(): void {
+                    do {
+                        stdio.println("blocked");
+                    } while (false);
+                    return;
+                }
+                """);
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.untrustedActor()));
+        assertTrue(denied.getMessage().contains("STDOUT"), denied.getMessage());
+    }
+
+    @Test
+    void capabilityScanTraversesUsingBorrowScopes() {
+        Ast.Program program = Parser.parse("""
+                fnc blocked(): void {
+                    using request.borrow() as view {
+                        stdio.println("blocked");
+                    }
+                    return;
+                }
+                """);
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.untrustedActor()));
+        assertTrue(denied.getMessage().contains("STDOUT"), denied.getMessage());
+    }
+
+    @Test
     void processExitAuthorityIsDeniedForEveryActorKindEvenWhenParentIsPrivileged() {
         for (String declaration : new String[] {
                 "define actor Worker as",
