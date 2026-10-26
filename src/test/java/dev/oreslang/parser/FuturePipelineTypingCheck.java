@@ -148,6 +148,18 @@ public final class FuturePipelineTypingCheck {
             throw new AssertionError("sync Future-returning stage lost flatten/ownership plan");
         }
 
+        rejected("""
+                async fnc source(): Future<int> {
+                  async fnc impossible_local(): int { return 1; }
+                  return impossible_local();
+                }
+                fnc identity(Future<int> pending): Future<int> { return pending; }
+                fnc main(): void {
+                  val Future<int> nested = source() |> identity();
+                  return;
+                }
+                """, "borrowed/shared Future results cannot acquire cancellation ownership");
+
         Ast.Program becomesAsync = TypeChecker.check(Parser.parse("""
                 async fnc start_async(int value): int {
                   rt cooperate;
