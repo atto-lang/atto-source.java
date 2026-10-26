@@ -522,7 +522,7 @@ public final class OresEvalRootNode extends RootNode {
                         exact.parameters().stream()
                                 .map(Ast.Param::omittable)
                                 .toList(),
-                        inputs());
+                        inputs);
                 return exact;
             }
 
@@ -541,7 +541,7 @@ public final class OresEvalRootNode extends RootNode {
                             candidate.parameters().stream()
                                     .map(Ast.Param::omittable)
                                     .toList(),
-                            inputs());
+                            inputs);
                     matches.add(candidate);
                 } catch (IllegalArgumentException ignored) {
                     // Not a viable omission shape.
