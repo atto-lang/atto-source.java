@@ -170,6 +170,42 @@ final class OresSmartPointersTest {
     }
 
     @Test
+    void weakUpgradeRacingFinalStrongDropNeverResurrectsPayload() throws Exception {
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            for (int iteration = 0; iteration < 1_024; ++iteration) {
+                var owner = OresSmartPointers.arc(42);
+                var weak = owner.downgrade();
+                var start = new CountDownLatch(1);
+                var upgradedFuture = workers.submit(() -> {
+                    start.await();
+                    return weak.upgrade().orElse(null);
+                });
+                var dropFuture = workers.submit(() -> {
+                    start.await();
+                    owner.close();
+                    return null;
+                });
+                start.countDown();
+                var upgraded = upgradedFuture.get(10, TimeUnit.SECONDS);
+                dropFuture.get(10, TimeUnit.SECONDS);
+                if (upgraded != null) {
+                    assertEquals(42, upgraded.value().intValue());
+                    assertEquals(1, weak.strongCount(),
+                            "a successful upgrade must own the last strong handle");
+                    upgraded.close();
+                }
+                assertEquals(0, weak.strongCount());
+                assertTrue(weak.upgrade().isEmpty(),
+                        "the last drop must permanently reject resurrection");
+                weak.close();
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void rcIsCarrierLocalAndWeakDoesNotKeepPayloadAlive() throws Exception {
         var rc = OresSmartPointers.rc("local");
         var clone = rc.retain();
