@@ -699,6 +699,18 @@ final class TaskPipelineTest {
                                 })));
                 assertTrue(pipelineError.getMessage().contains("scheduler domains"));
 
+                OresFuture<Integer> moved = new OresFuture<>();
+                IllegalStateException ownedError = assertThrows(
+                        IllegalStateException.class,
+                        () -> TaskPipeline.startOwnedInCurrentTaskOrRoot(
+                                foreign, moved, List.of(value -> {
+                                    stageCalls.incrementAndGet();
+                                    return value;
+                                })));
+                assertTrue(ownedError.getMessage().contains("scheduler domains"));
+                assertTrue(moved.isCancelled(),
+                        "a transferred input must be revoked when admission crosses domains");
+
                 IllegalStateException taskError = assertThrows(
                         IllegalStateException.class,
                         () -> foreign.startTrackedInCurrentTaskOrRoot(
