@@ -17,6 +17,7 @@ public final class OresCompiler {
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
+        ExportResolver.resolve(program);
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return checked.program();
@@ -25,6 +26,7 @@ public final class OresCompiler {
     /** Imported module contracts participate in type proofs, not runtime declarations. */
     public static Ast.Program analyze(
             Ast.Program program, java.util.Map<String, Ast.InterfaceDecl> importedContracts) {
+        ExportResolver.resolve(program);
         TypeChecker.TypeCheckResult checked =
                 TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                         program, java.util.Map.of(), java.util.Map.of(), importedContracts);
@@ -42,9 +44,15 @@ public final class OresCompiler {
     }
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
+        ExportResolver.resolve(program);
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return new AnalysisResult(checked.program(), checked.warnings());
+    }
+
+    /** Resolve source-language export bindings without creating host/native ABI exports. */
+    public static ExportResolver.Result resolveExports(Ast.Program program) {
+        return ExportResolver.resolve(program);
     }
 
     /**
