@@ -257,8 +257,6 @@ public final class ExportResolver {
                                     + export.scope().name().toLowerCase() + " scope");
                 }
 
-                validateApiLeakage(family, export.scope(), families);
-
                 String externalName = item.symbolLiteral()
                         ? "#" + item.localName()
                         : item.externalName();
@@ -276,6 +274,7 @@ public final class ExportResolver {
             }
         }
 
+        validateApiLeakageAfterBindingCompletion(families, bindings);
         return List.copyOf(bindings);
     }
 
@@ -441,45 +440,86 @@ public final class ExportResolver {
     }
 
     /**
-     * Current Java visibility has only private/public. A referenced local type
-     * that remains private is therefore narrower than every explicit export
-     * scope (file/package/public) and cannot leak through the exported API.
+     * Validate API leakage only after every implicit/explicit binding has been
+     * constructed. This is required for order independence: a type exported
+     * later in the file can satisfy an earlier function/class export.
+     *
+     * Current Java declarations expose only private/public visibility, but
+     * ExportBinding carries file/package/public. The maximum completed binding
+     * scope of the referenced local symbol must be at least the scope of the
+     * API that mentions it.
      */
-    private static void validateApiLeakage(
-            LocalFamily family,
-            Ast.ExportScope scope,
-            List<LocalFamily> families) {
+    private static void validateApiLeakageAfterBindingCompletion(
+            List<LocalFamily> families,
+            List<ExportBinding> bindings) {
         Map<String, LocalFamily> localTypes = new LinkedHashMap<>();
+        Map<String, Integer> maxScopeByLocalSymbol = new LinkedHashMap<>();
+        Map<String, Integer> maxApiScopeByLocalSymbol = new LinkedHashMap<>();
+
         for (LocalFamily candidate : families) {
-            if (candidate.kind() == Ast.ExportKind.CLASS
-                    || candidate.kind() == Ast.ExportKind.ACTOR
-                    || candidate.kind() == Ast.ExportKind.INTERFACE
-                    || candidate.kind() == Ast.ExportKind.TRAIT
-                    || candidate.kind() == Ast.ExportKind.CONTRACT
-                    || candidate.kind() == Ast.ExportKind.TYPE
-                    || candidate.kind() == Ast.ExportKind.STRUCT) {
+            if (isTypeFamily(candidate.kind())) {
                 localTypes.putIfAbsent(candidate.name(), candidate);
             }
         }
 
-        LinkedHashSet<String> referenced = new LinkedHashSet<>();
-        for (Ast.Decl declaration : family.declarations()) {
-            collectApiTypes(declaration, referenced);
+        for (ExportBinding binding : bindings) {
+            int rank = scopeRank(binding.scope());
+            maxScopeByLocalSymbol.merge(binding.localSymbolId(), rank, Math::max);
+            maxApiScopeByLocalSymbol.merge(binding.localSymbolId(), rank, Math::max);
         }
 
-        for (String typeName : referenced) {
-            LocalFamily referencedFamily = localTypes.get(typeName);
-            if (referencedFamily == null) continue;
-            if (!referencedFamily.hasPublic()) {
-                throw semantic(
-                        "EXPORT_API_LEAK",
-                        "exported " + family.kind().name().toLowerCase()
-                                + " '" + family.name() + "' at "
-                                + scope.name().toLowerCase()
-                                + " scope exposes narrower local type '"
-                                + typeName + "'");
+        for (LocalFamily family : families) {
+            Integer apiRank = maxApiScopeByLocalSymbol.get(family.id());
+            if (apiRank == null) continue;
+
+            LinkedHashSet<String> referenced = new LinkedHashSet<>();
+            for (Ast.Decl declaration : family.declarations()) {
+                collectApiTypes(declaration, referenced);
+            }
+
+            for (String typeName : referenced) {
+                LocalFamily referencedFamily = localTypes.get(typeName);
+                if (referencedFamily == null) continue;
+                int referencedRank =
+                        maxScopeByLocalSymbol.getOrDefault(referencedFamily.id(), 0);
+                if (referencedRank < apiRank) {
+                    throw semantic(
+                            "EXPORT_API_LEAK",
+                            "exported " + family.kind().name().toLowerCase()
+                                    + " '" + family.name() + "' at "
+                                    + scopeName(apiRank)
+                                    + " scope exposes narrower local type '"
+                                    + typeName + "'");
+                }
             }
         }
+    }
+
+    private static boolean isTypeFamily(Ast.ExportKind kind) {
+        return kind == Ast.ExportKind.CLASS
+                || kind == Ast.ExportKind.ACTOR
+                || kind == Ast.ExportKind.INTERFACE
+                || kind == Ast.ExportKind.TRAIT
+                || kind == Ast.ExportKind.CONTRACT
+                || kind == Ast.ExportKind.TYPE
+                || kind == Ast.ExportKind.STRUCT;
+    }
+
+    private static int scopeRank(Ast.ExportScope scope) {
+        return switch (scope) {
+            case FILE -> 1;
+            case PACKAGE -> 2;
+            case PUBLIC -> 3;
+        };
+    }
+
+    private static String scopeName(int rank) {
+        return switch (rank) {
+            case 1 -> "file";
+            case 2 -> "package";
+            case 3 -> "public";
+            default -> "private";
+        };
     }
 
     private static void collectApiTypes(Ast.Decl declaration, Set<String> names) {
