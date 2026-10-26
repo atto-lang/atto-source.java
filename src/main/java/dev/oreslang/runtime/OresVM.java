@@ -221,6 +221,24 @@ public final class OresVM implements AutoCloseable {
         return controlExecutor.getPoolSize();
     }
 
+    OresCarrierBudget carrierBudget() { return carrierBudget; }
+    OresCarrierPermitPool carrierPermitPool() { return carrierPermitPool; }
+    OresCarrierPermitPool.Snapshot carrierPermitSnapshot() {
+        return carrierPermitPool == null ? null : carrierPermitPool.snapshot();
+    }
+
+    NioReadinessGroup nioReadiness() {
+        if (!started()) {
+            throw new IllegalStateException(
+                    "Oreslang VM NIO readiness was requested before startup");
+        }
+        return nioReadiness;
+    }
+
+    int nioReactorCount() {
+        return nioReadiness.reactorCount();
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
@@ -311,6 +329,8 @@ public final class OresVM implements AutoCloseable {
         // An ordinary actor/Mailman must likewise delegate blocking VM teardown
         // to its supervising host after its turn finishes.
         if (OresScheduler.current() != null
+                || onControlCarrier()
+                || onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
