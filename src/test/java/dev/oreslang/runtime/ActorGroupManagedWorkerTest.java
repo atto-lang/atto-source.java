@@ -146,6 +146,44 @@ final class ActorGroupManagedWorkerTest {
     }
 
     @Test
+    void staleSameIdTerminationCannotEvictLiveMembership() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
+            ActorRuntime.ActorRef<String> live = runtime.spawnShared(
+                    () -> (message, context) -> { });
+            group.join(live, capability);
+            assertTrue(group.contains(live));
+            assertEquals(1, group.memberCount());
+
+            var constructor = live.getClass().getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<String> stale =
+                    (ActorRuntime.ActorRef<String>) constructor.newInstance(
+                            runtime, live.id(), live.kind(), live.generation() + 1L);
+
+            var terminated = group.getClass().getDeclaredMethod(
+                    "actorTerminated", ActorRuntime.ActorRef.class);
+            terminated.setAccessible(true);
+            terminated.invoke(group, stale);
+
+            assertTrue(group.contains(live),
+                    "stale same-id retirement must not revoke the live member");
+            assertEquals(1, group.memberCount(),
+                    "stale same-id retirement must not release live membership quota");
+
+            group.close();
+            live.stop();
+            live.done().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void managementRejectsCrossRuntimeRefsAndRequiresActiveActor() throws Exception {
         try (ActorRuntime one = new ActorRuntime();
              ActorRuntime two = new ActorRuntime()) {
