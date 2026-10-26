@@ -38,6 +38,7 @@ BLOCKING_INCIDENT_IDS = {
 }
 BLOCKING_INCIDENTS = (22, 77, 127)
 QUARANTINED_DESTINATIONS = ("zed-pkg-test/java-app",)
+QUARANTINED_DESTINATION_IDS = (1323575966,)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
@@ -94,7 +95,7 @@ def trusted_github_cli():
 
 
 def github_api_environment():
-    """Use one explicit token and no ambient credential/config environment."""
+    """Use exactly one explicit token and no ambient transport/config state."""
     provided = [
         name for name in ("GH_TOKEN", "GITHUB_TOKEN")
         if os.environ.get(name)
@@ -106,9 +107,11 @@ def github_api_environment():
         "GH_HOST": "github.com",
         "GH_PROMPT_DISABLED": "1",
         "PATH": "/usr/bin:/bin",
-        "HOME": "/",
+        "HOME": "/nonexistent",
         "XDG_CONFIG_HOME": "/nonexistent",
         "LC_ALL": "C.UTF-8",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
     }
 
 
@@ -216,13 +219,22 @@ def checked_repo(repository, expected_repository_id=None):
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
-            or result.get("private") is not True):
-        raise Denied("destination identity or private visibility changed")
+            or result.get("private") is not True
+            or result.get("archived") is not False
+            or result.get("disabled") is not False
+            or result.get("fork") is not False
+            or result.get("default_branch") != "main"):
+        raise Denied("destination identity/state or private visibility changed")
+    repository_id = result.get("id")
+    if type(repository_id) is not int or isinstance(repository_id, bool) or repository_id <= 0:
+        raise Denied("destination numeric repository ID is invalid")
+    if repository_id in QUARANTINED_DESTINATION_IDS:
+        raise Denied("destination repository ID is quarantined by private-source incident policy")
     if expected_repository_id is not None:
         if (type(expected_repository_id) is not int
+                or isinstance(expected_repository_id, bool)
                 or expected_repository_id <= 0
-                or type(result.get("id")) is not int
-                or result["id"] != expected_repository_id):
+                or repository_id != expected_repository_id):
             raise Denied("destination numeric repository ID differs from reviewed approval")
     return result
 
@@ -288,12 +300,15 @@ def _parse_policy_approval(contents, repository, label):
         if match is None:
             raise Denied(label + " requires exact owner/repo numeric-id pairs")
         slug, numeric_id = match.groups()
+        candidate_id = int(numeric_id)
+        if candidate_id in QUARANTINED_DESTINATION_IDS:
+            raise Denied("destination repository ID is quarantined by private-source incident policy")
         key = slug.casefold()
         if key in seen:
             raise Denied(label + " contains duplicate repository identities")
         seen.add(key)
         if key == repository.casefold():
-            approved_id = int(numeric_id)
+            approved_id = candidate_id
     if approved_id is None:
         raise Denied("destination approval was revoked or absent")
     return approved_id
@@ -729,24 +744,17 @@ def publish(repository, source, branch, trusted_root, source_commit):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("repository", help="approved private owner/repo")
-    p.add_argument("--source-dir", required=True, type=Path)
-    p.add_argument("--branch", required=True)
-    p.add_argument("--source-commit", required=True,
-                   help="exact source-origin 40-hex Git commit to prove")
-    args = p.parse_args(argv)
-    # Policy and code are taken from the same trusted checkout as this script.
-    root = Path(__file__).resolve().parent.parent
-    try:
-        commit, count = publish(
-            args.repository, args.source_dir, args.branch, root, args.source_commit)
-    except Denied as exc:
-        print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
-        return 1
-    print(f"PRIVATE_CI_SNAPSHOT_CREATED: files={count} commit={commit}")
-    return 0
-
+    # Direct legacy publication is intentionally disabled. V3 is the only
+    # supported transfer entrypoint; keeping this module importable preserves
+    # shared verifier helpers and offline adversarial tests without exposing a
+    # second operational publisher path.
+    del argv
+    print(
+        "PRIVATE_CI_DESTINATION_REJECTED: legacy private-source publisher "
+        "is disabled; use run-in-private-ci-destination.sh (V3)",
+        file=sys.stderr,
+    )
+    return 1
 
 if __name__ == "__main__":
     sys.exit(main())
