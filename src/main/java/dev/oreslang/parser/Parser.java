@@ -580,7 +580,191 @@ public final class Parser {
 
         consume(ARROW, "define macro requires an explicit '-> <macro-result-kind>'");
         Ast.MacroResultKind resultKind = parseMacroResultKind();
-        return new Ast.MacroDecl(name, visibility, parameters, resultKind, parseBlock());
+        List<Ast.Stmt> body = parseBlock();
+        rejectMacroQuoteShadowing(body);
+        return new Ast.MacroDecl(name, visibility, parameters, resultKind, body);
+    }
+
+    /**
+     * `quote` is contextual: ordinary runtime code may use the name, but a
+     * macro body cannot bind it and thereby make compiler quotation ambiguous.
+     * Quoted Syntax<K> payloads are compiler data, not macro-body lexical scope,
+     * so MacroInvocationExpr payloads are deliberately not traversed here.
+     */
+    private void rejectMacroQuoteShadowing(List<Ast.Stmt> statements) {
+        for (Ast.Stmt statement : statements) {
+            if (statement instanceof Ast.BindingStmt binding) {
+                rejectMacroQuoteBinding(binding.name());
+                rejectMacroQuoteShadowing(binding.initializer());
+            } else if (statement instanceof Ast.DestructureStmt destructure) {
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) rejectMacroQuoteBinding(binding.name());
+                }
+                rejectMacroQuoteShadowing(destructure.initializer());
+            } else if (statement instanceof Ast.ReturnStmt returned) {
+                rejectMacroQuoteShadowing(returned.value());
+            } else if (statement instanceof Ast.YieldStmt yielded) {
+                rejectMacroQuoteShadowing(yielded.value());
+            } else if (statement instanceof Ast.ExprStmt expression) {
+                rejectMacroQuoteShadowing(expression.expression());
+            } else if (statement instanceof Ast.DeferStmt deferred) {
+                rejectMacroQuoteShadowing(deferred.expression());
+            } else if (statement instanceof Ast.BlockStmt block) {
+                rejectMacroQuoteShadowing(block.body());
+            } else if (statement instanceof Ast.TaskScopeStmt scope) {
+                rejectMacroQuoteShadowing(scope.body());
+            } else if (statement instanceof Ast.UsingBorrowStmt using) {
+                rejectMacroQuoteBinding(using.binding());
+                rejectMacroQuoteShadowing(using.resource());
+                rejectMacroQuoteShadowing(using.body());
+            } else if (statement instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    rejectMacroQuoteShadowing(branch.condition());
+                    rejectMacroQuoteShadowing(branch.body());
+                }
+                rejectMacroQuoteShadowing(conditional.elseBody());
+            } else if (statement instanceof Ast.MatchStmt matched) {
+                rejectMacroQuoteShadowing(matched.subject());
+                for (Ast.MatchArm arm : matched.arms()) {
+                    rejectMacroQuoteShadowing(arm.pattern());
+                    rejectMacroQuoteShadowing(arm.guard());
+                    rejectMacroQuoteShadowing(arm.body());
+                }
+            } else if (statement instanceof Ast.SwitchStmt switched) {
+                rejectMacroQuoteShadowing(switched.subject());
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    for (Ast.Expr constant : arm.constants()) {
+                        rejectMacroQuoteShadowing(constant);
+                    }
+                    rejectMacroQuoteShadowing(arm.body());
+                }
+                rejectMacroQuoteShadowing(switched.defaultBody());
+            } else if (statement instanceof Ast.TryStmt tried) {
+                if (tried.errorName() != null) rejectMacroQuoteBinding(tried.errorName());
+                rejectMacroQuoteShadowing(tried.body());
+                rejectMacroQuoteShadowing(tried.catchBody());
+                rejectMacroQuoteShadowing(tried.finallyBody());
+            } else if (statement instanceof Ast.ForOfStmt loop) {
+                rejectMacroQuoteBinding(loop.bindingName());
+                rejectMacroQuoteShadowing(loop.iterable());
+                rejectMacroQuoteShadowing(loop.body());
+            } else if (statement instanceof Ast.ForOfDestructureStmt loop) {
+                for (Ast.DestructureBinding binding : loop.bindings()) {
+                    if (!binding.isDiscard()) rejectMacroQuoteBinding(binding.name());
+                }
+                rejectMacroQuoteShadowing(loop.iterable());
+                rejectMacroQuoteShadowing(loop.body());
+            } else if (statement instanceof Ast.ForStmt loop) {
+                if (loop.initializer() != null) rejectMacroQuoteShadowing(List.of(loop.initializer()));
+                rejectMacroQuoteShadowing(loop.condition());
+                rejectMacroQuoteShadowing(loop.update());
+                rejectMacroQuoteShadowing(loop.body());
+            } else if (statement instanceof Ast.DoWhileStmt loop) {
+                rejectMacroQuoteShadowing(loop.body());
+                rejectMacroQuoteShadowing(loop.condition());
+            } else if (statement instanceof Ast.LoopStmt loop) {
+                rejectMacroQuoteShadowing(loop.body());
+            } else if (statement instanceof Ast.SelectStmt selected) {
+                for (Ast.SelectArm arm : selected.arms()) {
+                    if (arm.bindingName() != null) rejectMacroQuoteBinding(arm.bindingName());
+                    rejectMacroQuoteShadowing(arm.channel());
+                    rejectMacroQuoteShadowing(arm.value());
+                    rejectMacroQuoteShadowing(arm.body());
+                }
+            }
+        }
+    }
+
+    private void rejectMacroQuoteShadowing(Ast.Expr expression) {
+        if (expression == null || expression instanceof Ast.MacroInvocationExpr) return;
+        if (expression instanceof Ast.MatchExpr matched) {
+            rejectMacroQuoteShadowing(matched.subject());
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                rejectMacroQuoteShadowing(arm.pattern());
+                rejectMacroQuoteShadowing(arm.guard());
+                rejectMacroQuoteShadowing(arm.value());
+            }
+        } else if (expression instanceof Ast.TypeTestExpr test) {
+            if (test.binding() != null) rejectMacroQuoteBinding(test.binding());
+            rejectMacroQuoteShadowing(test.value());
+        } else if (expression instanceof Ast.PatternTestExpr test) {
+            rejectMacroQuoteShadowing(test.pattern());
+            rejectMacroQuoteShadowing(test.value());
+        } else if (expression instanceof Ast.CastExpr cast) {
+            rejectMacroQuoteShadowing(cast.value());
+        } else if (expression instanceof Ast.SpreadExpr spread) {
+            rejectMacroQuoteShadowing(spread.expression());
+        } else if (expression instanceof Ast.BinaryExpr binary) {
+            rejectMacroQuoteShadowing(binary.left());
+            rejectMacroQuoteShadowing(binary.right());
+        } else if (expression instanceof Ast.UnaryExpr unary) {
+            rejectMacroQuoteShadowing(unary.operand());
+        } else if (expression instanceof Ast.AssignExpr assignment) {
+            rejectMacroQuoteShadowing(assignment.target());
+            rejectMacroQuoteShadowing(assignment.value());
+        } else if (expression instanceof Ast.ConditionalExpr conditional) {
+            rejectMacroQuoteShadowing(conditional.condition());
+            rejectMacroQuoteShadowing(conditional.whenTrue());
+            rejectMacroQuoteShadowing(conditional.whenFalse());
+        } else if (expression instanceof Ast.CallExpr call) {
+            rejectMacroQuoteShadowing(call.callee());
+            for (Ast.Expr argument : call.arguments()) rejectMacroQuoteShadowing(argument);
+        } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            for (Ast.Expr argument : runtime.arguments()) rejectMacroQuoteShadowing(argument);
+        } else if (expression instanceof Ast.MemberExpr member) {
+            rejectMacroQuoteShadowing(member.receiver());
+        } else if (expression instanceof Ast.IndexExpr indexed) {
+            rejectMacroQuoteShadowing(indexed.receiver());
+            rejectMacroQuoteShadowing(indexed.index());
+        } else if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) rejectMacroQuoteShadowing(argument);
+        } else if (expression instanceof Ast.AwaitExpr awaited) {
+            rejectMacroQuoteShadowing(awaited.expression());
+        } else if (expression instanceof Ast.TaskExpr task) {
+            rejectMacroQuoteShadowing(task.body());
+        } else if (expression instanceof Ast.TrapExpr trapped) {
+            rejectMacroQuoteShadowing(trapped.expression());
+        } else if (expression instanceof Ast.ChannelOpExpr operation) {
+            rejectMacroQuoteShadowing(operation.channel());
+            rejectMacroQuoteShadowing(operation.value());
+            rejectMacroQuoteShadowing(operation.callbackBody());
+        } else if (expression instanceof Ast.DynamicSelectExpr selected) {
+            rejectMacroQuoteShadowing(selected.cases());
+        } else if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr item : list.elements()) rejectMacroQuoteShadowing(item);
+        } else if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr item : tuple.elements()) rejectMacroQuoteShadowing(item);
+        } else if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) rejectMacroQuoteShadowing(field.value());
+        } else if (expression instanceof Ast.LambdaExpr lambda) {
+            for (Ast.Param parameter : lambda.parameters()) {
+                rejectMacroQuoteBinding(parameter.name());
+            }
+            rejectMacroQuoteShadowing(lambda.expressionBody());
+            if (lambda.blockBody() != null) rejectMacroQuoteShadowing(lambda.blockBody());
+        }
+    }
+
+    private void rejectMacroQuoteShadowing(Ast.Pattern pattern) {
+        if (pattern == null) return;
+        if (pattern instanceof Ast.BindingPattern binding) {
+            rejectMacroQuoteBinding(binding.name());
+        } else if (pattern instanceof Ast.TypePattern typed) {
+            if (typed.binding() != null) rejectMacroQuoteBinding(typed.binding());
+        } else if (pattern instanceof Ast.StructuralPattern structural) {
+            if (structural.binding() != null) rejectMacroQuoteBinding(structural.binding());
+        } else if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) rejectMacroQuoteShadowing(element);
+        } else if (pattern instanceof Ast.ConstructorPattern constructor) {
+            for (Ast.Pattern argument : constructor.arguments()) rejectMacroQuoteShadowing(argument);
+        }
+    }
+
+    private void rejectMacroQuoteBinding(String name) {
+        if ("quote".equals(name)) {
+            throw error(previous(),
+                    "'quote' is reserved for compile-time macro quotation and cannot be rebound in a macro body");
+        }
     }
 
     private Ast.MacroParamType parseMacroParamType() {
