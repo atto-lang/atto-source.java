@@ -1621,9 +1621,17 @@ public final class OwnershipChecker {
 
         if (call.callee() instanceof Ast.NameExpr name
                 && scope.lookup(name.name()) == null) {
-            Ast.FunctionDecl fn = findFunction(
-                    name.name(), syntacticCallArgumentTypes(call.arguments(), scope).size());
+            Ast.FunctionDecl fn =
+                    selectDirectFunction(name.name(), call.arguments(), scope);
             if (fn != null) {
+                boolean optional =
+                        fn.parameters().stream().anyMatch(Ast.Param::omittable);
+                if (optional && !fn.genericParameters().isEmpty()) {
+                    throw error("function " + fn.name()
+                            + " optional/default binding with generic parameters "
+                            + "is not enabled until ownership specialization consumes "
+                            + "the omission-aware plan");
+                }
                 if (!fn.genericParameters().isEmpty()
                         && hasLabeledProductSyntax(call.arguments(), scope)) {
                     throw error("function " + fn.name()
@@ -1631,18 +1639,36 @@ public final class OwnershipChecker {
                             + "is not enabled until ownership specialization consumes "
                             + "the same checked source-to-ABI plan");
                 }
-                CallSignature signature = specializeCall(
-                        fn.genericParameters(), fn.genericParameters(),
-                        fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                CallSignature signature = optional
+                        ? new CallSignature(fn.parameters(), fn.returnType())
+                        : specializeCall(
+                                fn.genericParameters(),
+                                fn.genericParameters(),
+                                fn.parameters(),
+                                fn.returnType(),
+                                call,
+                                scope,
+                                Map.of(),
+                                fn.genericSpecs());
+                if (fn.suspends()) {
+                    checkSuspensionBorrows(
+                            scope, "suspends call " + fn.name());
+                }
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
                         scope,
                         "function " + fn.name(),
                         true);
-                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
-                return new ValueInfo(callResult, kindOfType(callResult), null);
+                Ast.TypeRef callResult =
+                        callableResultType(
+                                signature.result(),
+                                fn.async(),
+                                fn.generator());
+                return new ValueInfo(
+                        callResult,
+                        kindOfType(callResult),
+                        null);
             }
         }
 
@@ -2449,21 +2475,38 @@ public final class OwnershipChecker {
             inputs.add(FixedProductCallPlan.InputSlot.positional());
         }
 
-        if (inputs.size() != params.size()) {
-            throw error(callable + " expanded argument arity mismatch: expected "
-                    + params.size() + ", got " + inputs.size());
-        }
-
-        List<Ast.Param> sourceParameters = params;
-        if (inputs.stream().anyMatch(input -> input.label() != null)) {
-            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+        boolean optional =
+                params.stream().anyMatch(Ast.Param::omittable);
+        List<Ast.Param> sourceParameters;
+        if (optional) {
+            OptionalCallPlan plan = OptionalCallPlan.bind(
                     params.stream().map(Ast.Param::name).toList(),
+                    params.stream().map(Ast.Param::omittable).toList(),
                     inputs);
-            List<Ast.Param> reordered = new ArrayList<>(params.size());
-            for (FixedProductCallPlan.BoundSlot slot : plan.sourceOrder()) {
+            List<Ast.Param> reordered =
+                    new ArrayList<>(plan.sourceOrder().size());
+            for (OptionalCallPlan.BoundSlot slot : plan.sourceOrder()) {
                 reordered.add(params.get(slot.parameterIndex()));
             }
             sourceParameters = List.copyOf(reordered);
+        } else {
+            if (inputs.size() != params.size()) {
+                throw error(callable
+                        + " expanded argument arity mismatch: expected "
+                        + params.size() + ", got " + inputs.size());
+            }
+            sourceParameters = params;
+            if (inputs.stream().anyMatch(input -> input.label() != null)) {
+                FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                        params.stream().map(Ast.Param::name).toList(),
+                        inputs);
+                List<Ast.Param> reordered =
+                        new ArrayList<>(params.size());
+                for (FixedProductCallPlan.BoundSlot slot : plan.sourceOrder()) {
+                    reordered.add(params.get(slot.parameterIndex()));
+                }
+                sourceParameters = List.copyOf(reordered);
+            }
         }
 
         int parameterIndex = 0;
@@ -3883,6 +3926,107 @@ public final class OwnershipChecker {
             }
         }
         return false;
+    }
+
+    private List<FixedProductCallPlan.InputSlot> callInputSlots(
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        ArrayList<FixedProductCallPlan.InputSlot> result =
+                new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.NamedArgExpr named) {
+                result.add(
+                        FixedProductCallPlan.InputSlot.named(named.name()));
+                continue;
+            }
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef type = syntacticType(spread.expression(), scope);
+                if (type.isBorrow()) type = type.borrowedTarget();
+                if (type.isReadonlyRecordType()
+                        && spread.expression() instanceof Ast.ObjectExpr object
+                        && object.structuralRecord()) {
+                    for (String name : type.recordMembers().keySet()) {
+                        result.add(
+                                FixedProductCallPlan.InputSlot.named(name));
+                    }
+                    continue;
+                }
+                if (type.isTupleType()) {
+                    for (int i = 0; i < type.arguments().size(); i++) {
+                        result.add(
+                                FixedProductCallPlan.InputSlot.positional());
+                    }
+                    continue;
+                }
+                throw error(
+                        "fixed call spread requires a statically known tuple "
+                                + "or supported direct closed record pack");
+            }
+            result.add(FixedProductCallPlan.InputSlot.positional());
+        }
+        return List.copyOf(result);
+    }
+
+    private Ast.FunctionDecl selectDirectFunction(
+            String name,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        LinkedHashMap<Integer, Ast.FunctionDecl> family =
+                functions.get(name);
+        if (family == null) return null;
+        List<FixedProductCallPlan.InputSlot> inputs =
+                callInputSlots(arguments, scope);
+
+        Ast.FunctionDecl exact = family.get(inputs.size());
+        if (exact != null) {
+            if (exact.parameters().stream().anyMatch(Ast.Param::omittable)) {
+                OptionalCallPlan.bind(
+                        exact.parameters().stream()
+                                .map(Ast.Param::name)
+                                .toList(),
+                        exact.parameters().stream()
+                                .map(Ast.Param::omittable)
+                                .toList(),
+                        inputs);
+            } else if (inputs.stream()
+                    .anyMatch(slot -> slot.label() != null)) {
+                FixedProductCallPlan.bind(
+                        exact.parameters().stream()
+                                .map(Ast.Param::name)
+                                .toList(),
+                        inputs);
+            }
+            return exact;
+        }
+
+        List<Ast.FunctionDecl> matches = new ArrayList<>();
+        for (Ast.FunctionDecl candidate : family.values()) {
+            if (candidate.parameters().size() <= inputs.size()
+                    || candidate.parameters().stream()
+                            .noneMatch(Ast.Param::omittable)) {
+                continue;
+            }
+            try {
+                OptionalCallPlan.bind(
+                        candidate.parameters().stream()
+                                .map(Ast.Param::name)
+                                .toList(),
+                        candidate.parameters().stream()
+                                .map(Ast.Param::omittable)
+                                .toList(),
+                        inputs);
+                matches.add(candidate);
+            } catch (IllegalArgumentException ignored) {
+                // Not a compatible omission shape.
+            }
+        }
+        if (matches.size() > 1) {
+            throw error(
+                    "function " + name
+                            + " is ambiguous across omittable declaration arities; "
+                            + "labels do not select overloads");
+        }
+        return matches.isEmpty() ? null : matches.getFirst();
     }
 
     private List<Ast.TypeRef> syntacticCallArgumentTypes(
