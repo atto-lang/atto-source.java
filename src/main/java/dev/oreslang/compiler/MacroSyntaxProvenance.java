@@ -23,7 +23,8 @@ public final class MacroSyntaxProvenance {
         CONST_QUOTE,
         TEMPLATE_QUOTE,
         HYGIENIC_IDENTIFIER,
-        CHECKED_CAPTURE
+        CHECKED_CAPTURE,
+        DECLARE_FUNCTION
     }
 
     public record HygieneIdentity(
