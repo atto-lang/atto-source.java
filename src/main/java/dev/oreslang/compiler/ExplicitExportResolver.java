@@ -149,7 +149,8 @@ public final class ExplicitExportResolver {
                     resolvedKind = declarationKind(declarations.get(candidates.getFirst()));
                 }
 
-                if (module.explicitlyPrivateNames().contains(item.localName())) {
+                String privateKey = resolvedKind.name() + "\0" + item.localName();
+                if (module.explicitlyPrivateSymbols().contains(privateKey)) {
                     throw semantic("explicitly private declaration '" + item.localName()
                             + "' cannot be exported");
                 }
