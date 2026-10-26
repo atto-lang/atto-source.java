@@ -247,6 +247,12 @@ public final class AsyncNativeIo implements AutoCloseable {
             Set<Operation<?>> admitted, int limit, ThreadPoolExecutor executor) {
         Objects.requireNonNull(operation);
         Objects.requireNonNull(work);
+        // Strict NIO never hides a blocking host syscall in a virtual thread.
+        // Reject before admission, executor dispatch, actor-loan accounting, or
+        // user work invocation. This also covers control-path socket close.
+        if (NioOnlyPolicy.enabled()) {
+            return OresFuture.failed(NioOnlyPolicy.denyLegacy(operation));
+        }
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
         if (closed || admitted.size() >= limit) {
             CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
