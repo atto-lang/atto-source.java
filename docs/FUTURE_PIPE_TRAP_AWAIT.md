@@ -64,10 +64,11 @@ If such an eager scalar stage returns `Future<int>`, the next checked pipe
 stage switches into Future-aware lowering; for example
 `21 |> start_async() |> finish()` invokes `start_async(21)` eagerly and
 defers `finish` until that Future succeeds. Only the narrow, checked pure-unary subset above has compiler-to-runtime lifting. Within that subset, an async
-stage's `Future<int>` is flattened by
+stage's Future result is flattened by
 the same single `TaskPipeline` task, and the compiler marks the stage-created
 Future as pipeline-owned so cancellation revokes it while leaving the borrowed
-producer Future alone. Future stages with effect declarations, extra arguments,
+producer Future alone.
+Synchronous `Future<B>`-returning stages are admitted only when the returned Future is proven fresh from a checked async helper; returning a borrowed/shared Future does not grant the pipeline cancellation ownership. Future stages with effect declarations, extra arguments,
 non-int payloads, HasFuture projections, actor affinity or loan/capture
 requirements still fail closed. There is no general
 `Task.pipeline` source intrinsic or Java/LLVM/JS/Wasm executable parity.
