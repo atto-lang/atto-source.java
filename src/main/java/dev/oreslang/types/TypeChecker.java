@@ -1441,12 +1441,9 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "actor '" + klass.name() + "' cannot declare a class constructor");
             }
-            if (constructor.visibility() == Ast.Visibility.PUBLIC
-                    && klass.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException(
-                        "public constructor on private class '" + klass.name()
-                                + "' is unreachable; make the module class public or keep the constructor private");
-            }
+            // Constructor source visibility is independent of declaration-site
+            // class visibility. ExportResolver decides whether the class itself
+            // is externally nameable after all declarations/exports are known.
 
             Env constructorEnv = new Env(null);
             constructorEnv.define("self", self, Ast.BindingKind.VAL);
