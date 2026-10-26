@@ -21,9 +21,9 @@ final class InvertedOneLevelLayoutTest {
 
     private static final String PARTICLE = """
             define inverted class Particle as
-                position: struct{x: f64, y: f64, alive: bool};
-                velocity: struct{x: f32, y: f32};
-                mass: f64;
+                let struct{x: f64, y: f64, alive: bool} position;
+                let struct{x: f32, y: f32} velocity;
+                let f64 mass;
             end
             """;
 
