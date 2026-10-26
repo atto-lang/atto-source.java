@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.types.NamedCallBindingPlan;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -4589,9 +4590,13 @@ public final class OresEvalRootNode extends RootNode {
                 continuation.accept(task, List.copyOf(values), null);
                 return;
             }
+            Ast.Expr argument = expressions.get(index);
+            if (argument instanceof Ast.NamedValueArgumentExpr named) {
+                argument = named.expression();
+            }
             evalSuspendableExpr(
                     task,
-                    expressions.get(index),
+                    argument,
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
@@ -5071,7 +5076,8 @@ public final class OresEvalRootNode extends RootNode {
                                 }
                                 try {
                                     Invocation invocation =
-                                            functionInvocation(direct, values);
+                                            functionInvocation(direct,
+                                                    bindNamedCallValues(call.arguments(), direct.parameters(), values));
                                     completeSourceInvocation(
                                             t,
                                             invocation,
@@ -6939,7 +6945,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    return functionInvocation(direct,
+                            bindNamedCallValues(call.arguments(), direct.parameters(), args));
                 }
             }
 
@@ -7116,11 +7123,31 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.Expr argument : arguments) {
                 if (argument instanceof Ast.SpreadExpr spread) {
                     values.addAll(expandArgumentSequence(eval(spread.expression(), env), "argument spread"));
+                } else if (argument instanceof Ast.NamedValueArgumentExpr named) {
+                    values.add(eval(named.expression(), env));
                 } else {
                     values.add(eval(argument, env));
                 }
             }
             return List.copyOf(values);
+        }
+
+        private List<Object> bindNamedCallValues(
+                List<Ast.Expr> arguments, List<Ast.Param> parameters, List<Object> values) {
+            if (arguments.stream().noneMatch(Ast.NamedValueArgumentExpr.class::isInstance)) {
+                return values;
+            }
+            List<String> labels = new ArrayList<>(arguments.size());
+            for (Ast.Expr argument : arguments) {
+                if (argument instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException("named arguments cannot be mixed with spreads");
+                }
+                labels.add(argument instanceof Ast.NamedValueArgumentExpr named
+                        ? named.label() : null);
+            }
+            var plan = NamedCallBindingPlan.bind(
+                    parameters.stream().map(Ast.Param::name).toList(), labels);
+            return plan.inFormalOrder(values);
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
