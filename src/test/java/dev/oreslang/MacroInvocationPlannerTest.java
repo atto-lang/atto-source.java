@@ -725,6 +725,27 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void hygienicIdentifierDoesNotCaptureCallerLocalDuringFullTypeCheck() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro fresh(Identifier hint) -> Syntax<Expr> {
+                            return hygienic(hint);
+                        }
+
+                        fnc demo() -> int {
+                            const int value = 1;
+                            return fresh!(ident value);
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("unknown name '$macro$g$"),
+                failure::toString);
+        assertFalse(failure.getMessage().contains("unknown name 'value'"),
+                "the caller local must not be mistaken for the generated identifier");
+    }
+
+    @Test
     void sourceUnitIdentitySeparatesOtherwiseIdenticalHygiene() {
         String source = """
                 define macro fresh(Identifier hint) -> Syntax<Expr> {
@@ -935,6 +956,30 @@ final class MacroInvocationPlannerTest {
 
         assertTrue(failure.getMessage().contains(
                 "could not resolve ordinary module-level function 'helper'"),
+                failure::toString);
+    }
+
+    @Test
+    void declareFncIntrinsicRequiresDirectCallOrigin() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro make(
+                            Identifier name,
+                            Type result,
+                            Syntax<Expr> body
+                        ) -> Syntax<Decl> {
+                            return name |> declare_fnc(result, body);
+                        }
+
+                        make!(ident answer, type int, syntax expr 42);
+                        """));
+
+        assertTrue(failure.getMessage().contains("private zero-arg declare_fnc")
+                        || failure.getMessage().contains(
+                                "declaration output currently admits only declare_fnc"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
                 failure::toString);
     }
 
