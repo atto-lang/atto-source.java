@@ -71,24 +71,52 @@ def safe_descriptor_flags_available():
 
 
 def require_security_codeowners(contents):
-    """Require terminal exact rules owned by an explicit Oreslang team."""
+    """Validate the final matching CODEOWNERS rule for each source-export gate.
+
+    GitHub uses the *last matching* rule, not the last N physical lines.
+    Broad terminal /scripts/ and /.github/workflows/ ownership in current
+    source main is legitimate when it still assigns only @ORESoftware.
+    Reject unmodeled glob syntax instead of granting authority based on an
+    incomplete CODEOWNERS interpreter.
+    """
     if not isinstance(contents, bytes) or not contents or len(contents) > 16 * 1024:
         raise Denied("protected CODEOWNERS is missing or oversized")
     try:
         lines = contents.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
         raise Denied("protected CODEOWNERS is not UTF-8") from exc
-    rules = [line.strip() for line in lines
-             if line.strip() and not line.lstrip().startswith("#")]
-    if len(rules) < len(SECURITY_CODEOWNER_PATHS):
-        raise Denied("protected CODEOWNERS lacks terminal export rules")
-    tail = rules[-len(SECURITY_CODEOWNER_PATHS):]
-    for expected_path, rule in zip(SECURITY_CODEOWNER_PATHS, tail):
+
+    rules = []
+    for raw in lines:
+        rule = raw.strip()
+        if not rule or rule.startswith("#"):
+            continue
         fields = rule.split()
-        if (len(fields) < 2 or fields[0] != expected_path
-                or SECURITY_CODEOWNER not in fields[1:]):
+        if (len(fields) != 2
+                or not re.fullmatch(r"(?:\\*|/[A-Za-z0-9._/-]+)", fields[0])
+                or "//" in fields[0]
+                or "/../" in fields[0] or "/./" in fields[0]
+                or fields[0].endswith("/..") or fields[0].endswith("/.")
+                or not re.fullmatch(r"@[A-Za-z0-9-]+", fields[1])):
+            raise Denied("protected CODEOWNERS contains an unmodeled or unsafe rule")
+        rules.append((fields[0], fields[1]))
+
+    if not rules:
+        raise Denied("protected CODEOWNERS lacks terminal export rules")
+    for protected_path in SECURITY_CODEOWNER_PATHS:
+        # Keep a reviewable path-specific declaration in addition to
+        # validating all later overrides. A universal wildcard alone cannot
+        # silently authorize private-source exports.
+        if not any(pattern == protected_path for pattern, _ in rules):
+            raise Denied("protected CODEOWNERS lacks exact private-export rule")
+        owner = None
+        for pattern, candidate in rules:
+            if (pattern == "*" or pattern == protected_path
+                    or pattern.endswith("/") and protected_path.startswith(pattern)):
+                owner = candidate
+        if owner != SECURITY_CODEOWNER:
             raise Denied(
-                "protected CODEOWNERS must end with exact export rules owned by the independent security owner"
+                "protected CODEOWNERS terminal rule must assign only the independent security owner"
             )
 
 
