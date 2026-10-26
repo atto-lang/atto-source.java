@@ -214,9 +214,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             patch.object(pub, "gh_api") as api,
         ):
             with self.assertRaisesRegex(pub.Denied, "quarantined"):
-                pub.publish(
-                    "agent-pontifex-test/agent-pontifex-e2e-tests",
-                    self.source, "ci/oreslang-test", self.root, A,
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "agent-pontifex-test/agent-pontifex-e2e-tests", self.root,
                 )
             incidents.assert_not_called()
             policy.assert_not_called()
