@@ -4472,11 +4472,13 @@ public final class TypeChecker {
                         requireAssignable(result, actual, "value match arm");
                     }
 
-                    // Reuse canonical exhaustiveness/reachability and statement
-                    // typing with the real lexical body. Its terminal ReturnStmt
-                    // is contextual ARM_RESULT for this MatchExpr.
+                    // Reuse canonical pattern reachability/exhaustiveness
+                    // without re-checking the executable block a second time.
+                    // The lexical prefix/result were already checked above in
+                    // one isolated arm environment. Empty proof bodies avoid
+                    // cross-arm definite-init pollution.
                     proofArms.add(new Ast.MatchArm(
-                            arm.pattern(), arm.guard(), arm.body()));
+                            arm.pattern(), arm.guard(), List.of()));
                 }
 
                 checkMatch(
