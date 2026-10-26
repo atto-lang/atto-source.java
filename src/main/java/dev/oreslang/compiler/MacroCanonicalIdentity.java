@@ -44,6 +44,8 @@ final class MacroCanonicalIdentity {
         integer(MacroExpander.MAX_EXPANSION_DEPTH);
         integer(MacroExpander.MAX_TEMPLATE_NODES);
         integer(MacroExpander.MAX_TEMPLATE_DEPTH);
+        integer(MacroExpander.MAX_REWRITE_TRAVERSAL_NODES);
+        integer(MacroExpander.MAX_REWRITE_TRAVERSAL_DEPTH);
         integer(MacroSyntaxProvenance.MAX_PROVENANCE_NODES);
         integer(MacroSyntaxProvenance.MAX_PROVENANCE_DEPTH);
     }
