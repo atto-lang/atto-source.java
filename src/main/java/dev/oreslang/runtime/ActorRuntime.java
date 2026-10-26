@@ -526,7 +526,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final PhysicalStopDispatcher physicalStopDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
     /** Physical native I/O operation/loan gate for the actor incarnation. */
-    private volatile java.util.function.Predicate<ActorId> nativeIoLoanRetired =
+    private volatile java.util.function.Predicate<ActorRef<?>> nativeIoLoanRetired =
             ignored -> true;
 
     /**
@@ -832,16 +832,18 @@ public final class ActorRuntime implements AutoCloseable {
      * memory slice closes (unlike the best-effort actorExitHook).
      */
     public void setNativeIoLoanRetirementGate(
-            java.util.function.Predicate<ActorId> gate) {
+            java.util.function.Predicate<ActorRef<?>> gate) {
         requireSupervisorContext("install native I/O retirement gate");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         nativeIoLoanRetired = Objects.requireNonNull(gate);
     }
 
-    /** Wake an already-stopping actor when its final native loan retires. */
-    void onNativeIoLoanRetired(ActorId id) {
-        ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
-        if (cell == null) return;
+    /** Wake only the exact already-stopping actor incarnation whose final native loan retired. */
+    void onNativeIoLoanRetired(ActorRef<?> ref) {
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) return;
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref) return;
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() && !cell.finalized) cell.finalizeStopLocked();
             cell.lifecycleLock.notifyAll();
@@ -2645,11 +2647,11 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ActorHandle<M> {
         private final ActorRef<M> ref;
-        private final ActorId ownerActorId;
+        private final ActorRef<?> ownerActorRef;
 
-        private ActorHandle(ActorRef<M> ref, ActorId ownerActorId) {
+        private ActorHandle(ActorRef<M> ref, ActorRef<?> ownerActorRef) {
             this.ref = Objects.requireNonNull(ref, "ref");
-            this.ownerActorId = Objects.requireNonNull(ownerActorId, "ownerActorId");
+            this.ownerActorRef = Objects.requireNonNull(ownerActorRef, "ownerActorRef");
         }
 
         public ActorRef<M> ref() { return ref; }
@@ -2771,10 +2773,11 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorHandle belongs to a different ActorRuntime");
         }
         ActorCell<?> caller = currentActor.get();
-        if (caller == null || !caller.ref.id().equals(handle.ownerActorId)) {
+        if (caller == null || caller.ref != handle.ownerActorRef) {
             throw new SecurityException(
-                    "ActorHandle lifecycle authority is bound to spawning parent "
-                            + handle.ownerActorId + "; cannot " + operation
+                    "ActorHandle lifecycle authority is bound to exact spawning parent "
+                            + handle.ownerActorRef.id() + "@" + handle.ownerActorRef.generation()
+                            + "; cannot " + operation
                             + " from this execution context");
         }
         ActorCell<?> target = actors.get(handle.ref.id());
@@ -4474,7 +4477,7 @@ public final class ActorRuntime implements AutoCloseable {
                 policy,
                 behaviorFactory,
                 false);
-        return new ActorHandle<>(ref, parent.ref.id());
+        return new ActorHandle<>(ref, parent.ref);
     }
 
     public <M> ActorHandle<M> spawnChildPrivate(
@@ -8039,7 +8042,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeUntrustedSourceTaskCount != 0
                     || activeUntrustedTimedAdmissions != 0)) return;
             try {
-                if (!nativeIoLoanRetired.test(ref.id())) return;
+                if (!nativeIoLoanRetired.test(ref)) return;
             } catch (RuntimeException | Error gateFailure) {
                 sourceStopCleanupAborted = true;
                 recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
