@@ -27,6 +27,7 @@ public final class WebSocketFrameCodec {
     public static final int OPCODE_CLOSE = 0x8;
     public static final int OPCODE_PING = 0x9;
     public static final int OPCODE_PONG = 0xA;
+    public static final int MAX_CONFIGURED_PAYLOAD_BYTES = 64 * 1024 * 1024;
 
     private WebSocketFrameCodec() { }
 
@@ -36,7 +37,8 @@ public final class WebSocketFrameCodec {
                 throw new IllegalArgumentException("WebSocket payload is required");
             }
             requireOpcode(opcode);
-            validateFrameShape(fin, opcode, payload.length, Integer.MAX_VALUE);
+            validateFrameShape(
+                    fin, opcode, payload.length, MAX_CONFIGURED_PAYLOAD_BYTES);
             validateTerminalPayload(fin, opcode, payload);
             payload = Arrays.copyOf(payload, payload.length);
         }
@@ -83,7 +85,7 @@ public final class WebSocketFrameCodec {
     public static Frame readClientFrame(InputStream input, int maxFrameBytes)
             throws IOException {
         if (input == null) throw new IllegalArgumentException("WebSocket input is required");
-        requirePositiveLimit(maxFrameBytes, "maxFrameBytes");
+        requirePayloadLimit(maxFrameBytes, "maxFrameBytes");
 
         int first = readRequiredByte(input, "WebSocket frame first byte");
         int second = readRequiredByte(input, "WebSocket frame second byte");
@@ -154,7 +156,7 @@ public final class WebSocketFrameCodec {
             int maxFrameBytes) throws IOException {
         if (output == null) throw new IllegalArgumentException("WebSocket output is required");
         if (payload == null) throw new IllegalArgumentException("WebSocket payload is required");
-        requirePositiveLimit(maxFrameBytes, "maxFrameBytes");
+        requirePayloadLimit(maxFrameBytes, "maxFrameBytes");
         requireOpcode(opcode);
         validateFrameShape(fin, opcode, payload.length, maxFrameBytes);
         validateTerminalPayload(fin, opcode, payload);
@@ -184,7 +186,7 @@ public final class WebSocketFrameCodec {
      */
     public static Frame decodeClientFrame(byte[] wire, int maxFrameBytes) {
         if (wire == null) throw new IllegalArgumentException("WebSocket frame bytes are required");
-        requirePositiveLimit(maxFrameBytes, "maxFrameBytes");
+        requirePayloadLimit(maxFrameBytes, "maxFrameBytes");
         if (wire.length < 2) throw new IllegalArgumentException("truncated WebSocket frame header");
 
         int first = Byte.toUnsignedInt(wire[0]);
@@ -255,7 +257,7 @@ public final class WebSocketFrameCodec {
     public static byte[] encodeServerFrame(
             boolean fin, int opcode, byte[] payload, int maxFrameBytes) {
         if (payload == null) throw new IllegalArgumentException("WebSocket payload is required");
-        requirePositiveLimit(maxFrameBytes, "maxFrameBytes");
+        requirePayloadLimit(maxFrameBytes, "maxFrameBytes");
         requireOpcode(opcode);
         validateFrameShape(fin, opcode, payload.length, maxFrameBytes);
         validateTerminalPayload(fin, opcode, payload);
@@ -344,8 +346,11 @@ public final class WebSocketFrameCodec {
         }
     }
 
-    private static void requirePositiveLimit(int limit, String name) {
-        if (limit < 1) throw new IllegalArgumentException(name + " must be positive");
+    private static void requirePayloadLimit(int limit, String name) {
+        if (limit < 1 || limit > MAX_CONFIGURED_PAYLOAD_BYTES) {
+            throw new IllegalArgumentException(
+                    name + " must be in 1.." + MAX_CONFIGURED_PAYLOAD_BYTES);
+        }
     }
 
     private static int readRequiredByte(InputStream input, String what)
@@ -362,7 +367,12 @@ public final class WebSocketFrameCodec {
         while (offset < length) {
             int read = input.read(bytes, offset, length - offset);
             if (read < 0) throw new EOFException("truncated " + what);
-            if (read == 0) continue;
+            if (read == 0) {
+                int one = input.read();
+                if (one < 0) throw new EOFException("truncated " + what);
+                bytes[offset++] = (byte) one;
+                continue;
+            }
             offset += read;
         }
         return bytes;
@@ -384,7 +394,7 @@ public final class WebSocketFrameCodec {
         private int activeOpcode = -1;
 
         public MessageAssembler(int maxMessageBytes) {
-            requirePositiveLimit(maxMessageBytes, "maxMessageBytes");
+            requirePayloadLimit(maxMessageBytes, "maxMessageBytes");
             this.maxMessageBytes = maxMessageBytes;
         }
 
