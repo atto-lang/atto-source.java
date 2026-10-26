@@ -438,8 +438,16 @@ been evaluated. A positional or spread argument may not follow the first named
 argument. Java/Graal normalizes both required and omittable fixed calls through
 one immutable `CheckedCallPlan`: raw call-item/projection provenance stays in
 source order while the plan supplies the declaration-order ABI mapping and marks
-omitted formals with no source value. Type checking, ownership checking, overload
-shape validation, and executable lowering consume this same binding contract.
+omitted formals with no source value. Each flattened scalar is represented by a
+`CheckedCallItem`, which identifies the one raw expression evaluated for that
+call item plus its direct/tuple/record projection. Multiple spread projections
+therefore share one source-expression identity and must never imply repeated
+evaluation. Type checking publishes the resulting plan on the exact `CallExpr`
+or explicit `NewExpr` AST identity; ownership and executable lowering require
+an equal plan before consuming it. Tree-shaker rewrites transfer this checked
+metadata only between the same call/constructor AST kinds. Type checking,
+ownership checking, overload shape validation, and executable lowering consume
+this same binding contract.
 The executable Java/Graal fixed-call surface includes direct source
 functions (including generic direct calls), required-parameter instance methods,
 required-parameter static class functions, and explicit non-generic guest
