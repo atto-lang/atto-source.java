@@ -112,10 +112,10 @@ if ! cmp -s "$build_info_stdout" "$build_info_expected"; then
 fi
 cat "$build_info_stdout"
 
-# Byte-level provenance check for native stderr. AWK line parsing alone can
-# accept an embedded NUL or CR in a plausible capability/JIT message. The
-# specific checked-in fixtures use printable ASCII plus LF only.
-native_diagnostic_clean_bytes() {
+# Byte-level provenance for human/machine native test output. AWK's handling
+# of NUL/CR/terminal controls is implementation-dependent; forbid every byte
+# except printable ASCII and LF in the known machine-readable records.
+native_text_record_clean_bytes() {
   LC_ALL=C tr -cd '\12\40-\176' < "$1" | cmp -s - "$1"
 }
 
@@ -228,7 +228,7 @@ fi
 # not proof of linked actor admission. Enforce one stderr record, anchored at
 # its beginning, so grep cannot find an isolated matching line in a traceback.
 if [ -s "$guest_stdout" ] ||
-   ! native_diagnostic_clean_bytes "$guest_stderr" ||
+   ! native_text_record_clean_bytes "$guest_stderr" ||
    ! LC_ALL=C awk '
      NR != 1 { bad=1; next }
      $0 !~ /^Oreslang isolate denies capability (SHARED_MEMORY|ACTOR_SHARE_READONLY)([[:space:]:]|$)/ { bad=1 }
@@ -291,12 +291,13 @@ expected_summary='ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered
 # Tolerate detail text only after a recognized test name. The summary is
 # terminal: accepting PASS/SKIP events after SUMMARY can falsely certify an
 # incomplete test run whose supposedly final summary was emitted too early.
-if ! awk -F '|' -v expected="$expected_summary" '
+if ! native_text_record_clean_bytes "$test_output_file" ||
+   ! LC_ALL=C awk -F '|' -v expected="$expected_summary" '
   !/^ORES_TEST\|/ { bad=1; next }
   /^ORES_TEST\|/ {
     if ($0 == expected) { summaries++; next }
     if (summaries) { bad=1; next }
-    if ($1 != "ORES_TEST") { bad=1; next }
+    if ($1 != "ORES_TEST" || NF != 4) { bad=1; next }
     if ($2 == "PASS" && $3 == "core/arithmetic/adds") { adds++; next }
     if ($2 == "PASS" && $3 == "core/float/tolerance") { floats++; next }
     if ($2 == "PASS" && $3 == "core/property/square") { properties++; next }
@@ -331,7 +332,7 @@ esac
 # Require the complete single diagnostic, not a prefix followed by unrelated
 # fatal text. Also reject NUL/CR/control bytes that text-line AWK can ignore.
 if [ -s "$guest_stdout" ] ||
-   ! native_diagnostic_clean_bytes "$guest_stderr" ||
+   ! native_text_record_clean_bytes "$guest_stderr" ||
    ! LC_ALL=C awk -v expected="$expected_jit_line" '
      NR != 1 { bad=1; next }
      $0 != expected { bad=1 }
