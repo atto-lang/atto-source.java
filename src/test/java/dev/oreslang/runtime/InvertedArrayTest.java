@@ -297,6 +297,28 @@ final class InvertedArrayTest {
     }
 
     @Test
+    void preservesFinalFieldCapabilityAfterConstruction() {
+        var frozen = declaration("""
+                define inverted class Frozen as
+                    x: f64;
+                end
+                """);
+        var schema = InvertedArray.Schema.fromClass(frozen);
+        assertEquals(Ast.BindingKind.VAL, schema.fields().getFirst().bindingKind());
+        assertFalse(schema.fields().getFirst().writable());
+        try (var array = InvertedArray.fromClass(frozen, 1)) {
+            var row = array.pushValues(1.0);
+            assertEquals(1.0, array.read(row, "x"));
+            assertThrows(IllegalStateException.class, () -> array.write(row, "x", 2.0));
+            assertThrows(IllegalStateException.class, () -> array.bindField("x").set(row, 2.0));
+            assertThrows(IllegalStateException.class, () -> array.borrowWrite("x"));
+            assertThrows(IllegalStateException.class,
+                    () -> array.updateRow(row, Map.of("x", 2.0)));
+            assertEquals(1.0, array.read(row, "x"));
+        }
+    }
+
+    @Test
     void rejectsUnprovedLayoutsAndGuestExecutionRemainsClosed() {
         String[] invalid = {
                 "define class NotInverted as x: i32; end",
