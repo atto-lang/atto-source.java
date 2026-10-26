@@ -11311,12 +11311,19 @@ public final class OresEvalRootNode extends RootNode {
     private record ActorIoOutFacade(OresContext context) {
         private Object write(List<Object> args) {
             requireOne(args, "io.out.write");
-            context.actors().emitCurrentActorOutput(args.getFirst());
-            // Source sees an awaitable operation even though this first slice
-            // completes at bounded transport admission. A later router can
-            // suspend this Future for physical backpressure without changing
-            // the source-level API.
-            return OresFuture.completed(null);
+            try {
+                context.actors().emitCurrentActorOutput(args.getFirst());
+                // Source sees an awaitable operation even though this first
+                // slice completes at bounded transport admission. A later
+                // router can suspend this Future for physical backpressure
+                // without changing the source-level API.
+                return OresFuture.completed(null);
+            } catch (RuntimeException failure) {
+                // An async source API must report operational admission,
+                // lifecycle and transport failures through its Future rather
+                // than unexpectedly throwing before the caller can await it.
+                return OresFuture.failed(failure);
+            }
         }
     }
 
