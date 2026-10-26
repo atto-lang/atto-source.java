@@ -35,6 +35,7 @@ public final class MacroExpander {
 
     private final Map<String, Ast.MacroDecl> macros = new HashMap<>();
     private final Map<String, List<Ast.Decl>> declarationsByModule = new HashMap<>();
+    private final Map<String, Set<String>> occupiedDeclarationNames = new HashMap<>();
     private final Set<String> active = new HashSet<>();
     private final String sourceUnitId;
     private int expansions;
@@ -64,9 +65,9 @@ public final class MacroExpander {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.MacroDecl) continue;
                 if (declaration instanceof Ast.MacroInvocationDecl invocation) {
-                    throw expander.unsupported(
-                            invocation.name(),
-                            "declaration-producing macro expansion is not enabled yet");
+                    declarations.add(expander.expandDeclarationInvocation(
+                            module.name(), invocation, 0));
+                    continue;
                 }
                 declarations.add(expander.rewriteDeclaration(
                         module.name(), declaration, 0));
@@ -80,11 +81,24 @@ public final class MacroExpander {
     private void index(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             declarationsByModule.put(module.name(), module.declarations());
+            HashSet<String> occupied = new HashSet<>();
             for (Ast.Decl declaration : module.declarations()) {
+                String declarationName = runtimeDeclarationName(declaration);
+                if (declarationName != null) occupied.add(declarationName);
                 if (!(declaration instanceof Ast.MacroDecl macro)) continue;
                 macros.put(module.name() + "." + macro.name(), macro);
             }
+            occupiedDeclarationNames.put(module.name(), occupied);
         }
+    }
+
+    private String runtimeDeclarationName(Ast.Decl declaration) {
+        if (declaration instanceof Ast.FunctionDecl fn) return fn.name();
+        if (declaration instanceof Ast.ClassDecl klass) return klass.name();
+        if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
+        if (declaration instanceof Ast.FieldDecl field) return field.name();
+        if (declaration instanceof Ast.TypeAliasDecl alias) return alias.name();
+        return null;
     }
 
     private void requireSupportedDeclarations(Ast.Program program) {
@@ -95,13 +109,15 @@ public final class MacroExpander {
                         && !isConstLiteralQuote(macro)
                         && !isSyntaxExprTemplateQuote(macro)
                         && !isIdentifierIntrinsic(macro, "hygienic")
-                        && !isIdentifierIntrinsic(macro, "capture_fnc")) {
+                        && !isIdentifierIntrinsic(macro, "capture_fnc")
+                        && !isDeclareFunctionMacro(macro)) {
                     throw unsupported(
                             macro.name(),
                             "the first evaluator slice only admits Syntax<Expr> identity, "
                                     + "bounded Const<T> quotation, identifier-free "
                                     + "Syntax<Expr> quote/unquote templates, generated hygienic "
-                                    + "Identifier emission, or checked module-function capture");
+                                    + "Identifier emission, checked module-function capture, "
+                                    + "or the private zero-arg declare_fnc declaration builder");
                 }
             }
         }
@@ -418,6 +434,133 @@ public final class MacroExpander {
         return matches;
     }
 
+    private boolean isDeclareFunctionMacro(Ast.MacroDecl macro) {
+        if (macro.resultKind().list()
+                || macro.resultKind().syntaxKind() != Ast.MacroSyntaxKind.DECL
+                || macro.parameters().size() != 3
+                || macro.body().size() != 1) {
+            return false;
+        }
+        Ast.MacroParam name = macro.parameters().get(0);
+        Ast.MacroParam returnType = macro.parameters().get(1);
+        Ast.MacroParam body = macro.parameters().get(2);
+        if (name.type().kind() != Ast.MacroParamKind.IDENTIFIER
+                || returnType.type().kind() != Ast.MacroParamKind.TYPE
+                || body.type().kind() != Ast.MacroParamKind.SYNTAX
+                || body.type().syntaxKind() != Ast.MacroSyntaxKind.EXPR) {
+            return false;
+        }
+        if (!(macro.body().getFirst() instanceof Ast.ReturnStmt returned)
+                || !(returned.value() instanceof Ast.CallExpr call)
+                || !(call.callee() instanceof Ast.NameExpr callee)
+                || !callee.name().equals("declare_fnc")
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent()
+                || call.arguments().size() != 3) {
+            return false;
+        }
+        return call.arguments().get(0) instanceof Ast.NameExpr first
+                && first.name().equals(name.name())
+                && call.arguments().get(1) instanceof Ast.NameExpr second
+                && second.name().equals(returnType.name())
+                && call.arguments().get(2) instanceof Ast.NameExpr third
+                && third.name().equals(body.name());
+    }
+
+    private int nextExpansionOrdinal(int depth) {
+        if (depth >= MAX_EXPANSION_DEPTH) {
+            throw new IllegalArgumentException(
+                    "macro expansion depth exceeds " + MAX_EXPANSION_DEPTH
+                            + "; runtime fallback is forbidden");
+        }
+        if (++expansions > MAX_EXPANSIONS) {
+            throw new IllegalArgumentException(
+                    "macro expansion count exceeds " + MAX_EXPANSIONS
+                            + "; runtime fallback is forbidden");
+        }
+        return expansions - 1;
+    }
+
+    private Ast.Decl expandDeclarationInvocation(
+            String module,
+            Ast.MacroInvocationDecl invocation,
+            int depth) {
+        int expansionOrdinal = nextExpansionOrdinal(depth);
+        Ast.MacroDecl macro = resolve(module, invocation.name());
+        if (!isDeclareFunctionMacro(macro)) {
+            throw unsupported(
+                    invocation.name(),
+                    "declaration output currently admits only "
+                            + "declare_fnc(Identifier, Type, Syntax<Expr>)");
+        }
+        if (invocation.arguments().size() != 3
+                || !(invocation.arguments().get(0)
+                        instanceof Ast.MacroIdentifierArgument identifier)
+                || !(invocation.arguments().get(1)
+                        instanceof Ast.MacroTypeArgument returnType)
+                || !(invocation.arguments().get(2)
+                        instanceof Ast.MacroSyntaxExprArgument body)) {
+            throw new IllegalArgumentException(
+                    "macro '" + invocation.name()
+                            + "' declaration builder requires "
+                            + "Identifier, Type, Syntax<Expr>");
+        }
+
+        Set<String> occupied = occupiedDeclarationNames.computeIfAbsent(
+                module, ignored -> new HashSet<>());
+        if (occupied.contains(identifier.name())) {
+            throw new IllegalArgumentException(
+                    "declare_fnc generated name '" + identifier.name()
+                            + "' collides with an existing declaration in module '"
+                            + module + "'; generated overload/coherence synthesis "
+                            + "is not enabled in this declaration slice");
+        }
+
+        String activeKey = sourceUnitId + "\0decl\0" + module + "\0"
+                + invocation.name() + "\0" + invocation.site().line()
+                + ":" + invocation.site().column();
+        if (!active.add(activeKey)) {
+            throw new IllegalArgumentException(
+                    "macro expansion cycle at declaration '" + invocation.name()
+                            + "'; runtime fallback is forbidden");
+        }
+        try {
+            Ast.Expr expandedBody =
+                    rewriteExpression(module, body.expression(), depth + 1);
+            String owner = macroOwnerModule(module, invocation.name());
+            MacroSyntaxProvenance.Origin origin =
+                    new MacroSyntaxProvenance.Origin(
+                            new MacroSyntaxProvenance.HygieneIdentity(
+                                    sourceUnitId,
+                                    module,
+                                    owner,
+                                    macro.name(),
+                                    invocation.site(),
+                                    expansionOrdinal),
+                            macro.definitionSite(),
+                            MacroSyntaxProvenance.EmissionKind.DECLARE_FUNCTION);
+
+            // Provenance traversal is quota-checked and publishes only after a
+            // complete walk. The declaration object is not exposed until both
+            // body expansion and provenance succeed.
+            MacroSyntaxProvenance.recordTree(expandedBody, origin);
+            Ast.FunctionDecl generated = new Ast.FunctionDecl(
+                    identifier.name(),
+                    Ast.Visibility.PRIVATE,
+                    false,
+                    List.of(),
+                    List.of(),
+                    returnType.type(),
+                    List.of(),
+                    List.of(new Ast.ReturnStmt(expandedBody)));
+            MacroDeclarationProvenance.record(generated, origin);
+            occupied.add(identifier.name());
+            return generated;
+        } finally {
+            active.remove(activeKey);
+        }
+    }
+
     private IllegalArgumentException unsupported(String name, String detail) {
         return new IllegalArgumentException(
                 "define macro '" + name + "' is compile-time-only, but " + detail
@@ -459,17 +602,7 @@ public final class MacroExpander {
             String module,
             Ast.MacroInvocationExpr invocation,
             int depth) {
-        if (depth >= MAX_EXPANSION_DEPTH) {
-            throw new IllegalArgumentException(
-                    "macro expansion depth exceeds " + MAX_EXPANSION_DEPTH
-                            + "; runtime fallback is forbidden");
-        }
-        if (++expansions > MAX_EXPANSIONS) {
-            throw new IllegalArgumentException(
-                    "macro expansion count exceeds " + MAX_EXPANSIONS
-                            + "; runtime fallback is forbidden");
-        }
-        int expansionOrdinal = expansions - 1;
+        int expansionOrdinal = nextExpansionOrdinal(depth);
 
         Ast.MacroDecl macro = resolve(module, invocation.name());
         boolean syntaxIdentity = isSyntaxExprPassthrough(macro);
