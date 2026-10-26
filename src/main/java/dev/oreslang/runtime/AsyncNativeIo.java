@@ -51,12 +51,12 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final Map<AutoCloseable, ResourceLeaseState> resourceLoans =
             new IdentityHashMap<>();
     /** Counts entire I/O operations from admission through callback drain. */
-    private final ConcurrentHashMap<ActorRuntime.ActorId, Integer> actorOperations =
+    private final ConcurrentHashMap<ActorRuntime.ActorRef<?>, Integer> actorOperations =
             new ConcurrentHashMap<>();
-    private volatile Consumer<ActorRuntime.ActorId> actorLoanRetired = ignored -> { };
+    private volatile Consumer<ActorRuntime.ActorRef<?>> actorLoanRetired = ignored -> { };
     private final AtomicLong nextResourceGeneration = new AtomicLong();
     private final AtomicLong nextLoanGeneration = new AtomicLong();
-    private final ThreadLocal<ActorRuntime.ActorId> currentOperationActor = new ThreadLocal<>();
+    private final ThreadLocal<ActorRuntime.ActorRef<?>> currentOperationActor = new ThreadLocal<>();
     /** A resource unregistered while workers have loans stays reachable. */
     private final Set<AutoCloseable> deferredUnregister =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -71,18 +71,22 @@ public final class AsyncNativeIo implements AutoCloseable {
     /** Published lock-free to actor finalization gates; mutations synchronized. */
     private volatile Throwable incompleteReceipt;
 
-    /** Immutable receipt identity; actorId is null for root/host operations. */
+    /** Immutable receipt identity; actorRef is null for root/host operations. */
     record IoLoanIdentity(long resourceGeneration, long loanGeneration,
-            ActorRuntime.ActorId actorId) { }
+            ActorRuntime.ActorRef<?> actorRef) {
+        ActorRuntime.ActorId actorId() {
+            return actorRef == null ? null : actorRef.id();
+        }
+    }
 
     private static final class ResourceLeaseState {
         final long generation;
         final AutoCloseable resource;
-        final ActorRuntime.ActorId registeredBy;
+        final ActorRuntime.ActorRef<?> registeredBy;
         int active;
         boolean unregistered;
         ResourceLeaseState(long generation, AutoCloseable resource,
-                ActorRuntime.ActorId registeredBy) {
+                ActorRuntime.ActorRef<?> registeredBy) {
             this.generation = generation;
             this.resource = resource;
             this.registeredBy = registeredBy;
@@ -109,7 +113,7 @@ public final class AsyncNativeIo implements AutoCloseable {
             if (!released.compareAndSet(false, true)) {
                 throw new IllegalStateException("duplicate physical I/O loan receipt");
             }
-            ActorRuntime.ActorId retireActor;
+            ActorRuntime.ActorRef<?> retireActor;
             synchronized (AsyncNativeIo.this) {
                 if (resourceLoans.get(lease.resource) != lease
                         || lease.generation != identity.resourceGeneration()
@@ -124,7 +128,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                     resourceLoans.remove(lease.resource);
                     deferredUnregister.remove(lease.resource);
                 }
-                retireActor = decrementActorOperationLocked(identity.actorId());
+                retireActor = decrementActorOperationLocked(identity.actorRef());
                 AsyncNativeIo.this.notifyAll();
             }
             notifyActorRetirement(retireActor);
@@ -142,40 +146,49 @@ public final class AsyncNativeIo implements AutoCloseable {
             throw new RejectedExecutionException(
                     "native resource is closed, unregistered or shutdown-sealed");
         }
-        ActorRuntime.ActorId actorId = currentOwnerActor();
+        ActorRuntime.ActorRef<?> actorRef = currentOwnerActor();
         state.active++;
-        incrementActorOperationLocked(actorId);
+        incrementActorOperationLocked(actorRef);
         return new IoLoan(state, new IoLoanIdentity(
-                state.generation, nextLoanGeneration.incrementAndGet(), actorId));
+                state.generation, nextLoanGeneration.incrementAndGet(), actorRef));
     }
 
-    int outstandingActorOperations(ActorRuntime.ActorId id) {
+    int outstandingActorOperations(ActorRuntime.ActorRef<?> ref) {
         // Called under ActorCell.lifecycleLock. NEVER acquire the AsyncNativeIo
         // monitor here: rejected Futures can deliver host callbacks while the
         // AsyncNativeIo monitor is held by the admitting actor.
-        return actorOperations.getOrDefault(Objects.requireNonNull(id), 0);
+        return actorOperations.getOrDefault(Objects.requireNonNull(ref), 0);
     }
 
-    boolean actorPhysicallyRetired(ActorRuntime.ActorId id) {
+    /** Logical-id aggregate for diagnostics/tests only; never use as authority. */
+    int outstandingActorOperations(ActorRuntime.ActorId id) {
+        Objects.requireNonNull(id, "id");
+        return actorOperations.entrySet().stream()
+                .filter(entry -> entry.getKey().id().equals(id))
+                .mapToInt(Map.Entry::getValue)
+                .sum();
+    }
+
+    boolean actorPhysicallyRetired(ActorRuntime.ActorRef<?> ref) {
         // A failed native completion receipt can invalidate retirement even
-        // after its count reaches zero. Quarantine all affected context heaps
-        // until the physical failure has been independently reconciled.
-        return incompleteReceipt == null && outstandingActorOperations(id) == 0;
+        // after its count reaches zero. Quarantine only the exact actor
+        // incarnation represented by the runtime-owned ActorRef.
+        return incompleteReceipt == null && outstandingActorOperations(ref) == 0;
     }
 
-    void setActorLoanRetiredListener(Consumer<ActorRuntime.ActorId> callback) {
+    void setActorLoanRetiredListener(Consumer<ActorRuntime.ActorRef<?>> callback) {
         actorLoanRetired = Objects.requireNonNull(callback);
     }
 
-    private void incrementActorOperationLocked(ActorRuntime.ActorId id) {
-        if (id != null) actorOperations.merge(id, 1, Integer::sum);
+    private void incrementActorOperationLocked(ActorRuntime.ActorRef<?> ref) {
+        if (ref != null) actorOperations.merge(ref, 1, Integer::sum);
     }
 
-    private ActorRuntime.ActorId decrementActorOperationLocked(ActorRuntime.ActorId id) {
-        if (id == null) return null;
+    private ActorRuntime.ActorRef<?> decrementActorOperationLocked(ActorRuntime.ActorRef<?> ref) {
+        if (ref == null) return null;
         AtomicBoolean finalLoan = new AtomicBoolean();
         AtomicBoolean underflow = new AtomicBoolean();
-        actorOperations.compute(id, (ignored, count) -> {
+        actorOperations.compute(ref, (ignored, count) -> {
             if (count == null || count <= 0) {
                 underflow.set(true);
                 return null;
@@ -188,13 +201,13 @@ public final class AsyncNativeIo implements AutoCloseable {
         });
         if (underflow.get()) recordIncomplete(new IllegalStateException(
                 "actor native I/O operation receipt underflow"));
-        return finalLoan.get() ? id : null;
+        return finalLoan.get() ? ref : null;
     }
 
-    private void notifyActorRetirement(ActorRuntime.ActorId id) {
-        if (id != null) {
+    private void notifyActorRetirement(ActorRuntime.ActorRef<?> ref) {
+        if (ref != null) {
             try {
-                actorLoanRetired.accept(id);
+                actorLoanRetired.accept(ref);
             } catch (RuntimeException | Error notifyFailure) {
                 recordIncomplete(notifyFailure);
             }
@@ -257,7 +270,7 @@ public final class AsyncNativeIo implements AutoCloseable {
 
         Operation<T> op = new Operation<>(
                 operation, work, result, admitted,
-                ActorRuntime.currentActorId().orElse(null));
+                ActorRuntime.currentActorRef());
         admitted.add(op); // Reserve before publishing work to any executor.
         incrementActorOperationLocked(op.admittedActor);
         long queuedAt = CorePerf.start();
@@ -279,13 +292,13 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final Callable<T> work;
         private final OresFuture<T> completion;
         private final Set<Operation<?>> owner;
-        private final ActorRuntime.ActorId admittedActor;
+        private final ActorRuntime.ActorRef<?> admittedActor;
         private final AtomicReference<OperationState> state =
                 new AtomicReference<>(OperationState.ADMITTED);
         private long queuedAt;
 
         private Operation(String operation, Callable<T> work, OresFuture<T> completion,
-                Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor) {
+                Set<Operation<?>> owner, ActorRuntime.ActorRef<?> admittedActor) {
             this.operation = operation;
             this.work = work;
             this.completion = completion;
@@ -326,7 +339,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 throw notificationFailure;
             } finally {
                 state.set(OperationState.RETIRED);
-                ActorRuntime.ActorId retireActor;
+                ActorRuntime.ActorRef<?> retireActor;
                 synchronized (AsyncNativeIo.this) {
                     owner.remove(this);
                     retireActor = decrementActorOperationLocked(admittedActor);
@@ -355,7 +368,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                     } catch (RuntimeException | Error notificationFailure) {
                         recordIncomplete(notificationFailure);
                     } finally {
-                        ActorRuntime.ActorId retireActor;
+                        ActorRuntime.ActorRef<?> retireActor;
                         synchronized (AsyncNativeIo.this) {
                             owner.remove(this);
                             retireActor = decrementActorOperationLocked(admittedActor);
@@ -389,9 +402,9 @@ public final class AsyncNativeIo implements AutoCloseable {
         }
     }
 
-    private ActorRuntime.ActorId currentOwnerActor() {
-        ActorRuntime.ActorId id = currentOperationActor.get();
-        return id != null ? id : ActorRuntime.currentActorId().orElse(null);
+    private ActorRuntime.ActorRef<?> currentOwnerActor() {
+        ActorRuntime.ActorRef<?> ref = currentOperationActor.get();
+        return ref != null ? ref : ActorRuntime.currentActorRef();
     }
 
     synchronized void register(AutoCloseable resource) throws Exception {
