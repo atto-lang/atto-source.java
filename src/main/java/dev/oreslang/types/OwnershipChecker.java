@@ -1652,6 +1652,9 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            ValueInfo futureControl =
+                    checkBuiltinFutureControlCall(member, call.arguments(), scope);
+            if (futureControl != null) return futureControl;
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
@@ -2127,6 +2130,51 @@ public final class OwnershipChecker {
      * split_literal(...): List<String> retain their element ownership type.
      * Unknown/dynamic member calls remain conservative and move-only.
      */
+    /**
+     * Future<T> is affine: cancellation authority belongs to its unique owner.
+     * Read-only terminal-state queries may observe a borrow, but cancel() may
+     * not be invoked through a borrow or projected alias. Requiring a named
+     * owned local for the first guest cancellation slice keeps the authority
+     * explicit until projection-level affine method loans are modeled.
+     */
+    private ValueInfo checkBuiltinFutureControlCall(
+            Ast.MemberExpr member,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        String operation = member.member();
+        if (!operation.equals("cancel")
+                && !operation.equals("is_cancelled")
+                && !operation.equals("is_done")) {
+            return null;
+        }
+
+        Ast.TypeRef hinted = receiverType(member.receiver(), scope);
+        if (hinted == null) return null;
+        Ast.TypeRef concrete = hinted.isBorrow() ? hinted.borrowedTarget() : hinted;
+        if (!concrete.name().equals("Future") || concrete.arguments().size() != 1) {
+            return null;
+        }
+        if (!arguments.isEmpty()) {
+            throw error("Future." + operation + " expects no arguments");
+        }
+
+        ValueInfo receiver = checkExpr(member.receiver(), scope, false);
+        if (operation.equals("cancel")) {
+            if (receiver.type.isBorrow()) {
+                throw error("Future.cancel requires owned cancellation authority; borrowed Future is read-only");
+            }
+            if (!(member.receiver() instanceof Ast.NameExpr name)) {
+                throw error("Future.cancel requires an owned named Future local");
+            }
+            VarState owner = scope.lookup(name.name());
+            if (owner == null || owner.kind != ValueKind.MOVE_ONLY) {
+                throw error("Future.cancel requires an affine Future owner");
+            }
+        }
+
+        return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+    }
+
     private ValueInfo checkBuiltinStringCall(
             Ast.MemberExpr member,
             List<Ast.Expr> arguments,
