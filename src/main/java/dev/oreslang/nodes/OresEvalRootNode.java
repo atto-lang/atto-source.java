@@ -1642,25 +1642,68 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OresFuture<Object> startFutureChainTask(
-                OresScheduler.Task<Object> task) {
-            if (ActorRuntime.inActorExecution()) {
-                OresFuture<Object> future = context.actors().startActorTask(task);
-                context.actors().ownCurrentActorFuture(future);
-                return future;
+                OresScheduler.Task<Object> task,
+                TaskScope.Registration scopeRegistration) {
+            Objects.requireNonNull(task, "Future chain Task");
+            final OresFuture<Object> future;
+            try {
+                if (ActorRuntime.inActorExecution()) {
+                    if (scopeRegistration != null) {
+                        throw new IllegalStateException(
+                                "scoped Future chains inside actors are disabled until actor TaskScope integration is proven");
+                    }
+                    future = context.actors().startActorTask(task);
+                    context.actors().ownCurrentActorFuture(future);
+                } else {
+                    OresScheduler current = OresScheduler.current();
+                    OresScheduler scheduler =
+                            current != null
+                                    ? current
+                                    : context.vm().rootScheduler();
+                    future = scopeRegistration == null
+                            ? scheduler.start(task)
+                            : scheduler.startCompilerAdmittedTask(
+                                    task,
+                                    scopeRegistration::quiesced,
+                                    scopeRegistration::terminalReady);
+                }
+            } catch (RuntimeException | Error failure) {
+                if (scopeRegistration != null) {
+                    scopeRegistration.failedAdmission(failure);
+                }
+                throw failure;
             }
-            OresScheduler current = OresScheduler.current();
-            return (current != null
-                    ? current
-                    : context.vm().rootScheduler()).start(task);
+
+            if (scopeRegistration != null) {
+                try {
+                    scopeRegistration.attach(future);
+                } catch (RuntimeException | Error attachFailure) {
+                    // The chain already has scheduler Future identity and owns
+                    // physical retirement. Cancellation is the only safe rollback.
+                    future.cancel(false);
+                    throw attachFailure;
+                }
+            }
+            return future;
         }
 
         private OresFuture<Object> chainFuture(
                 OresFuture<?> source,
                 Invokable callback,
                 boolean flatten,
-                boolean observeSuccess) {
+                boolean observeSuccess,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             Objects.requireNonNull(source, "source");
             Objects.requireNonNull(callback, "callback");
+            if (taskScope != null && ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "scoped Future chains inside actors are disabled until actor TaskScope integration is proven");
+            }
+
+            final TaskScope.Registration chainRegistration =
+                    taskScope == null ? null : taskScope.reserve(taskScopeParent);
+
             return startFutureChainTask(new OresScheduler.Task<>() {
                 private int pc;
 
@@ -1671,6 +1714,12 @@ public final class OresEvalRootNode extends RootNode {
                         if (!resume.initial()) {
                             throw new IllegalStateException(
                                     "Future chain started with a non-initial resume");
+                        }
+                        if (chainRegistration != null) {
+                            // A chain created inside a lexical scope is itself
+                            // a structured child. Only a dispatched child may
+                            // admit callback descendants while the scope closes.
+                            chainRegistration.beganExecution();
                         }
                         pc = 1;
                         return OresScheduler.await(source);
@@ -1687,7 +1736,11 @@ public final class OresEvalRootNode extends RootNode {
                         // while allowing the value itself to be null.
                         Object mapped = invoke(
                                 invokableInvocation(callback,
-                                        java.util.Collections.singletonList(value)));
+                                        java.util.Collections.singletonList(value)),
+                                taskScope,
+                                chainRegistration != null
+                                        ? chainRegistration
+                                        : taskScopeParent);
 
                         if (observeSuccess) {
                             if (mapped != null) {
@@ -1722,7 +1775,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "Future chain resumed after completion");
                 }
-            });
+            }, chainRegistration);
         }
 
         private OresFuture<Object> wrapFutureSome(OresFuture<?> source) {
@@ -5057,7 +5110,13 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     if (fn.returnType().name().equals("Future")) {
-                        return chainFuture(future, values -> values.getFirst(), true, false);
+                        return chainFuture(
+                                future,
+                                values -> values.getFirst(),
+                                true,
+                                false,
+                                taskScope,
+                                taskScopeParent);
                     }
                     return returnSourceTaskResult(future, false);
                 }
@@ -7484,7 +7543,13 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "Future.map expects one callable");
                         }
-                        return chainFuture(future, callback, false, false);
+                        return chainFuture(
+                                future,
+                                callback,
+                                false,
+                                false,
+                                env == null ? null : env.taskScope,
+                                env == null ? null : env.taskScopeParent);
                     };
                     case "compose", "flatMap" -> (Invokable) args -> {
                         requireOne(args, "Future." + name);
@@ -7492,13 +7557,25 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "Future." + name + " expects one callable");
                         }
-                        return chainFuture(future, callback, true, false);
+                        return chainFuture(
+                                future,
+                                callback,
+                                true,
+                                false,
+                                env == null ? null : env.taskScope,
+                                env == null ? null : env.taskScopeParent);
                     };
                     case "flatten" -> (Invokable) args -> {
                         requireZero(args, "Future.flatten");
                         // Use the owned scheduler's continuation path.  In particular,
                         // a producer callback must never execute guest code inline.
-                        return chainFuture(future, values -> values.getFirst(), true, false);
+                        return chainFuture(
+                                future,
+                                values -> values.getFirst(),
+                                true,
+                                false,
+                                env == null ? null : env.taskScope,
+                                env == null ? null : env.taskScopeParent);
                     };
                     case "onSuccess" -> (Invokable) args -> {
                         requireOne(args, "Future.onSuccess");
@@ -7506,7 +7583,13 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "Future.onSuccess expects one callable");
                         }
-                        return chainFuture(future, callback, false, true);
+                        return chainFuture(
+                                future,
+                                callback,
+                                false,
+                                true,
+                                env == null ? null : env.taskScope,
+                                env == null ? null : env.taskScopeParent);
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown Future instance member " + name);
