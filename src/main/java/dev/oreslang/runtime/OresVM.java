@@ -32,6 +32,24 @@ public final class OresVM implements AutoCloseable {
             Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_PHYSICAL_STOP_QUEUE_CAPACITY = 16_384;
 
+    private static final ThreadLocal<Boolean> ON_NIO_WORKER = new ThreadLocal<>();
+
+    static boolean onNioWorker() {
+        return Boolean.TRUE.equals(ON_NIO_WORKER.get());
+    }
+
+    static void runAsNioWorker(Runnable work) {
+        Objects.requireNonNull(work, "work");
+        Boolean previous = ON_NIO_WORKER.get();
+        ON_NIO_WORKER.set(Boolean.TRUE);
+        try {
+            work.run();
+        } finally {
+            if (previous == null) ON_NIO_WORKER.remove();
+            else ON_NIO_WORKER.set(previous);
+        }
+    }
+
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
     /**
