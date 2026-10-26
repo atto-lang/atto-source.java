@@ -59,6 +59,31 @@ public final class MacroSyntaxProvenance {
 
     private static final ReferenceQueue<Ast.Expr> CLEARED = new ReferenceQueue<>();
     private static final Map<IdentityKey, List<Origin>> ORIGINS = new HashMap<>();
+    private static final int MAX_PROVENANCE_NODES = 65_536;
+    private static final int MAX_PROVENANCE_DEPTH = 256;
+    private static final ThreadLocal<PendingTree> PENDING = new ThreadLocal<>();
+
+    private static final class PendingTree {
+        final ArrayList<Ast.Expr> expressions = new ArrayList<>();
+        int totalNodes;
+        int depth;
+
+        void visitNode() {
+            if (++totalNodes > MAX_PROVENANCE_NODES) {
+                throw new IllegalArgumentException(
+                        "macro provenance node budget exceeds " + MAX_PROVENANCE_NODES
+                                + "; no partial origin publication");
+            }
+        }
+
+        void enterDepth() {
+            if (++depth > MAX_PROVENANCE_DEPTH) {
+                throw new IllegalArgumentException(
+                        "macro provenance depth budget exceeds " + MAX_PROVENANCE_DEPTH
+                                + "; no partial origin publication");
+            }
+        }
+    }
 
     private MacroSyntaxProvenance() { }
 
@@ -117,7 +142,17 @@ public final class MacroSyntaxProvenance {
      */
     public static synchronized void recordTree(Ast.Expr expression, Origin origin) {
         if (expression == null) return;
-        record(expression, origin);
+        java.util.Objects.requireNonNull(origin, "macro syntax origin");
+        PendingTree pending = PENDING.get();
+        boolean outermost = pending == null;
+        if (outermost) {
+            pending = new PendingTree();
+            PENDING.set(pending);
+        }
+        try {
+            pending.visitNode();
+            pending.enterDepth();
+            pending.expressions.add(expression);
 
         if (expression instanceof Ast.BinaryExpr e) {
             recordTree(e.left(), origin);
@@ -187,12 +222,28 @@ public final class MacroSyntaxProvenance {
             recordTree(e.expressionBody(), origin);
             if (e.blockBody() != null) recordStatements(e.blockBody(), origin);
         }
+            // No global state is changed until the entire traversal succeeds.
+            // Nested recordTree calls append to this same collection.
+            if (outermost) {
+                for (Ast.Expr node : pending.expressions) record(node, origin);
+            }
+        } finally {
+            pending.depth--;
+            if (outermost) PENDING.remove();
+        }
     }
 
     private static void recordStatements(
             List<Ast.Stmt> statements,
             Origin origin) {
+        PendingTree pending = PENDING.get();
+        if (pending == null) {
+            throw new IllegalStateException("macro provenance traversal has no active transaction");
+        }
+        pending.enterDepth();
+        try {
         for (Ast.Stmt statement : statements) {
+            pending.visitNode();
             if (statement instanceof Ast.BindingStmt s) {
                 recordTree(s.initializer(), origin);
             } else if (statement instanceof Ast.DestructureStmt s) {
@@ -262,6 +313,9 @@ public final class MacroSyntaxProvenance {
                     recordStatements(arm.body(), origin);
                 }
             }
+        }
+        } finally {
+            pending.depth--;
         }
     }
 }
