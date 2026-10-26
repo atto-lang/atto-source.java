@@ -1,0 +1,45 @@
+name: explicit-exports-v1
+
+on:
+  push:
+    branches:
+      - "feat/explicit-exports-v1-java-20261025"
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/ast/Ast.java"
+      - "src/main/java/dev/oreslang/ast/AnnotationExpander.java"
+      - "src/main/java/dev/oreslang/parser/Parser.java"
+      - "src/main/java/dev/oreslang/compiler/ExportResolver.java"
+      - "src/main/java/dev/oreslang/compiler/OresCompiler.java"
+      - "src/main/java/dev/oreslang/compiler/TreeShaker.java"
+      - "src/test/java/dev/oreslang/ExplicitExportSyntaxTest.java"
+      - "docs/grammar.ebnf"
+      - ".github/workflows/explicit-exports-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head:
+    name: exact-head export parser and resolver
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile exact head
+        run: mvn -B -ntp -DskipTests compile
+      - name: Run explicit export regression
+        run: mvn -B -ntp -Dtest=ExplicitExportSyntaxTest test
