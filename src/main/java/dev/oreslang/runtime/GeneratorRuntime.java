@@ -404,13 +404,13 @@ public final class GeneratorRuntime {
 
         @Override
         public void close() {
-            boolean first = !closed.get();
             requestScopeClose();
-            if (first) {
-                synchronized (launchLock) {
-                    OresFuture<Void> task = producerTask.get();
-                    if (task != null) task.cancel(true);
-                }
+            // Explicit close is stronger than the lexical scope's graceful
+            // close request. It may arrive after that request and must still
+            // be able to interrupt a producer stuck in host/runtime work.
+            synchronized (launchLock) {
+                OresFuture<Void> task = producerTask.get();
+                if (task != null) task.cancel(true);
             }
             awaitProducerExit();
         }
