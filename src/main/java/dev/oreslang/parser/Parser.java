@@ -567,8 +567,11 @@ public final class Parser {
                     throw error(peek(), "macro parameters are immutable compiler values; mut/structural is not permitted");
                 }
                 Token parameterName = consume(IDENT, "expected macro parameter name after compiler-only meta type");
-                if (parameterName.lexeme().equals("quote")) {
-                    throw error(parameterName, "'quote' is reserved for compile-time macro quotation");
+                if (parameterName.lexeme().equals("quote")
+                        || parameterName.lexeme().equals("unquote")) {
+                    throw error(parameterName,
+                            "'" + parameterName.lexeme()
+                                    + "' is reserved for compile-time macro quotation");
                 }
                 if (!parameterNames.add(parameterName.lexeme())) {
                     throw error(parameterName, "duplicate macro parameter '" + parameterName.lexeme() + "'");
@@ -586,7 +589,7 @@ public final class Parser {
     }
 
     /**
-     * `quote` is contextual: ordinary runtime code may use the name, but a
+     * `quote`/`unquote` are contextual: ordinary runtime code may use the names, but a
      * macro body cannot bind it and thereby make compiler quotation ambiguous.
      * Quoted Syntax<K> payloads are compiler data, not macro-body lexical scope,
      * so MacroInvocationExpr payloads are deliberately not traversed here.
@@ -761,9 +764,10 @@ public final class Parser {
     }
 
     private void rejectMacroQuoteBinding(String name) {
-        if ("quote".equals(name)) {
+        if ("quote".equals(name) || "unquote".equals(name)) {
             throw error(previous(),
-                    "'quote' is reserved for compile-time macro quotation and cannot be rebound in a macro body");
+                    "'" + name
+                            + "' is reserved for compile-time macro quotation and cannot be rebound in a macro body");
         }
     }
 
