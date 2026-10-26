@@ -68,4 +68,18 @@ final class ExplicitExportModuleShapeTest {
                 }
                 """)));
     }
+    @Test
+    void mixedGenericOverloadFamilyCannotBeImportedAsReifiableFunctionValue() {
+        Ast.Program program = Parser.parse("""
+                export fnc mixed as public_mixed;
+                fnc mixed(int value): int { return value; }
+                fnc mixed<T>(T value, int salt): int { return salt; }
+                """);
+        assertEquals(1, ExportResolver.resolve(program)
+                .bindings(Parser.ROOT_MODULE).size());
+        assertTrue(SourceExportTable.matchingPublic(
+                program, Ast.ImportKind.FUNCTION, "public_mixed").isEmpty(),
+                "a partly reifiable exported overload family must fail closed");
+    }
+
 }
