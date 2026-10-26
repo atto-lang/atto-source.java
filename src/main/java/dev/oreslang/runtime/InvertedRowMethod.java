@@ -47,6 +47,7 @@ final class InvertedRowMethod {
         if (method.isStatic() || method.isAbstract() || method.async() || method.suspends()
                 || method.structural() || method.explicitReceiverType() != null
                 || !method.genericParameters().isEmpty() || !method.annotations().isEmpty()
+                || !method.effects().isEmpty()
                 || method.returnType() == null || !method.returnType().name().equals("void")
                 || method.returnType().inferArguments()
                 || !method.returnType().arguments().isEmpty()
