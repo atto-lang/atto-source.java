@@ -65,10 +65,9 @@ final class HotCodeGenerationRetentionV1Test {
         budget.activated(serving);
         var ledger = new HttpGenerationDrainV1(1, 1, 1);
         ledger.beginDrain();
-        var cleanup = budget.physicalCleanupCompleted(serving, "loader:serving-a");
         assertThrows(IllegalStateException.class,
-                () -> budget.acknowledgePhysicalCleanup(
-                        serving, 1, ledger, cleanup));
+                () -> budget.physicalCleanupCompleted(
+                        serving, "loader:serving-a"));
         assertEquals(25, budget.status().heldBytes());
     }
 
