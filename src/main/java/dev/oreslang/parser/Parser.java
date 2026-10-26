@@ -3526,7 +3526,8 @@ public final class Parser {
                     throw error(previous(),
                             "value match block arm v1 permits only its terminal top-level 'return value;' result");
                 }
-                valueArms.add(new Ast.MatchValueArm(pattern, guard, body));
+                valueArms.add(new Ast.MatchValueArm(
+                        pattern, guard, List.copyOf(prefix), returned.value()));
                 continue;
             }
 
