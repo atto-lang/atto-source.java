@@ -65,6 +65,84 @@ public final class Ast {
         public Annotation { arguments = List.copyOf(arguments); }
     }
 
+    /** Compiler-only syntax categories accepted by the v1 macro contract. */
+    public enum MacroSyntaxKind { EXPR, STMT, DECL, TYPE, PATTERN }
+
+    /** Compiler-only macro input categories. These never enter runtime ABI. */
+    public enum MacroParamKind { TYPE, CONST, IDENTIFIER, SYNTAX }
+
+    /**
+     * A macro parameter type is deliberately distinct from ordinary TypeRef.
+     * Only CONST carries a value type; only SYNTAX carries a syntax category.
+     */
+    public record MacroParamType(
+            MacroParamKind kind,
+            TypeRef constType,
+            MacroSyntaxKind syntaxKind) {
+        public MacroParamType {
+            java.util.Objects.requireNonNull(kind, "macro parameter kind");
+            if (kind == MacroParamKind.CONST) {
+                java.util.Objects.requireNonNull(constType, "Const<T> macro parameter type");
+                if (syntaxKind != null) {
+                    throw new IllegalArgumentException("Const<T> macro parameter cannot carry a syntax kind");
+                }
+            } else if (kind == MacroParamKind.SYNTAX) {
+                java.util.Objects.requireNonNull(syntaxKind, "Syntax<K> macro parameter kind");
+                if (constType != null) {
+                    throw new IllegalArgumentException("Syntax<K> macro parameter cannot carry a const type");
+                }
+            } else if (constType != null || syntaxKind != null) {
+                throw new IllegalArgumentException("Type/Identifier macro parameter has no nested payload");
+            }
+        }
+
+        public static MacroParamType type() {
+            return new MacroParamType(MacroParamKind.TYPE, null, null);
+        }
+
+        public static MacroParamType identifier() {
+            return new MacroParamType(MacroParamKind.IDENTIFIER, null, null);
+        }
+
+        public static MacroParamType constant(TypeRef type) {
+            return new MacroParamType(MacroParamKind.CONST, type, null);
+        }
+
+        public static MacroParamType syntax(MacroSyntaxKind kind) {
+            return new MacroParamType(MacroParamKind.SYNTAX, null, kind);
+        }
+    }
+
+    public record MacroParam(MacroParamType type, String name) {
+        public MacroParam {
+            java.util.Objects.requireNonNull(type, "macro parameter type");
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid macro parameter name");
+            }
+        }
+    }
+
+    /**
+     * Macro outputs are typed syntax. V1 permits a single Syntax<K>, or a
+     * declaration list; arbitrary runtime/meta types are not result kinds.
+     */
+    public record MacroResultKind(MacroSyntaxKind syntaxKind, boolean list) {
+        public MacroResultKind {
+            java.util.Objects.requireNonNull(syntaxKind, "macro result syntax kind");
+            if (list && syntaxKind != MacroSyntaxKind.DECL) {
+                throw new IllegalArgumentException("v1 macro lists may contain declarations only");
+            }
+        }
+
+        public static MacroResultKind syntax(MacroSyntaxKind kind) {
+            return new MacroResultKind(kind, false);
+        }
+
+        public static MacroResultKind declarations() {
+            return new MacroResultKind(MacroSyntaxKind.DECL, true);
+        }
+    }
+
     /**
      * Compile-time-only macro declaration. Macro declarations are never runtime
      * callable values; an expansion phase must eliminate them before executable
@@ -73,8 +151,8 @@ public final class Ast {
     public record MacroDecl(
             String name,
             Visibility visibility,
-            List<Param> parameters,
-            TypeRef resultKind,
+            List<MacroParam> parameters,
+            MacroResultKind resultKind,
             List<Stmt> body) implements Decl {
         public MacroDecl {
             if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
@@ -83,6 +161,12 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             body = List.copyOf(body);
             java.util.Objects.requireNonNull(resultKind, "macro result kind");
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            for (MacroParam parameter : parameters) {
+                if (!names.add(parameter.name())) {
+                    throw new IllegalArgumentException("duplicate macro parameter '" + parameter.name() + "'");
+                }
+            }
         }
     }
 
