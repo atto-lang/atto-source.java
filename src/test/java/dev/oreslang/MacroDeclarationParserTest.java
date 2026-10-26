@@ -204,6 +204,19 @@ final class MacroDeclarationParserTest {
     }
 
     @Test
+    void quoteRemainsAnOrdinaryRuntimeNameOutsideMacroScope() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                fnc quote(int value) -> int {
+                    return value;
+                }
+
+                fnc answer() -> int {
+                    return quote(42);
+                }
+                """));
+    }
+
+    @Test
     void rejectsMacroDeclarationsInsideRuntimeBlocks() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
