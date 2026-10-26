@@ -269,7 +269,7 @@ final class ExplicitExportSyntaxTest {
                 pub fnc work(): int { return 1; }
                 fnc work(int value): int { return value; }
                 """);
-        assertExportError("OVERLOAD_VISIBILITY_CONFLICT", bad);
+        assertExportError("EXPORT_OVERLOAD_VISIBILITY_CONFLICT", bad);
     }
 
     @Test
