@@ -99,6 +99,18 @@ public final class Types {
             return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
         }
 
+        /** Category-preserving union used by async/pipeline composition. */
+        public CheckedEffects union(CheckedEffects other) {
+            Objects.requireNonNull(other, "other checked effects");
+            java.util.ArrayList<Type> throwsUnion = new java.util.ArrayList<>(throwsTypes);
+            throwsUnion.addAll(other.throwsTypes);
+            java.util.ArrayList<Type> raisesUnion = new java.util.ArrayList<>(raisesTypes);
+            raisesUnion.addAll(other.raisesTypes);
+            java.util.ArrayList<Type> panicsUnion = new java.util.ArrayList<>(panicsTypes);
+            panicsUnion.addAll(other.panicsTypes);
+            return new CheckedEffects(throwsUnion, raisesUnion, panicsUnion);
+        }
+
         /** Exact-type category preservation; nominal Error subtyping is a separate gate. */
         public boolean isSubsetOf(CheckedEffects allowance) {
             return allowance.throwsTypes.containsAll(throwsTypes)
