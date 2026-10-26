@@ -9,6 +9,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.FixedProductCallPlan;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -1115,6 +1116,45 @@ public final class OresEvalRootNode extends RootNode {
             void accept(SourceTask task, List<Object> values, Throwable failure);
         }
 
+        private record DirectArguments(
+                List<Object> values,
+                List<FixedProductCallPlan.InputSlot> inputs) {
+            private DirectArguments {
+                values = java.util.Collections.unmodifiableList(
+                        new ArrayList<>(values));
+                inputs = List.copyOf(inputs);
+                if (values.size() != inputs.size()) {
+                    throw new IllegalArgumentException(
+                            "direct product values/labels out of sync");
+                }
+            }
+
+            private List<Object> inAbiOrder(Ast.FunctionDecl function) {
+                if (inputs.stream().noneMatch(slot -> slot.label() != null)) {
+                    return values;
+                }
+                FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                        function.parameters().stream()
+                                .map(Ast.Param::name)
+                                .toList(),
+                        inputs);
+                ArrayList<Object> ordered =
+                        new ArrayList<>(values.size());
+                for (int source : plan.abiToSource()) {
+                    ordered.add(values.get(source));
+                }
+                return java.util.Collections.unmodifiableList(ordered);
+            }
+        }
+
+        @FunctionalInterface
+        private interface SourceDirectArgsCont {
+            void accept(
+                    SourceTask task,
+                    DirectArguments arguments,
+                    Throwable failure);
+        }
+
         @FunctionalInterface
         private interface SourceFlowCont {
             void accept(SourceTask task, SourceFlow flow);
@@ -2098,6 +2138,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 return false;
+            }
+            if (expr instanceof Ast.NamedArgExpr named) {
+                return expressionContainsPotentialSuspension(
+                        named.value(), seen);
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 return expressionContainsPotentialSuspension(trapped.expression(), seen);
@@ -4563,6 +4607,119 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private void evalSuspendableDirectArguments(
+                SourceTask task,
+                List<Ast.Expr> expressions,
+                Env env,
+                SourceDirectArgsCont continuation) {
+            evalSuspendableDirectArgumentAt(
+                    task,
+                    expressions,
+                    env,
+                    new ArrayList<>(),
+                    new ArrayList<>(),
+                    0,
+                    continuation);
+        }
+
+        private void evalSuspendableDirectArgumentAt(
+                SourceTask task,
+                List<Ast.Expr> expressions,
+                Env env,
+                ArrayList<Object> values,
+                ArrayList<FixedProductCallPlan.InputSlot> inputs,
+                int index,
+                SourceDirectArgsCont continuation) {
+            if (index >= expressions.size()) {
+                continuation.accept(
+                        task,
+                        new DirectArguments(values, inputs),
+                        null);
+                return;
+            }
+
+            Ast.Expr raw = expressions.get(index);
+            Ast.Expr expression;
+            String label = null;
+            boolean spread = false;
+            if (raw instanceof Ast.NamedArgExpr named) {
+                expression = named.value();
+                label = named.name();
+            } else if (raw instanceof Ast.SpreadExpr expanded) {
+                expression = expanded.expression();
+                spread = true;
+            } else {
+                expression = raw;
+            }
+            final String sourceLabel = label;
+            final boolean sourceSpread = spread;
+
+            evalSuspendableExpr(
+                    task,
+                    expression,
+                    env,
+                    (t, value, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(t, null, failure);
+                            return;
+                        }
+                        try {
+                            if (sourceLabel != null) {
+                                values.add(value);
+                                inputs.add(
+                                        FixedProductCallPlan.InputSlot.named(
+                                                sourceLabel));
+                            } else if (sourceSpread) {
+                                if (value instanceof ReadonlyRecordValue record) {
+                                    if (record.isEmpty()) {
+                                        throw new IllegalArgumentException(
+                                                "record argument spread requires a nonempty closed record");
+                                    }
+                                    for (Map.Entry<String, Object> field
+                                            : record.entrySet()) {
+                                        values.add(field.getValue());
+                                        inputs.add(
+                                                FixedProductCallPlan.InputSlot.named(
+                                                        field.getKey()));
+                                    }
+                                } else if (value instanceof MutableStructValue
+                                        || value instanceof Map<?, ?>) {
+                                    throw new IllegalArgumentException(
+                                            "record argument spread accepts readonly record values only; "
+                                                    + "structs and Maps are not named argument packs");
+                                } else {
+                                    for (Object item : expandArgumentSequence(
+                                            value,
+                                            "argument spread")) {
+                                        values.add(item);
+                                        inputs.add(
+                                                FixedProductCallPlan.InputSlot.positional());
+                                    }
+                                }
+                            } else {
+                                values.add(value);
+                                inputs.add(
+                                        FixedProductCallPlan.InputSlot.positional());
+                            }
+                        } catch (RuntimeException | Error expansionFailure) {
+                            continuation.accept(
+                                    t,
+                                    null,
+                                    expansionFailure);
+                            return;
+                        }
+
+                        evalSuspendableDirectArgumentAt(
+                                t,
+                                expressions,
+                                env,
+                                values,
+                                inputs,
+                                index + 1,
+                                continuation);
+                    });
+        }
+
         private void evalSuspendableArguments(
                 SourceTask task,
                 List<Ast.Expr> expressions,
@@ -5080,7 +5237,7 @@ public final class OresEvalRootNode extends RootNode {
                     && env.lookup(name.name()) == Env.MISSING
                     && hasFunctionFamily(name.name())) {
                 requireExplicitClassCallableImport(env, name.name());
-                evalSuspendableArguments(
+                evalSuspendableDirectArguments(
                         task,
                         call.arguments(),
                         env,
@@ -5091,15 +5248,19 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             try {
                                 Ast.FunctionDecl direct =
-                                        findFunction(name.name(), values.size());
+                                        findFunction(
+                                                name.name(),
+                                                values.values().size());
                                 if (direct == null) {
                                     throw new IllegalArgumentException(
                                             "no function " + name.name()
                                                     + " with expanded arity "
-                                                    + values.size());
+                                                    + values.values().size());
                                 }
                                 Invocation invocation =
-                                        functionInvocation(direct, values);
+                                        functionInvocation(
+                                                direct,
+                                                values.inAbiOrder(direct));
                                 completeSourceInvocation(
                                         t,
                                         invocation,
@@ -6964,18 +7125,21 @@ public final class OresEvalRootNode extends RootNode {
                     && env.lookup(directName.name()) == Env.MISSING
                     && hasFunctionFamily(directName.name())) {
                 requireExplicitClassCallableImport(env, directName.name());
-                // Fixed tuple spread changes effective arity. Evaluate each
-                // lexical argument once, expand it, then select the already
-                // type-checked overload by the effective runtime arity.
-                List<Object> args = evaluateArguments(call.arguments(), env);
+                // Evaluate every source argument exactly once in lexical
+                // order. Labels affect only the final source->ABI permutation.
+                DirectArguments args =
+                        evaluateDirectArguments(call.arguments(), env);
                 Ast.FunctionDecl direct =
-                        findFunction(directName.name(), args.size());
+                        findFunction(directName.name(), args.values().size());
                 if (direct == null) {
                     throw new IllegalArgumentException(
                             "no function " + directName.name()
-                                    + " with expanded arity " + args.size());
+                                    + " with expanded arity "
+                                    + args.values().size());
                 }
-                return functionInvocation(direct, args);
+                return functionInvocation(
+                        direct,
+                        args.inAbiOrder(direct));
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
@@ -7144,6 +7308,61 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not callable: " + callee);
             }
             return invokableInvocation(invokable, args);
+        }
+
+        private DirectArguments evaluateDirectArguments(
+                List<Ast.Expr> arguments,
+                Env env) {
+            ArrayList<Object> values = new ArrayList<>();
+            ArrayList<FixedProductCallPlan.InputSlot> inputs =
+                    new ArrayList<>();
+            for (Ast.Expr argument : arguments) {
+                if (argument instanceof Ast.NamedArgExpr named) {
+                    values.add(eval(named.value(), env));
+                    inputs.add(
+                            FixedProductCallPlan.InputSlot.named(
+                                    named.name()));
+                    continue;
+                }
+
+                if (argument instanceof Ast.SpreadExpr spread) {
+                    Object aggregate = eval(spread.expression(), env);
+                    if (aggregate instanceof ReadonlyRecordValue record) {
+                        if (record.isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "record argument spread requires a nonempty closed record");
+                        }
+                        for (Map.Entry<String, Object> field
+                                : record.entrySet()) {
+                            values.add(field.getValue());
+                            inputs.add(
+                                    FixedProductCallPlan.InputSlot.named(
+                                            field.getKey()));
+                        }
+                        continue;
+                    }
+                    if (aggregate instanceof MutableStructValue
+                            || aggregate instanceof Map<?, ?>) {
+                        throw new IllegalArgumentException(
+                                "record argument spread accepts readonly record values only; "
+                                        + "structs and Maps are not named argument packs");
+                    }
+                    List<Object> expanded =
+                            expandArgumentSequence(
+                                    aggregate,
+                                    "argument spread");
+                    for (Object value : expanded) {
+                        values.add(value);
+                        inputs.add(
+                                FixedProductCallPlan.InputSlot.positional());
+                    }
+                    continue;
+                }
+
+                values.add(eval(argument, env));
+                inputs.add(FixedProductCallPlan.InputSlot.positional());
+            }
+            return new DirectArguments(values, inputs);
         }
 
         private List<Object> evaluateArguments(List<Ast.Expr> arguments, Env env) {
@@ -7510,6 +7729,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
+            }
+            if (expr instanceof Ast.NamedArgExpr) {
+                throw new IllegalArgumentException(
+                        "named arguments are only valid on supported call surfaces");
             }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
                 if (runtime.operation().equals("spawn")) {
