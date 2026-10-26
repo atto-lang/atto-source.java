@@ -1575,7 +1575,7 @@ public final class OwnershipChecker {
             if (call.arguments().size() != 1
                     || !(call.callee() instanceof Ast.NameExpr)
                     || pipelinePlan.inputOwnership()
-                            != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM) {
+                            != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD) {
                 throw error("checked Future stage was rewritten after type checking");
             }
             ValueInfo upstream = checkExpr(call.arguments().getFirst(), scope, false);
