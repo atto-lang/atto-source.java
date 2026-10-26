@@ -45,14 +45,80 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+    public enum ExportScope { FILE, PACKAGE, PUBLIC }
+
+    public enum ExportKind {
+        MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE,
+        CONST, VAL, LET, SYMBOL
+    }
+
+    /** Exact source location of declaration metadata. */
+    public record SourceSpan(int line, int column) {
+        public SourceSpan {
+            if (line < 1 || column < 1) throw new IllegalArgumentException("source span must be one-based");
+        }
+    }
+
+    /**
+     * An unresolved local export item. Symbol literals retain the leading '#'
+     * in localName/externalName so nominal Symbol identity cannot collide with
+     * an ordinary identifier spelling.
+     */
+    public record ExportItem(
+            String localName,
+            String externalName,
+            boolean symbol,
+            boolean selfIdentity) {
+        public ExportItem {
+            java.util.Objects.requireNonNull(localName, "export local name");
+            java.util.Objects.requireNonNull(externalName, "export external name");
+            if (localName.isBlank() || externalName.isBlank()) {
+                throw new IllegalArgumentException("export names cannot be blank");
+            }
+            if (selfIdentity && (!symbol || !localName.equals(externalName))) {
+                throw new IllegalArgumentException("Symbol self-identity export must preserve exact identity");
+            }
+        }
+    }
+
+    /**
+     * Parsed export metadata is intentionally not a Decl: it creates no runtime
+     * initialization edge and does not participate in executable AST traversal.
+     */
+    public record ExportDecl(
+            ExportScope scope,
+            ExportKind kind,
+            List<ExportItem> items,
+            SourceSpan sourceSpan) {
+        public ExportDecl {
+            java.util.Objects.requireNonNull(scope, "export scope");
+            java.util.Objects.requireNonNull(sourceSpan, "export source span");
+            items = List.copyOf(items);
+            if (items.isEmpty()) throw new IllegalArgumentException("export declaration cannot be empty");
+        }
+    }
+
+    public record ModuleDecl(
+            String name,
+            List<Annotation> annotations,
+            List<TypeRef> contracts,
+            List<Decl> declarations,
+            List<ExportDecl> exports) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
+            exports = List.copyOf(exports);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
-        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+            this(name, annotations, contracts, declarations, List.of());
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, List.of(), List.of(), declarations, List.of());
+        }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, annotations, List.of(), declarations, List.of());
+        }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
@@ -534,23 +600,36 @@ public final class Ast {
         }
     }
 
+    public enum InterfaceFlavor { INTERFACE, TRAIT, CONTRACT }
+
     public record InterfaceDecl(
             String name,
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            InterfaceFlavor flavor) implements Decl {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
+            java.util.Objects.requireNonNull(flavor, "interface flavor");
+            if (moduleContract != (flavor == InterfaceFlavor.CONTRACT)) {
+                throw new IllegalArgumentException("moduleContract must agree with interface flavor");
+            }
+        }
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters,
+                             List<TypeRef> parents, List<InterfaceMember> members, boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members, moduleContract,
+                    moduleContract ? InterfaceFlavor.CONTRACT : InterfaceFlavor.INTERFACE);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
-            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
+            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false, InterfaceFlavor.INTERFACE);
         }
-        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters, List<TypeRef> parents, List<InterfaceMember> members) {
-            this(name, visibility, genericParameters, parents, members, false);
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters,
+                             List<TypeRef> parents, List<InterfaceMember> members) {
+            this(name, visibility, genericParameters, parents, members, false, InterfaceFlavor.INTERFACE);
         }
     }
 
