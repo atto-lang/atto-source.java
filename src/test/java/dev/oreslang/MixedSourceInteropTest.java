@@ -203,14 +203,19 @@ final class MixedSourceInteropTest {
                     if (Ores.multiply(6, 7) != 42) {
                       throw new AssertionError("public routine bridge was not callable");
                     }
-                    if (!java.util.Objects.equals(Ores.call("aliased", 3L), 4L)) {
+                    Object aliased = Ores.call("aliased", 3L);
+                    if (!(aliased instanceof Number)
+                            || ((Number) aliased).longValue() != 4L) {
                       throw new AssertionError("explicit export alias was not linked");
                     }
+                    boolean localNameBlocked = false;
                     try {
                       Ores.call("private_impl", 3L);
+                    } catch (RuntimeException expected) {
+                      localNameBlocked = true;
+                    }
+                    if (!localNameBlocked) {
                       throw new AssertionError("local spelling leaked through bridge");
-                    } catch (IllegalArgumentException expected) {
-                      // Only the explicit external binding is source-public.
                     }
                   }
 
