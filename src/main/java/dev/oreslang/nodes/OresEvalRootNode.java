@@ -5724,16 +5724,17 @@ public final class OresEvalRootNode extends RootNode {
                             "actor callables cannot expose generator activations across mailbox turns");
                 }
 
-                List<?> captured = fn.async()
+                boolean asynchronousGenerator = fn.async() || fn.suspends();
+                List<?> captured = asynchronousGenerator
                         ? detachAsyncArguments(normalized, fn.parameters())
                         : List.copyOf(normalized);
                 GeneratorRuntime.Producer<Object> producer = emitter -> {
-                    GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
+                    GeneratorRuntime.Emitter<Object> boundaryEmitter = asynchronousGenerator
                             ? value -> emitter.emit(detachAsyncValue(value, new IdentityHashMap<>()))
                             : emitter;
                     callGeneratorBodyRaw(fn, captured, boundaryEmitter);
                 };
-                return fn.async()
+                return asynchronousGenerator
                         ? GeneratorRuntime.asyncGenerator(context.asyncRuntime(), producer)
                         : GeneratorRuntime.generator(context.asyncRuntime(), producer);
             }
@@ -6055,7 +6056,7 @@ public final class OresEvalRootNode extends RootNode {
             GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
             Boolean previousAsync = activeGeneratorAsync.get();
             activeGeneratorEmitter.set(emitter);
-            activeGeneratorAsync.set(fn.async());
+            activeGeneratorAsync.set(fn.async() || fn.suspends());
             try {
                 executeBlock(fn.body(), env);
             } catch (ReturnSignal signal) {
@@ -6090,6 +6091,11 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != method.parameters().size()) {
                 throw new IllegalArgumentException(
                         "method " + method.name() + " arity mismatch");
+            }
+            if (method.generator()) {
+                throw new IllegalStateException(
+                        "instance generator methods require an iterator-owned receiver-lifetime witness; "
+                                + "the compiler must reject this activation before runtime dispatch");
             }
             if (method.async() || methodContainsPotentialSuspension(method)) {
                 OresFuture<Object> future =
@@ -8765,6 +8771,21 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "static function " + fn.name() + " arity mismatch");
             }
+            if (fn.generator()) {
+                boolean asynchronousGenerator = fn.async() || fn.suspends();
+                List<?> captured = asynchronousGenerator
+                        ? detachAsyncArguments(args, fn.parameters())
+                        : List.copyOf(args);
+                GeneratorRuntime.Producer<Object> producer = emitter -> {
+                    GeneratorRuntime.Emitter<Object> boundaryEmitter = asynchronousGenerator
+                            ? value -> emitter.emit(detachAsyncValue(value, new IdentityHashMap<>()))
+                            : emitter;
+                    callStaticGeneratorBodyRaw(fn, captured, boundaryEmitter, asynchronousGenerator);
+                };
+                return asynchronousGenerator
+                        ? GeneratorRuntime.asyncGenerator(context.asyncRuntime(), producer)
+                        : GeneratorRuntime.generator(context.asyncRuntime(), producer);
+            }
             if (fn.async() || methodContainsPotentialSuspension(fn)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(
@@ -8776,6 +8797,41 @@ public final class OresEvalRootNode extends RootNode {
                 return returnSourceTaskResult(future, fn.async());
             }
             return callStaticFunctionBodyRaw(fn, args);
+        }
+
+        private void callStaticGeneratorBodyRaw(
+                Ast.MethodDecl fn,
+                List<?> args,
+                GeneratorRuntime.Emitter<Object> emitter,
+                boolean asynchronousGenerator) {
+            Env env = new Env(null, false, declaringClass(fn));
+            bindCallableArguments(env, fn.parameters(), args, "static generator " + fn.name());
+
+            GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
+            Boolean previousAsync = activeGeneratorAsync.get();
+            activeGeneratorEmitter.set(emitter);
+            activeGeneratorAsync.set(asynchronousGenerator);
+            try {
+                executeBlock(fn.body(), env);
+            } catch (ReturnSignal signal) {
+                if (signal.value != null) {
+                    throw new IllegalStateException(
+                            "generator return cannot carry a value; use yield for sequence elements");
+                }
+            } catch (TailCallSignal signal) {
+                throw new IllegalStateException(
+                        "generator completion cannot be tail-call lowered; use a bare return to finish",
+                        signal);
+            } catch (BreakSignal | ContinueSignal signal) {
+                throw new IllegalStateException(
+                        "loop control cannot cross a static generator boundary",
+                        signal);
+            } finally {
+                if (previous == null) activeGeneratorEmitter.remove();
+                else activeGeneratorEmitter.set(previous);
+                if (previousAsync == null) activeGeneratorAsync.remove();
+                else activeGeneratorAsync.set(previousAsync);
+            }
         }
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
