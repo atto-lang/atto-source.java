@@ -1682,20 +1682,10 @@ public final class OwnershipChecker {
             if (fn != null) {
                 boolean optional =
                         fn.parameters().stream().anyMatch(Ast.Param::omittable);
-                if (optional && !fn.genericParameters().isEmpty()) {
-                    throw error("function " + fn.name()
-                            + " optional/default binding with generic parameters "
-                            + "is not enabled until ownership specialization consumes "
-                            + "the omission-aware plan");
-                }
-                if (!fn.genericParameters().isEmpty()
-                        && hasLabeledProductSyntax(call.arguments(), scope)) {
-                    throw error("function " + fn.name()
-                            + " named/record-spread binding with generic parameters "
-                            + "is not enabled until ownership specialization consumes "
-                            + "the same checked source-to-ABI plan");
-                }
-                CallSignature signature = optional
+                // Generic specialization is driven by the checked
+                // source-to-formal plan, not raw argument position.
+                CallSignature signature =
+                        optional && fn.genericParameters().isEmpty()
                         ? new CallSignature(fn.parameters(), fn.returnType())
                         : specializeCall(
                                 fn.genericParameters(),
@@ -4232,10 +4222,42 @@ public final class OwnershipChecker {
                 GenericCallArguments.bind(explicitGenericNames, call.typeArguments(), "generic call");
         bindings.putAll(bound.explicitTypes());
         fixed.addAll(bound.explicitTypes().keySet());
-        List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(call.arguments(), scope);
-        for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
-            inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
-                    Set.copyOf(allGenericNames), bindings, fixed);
+        List<Ast.TypeRef> actualTypes =
+                syntacticCallArgumentTypes(call.arguments(), scope);
+        List<FixedProductCallPlan.InputSlot> inputSlots =
+                callInputSlots(call.arguments(), scope, true, "generic call");
+        if (inputSlots.size() != actualTypes.size()) {
+            throw error("generic call expansion and source provenance disagree");
+        }
+
+        // Infer each generic from the formal selected by the same checked
+        // source-order plan consumed by the type checker and runtime.
+        // Omitted ABI slots have no source value and supply no inference.
+        List<Integer> sourceToFormal;
+        if (parameters.stream().anyMatch(Ast.Param::omittable)) {
+            OptionalCallPlan plan = OptionalCallPlan.bind(
+                    parameters.stream().map(Ast.Param::name).toList(),
+                    parameters.stream().map(Ast.Param::omittable).toList(),
+                    inputSlots);
+            sourceToFormal = plan.sourceOrder().stream()
+                    .map(OptionalCallPlan.BoundSlot::parameterIndex).toList();
+        } else {
+            if (parameters.size() != inputSlots.size()) {
+                throw error("generic call expanded argument arity mismatch");
+            }
+            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                    parameters.stream().map(Ast.Param::name).toList(),
+                    inputSlots);
+            sourceToFormal = plan.sourceOrder().stream()
+                    .map(FixedProductCallPlan.BoundSlot::parameterIndex).toList();
+        }
+        Set<String> genericNames = Set.copyOf(allGenericNames);
+        for (int sourceIndex = 0; sourceIndex < actualTypes.size(); sourceIndex++) {
+            int formalIndex = sourceToFormal.get(sourceIndex);
+            inferGenericBindings(
+                    parameters.get(formalIndex).type(),
+                    actualTypes.get(sourceIndex),
+                    genericNames, bindings, fixed);
         }
         GenericCallArguments.applyDefaults(
                 explicitGenericNames, genericSpecs, bindings, bound.inferenceHoles(),
