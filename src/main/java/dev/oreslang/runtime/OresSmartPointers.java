@@ -126,14 +126,19 @@ public final class OresSmartPointers {
         /** Explicit Arc clone. */
         public synchronized Arc<T> retain() {
             requireLiveHandle();
+            // Allocate the host handle before reserving ownership, so an OOME
+            // cannot strand a strong count without a corresponding Arc handle.
+            Arc<T> retained = new Arc<>(control, true);
             incrementAtomic(control.strong, "Arc<T> strong count");
-            return new Arc<>(control, true);
+            return retained;
         }
 
         public synchronized Weak<T> downgrade() {
             requireLiveHandle();
+            // A failed allocation must never strand a weak count.
+            Weak<T> weak = new Weak<>(control);
             incrementAtomic(control.weak, "Arc<T> weak count");
-            return new Weak<>(control);
+            return weak;
         }
 
         public synchronized long strongCount() {
@@ -188,15 +193,25 @@ public final class OresSmartPointers {
 
         public synchronized Optional<Arc<T>> upgrade() {
             requireLiveHandle();
+            long strong = control.strong.get();
+            if (strong == 0) return Optional.empty();
+            if (strong >= MAX_REFERENCE_COUNT) {
+                throw new IllegalStateException("Arc<T> strong count overflow");
+            }
+            // Construct both Arc and Optional before incrementing strong:
+            // failed host allocation cannot leak a strong count. Reuse this
+            // unpublished candidate across retries; CAS still decides whether
+            // an upgrade owns a reference, and 0 can never be resurrected.
+            Optional<Arc<T>> upgraded = Optional.of(new Arc<>(control, true));
             while (true) {
-                long strong = control.strong.get();
                 if (strong == 0) return Optional.empty();
                 if (strong >= MAX_REFERENCE_COUNT) {
                     throw new IllegalStateException("Arc<T> strong count overflow");
                 }
                 if (control.strong.compareAndSet(strong, strong + 1)) {
-                    return Optional.of(new Arc<>(control, true));
+                    return upgraded;
                 }
+                strong = control.strong.get();
             }
         }
 
