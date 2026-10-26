@@ -313,6 +313,8 @@ public final class ReturnCleanupChecker {
             expression(cast.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.SpreadExpr spread) {
             expression(spread.expression(), scope, inDefer, state);
+        } else if (expr instanceof Ast.NamedArgExpr named) {
+            expression(named.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.CallExpr call) {
             if (inDefer && call.callee() instanceof Ast.NameExpr name) {
                 Binding target = scope.resolve(name.name());
