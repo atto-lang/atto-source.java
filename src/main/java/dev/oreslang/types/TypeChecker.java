@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -151,6 +152,17 @@ public final class TypeChecker {
      * these rows, reject *before* annotation expansion or linked-type shape
      * projection could silently discard the metadata.
      */
+    private static void rejectPendingMacroInvocations(Ast.Program program) {
+        MacroExpansionPlanner.Plan plan = MacroExpansionPlanner.plan(program);
+        if (!plan.hasInvocations()) return;
+        MacroExpansionPlanner.WorkItem first = plan.workItems().getFirst();
+        throw new IllegalArgumentException(
+                "macro invocation '" + first.macro().name()
+                        + "' at " + first.site().line() + ":" + first.site().column()
+                        + " is bound as compile-time syntax, but the deterministic macro evaluator/expander "
+                        + "is not enabled on this compiler head; runtime fallback is forbidden");
+    }
+
     private static void rejectUnexpandedMacros(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
@@ -211,11 +223,13 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectPendingMacroInvocations(program);
         rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectPendingMacroInvocations(program);
         rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
@@ -258,6 +272,7 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectPendingMacroInvocations(program);
         rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
@@ -269,6 +284,7 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectPendingMacroInvocations(program);
         rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
