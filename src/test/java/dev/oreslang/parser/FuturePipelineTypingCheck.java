@@ -96,6 +96,42 @@ public final class FuturePipelineTypingCheck {
             throw new AssertionError("rewritten Future stage inherited stale lowering proof");
         }
 
+        Ast.Program asyncLifted = TypeChecker.check(Parser.parse("""
+                async fnc source(): int { return 21; }
+                async fnc delayed_identity(int value): int {
+                  rt cooperate;
+                  return value;
+                }
+                async fnc save(int value): int {
+                  return (await delayed_identity(value)) + 1;
+                }
+                fnc main(): void {
+                  val Future<int> pending = source() |> save();
+                  val int result = await pending;
+                  return;
+                }
+                """));
+        Ast.FunctionDecl asyncMain = (Ast.FunctionDecl)
+                asyncLifted.modules().getFirst().declarations().get(3);
+        Ast.CallExpr asyncPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) asyncMain.body().getFirst()).initializer();
+        if (!TypeChecker.CheckedPureFuturePipe.lookup(asyncPipe)
+                || !TypeChecker.CheckedPureFuturePipe.target(asyncPipe).async()) {
+            throw new AssertionError("checked async Future stage lost its lowering proof");
+        }
+
+        rejected("""
+                async fnc source(): int { return 21; }
+                async fnc save(int value): int {
+                  stdio.println(value);
+                  return value + 1;
+                }
+                fnc main(): void {
+                  val Future<int> pending = source() |> save();
+                  return;
+                }
+                """, "pure int -> int sync/async stage");
+
         rejected("""
                 async fnc source(): int { return 21; }
                 fnc save(int value, int extra): int { return value + extra; }
@@ -115,7 +151,7 @@ public final class FuturePipelineTypingCheck {
                   val Future<int> pending = source() |> save();
                   return;
                 }
-                """, "pure int -> int stage");
+                """, "pure int -> int sync/async stage");
 
         // Scalar call-shaped producers do not incur speculative Future
         // type checking or acquire a checked Future pipeline proof.
