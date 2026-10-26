@@ -70,10 +70,10 @@ public final class DiagnosticCollector {
         StringBuilder safe = new StringBuilder(Math.min(MAX_MESSAGE_CHARS, value.length()));
         for (int i = 0; i < value.length() && safe.length() < MAX_MESSAGE_CHARS; i++) {
             char ch = value.charAt(i);
-            if (Character.isISOControl(ch) || ch == '\\u202e' || ch == '\\u202d'
-                    || ch == '\\u202a' || ch == '\\u202b' || ch == '\\u202c'
-                    || ch == '\\u2066' || ch == '\\u2067'
-                    || ch == '\\u2068' || ch == '\\u2069') {
+            if (Character.isISOControl(ch) || ch == 0x202e || ch == 0x202d
+                    || ch == 0x202a || ch == 0x202b || ch == 0x202c
+                    || ch == 0x2066 || ch == 0x2067
+                    || ch == 0x2068 || ch == 0x2069) {
                 safe.append('?');
             } else {
                 safe.append(ch);
