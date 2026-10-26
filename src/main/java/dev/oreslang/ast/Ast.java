@@ -45,14 +45,82 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+    public enum ExportScope { PUBLIC, PACKAGE, FILE }
+
+    public enum ExportKind {
+        INFERRED,
+        MODULE,
+        ACTOR,
+        CLASS,
+        FUNCTION,
+        ROUTINE,
+        INTERFACE,
+        CONTRACT,
+        TRAIT,
+        STRUCT,
+        TYPE,
+        CONST,
+        VAL,
+        LET,
+        SYMBOL,
+        MODEL
+    }
+
+    /**
+     * One source-level export item. externalName is null for the ordinary
+     * unaliased spelling. Symbol self-identity is represented explicitly so
+     * '#ready as #ready' cannot be confused with a binding rename.
+     */
+    public record ExportItem(
+            String localName,
+            String externalName,
+            boolean symbolLiteral,
+            boolean symbolSelfIdentity) {
+        public ExportItem {
+            java.util.Objects.requireNonNull(localName, "export local name");
+            if (localName.isBlank()) throw new IllegalArgumentException("export local name cannot be blank");
+            if (symbolSelfIdentity && !symbolLiteral)
+                throw new IllegalArgumentException("only Symbol exports may use Symbol self identity");
+        }
+        public String effectiveExternalName() {
+            return externalName == null ? localName : externalName;
+        }
+    }
+
+    public record ExportDecl(ExportScope scope, ExportKind kind, List<ExportItem> items) {
+        public ExportDecl {
+            java.util.Objects.requireNonNull(scope, "export scope");
+            java.util.Objects.requireNonNull(kind, "export kind");
+            items = List.copyOf(items);
+            if (items.isEmpty()) throw new IllegalArgumentException("export declaration cannot be empty");
+        }
+    }
+
+    public record ModuleDecl(
+            String name,
+            List<Annotation> annotations,
+            List<TypeRef> contracts,
+            List<ExportDecl> exports,
+            List<String> explicitlyPrivateNames,
+            List<Decl> declarations) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
+            exports = List.copyOf(exports);
+            explicitlyPrivateNames = List.copyOf(explicitlyPrivateNames);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
-        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
+
+        /** Preserve the pre-export canonical constructor ABI. */
+        public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+            this(name, annotations, contracts, List.of(), List.of(), declarations);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, List.of(), List.of(), List.of(), List.of(), declarations);
+        }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, annotations, List.of(), List.of(), List.of(), declarations);
+        }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
