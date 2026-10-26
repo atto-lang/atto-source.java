@@ -9640,6 +9640,13 @@ public final class TypeChecker {
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
+                // Futures may settle after the lexical scope that created or
+                // awaited them. Never let a borrow hide inside a Future payload,
+                // including through nested records/containers/nominal fields.
+                if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            "Future<T> requires owned payload data; borrowed values cannot cross a future/suspension boundary");
+                }
                 // Future<void> is the canonical completion type for nb writech.
                 // OresFuture supports a null terminal payload, so void is valid here.
                 yield new Named("Future", List.of(element));
