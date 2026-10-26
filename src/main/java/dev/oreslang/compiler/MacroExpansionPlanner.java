@@ -269,38 +269,6 @@ public final class MacroExpansionPlanner {
         };
     }
 
-    /**
-     * Initial deterministic const subset. Name lookup, function calls and
-     * compiler intrinsics remain closed until the dedicated const evaluator
-     * proves them compile-time-only.
-     */
-    private boolean isClosedConstExpression(Ast.Expr expression) {
-        if (expression instanceof Ast.LiteralExpr) return true;
-        if (expression instanceof Ast.UnaryExpr unary) {
-            return isClosedConstExpression(unary.operand());
-        }
-        if (expression instanceof Ast.BinaryExpr binary) {
-            return isClosedConstExpression(binary.left())
-                    && isClosedConstExpression(binary.right());
-        }
-        if (expression instanceof Ast.ConditionalExpr conditional) {
-            return isClosedConstExpression(conditional.condition())
-                    && isClosedConstExpression(conditional.whenTrue())
-                    && isClosedConstExpression(conditional.whenFalse());
-        }
-        if (expression instanceof Ast.ListExpr list) {
-            return list.elements().stream().allMatch(this::isClosedConstExpression);
-        }
-        if (expression instanceof Ast.TupleExpr tuple) {
-            return tuple.elements().stream().allMatch(this::isClosedConstExpression);
-        }
-        if (expression instanceof Ast.ObjectExpr object) {
-            return object.fields().stream()
-                    .allMatch(field -> isClosedConstExpression(field.value()));
-        }
-        return false;
-    }
-
     private void scanMacroArguments(String module, List<Ast.MacroArgument> arguments) {
         // Syntax<K> is quoted compiler data: do not expand invocations inside
         // it until/unless a macro later splices that syntax into output.
