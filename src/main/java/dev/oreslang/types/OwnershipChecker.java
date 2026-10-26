@@ -972,6 +972,10 @@ public final class OwnershipChecker {
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
+        if (!storedType.isBorrow() && containsBorrowType(storedType)) {
+            throw error("owned binding '" + binding.name()
+                    + "' cannot retain a nested borrowed reference without explicit container lifetimes");
+        }
 
         ValueKind storedKind = binding.declaredType() == null ? value.kind : kindOfType(storedType);
         VarState state = new VarState(
@@ -1056,7 +1060,7 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.TrapExpr trapped) {
             ValueInfo value = checkExpr(trapped.expression(), scope, true);
-            if (isBorrowValue(value) || containsMutexGuardType(value.type))
+            if (isBorrowValue(value) || containsBorrowType(value.type) || containsMutexGuardType(value.type))
                 throw error("trap cannot package a borrow or MutexGuard without proven scoped lifetime");
             Ast.TypeRef option = new Ast.TypeRef("Option", List.of(value.type), false);
             return new ValueInfo(option, kindOfType(option), null);
@@ -1192,7 +1196,7 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
             }
-            if (isBorrowValue(assigned)) {
+            if (isBorrowValue(assigned) || containsBorrowType(assigned.type)) {
                 throw error("borrowed references cannot be assigned into longer-lived storage; create a fresh lexical borrow binding instead");
             }
             if (!directRebind) {
@@ -1344,9 +1348,17 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a constructed object");
                 }
+                if (isBorrowValue(info) || containsBorrowType(info.type)) {
+                    throw error("constructed objects cannot retain borrowed constructor arguments "
+                            + "without an explicit scoped lifetime");
+                }
                 argumentTypes.add(info.type);
             }
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
+            if (containsBorrowType(constructedType)) {
+                throw error("constructed object type cannot contain borrowed generic arguments "
+                        + "without an explicit scoped lifetime");
+            }
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TaskExpr task) {
@@ -1445,7 +1457,7 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
                 }
-                if (isBorrowValue(payload)) {
+                if (isBorrowValue(payload) || containsBorrowType(payload.type)) {
                     throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
                 }
                 if (channelOp.callback()) {
@@ -1505,7 +1517,7 @@ public final class OwnershipChecker {
             for (Ast.Expr item : list.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
-                if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
+                if (isBorrowValue(info) || containsBorrowType(info.type)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
                 elementType = elementType == null
                         ? info.type
                         : joinConditionalType(elementType, info.type);
@@ -1522,7 +1534,7 @@ public final class OwnershipChecker {
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
-                if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
+                if (isBorrowValue(info) || containsBorrowType(info.type)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
                 copy &= info.kind == ValueKind.COPY;
                 slots.add(info.type);
             }
@@ -1542,7 +1554,7 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
                 }
-                if (isBorrowValue(info)) {
+                if (isBorrowValue(info) || containsBorrowType(info.type)) {
                     throw error("borrowed references cannot be stored in an owned struct until explicit container lifetimes are supported");
                 }
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
@@ -1607,7 +1619,7 @@ public final class OwnershipChecker {
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
             ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
-            if (owned.type != null && owned.type.isBorrow()) {
+            if (isBorrowValue(owned) || containsBorrowType(owned.type)) {
                 throw error(factory.name()
                         + ".new requires an owned value; borrowed values cannot become mutex state");
             }
@@ -1624,8 +1636,7 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
             }
             ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
-            if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
-                    || (payload.type != null && payload.type.isBorrow())) {
+            if (isBorrowValue(payload) || containsBorrowType(payload.type)) {
                 throw error(name.name()
                         + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
             }
@@ -2571,6 +2582,10 @@ public final class OwnershipChecker {
         ValueInfo argument = checkExpr(arg, scope, true);
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
+        }
+        if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
+            throw error(callable + " argument " + position
+                    + " cannot consume a borrowed value as an owned parameter");
         }
     }
 

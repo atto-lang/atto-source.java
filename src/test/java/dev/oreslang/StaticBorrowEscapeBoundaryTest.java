@@ -103,6 +103,80 @@ final class StaticBorrowEscapeBoundaryTest {
                 """)));
     }
 
+
+    @Test
+    void nestedLoansCannotBecomeOwnedLocalBindings() {
+        rejects("""
+                fnc bad(Option<borrow int> borrowed): void {
+                  val alias = borrowed;
+                  return;
+                }
+                """, "cannot retain a nested borrowed reference");
+    }
+
+    @Test
+    void ownedCallsCannotConsumeNestedBorrowCapabilities() {
+        rejects("""
+                fnc consume(Option<borrow int> value): void { return; }
+                fnc bad(Option<borrow int> borrowed): void {
+                  consume(borrowed);
+                  return;
+                }
+                """, "cannot consume a borrowed value as an owned parameter");
+    }
+
+    @Test
+    void constructedObjectsCannotStoreBorrowedArguments() {
+        rejects("""
+                define class Box as
+                  pub val int number;
+                end
+                fnc bad(): void {
+                  let int original = 1;
+                  val box = new Box(rt borrow original);
+                  return;
+                }
+                """, "borrowed constructor arguments");
+    }
+
+    @Test
+    void constructedGenericInstancesCannotHideBorrowedTypeArguments() {
+        rejects("""
+                define class Box<T> as
+                  pub val T value;
+                end
+                fnc bad(): void {
+                  val box = new Box<borrow int>();
+                  return;
+                }
+                """, "cannot contain borrowed generic arguments");
+    }
+
+    @Test
+    void sumConstructorsCannotWrapNestedBorrowCapabilities() {
+        rejects("""
+                fnc bad(Option<borrow int> borrowed): void {
+                  Some(borrowed);
+                  return;
+                }
+                """, "cannot store a borrow in an owned sum value");
+    }
+
+    @Test
+    void ordinaryConstructorAndByValueCallsRemainAllowed() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                define class Box as
+                  pub val int value;
+                end
+                fnc consume(int value): void { return; }
+                fnc valid(): void {
+                  val box = new Box(7);
+                  consume(42);
+                  return;
+                }
+                """)));
+    }
+
     @Test
     void compilerEntrypointRejectsFreshLoanYieldBeforeExecution() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""

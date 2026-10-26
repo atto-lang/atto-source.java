@@ -26,14 +26,20 @@ memory reclamation and actor runtime synchronization remain distinct.
 - Suspension (`await`, `rt cooperate`, blocking channels/select and
   suspending call checks) treats transitive borrowed parameters as live loans,
   even if the top-level type looks owned.
+- Ordinary owned local bindings, by-value callable arguments, constructor
+  arguments/instantiations and sum constructors reject nested borrowed data
+  unless a lexical lifetime is explicitly modeled.
+- Owned list/tuple/struct initialization, assignment, trap wrapping and channel
+  writes also reject transitive loan-bearing values before lowering.
 
 All decisions are made over the AST's `TypeRef` tree by `OwnershipChecker`.
 No borrow state or counter is introduced in the guest runtime.
 
 ## Boundaries intentionally not certified by this change
 
-- Alias expansion and generic instantiation substituting borrowed type
-  arguments into otherwise-owned class fields.
+- Alias expansion and method/field generic substitution still require
+  whole-program proof; constructed generic types with explicit borrow
+  arguments now fail closed.
 - Flow-sensitive shared/exclusive loan proof across all advanced control-flow
   joins, callbacks, closures and imports.
 - Actual LLVM / WASM / .NET / JavaScript frontends and emitted-code inspection.
