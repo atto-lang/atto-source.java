@@ -2457,7 +2457,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.NameExpr name) {
             String resolvedModule =
-                    Ast.internalModuleReferenceTarget(name.name());
+                    dev.oreslang.compiler.MacroIdentifierHygiene.authorizedInternalModuleReferenceTarget(name);
             if (resolvedModule != null) {
                 Ast.ModuleDecl moduleNamespace = modules.get(resolvedModule);
                 if (moduleNamespace == null) {
