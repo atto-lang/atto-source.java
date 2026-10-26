@@ -150,6 +150,82 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void macroQualificationRespectsCompileTimeVisibility() {
+        Ast.Program privateProgram = Parser.parse("""
+                define module Producer as
+                    define macro secret(Type target) -> SyntaxList<Decl> {
+                        return generated(target);
+                    }
+                end
+
+                define module Consumer as
+                    Producer.secret!(type int);
+                end
+                """);
+
+        IllegalArgumentException privateFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpansionPlanner.plan(privateProgram));
+        assertTrue(privateFailure.getMessage().contains("private compile-time macro"),
+                privateFailure::toString);
+        assertTrue(privateFailure.getMessage().contains("visibility cannot be bypassed"),
+                privateFailure::toString);
+
+        Ast.Program publicProgram = Parser.parse("""
+                define module Producer as
+                    define pub macro exposed(Type target) -> SyntaxList<Decl> {
+                        return generated(target);
+                    }
+                end
+
+                define module Consumer as
+                    Producer.exposed!(type int);
+                end
+                """);
+        MacroExpansionPlanner.Plan plan = assertDoesNotThrow(
+                () -> MacroExpansionPlanner.plan(publicProgram));
+        assertEquals(1, plan.workItems().size());
+        assertEquals("exposed", plan.workItems().getFirst().macro().name());
+        assertEquals(Ast.Visibility.PUBLIC, plan.workItems().getFirst().macro().visibility());
+    }
+
+    @Test
+    void constMacroArgumentsMustMatchDeclaredCompileTimeType() {
+        Ast.Program wrongPrimitive = Parser.parse("""
+                define macro literal(Const<int> value) -> Syntax<Expr> {
+                    return generated(value);
+                }
+                fnc answer() -> int {
+                    return literal!(const "42");
+                }
+                """);
+
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpansionPlanner.plan(wrongPrimitive));
+        assertTrue(mismatch.getMessage().contains("Const<int>"), mismatch::toString);
+        assertTrue(mismatch.getMessage().contains("compile-time type String"), mismatch::toString);
+        assertTrue(mismatch.getMessage().contains("match their declared type exactly"), mismatch::toString);
+
+        Ast.Program unsupportedComposite = Parser.parse("""
+                define macro values(Const<List<int>> value) -> Syntax<Expr> {
+                    return generated(value);
+                }
+                fnc answer() -> int {
+                    return values!(const [1, 2, 3]);
+                }
+                """);
+
+        IllegalArgumentException unsupported = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpansionPlanner.plan(unsupportedComposite));
+        assertTrue(unsupported.getMessage().contains("cannot yet prove its compile-time type"),
+                unsupported::toString);
+        assertTrue(unsupported.getMessage().contains("runtime/type-check fallback is forbidden"),
+                unsupported::toString);
+    }
+
+    @Test
     void boundInvocationStillCannotFallBackToRuntimeExecution() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
