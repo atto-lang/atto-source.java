@@ -1417,13 +1417,13 @@ public final class TypeChecker {
                 && constructor.parameters().stream().anyMatch(Ast.Param::omittable)) {
             throw new IllegalArgumentException(
                     "omittable constructor parameters are parsed but remain fail-closed "
-                            + "until constructor call binding consumes OptionalCallPlan");
+                            + "until constructor call binding carries omission metadata through CheckedCallPlan");
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.parameters().stream().anyMatch(Ast.Param::omittable)) {
                 throw new IllegalArgumentException(
                         "omittable method/static-function parameters are parsed but remain fail-closed "
-                                + "until member dispatch consumes OptionalCallPlan: "
+                                + "until member dispatch carries omission metadata through CheckedCallPlan: "
                                 + klass.name() + "." + method.name());
             }
         }
