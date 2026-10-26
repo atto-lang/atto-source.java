@@ -652,7 +652,8 @@ public class TaskHandleTest {
             try {
                 assertThrows(IllegalArgumentException.class, () -> h.cancel(" "));
                 assertThrows(IllegalArgumentException.class, () -> h.cancel("x".repeat(257)));
-                assertFalse(h.isCancellationRequested());
+                assertTrue(h.isCancellationRequested(),
+                        "direct result cancellation revokes owned child authority");
             } finally {
                 release.countDown();
             }
