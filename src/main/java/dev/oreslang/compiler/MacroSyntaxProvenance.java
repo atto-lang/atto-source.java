@@ -25,17 +25,24 @@ public final class MacroSyntaxProvenance {
     }
 
     public record HygieneIdentity(
-            String module,
+            String callerModule,
+            String macroOwnerModule,
             String macroName,
             Ast.SourceSite invocationSite,
             int expansionOrdinal) {
         public HygieneIdentity {
-            if (module == null || module.isBlank()
+            if (callerModule == null || callerModule.isBlank()
+                    || macroOwnerModule == null || macroOwnerModule.isBlank()
                     || macroName == null || macroName.isBlank()
+                    || macroName.indexOf('.') >= 0
                     || invocationSite == null
                     || expansionOrdinal < 0) {
-                throw new IllegalArgumentException("invalid macro hygiene identity");
+                throw new IllegalArgumentException("invalid canonical macro hygiene identity");
             }
+        }
+
+        public String qualifiedMacroName() {
+            return macroOwnerModule + "." + macroName;
         }
     }
 
