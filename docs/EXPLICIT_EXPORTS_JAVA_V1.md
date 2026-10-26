@@ -78,3 +78,48 @@ Any such exposure requires a separate backend ABI contract.
 Focused JUnit parser/resolver tests are authored on the branch. Current source
 organization Actions can fail before runner assignment; a zero-step workflow is
 `NOT_EXECUTED`, not passing or failing compiler evidence.
+
+
+## Transform and optimizer preservation
+
+Export metadata is part of semantic AST state and must survive compiler rewrites.
+
+This branch preserves `exports` and explicit-private provenance through
+`AnnotationExpander` and the TreeShaker rewrite pass. In library mode,
+resolved public explicit exports are additional tree-shaker roots, so a
+default-private declaration exposed only by `export` cannot be pruned as
+unreachable.
+
+TreeShaker also preserves checked function/method effects, method suspension
+metadata, and actor concurrency metadata while rewriting declarations. Effect
+types participate in reachability because they are part of the source ABI.
+
+Compiler admission resolves exports both before type checking and again on the
+type-checked/annotation-expanded program. The second check prevents generated
+public members from introducing a narrower-type API leak after the initial
+export validation.
+
+## Cross-file linker boundary
+
+This reference slice does **not** yet make explicit exports available through
+cross-file imports.
+
+Current `ImportGraph`, linked class/contract metadata, and runtime imported
+value/callable lookup still admit declaration-site `pub` declarations. They
+therefore continue to reject a default-private declaration that is visible only
+through an explicit export.
+
+That is deliberate fail-closed behavior. The next linker slice must consume the
+resolved export-binding table end-to-end, including external aliases, instead of
+changing only import validation. In particular, all of these must move together:
+
+- import validation by external export name;
+- external-name -> local-symbol binding;
+- linked class/contract metadata;
+- runtime imported function/class/value lookup;
+- module-member lookup;
+- class construction authorization while retaining private-constructor rules;
+- incremental ABI digest invalidation for export aliases/binding changes.
+
+Until those are implemented together, cross-file explicit-export execution is
+not claimed.
