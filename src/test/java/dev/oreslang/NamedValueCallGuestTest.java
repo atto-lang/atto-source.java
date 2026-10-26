@@ -73,6 +73,25 @@ final class NamedValueCallGuestTest {
     }
 
     @Test
+    void genericInferenceDoesNotReorderNamedArgumentEffects() throws Exception {
+        assertEquals("IV42", run("""
+                fnc emit(string marker, int value): int {
+                  stdio.stdout.write(marker);
+                  return value;
+                }
+                fnc choose<T>(T value, int ignored): T {
+                  return value;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(choose(
+                      ignored: emit("I", 7),
+                      value: emit("V", 42)));
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void invalidNamesCollisionsAndOmissionsFailAtCompileTime() {
         for (String arguments : new String[]{
                 "left: 2, left: 3",
