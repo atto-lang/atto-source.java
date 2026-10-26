@@ -274,9 +274,11 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                             exported.failFromRuntime(conversionFailure);
                         }
                     });
-                } catch (RuntimeException rejected) {
-                    // A saturated/stopped executor must settle the exported
-                    // Future explicitly, never silently strand an await.
+                } catch (RuntimeException | Error rejected) {
+                    // Dispatch can fail with an Error as well as a rejection.
+                    // Runtime waiter callbacks deliberately swallow host
+                    // exceptions, so failing the exported Future here is
+                    // essential: otherwise guest await can remain pending.
                     exported.failFromRuntime(rejected);
                 }
             });
