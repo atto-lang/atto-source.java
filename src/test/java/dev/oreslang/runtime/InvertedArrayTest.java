@@ -303,8 +303,14 @@ final class InvertedArrayTest {
     @Test
     void bracketIndexTargetChecksBoundsAndPreservesLogicalIdentity() {
         try (var array = InvertedArray.fromClass(particle(), 0)) {
-            assertThrows(IndexOutOfBoundsException.class, () -> array.index(-1));
-            assertThrows(IndexOutOfBoundsException.class, () -> array.index(0));
+            assertThrows(IllegalArgumentException.class, () -> array.index(-1));
+            assertThrows(IllegalArgumentException.class, () -> array.index(0));
+            assertThrows(IllegalArgumentException.class,
+                    () -> array.index((long) Integer.MIN_VALUE - 1L));
+            assertThrows(IllegalArgumentException.class,
+                    () -> array.index((long) Integer.MAX_VALUE + 1L));
+            assertThrows(IllegalArgumentException.class, () -> array.index(Long.MIN_VALUE));
+            assertThrows(IllegalArgumentException.class, () -> array.index(Long.MAX_VALUE));
 
             var first = array.pushValues(10.0, 1.0, 0.0, 0.0, false);
             var second = array.pushValues(20.0, 2.0, 0.0, 0.0, false);
@@ -313,7 +319,7 @@ final class InvertedArrayTest {
             assertEquals(10.0, array.index(0).get("x"));
             assertEquals(20.0, array.index(1).get("x"));
             assertEquals(30.0, array.index(2).get("x"));
-            assertThrows(IndexOutOfBoundsException.class, () -> array.index(3));
+            assertThrows(IllegalArgumentException.class, () -> array.index(3));
 
             var savedSecond = array.index(1);
             array.reserve(64);
