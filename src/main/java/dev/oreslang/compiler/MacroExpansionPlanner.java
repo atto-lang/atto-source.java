@@ -2,9 +2,6 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,10 +19,17 @@ import java.util.Map;
 public final class MacroExpansionPlanner {
     public enum Context { DECLARATION, EXPRESSION }
 
-    public record HygieneMark(String value) {
+    public record HygieneMark(
+            String module,
+            String macroName,
+            int line,
+            int column,
+            int sourceOrdinal) {
         public HygieneMark {
-            if (value == null || value.isBlank()) {
-                throw new IllegalArgumentException("macro hygiene mark cannot be blank");
+            if (module == null || module.isBlank()
+                    || macroName == null || macroName.isBlank()
+                    || line < 1 || column < 1 || sourceOrdinal < 0) {
+                throw new IllegalArgumentException("invalid macro hygiene identity");
             }
         }
     }
@@ -538,20 +542,7 @@ public final class MacroExpansionPlanner {
             String name,
             Ast.SourceSite site,
             int sourceOrdinal) {
-        String input = "oreslang.macro.hygiene.v1\0"
-                + module + "\0" + name + "\0"
-                + site.line() + ":" + site.column() + "\0" + sourceOrdinal;
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(32);
-            for (int i = 0; i < 16; i++) {
-                hex.append(Character.forDigit((bytes[i] >>> 4) & 0xf, 16));
-                hex.append(Character.forDigit(bytes[i] & 0xf, 16));
-            }
-            return new HygieneMark(hex.toString());
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 unavailable", impossible);
-        }
+        return new HygieneMark(
+                module, name, site.line(), site.column(), sourceOrdinal);
     }
 }
