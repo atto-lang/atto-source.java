@@ -113,10 +113,8 @@ final class AutoTraitRulesTest {
         assertFalse(new AutoTraitRules.Capabilities(false, false, true).share());
         assertTrue(new AutoTraitRules.Capabilities(true, true, true).share());
 
-        for (var incomplete : new Set[]{Set.of(SHARE), Set.of(SEND, SHARE),
-                Set.of(SYNC, SHARE)}) {
-            @SuppressWarnings("unchecked")
-            Set<AutoTraitRules.AutoTrait> bounds = (Set<AutoTraitRules.AutoTrait>) incomplete;
+        for (var bounds : java.util.List.of(Set.of(SHARE), Set.of(SEND, SHARE),
+                Set.of(SYNC, SHARE))) {
             var caps = AutoTraitRules.infer(AutoTraitRules.TypeModel.dyn(bounds, true));
             assertFalse(caps.share(), "dyn Share must not imply Send or Sync");
         }
