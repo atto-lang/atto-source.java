@@ -9,6 +9,13 @@ Original historical head: `5911d5623d00a770ab11b104a2c18a39642d2852` (768 change
 - Bring back the original 11 test-method `TupleFixedArraySpreadTest` as an **additional regression oracle** at its exact historical Git blob `17e1b18d79ff78f20166394cec92e0eaede17aa0`; let the exact-head suite detect any now-invalid legacy spellings or semantic regressions.
 - Maintain the intended distinctions: positional heterogeneous tuples, uniform fixed-size arrays (union element for heterogeneity), statically safe spread to fixed arity, dynamic Array/List spread rejection, ownership transfer/evaluation exactly once.
 
+## Modern runtime oracle hardening (2026-10-25)
+
+- The original runtime test printed with legacy `stdio.println` inside a `define module app` wrapper and accepted *any* stdout containing `42` while separately counting occurrences of a marker. That could accept unrelated output and was not aligned with the current-main `ArgumentsTupleSpreadTest` fixture.
+- The new runtime test uses a top-level `pub routine main()`, `stdio.stdout.write`, an explicitly typed/ownership-checked program, and **exact stdout equality** to `pair-evaluated:42`. Extra diagnostics, duplicate evaluation, wrong answers, missing execution, and an unexpected trailing newline are rejected instead of silently tolerated.
+- Source-free local checks: 9/9 expected-output classifications; Java 21 syntax compilation of the isolated method against temporary test doubles plus 4/4 mock assertion classifications. **These are not actual Oreslang parser/guest/compiler execution, JUnit or full CI.** They only demonstrate the tighter test assertion and Java host syntax.
+- Remaining 10 historical test methods still need current-main syntax/typechecker adaptation and actual executed CI. Do not promote or merge this draft on the strength of local test-double checks.
+
 ## Review hold
 
 This reconciliation resolves the historical Git integration boundary without asserting that the old feature branch is independently correct or runnable today. The forwarded test class may require syntax/AST adaptation to match modern compiler contracts. Its presence is **not** a passed test. Run `TupleFixedArraySpreadTest`, `ArgumentsTupleSpreadTest`, parser/type/ownership/AOT and cross-backend fixtures before merge; reconcile any failures explicitly, without reverting #279.
