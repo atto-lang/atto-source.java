@@ -21,7 +21,16 @@ public record OptionalCallPlan(
         List<Integer> abiToSource,
         List<Boolean> omittable) {
 
-    public record BoundSlot(int sourceIndex, int parameterIndex, String label) { }
+    public record BoundSlot(
+            int sourceIndex,
+            int parameterIndex,
+            String label,
+            int callItemIndex,
+            int projectionIndex) {
+        public BoundSlot(int sourceIndex, int parameterIndex, String label) {
+            this(sourceIndex, parameterIndex, label, -1, -1);
+        }
+    }
 
     public OptionalCallPlan {
         sourceOrder = List.copyOf(sourceOrder);
@@ -37,6 +46,9 @@ public record OptionalCallPlan(
         boolean[] seenTarget = new boolean[abiToSource.size()];
         boolean namedStarted = false;
         Set<String> labels = new HashSet<>();
+        Boolean provenanceMode = null;
+        int previousCallItemIndex = -1;
+        int previousProjectionIndex = -1;
 
         for (int i = 0; i < sourceOrder.size(); i++) {
             BoundSlot slot = Objects.requireNonNull(sourceOrder.get(i), "bound slot");
@@ -64,6 +76,39 @@ public record OptionalCallPlan(
                     throw new IllegalArgumentException(
                             "duplicate or empty named argument in optional call plan");
                 }
+            }
+
+            boolean provenanced = slot.callItemIndex() >= 0;
+            if (slot.callItemIndex() < -1
+                    || slot.projectionIndex() < -1
+                    || (!provenanced && slot.projectionIndex() != -1)) {
+                throw new IllegalArgumentException(
+                        "invalid optional-call source provenance");
+            }
+            if (provenanceMode == null) {
+                provenanceMode = provenanced;
+            } else if (provenanceMode != provenanced) {
+                throw new IllegalArgumentException(
+                        "optional call plan cannot mix provenanced and unprovenanced inputs");
+            }
+            if (provenanced) {
+                if (slot.callItemIndex() < previousCallItemIndex) {
+                    throw new IllegalArgumentException(
+                            "optional call provenance reorders source call items");
+                }
+                if (slot.callItemIndex() == previousCallItemIndex) {
+                    if (slot.projectionIndex() < 0
+                            || previousProjectionIndex < 0
+                            || slot.projectionIndex() <= previousProjectionIndex) {
+                        throw new IllegalArgumentException(
+                                "optional call projection provenance is not strictly ordered");
+                    }
+                } else if (slot.projectionIndex() > 0) {
+                    throw new IllegalArgumentException(
+                            "optional call projection provenance must begin at projection 0");
+                }
+                previousCallItemIndex = slot.callItemIndex();
+                previousProjectionIndex = slot.projectionIndex();
             }
 
             seenSource[slot.sourceIndex()] = true;
@@ -159,7 +204,12 @@ public record OptionalCallPlan(
                                 + parameterNames.get(target) + "'");
             }
             abi[target] = sourceIndex;
-            source.add(new BoundSlot(sourceIndex, target, input.label()));
+            source.add(new BoundSlot(
+                    sourceIndex,
+                    target,
+                    input.label(),
+                    input.callItemIndex(),
+                    input.projectionIndex()));
         }
 
         for (int i = 0; i < parameterNames.size(); i++) {
