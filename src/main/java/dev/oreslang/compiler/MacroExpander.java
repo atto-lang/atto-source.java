@@ -398,10 +398,11 @@ public final class MacroExpander {
                 .filter(Ast.FunctionDecl.class::isInstance)
                 .map(Ast.FunctionDecl.class::cast)
                 .filter(function -> function.name().equals(identifier.name()))
+                .filter(function -> function.actorKind() == Ast.ActorKind.NONE)
                 .toList();
         if (matches.isEmpty()) {
             throw new IllegalArgumentException(
-                    "checked capture_fnc could not resolve module-level function '"
+                    "checked capture_fnc could not resolve ordinary module-level function '"
                             + identifier.name() + "' at call site "
                             + identifier.site().line() + ":" + identifier.site().column()
                             + " in module '" + callerModule + "'");
