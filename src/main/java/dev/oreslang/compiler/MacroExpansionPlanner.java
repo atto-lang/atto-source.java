@@ -228,7 +228,9 @@ public final class MacroExpansionPlanner {
         Ast.TypeRef expected = parameter.type().constType();
         CompileTimeConstEvaluator.Evaluation evaluated;
         try {
-            evaluated = CompileTimeConstEvaluator.evaluate(expression);
+            evaluated = expression instanceof Ast.ListExpr list && list.elements().isEmpty()
+                    ? CompileTimeConstEvaluator.evaluate(expression, expected)
+                    : CompileTimeConstEvaluator.evaluate(expression);
         } catch (CompileTimeConstEvaluator.Failure failure) {
             String detail = switch (failure.kind()) {
                 case RESOURCE -> "exceeds deterministic compile-time evaluation budgets: "
