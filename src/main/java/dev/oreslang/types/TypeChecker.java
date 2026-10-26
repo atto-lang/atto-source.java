@@ -645,7 +645,8 @@ public final class TypeChecker {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
+                        fn.genericParameters(), fn.parameters(), fn.returnType(),
+                        fn.async(), fn.suspends(), fn.generator(), Set.of(), null);
                 if (fn.trapped() && signature instanceof Function trappedSignature) {
                     signature = new Function(
                             trappedSignature.parameters(),
@@ -783,9 +784,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "async actor callables require mailbox continuation lowering; use an ordinary async fnc or a mailbox actor");
         }
-        if (fn.async() && !fn.genericParameters().isEmpty()) {
+        boolean asyncGeneratorProtocol = fn.generator() && (fn.async() || fn.suspends());
+        if ((fn.async() || asyncGeneratorProtocol) && !fn.genericParameters().isEmpty()) {
             throw new IllegalArgumentException(
-                    "generic async callables require an explicit task-safe/sendable generic bound, which is not available yet");
+                    "generic continuation-backed callables require an explicit task-safe/sendable generic bound, which is not available yet");
         }
 
         Set<String> generics = uniqueGenerics(
@@ -814,11 +816,11 @@ public final class TypeChecker {
                         false,
                         "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
             }
-            if (fn.async()) {
+            if (fn.async() || asyncGeneratorProtocol) {
                 validateAsyncBoundaryType(
                         parameterType,
                         false,
-                        "parameter '" + param.name() + "' of async callable '" + module + "." + fn.name() + "'");
+                        "parameter '" + param.name() + "' of continuation-backed callable '" + module + "." + fn.name() + "'");
             }
             env.define(
                     param.name(),
@@ -833,7 +835,7 @@ public final class TypeChecker {
         // element type and calls expose exactly one iterator wrapper.
         Type declaredReturn = resolve(fn.returnType(), generics, null);
         Type returns = fn.generator()
-                ? generatorYieldType(fn.async(), declaredReturn)
+                ? generatorYieldType(fn.async() || fn.suspends(), declaredReturn)
                 : declaredReturn;
         if (returns == Primitive.VOID && fn.generator()) {
             throw new IllegalArgumentException(
@@ -846,11 +848,11 @@ public final class TypeChecker {
                     true,
                     "return type of actor callable '" + module + "." + fn.name() + "'");
         }
-        if (fn.async()) {
+        if (fn.async() || asyncGeneratorProtocol) {
             validateAsyncBoundaryType(
                     returns,
                     true,
-                    (fn.generator() ? "yield type of async generator '" : "return type of async callable '")
+                    (fn.generator() ? "yield type of async/suspend generator '" : "return type of async callable '")
                             + module + "." + fn.name() + "'");
         }
 
@@ -859,7 +861,7 @@ public final class TypeChecker {
         boolean previousAsync = currentAsyncCallable;
         currentActorKind = fn.actorKind();
         currentGenerator = fn.generator();
-        currentAsyncCallable = fn.async();
+        currentAsyncCallable = fn.async() || asyncGeneratorProtocol;
         boolean previousMaySuspend = currentMaySuspend;
         currentMaySuspend = fn.async() || fn.suspends();
         try {
@@ -2947,7 +2949,7 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
-                    return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                    return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
@@ -2987,7 +2989,7 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
-                    return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                    return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
@@ -8351,6 +8353,7 @@ public final class TypeChecker {
                 fn.parameters(),
                 fn.returnType(),
                 fn.async(),
+                fn.suspends(),
                 fn.generator(),
                 generics,
                 self);
@@ -8385,12 +8388,32 @@ public final class TypeChecker {
         return declared;
     }
 
-    private Type callableResult(boolean async, boolean generator, Type result) {
+    private Type callableResult(boolean async, boolean suspends, boolean generator, Type result) {
         if (generator) {
-            Type element = generatorYieldType(async, result);
-            return new Named(async ? "AsyncIterator" : "Iterator", List.of(element));
+            boolean asyncProtocol = async || suspends;
+            Type element = generatorYieldType(asyncProtocol, result);
+            return new Named(asyncProtocol ? "AsyncIterator" : "Iterator", List.of(element));
         }
         return async ? new Named("Future", List.of(result)) : result;
+    }
+
+    private Type callableResult(boolean async, boolean generator, Type result) {
+        return callableResult(async, false, generator, result);
+    }
+
+    private Function functionType(
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            boolean suspends,
+            boolean generator,
+            Set<String> generics,
+            Type self) {
+        return new Function(
+                params.stream().map(p -> resolveParam(p, generics, self)).toList(),
+                params.stream().map(Ast.Param::mutable).toList(),
+                async,
+                callableResult(async, suspends, generator, resolve(returns, generics, self)));
     }
 
     private Function functionType(
@@ -8400,11 +8423,7 @@ public final class TypeChecker {
             boolean generator,
             Set<String> generics,
             Type self) {
-        return new Function(
-                params.stream().map(p -> resolveParam(p, generics, self)).toList(),
-                params.stream().map(Ast.Param::mutable).toList(),
-                async,
-                callableResult(async, generator, resolve(returns, generics, self)));
+        return functionType(params, returns, async, false, generator, generics, self);
     }
 
     private Function callableContractType(
@@ -8412,12 +8431,13 @@ public final class TypeChecker {
             List<Ast.Param> params,
             Ast.TypeRef returns,
             boolean async,
+            boolean suspends,
             boolean generator,
             Set<String> ownerGenerics,
             Type self) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
-        Function raw = functionType(params, returns, async, generator, all, self);
+        Function raw = functionType(params, returns, async, suspends, generator, all, self);
         // Contract comparison must preserve the fact that a slot is
         // receiver-polymorphic without baking in the declaring class. Parent,
         // child, and interface declarations of (...): self therefore compare
@@ -8432,6 +8452,18 @@ public final class TypeChecker {
             canonical.put(callableGenerics.get(i), new Generic("$callable" + i));
         }
         return (Function) substituteGenerics(raw, canonical);
+    }
+
+    private Function callableContractType(
+            List<String> callableGenerics,
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            boolean generator,
+            Set<String> ownerGenerics,
+            Type self) {
+        return callableContractType(
+                callableGenerics, params, returns, async, false, generator, ownerGenerics, self);
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
