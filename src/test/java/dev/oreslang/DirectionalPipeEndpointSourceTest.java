@@ -77,6 +77,14 @@ final class DirectionalPipeEndpointSourceTest {
                 """);
         assertTrue(missingOutput.getMessage().contains("public stable property 'output"),
                 missingOutput::toString);
+
+        IllegalArgumentException rebindable = rejects("""
+                define class RebindableSource implements HasOutputChannel<int> as
+                    pub let ReadChannel<int> output;
+                end
+                """);
+        assertTrue(rebindable.getMessage().contains("stable val/const slot"),
+                rebindable::toString);
     }
 
     @Test
