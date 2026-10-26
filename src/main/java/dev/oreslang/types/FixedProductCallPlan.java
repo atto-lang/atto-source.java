@@ -193,6 +193,16 @@ public record FixedProductCallPlan(
     public static FixedProductCallPlan bind(
             List<String> parameterNames,
             List<InputSlot> inputs) {
+        Objects.requireNonNull(parameterNames, "parameterNames");
+        Objects.requireNonNull(inputs, "inputs");
+        // Required fixed calls have an exact arity contract. Keep this
+        // diagnostic stable when delegating to the omission-aware binder.
+        // The canonical binder must still enforce all label/provenance rules.
+        if (parameterNames.size() != inputs.size()) {
+            throw new IllegalArgumentException(
+                    "fixed product call arity mismatch: expected "
+                            + parameterNames.size() + ", got " + inputs.size());
+        }
         CheckedCallPlan checked =
                 CheckedCallPlan.required(
                         parameterNames,
