@@ -14,6 +14,7 @@ import java.util.Optional;
  */
 public final class WebSocketSessionState {
     public static final int CLOSE_TRY_AGAIN_LATER = 1013;
+    public static final int MAX_USER_QUEUE_CAPACITY = 65_536;
 
     public enum State {
         OPEN, CLOSING, CLOSED
@@ -57,8 +58,10 @@ public final class WebSocketSessionState {
     private boolean closeReceived;
 
     public WebSocketSessionState(int userCapacity, int maxMessageBytes) {
-        if (userCapacity < 1) {
-            throw new IllegalArgumentException("WebSocket USER queue capacity must be positive");
+        if (userCapacity < 1 || userCapacity > MAX_USER_QUEUE_CAPACITY) {
+            throw new IllegalArgumentException(
+                    "WebSocket USER queue capacity must be in 1.."
+                            + MAX_USER_QUEUE_CAPACITY);
         }
         this.userCapacity = userCapacity;
         this.userMessages = new ArrayDeque<>(userCapacity);
@@ -151,6 +154,10 @@ public final class WebSocketSessionState {
         payload[0] = (byte) (code >>> 8);
         payload[1] = (byte) code;
         System.arraycopy(reasonBytes, 0, payload, 2, reasonBytes.length);
+        // Reuse the codec's protocol-intrinsic close validation so locally
+        // generated control frames cannot emit reserved status codes.
+        new WebSocketFrameCodec.Frame(
+                true, WebSocketFrameCodec.OPCODE_CLOSE, payload);
         return payload;
     }
 }
