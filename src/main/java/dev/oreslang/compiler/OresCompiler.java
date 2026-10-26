@@ -48,6 +48,14 @@ public final class OresCompiler {
     }
 
     /**
+     * Collect deterministic source-level export metadata after full front-end
+     * admission. This metadata is not a native/JVM host export table.
+     */
+    public static java.util.List<ExportMetadataCollector.Entry> collectExportMetadata(String source) {
+        return ExportMetadataCollector.collect(parseAndTypeCheck(source));
+    }
+
+    /**
      * Opt-in RT primitive subset: perform the full existing type/ownership check
      * before admitting any source-level resource bounds or lowering to Java 8.
      * This is not a verified no-heap runtime or WCET proof. Consumers must run
