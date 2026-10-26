@@ -435,9 +435,15 @@ Oreslang does **not** interpret `name = value` inside a call as a named argument
 Named call arguments use `name: value`, preserve lexical evaluation order, and
 are rebound to declaration-order parameter slots only after their values have
 been evaluated. A positional or spread argument may not follow the first named
-argument. The initial executable Java/Graal surface is direct source functions;
-method, imported, callable-value, and qualified-module named calls remain
-fail-closed until those dispatch paths consume the same checked binding plan.
+argument. The executable Java/Graal fixed-call surface includes non-generic
+direct source functions, instance methods, static class functions, and explicit
+non-generic guest constructors. Each uses the same checked source-to-ABI plan
+for named values, statically known tuple spread, and the currently admitted
+direct closed readonly Copy-only record-literal spread. Generic labeled calls,
+interface dispatch, imported/qualified-module calls, function-valued fields,
+dynamic callable values, synthesized field constructors, and actor spawn remain
+fail-closed until those dispatch paths consume the same checked binding and
+ownership proof. Maps are never implicit named argument packs.
 
 ### Option-valued vs omittable parameters
 
