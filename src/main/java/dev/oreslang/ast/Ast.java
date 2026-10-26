@@ -79,10 +79,55 @@ public final class Ast {
             MacroParamKind kind,
             TypeRef constType,
             MacroSyntaxKind syntaxKind) {
+        private static final int MAX_CONST_VALUE_TYPE_NODES = 512;
+        private static final int MAX_CONST_VALUE_TYPE_DEPTH = 64;
+        private static final java.util.Set<String> COMPILER_META_TYPE_NAMES =
+                java.util.Set.of("Type", "Const", "Identifier", "Syntax", "SyntaxList");
+
+        private record ConstValueTypeNode(TypeRef type, int depth) { }
+
+        private static void validateConstValueType(TypeRef root) {
+            java.util.ArrayDeque<ConstValueTypeNode> pending = new java.util.ArrayDeque<>();
+            pending.push(new ConstValueTypeNode(root, 0));
+            int visited = 0;
+            while (!pending.isEmpty()) {
+                ConstValueTypeNode node = pending.pop();
+                TypeRef type = node.type();
+                if (++visited > MAX_CONST_VALUE_TYPE_NODES
+                        || node.depth() > MAX_CONST_VALUE_TYPE_DEPTH) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type exceeds bounded compiler meta-type validation budget");
+                }
+                if (type.inferArguments()) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type must be closed and cannot contain inferred generic arguments");
+                }
+                if (type.isBorrow()) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type cannot contain a runtime borrow capability");
+                }
+                if (COMPILER_META_TYPE_NAMES.contains(type.name())) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type must be an ordinary compile-time-serializable type, "
+                                    + "not compiler-only macro meta type '" + type.name() + "'");
+                }
+                int children = type.arguments().size();
+                if ((long) visited + pending.size() + children > MAX_CONST_VALUE_TYPE_NODES) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type exceeds bounded compiler meta-type validation budget");
+                }
+                for (int i = children - 1; i >= 0; i--) {
+                    pending.push(new ConstValueTypeNode(
+                            type.arguments().get(i), node.depth() + 1));
+                }
+            }
+        }
+
         public MacroParamType {
             java.util.Objects.requireNonNull(kind, "macro parameter kind");
             if (kind == MacroParamKind.CONST) {
                 java.util.Objects.requireNonNull(constType, "Const<T> macro parameter type");
+                validateConstValueType(constType);
                 if (syntaxKind != null) {
                     throw new IllegalArgumentException("Const<T> macro parameter cannot carry a syntax kind");
                 }
