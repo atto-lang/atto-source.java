@@ -110,6 +110,10 @@ final class InvertedOneLevelLayoutTest {
         assertEquals(2, schema.fieldCount());
         assertEquals(16, schema.fields().get(0).recordLayout().bytes());
         assertThrows(IllegalArgumentException.class, () -> InvertedArray.Schema.fromClass(source));
+        assertThrows(IllegalArgumentException.class, () -> InvertedArray.Schema.fromClass(
+                source, Map.of("Position", Ast.TypeRef.structType(
+                        Map.of("x", Ast.TypeRef.simple("f64"), "y", Ast.TypeRef.simple("f64"))))),
+                "modern mutable struct metadata must stay fail-closed until a checked mutable aggregate ABI exists");
         try (var array = InvertedArray.fromClass(source, 1, Map.of("Position", point))) {
             var h = array.pushValues(Map.of("x", 0.0, "y", 3.0), 1);
             assertEquals(Map.of("x", 0.0, "y", 3.0), array.row(h).get("position"));
