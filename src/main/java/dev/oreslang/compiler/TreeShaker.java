@@ -548,7 +548,8 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     declarations.add(rewriteDeclaration(module.name(), declaration));
                 }
-                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
+                modules.add(new Ast.ModuleDecl(
+                        module.name(), module.annotations(), module.contracts(), declarations, module.exports()));
             }
             return new Ast.Program(program.namespace(), program.imports(), modules);
         }
@@ -1066,6 +1067,22 @@ public final class TreeShaker {
                 for (Symbol symbol : symbols.values()) {
                     if (isPublicApi(symbol.declaration())) markRoot(symbol.id());
                 }
+                // Explicit public exports are API roots even when the local
+                // declaration is default-private. Aliases never create a
+                // second executable symbol; they retain the local target.
+                for (Ast.ModuleDecl module : rewritten.modules()) {
+                    for (Ast.ExportDecl export : module.exports()) {
+                        if (export.scope() != Ast.ExportScope.PUBLIC) continue;
+                        for (Ast.ExportItem item : export.items()) {
+                            if (export.kind() == Ast.ExportKind.MODULE
+                                    && module.name().equals(Parser.ROOT_MODULE)) {
+                                markRuntimeModuleMembers(item.localName());
+                            } else if (!item.symbol()) {
+                                markRoot(qualify(module.name(), item.localName()));
+                            }
+                        }
+                    }
+                }
             }
 
             for (String requested : options.entryPoints()) {
@@ -1490,7 +1507,9 @@ public final class TreeShaker {
                     }
                 }
                 if (!declarations.isEmpty()) {
-                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
+                    modules.add(new Ast.ModuleDecl(
+                            module.name(), module.annotations(), module.contracts(), declarations,
+                            retainedExports(module, declarations)));
                 }
             }
 
@@ -1499,6 +1518,37 @@ public final class TreeShaker {
                 if (importIsUsed(imported)) imports.add(imported);
             }
             return new Ast.Program(program.namespace(), imports, modules);
+        }
+
+
+        private List<Ast.ExportDecl> retainedExports(
+                Ast.ModuleDecl module,
+                List<Ast.Decl> declarations) {
+            Set<String> retainedNames = new LinkedHashSet<>();
+            for (Ast.Decl declaration : declarations) {
+                String name = declarationName(declaration);
+                if (name != null) retainedNames.add(name);
+            }
+
+            List<Ast.ExportDecl> exports = new ArrayList<>();
+            for (Ast.ExportDecl export : module.exports()) {
+                List<Ast.ExportItem> items = new ArrayList<>();
+                for (Ast.ExportItem item : export.items()) {
+                    if (item.symbol() || retainedNames.contains(item.localName())) {
+                        items.add(item);
+                        continue;
+                    }
+                    if (export.kind() == Ast.ExportKind.MODULE
+                            && module.name().equals(Parser.ROOT_MODULE)
+                            && rewritten.modules().stream().anyMatch(m -> m.name().equals(item.localName()))) {
+                        items.add(item);
+                    }
+                }
+                if (!items.isEmpty()) {
+                    exports.add(new Ast.ExportDecl(export.scope(), export.kind(), items, export.sourceSpan()));
+                }
+            }
+            return List.copyOf(exports);
         }
 
         private boolean importIsUsed(Ast.ImportDecl imported) {
