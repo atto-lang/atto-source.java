@@ -113,7 +113,7 @@ public final class MacroExpander {
     private IllegalArgumentException unsupported(String name, String detail) {
         return new IllegalArgumentException(
                 "define macro '" + name + "' is compile-time-only, but " + detail
-                        + "; runtime/JIT/source-string fallback is forbidden");
+                        + "; runtime fallback is forbidden; JIT/source-string fallback is forbidden");
     }
 
     private Ast.MacroDecl resolve(String module, String name) {
