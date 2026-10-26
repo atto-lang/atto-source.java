@@ -164,9 +164,9 @@ public final class Ast {
             if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
                 throw new IllegalArgumentException("invalid macro parameter name");
             }
-            if (name.equals("quote") || name.equals("unquote")) {
+            if (java.util.Set.of("quote", "unquote", "hygienic", "capture_fnc").contains(name)) {
                 throw new IllegalArgumentException(
-                        "'" + name + "' is reserved for compile-time macro quotation");
+                        "'" + name + "' is reserved for a compile-time macro intrinsic");
             }
         }
     }
@@ -251,7 +251,8 @@ public final class Ast {
      */
     public record MacroIdentifierArgument(String name, SourceSite site) implements MacroArgument {
         public MacroIdentifierArgument {
-            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")
+                    || name.length() > 1024) {
                 throw new IllegalArgumentException("invalid macro identifier argument");
             }
             java.util.Objects.requireNonNull(site, "macro identifier call site");
