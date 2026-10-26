@@ -1112,6 +1112,14 @@ public final class MacroExpander {
             return new Ast.RuntimeCallExpr(e.operation(), arguments);
         }
         if (expression instanceof Ast.MemberExpr e) {
+            MacroIdentifierHygiene.Identity identity =
+                    MacroIdentifierHygiene.lookup(e);
+            if (identity instanceof MacroIdentifierHygiene.CapturedFunction) {
+                // Checked capture is already a fully lowered, authority-bound
+                // module/function reference. Rebuilding either the MemberExpr
+                // or its receiver would discard identity-bound admission.
+                return e;
+            }
             return new Ast.MemberExpr(
                     rewriteExpression(module, e.receiver(), depth), e.member());
         }
