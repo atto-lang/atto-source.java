@@ -1725,7 +1725,7 @@ public final class ActorRuntime implements AutoCloseable {
         // is still suspended.
         UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
         try {
-        synchronized (cell.lifecycleLock) {
+            synchronized (cell.lifecycleLock) {
             // Unlike the physical-cohort count, this remains charged while a
             // terminal Future subscriber is blocked AFTER guest quiescence.
             if (cell.activeUntrustedTimedAdmissions >=
@@ -1764,9 +1764,9 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new RejectedExecutionException(
                         "untrusted actor logical source-task cohort is full");
             }
-            cell.activeUntrustedSourceTaskCount++;
-            cell.activeUntrustedTimedAdmissions++;
-        }
+                cell.activeUntrustedSourceTaskCount++;
+                cell.activeUntrustedTimedAdmissions++;
+            }
         } catch (RuntimeException | Error admissionFailure) {
             // Quota admission failed before a scheduler child existed.
             releaseActorTaskLease.run();
@@ -1816,26 +1816,43 @@ public final class ActorRuntime implements AutoCloseable {
         };
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
-                UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
-                CURRENT_UNTRUSTED_QUOTA.set(quota);
-                boolean entered = false;
-                try {
-                    quota.enter();
-                    entered = true;
-                    quota.check();
-                    OresScheduler.Step<T> result = task.resume(resume);
-                    quota.check();
-                    return result;
-                } finally {
-                    try {
-                        if (entered) quota.leave();
-                    } finally {
-                        if (previous == null) CURRENT_UNTRUSTED_QUOTA.remove();
-                        else CURRENT_UNTRUSTED_QUOTA.set(previous);
-                    }
-                }
-            }, retireOnce, quota.remainingWallNanos(),
+            future = cell.sourceScheduler().startWithWallDeadline(
+                    new OresScheduler.Task<T>() {
+                        @Override
+                        public OresScheduler.Step<T> resume(
+                                OresScheduler.Resume resume) throws Exception {
+                            UntrustedLogicalQuota previous =
+                                    CURRENT_UNTRUSTED_QUOTA.get();
+                            CURRENT_UNTRUSTED_QUOTA.set(quota);
+                            boolean entered = false;
+                            try {
+                                quota.enter();
+                                entered = true;
+                                quota.check();
+                                OresScheduler.Step<T> result = task.resume(resume);
+                                quota.check();
+                                return result;
+                            } finally {
+                                try {
+                                    if (entered) quota.leave();
+                                } finally {
+                                    if (previous == null) {
+                                        CURRENT_UNTRUSTED_QUOTA.remove();
+                                    } else {
+                                        CURRENT_UNTRUSTED_QUOTA.set(previous);
+                                    }
+                                }
+                            }
+                        }
+
+                        @Override
+                        public void afterCarrierQuiescent(Runnable retire) {
+                            // Preserve SourceTask/TaskScope descendant barriers
+                            // through the untrusted quota wrapper.
+                            task.afterCarrierQuiescent(retire);
+                        }
+                    },
+                    retireOnce, quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
