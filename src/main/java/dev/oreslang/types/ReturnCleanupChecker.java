@@ -82,6 +82,10 @@ public final class ReturnCleanupChecker {
         for (Ast.Param param : params) scope.define(param.name());
         State state = new State();
         statements(statements, scope, false, false, true, state);
+        validatePendingReturns(state);
+    }
+
+    private static void validatePendingReturns(State state) {
         // Deferred callbacks are invoked on scope exit, not when registered.
         // Earlier static scans cannot authorize a later-replaced closure.
         for (Binding callback : state.deferredLocalCallbacks) {
@@ -311,10 +315,22 @@ public final class ReturnCleanupChecker {
                 Scope armScope = new Scope(scope);
                 bindPattern(arm.pattern(), armScope);
                 expression(arm.guard(), armScope, inDefer, state);
-                // The terminal return is ARM_RESULT, so it does not escape an
-                // enclosing finally. Still track it as this arm's pending
-                // result so defer-rebind checks remain exact.
-                statements(arm.body(), armScope, false, inDefer, true, state);
+
+                // ARM_RESULT has its own cleanup boundary. Do not add its
+                // returned binding to the enclosing callable's FUNCTION_RETURN
+                // ledger: an outer defer runs only after this match has already
+                // published its result.
+                State armState = new State();
+                statements(arm.body(), armScope, false, inDefer, true, armState);
+                validatePendingReturns(armState);
+
+                // If the entire MatchExpr itself executes from an enclosing
+                // defer, mutations performed by the selected arm are still
+                // deferred mutations of the enclosing callable and must remain
+                // visible to its pending FUNCTION_RETURN check.
+                if (inDefer) {
+                    state.reboundInDefer.addAll(armState.reboundInDefer);
+                }
             }
         } else if (expr instanceof Ast.TypeTestExpr test) {
             expression(test.value(), scope, inDefer, state);
