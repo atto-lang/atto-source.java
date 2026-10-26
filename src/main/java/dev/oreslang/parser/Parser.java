@@ -4617,6 +4617,9 @@ public final class Parser {
         if (expression instanceof Ast.SpreadExpr spread) {
             return containsExpressionBodyLambda(spread.expression());
         }
+        if (expression instanceof Ast.NamedValueArgumentExpr named) {
+            return containsExpressionBodyLambda(named.expression());
+        }
         if (expression instanceof Ast.CallExpr call) {
             if (containsExpressionBodyLambda(call.callee())) return true;
             return call.arguments().stream().anyMatch(this::containsExpressionBodyLambda);
