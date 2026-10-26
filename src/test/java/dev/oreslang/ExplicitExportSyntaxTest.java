@@ -347,6 +347,19 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void exportedConstMetadataFailsClosedUntilCompileTimeValueEncodingIsCanonical() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.collectExportMetadata(Parser.parse("""
+                        export const answer;
+                        const int answer = 42;
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("EXPORT_CONST_ABI_VALUE_UNENCODED"),
+                failure.getMessage());
+    }
+
+    @Test
     void inlinePubAndUnaliasedExplicitExportHaveEquivalentSourceSignatureDigest() {
         String explicit = OresCompiler.collectExportMetadata(Parser.parse("""
                 export fnc api;
