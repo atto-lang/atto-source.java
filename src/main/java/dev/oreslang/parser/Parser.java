@@ -367,6 +367,13 @@ public final class Parser {
         } else {
             if (kind == Ast.ExportKind.SYMBOL) {
                 if (check(IDENT)) {
+                    if (current + 2 < tokens.size()
+                            && tokens.get(current + 1).type() == AS
+                            && tokens.get(current + 2).type() == SYMBOL_LITERAL) {
+                        throw error(peek(),
+                                "[EXPORT_SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE] "
+                                        + "a Symbol identity target requires a #symbol source");
+                    }
                     throw error(peek(),
                             "[EXPORT_SYMBOL_LITERAL_REQUIRED] Symbol exports name nominal #symbol identities");
                 }
