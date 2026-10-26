@@ -64,3 +64,17 @@ Normative contract: [common-source HOT_UPGRADE_ERLANG_PITFALLS_V1](https://githu
 - A V1 streaming request/callback may remain pinned while V2 and V3 handle new admissions. The existence of a later generation never invalidates an already admitted request.
 - At the implementation boundary, host code must not mix old middleware, response framing, callback code, source actor method dispatch or dependency ABI with newer code halfway through an existing request.
 - Legacy `ActorUpgradeEpochGate` and `ActorRoutePublicationV1` must remain the only supervisory route/code authorities; this HTTP diagnostic ledger must not become a second code-loader/publisher.
+
+## Bounded image retention governor (draft host-only)
+
+`HotCodeGenerationRetentionV1` now provides a supervisor-only **admission budget** for code images, separate from the authoritative route publisher. Each staged, serving, draining or quarantined image consumes one generation slot and its reserved byte charge. A new candidate is rejected atomically if it exceeds either configured bound. The oldest image is **never purged** just to create capacity for a third deployment.
+
+- `reserve(generation, digest, bytes)` admits only canonical code identities and positive size reservations. A failed attempt changes no budget counters. Byte-cap arithmetic avoids signed overflow.
+- `activated(ticket)` and `draining(ticket)` are bookkeeping **after** the real supervisor publication boundary. They do not move HTTP routes, change actor state, or authorize image loading.
+- `quarantine(ticket)` does **not** refund capacity. Staged failures likewise keep their reservation until the trusted loader has actually cleaned its resources.
+- `acknowledgePhysicalCleanup(ticket, http, loaderConfirmed)` refuses unconfirmed cleanup, serving images, stale/foreign tickets and still-active or mismatched HTTP ledger generations. The `loaderConfirmed` flag is a **trusted-loader integration placeholder**, not cryptographically authenticated guest evidence; do not expose it to guest code or use it to certify independent Task/FFI/closure quiescence. Real image unload must happen in the owner loader after complete physical quiescence, outside control locks.
+- `status()` returns immutable snapshot blockers (generation, image digest, reserved bytes, phase), enabling operators to distinguish graceful drain pressure from executable-image leaks. Reserved bytes are a **configured charge**, not verified RSS or actual executable mapped bytes.
+
+This quota ledger intentionally **does not** introduce a second active route pointer or an automatic purge API. Before promoting the new generation, the supervisor must reserve budget; if exhausted, reject/defer the deployment while keeping all serving generations valid. To reclaim budget, complete real image/HTTP retirement then acknowledge physical cleanup. The fact that this bookkeeping admits a new image does not mean its code or state schema passed ABI/effect checks.
+
+Focused host-only JDK25 CI is specified in `.github/workflows/hot-code-generations-exact-head.yml`. It must show actual executed steps and JUnit reports before promotion.
