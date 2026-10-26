@@ -5510,6 +5510,7 @@ public final class TypeChecker {
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel")
                 || named.name().equals("ReadChannel") || named.name().equals("WriteChannel")
+                || named.name().equals("HasInputChannel") || named.name().equals("HasOutputChannel")
                 || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("ActorStream")
@@ -5597,6 +5598,7 @@ public final class TypeChecker {
                 || named.name().equals("Future") || named.name().equals("ActorStream")
                 || named.name().equals("Channel")
                 || named.name().equals("ReadChannel") || named.name().equals("WriteChannel")
+                || named.name().equals("HasInputChannel") || named.name().equals("HasOutputChannel")
                 || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
