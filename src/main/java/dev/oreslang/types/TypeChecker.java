@@ -9024,6 +9024,12 @@ public final class TypeChecker {
         }
 
         if (expanded.stream().anyMatch(slot -> slot.label() != null)) {
+            if (!genericNames.isEmpty()) {
+                throw new IllegalArgumentException(
+                        label + " named/record-spread binding with generic parameters "
+                                + "is not enabled until generic inference consumes the "
+                                + "same checked source-to-ABI plan");
+            }
             FixedProductCallPlan plan = FixedProductCallPlan.bind(
                     params.stream().map(Ast.Param::name).toList(),
                     expanded.stream()
