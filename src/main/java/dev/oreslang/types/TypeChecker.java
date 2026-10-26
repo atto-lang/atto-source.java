@@ -90,6 +90,14 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "checked Future pipeline target must be unary");
             }
+            if (asyncStage != target.async()) {
+                throw new IllegalArgumentException(
+                        "pipeline async-stage metadata must match the bound declaration");
+            }
+            if (!stageEffects.isSubsetOf(cumulativeEffects)) {
+                throw new IllegalArgumentException(
+                        "pipeline cumulative effects cannot erase the stage effect row");
+            }
             if (flattensFuture
                     != (producedFutureOwnership
                             == PipelineStageFutureOwnership.OWNED_STAGE_RESULT)) {
