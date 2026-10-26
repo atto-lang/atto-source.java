@@ -283,3 +283,32 @@ byte quotas are still required before guest-facing or strict zero-GC use.
 No source generic binders, native continuation lowering, full reactive
 multicast, Task.parallel TaskScope lifecycle or native/java performance
 claim is provided by these host primitives.
+
+
+## Guest Future cancellation slice (Java/Graal)
+
+Java/Graal now exposes the first narrow guest cancellation surface:
+
+```ores
+future.cancel()        // bool: this cancellation request won
+future.is_cancelled()  // bool: authenticated terminal cancellation state
+future.is_done()       // bool: any terminal state
+```
+
+`Future<T>` remains affine. `cancel()` is admitted only on an owned named
+Future local in this first slice; it is rejected through a borrowed Future or
+an owned projection so cancellation authority cannot be duplicated through an
+alias. The read-only state queries do not transfer ownership.
+
+Cancellation semantics belong to the operation that created the Future. For a
+pending `nb writech`, the channel runtime's cancellation admission atomically
+removes the still-uncommitted select/write registration. If the write already
+committed, cancellation loses and returns false; committed data is never rolled
+back. For an async task Future, cancellation invokes the runtime-owned task
+cancellation hook. Aggregate observer Futures retain their existing documented
+borrowed-source semantics.
+
+This does **not** establish structured `TaskScope` cancellation, physical
+quiescence, or LLVM parity. Code that needs proof that an executing Task has
+retired must still use the task/scope retirement contract rather than treating a
+cancelled result Future as a quiescence barrier.
