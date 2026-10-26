@@ -199,6 +199,22 @@ public final class InvertedArray implements AutoCloseable {
     public int capacity() { return store.capacity(); }
     public void reserve(int capacity) { store.reserve(capacity); }
 
+    /**
+     * Proposed checked compiler-lowering target for rows[i32/i64].
+     * Numeric indices select the current dense order; no stable position is
+     * promised across swap-delete. The returned view is non-escaping in guest
+     * code and validates its generation on every field operation.
+     * Guest syntax remains disabled pending compiler ownership verification.
+     */
+    public RowView at(long index) {
+        return row(store.handleAt(index));
+    }
+
+    /** Proposed compiler-lowering target for rows[issuedRowHandle]. */
+    public RowView at(InvertedColumnStore.Handle handle) {
+        return row(handle);
+    }
+
     private Object[] checkedValues(Map<String, ?> fields) {
         Objects.requireNonNull(fields, "row values");
         if (fields.size() != schema.fieldCount()) {
