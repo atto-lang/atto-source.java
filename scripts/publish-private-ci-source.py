@@ -303,6 +303,7 @@ def _parse_policy_approval(contents, repository, label):
     lines = canonical_security_lines(contents, label)
     approved_id = None
     seen = set()
+    seen_ids = set()
     for line in lines:
         if not line or line.startswith("#"):
             continue
@@ -316,7 +317,10 @@ def _parse_policy_approval(contents, repository, label):
         key = slug.casefold()
         if key in seen:
             raise Denied(label + " contains duplicate repository identities")
+        if candidate_id in seen_ids:
+            raise Denied(label + " contains duplicate numeric repository IDs")
         seen.add(key)
+        seen_ids.add(candidate_id)
         if key == repository.casefold():
             approved_id = candidate_id
     if approved_id is None:
