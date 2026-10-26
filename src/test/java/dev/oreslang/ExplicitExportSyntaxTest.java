@@ -455,7 +455,7 @@ final class ExplicitExportSyntaxTest {
     void exportedConstMetadataFailsClosedUntilCanonicalValueEncodingExists() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> OresCompiler.collectExportMetadata("""
+                () -> OresCompiler.emitExportMetadata("""
                         export const ready;
                         const string ready = 'ready';
                         """));
