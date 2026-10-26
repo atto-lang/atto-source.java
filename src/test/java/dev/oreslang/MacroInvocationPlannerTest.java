@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.compiler.MacroSyntaxProvenance;
+import dev.oreslang.compiler.MacroIdentifierHygiene;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -673,6 +674,141 @@ final class MacroInvocationPlannerTest {
         assertEquals(
                 MacroSyntaxProvenance.EmissionKind.CONST_QUOTE,
                 origins.getFirst().emissionKind());
+    }
+
+    @Test
+    void hygienicIdentifierCannotCaptureCallerByEqualSpelling() {
+        Ast.Program expanded = MacroExpander.expand(Parser.parse("""
+                define macro fresh(Identifier hint) -> Syntax<Expr> {
+                    return hygienic(hint);
+                }
+
+                fnc demo() -> int {
+                    const int value = 1;
+                    return fresh!(ident value);
+                }
+                """));
+
+        Ast.FunctionDecl fn = expanded.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class,
+                fn.body().get(fn.body().size() - 1));
+        Ast.NameExpr generated = assertInstanceOf(Ast.NameExpr.class, returned.value());
+
+        assertNotEquals("value", generated.name(),
+                "generated identifier must not capture caller binding by spelling");
+        assertTrue(generated.name().startsWith("$macro$g$"),
+                "generated identifier must use a source-unspellable compiler handle");
+
+        MacroIdentifierHygiene.Generated identity = assertInstanceOf(
+                MacroIdentifierHygiene.Generated.class,
+                MacroIdentifierHygiene.lookup(generated));
+        assertEquals("value", identity.hint());
+        assertEquals(Parser.ROOT_MODULE, identity.hygiene().callerModule());
+        assertEquals("fresh", identity.hygiene().macroName());
+
+        List<MacroSyntaxProvenance.Origin> origins =
+                MacroSyntaxProvenance.lookup(generated);
+        assertEquals(1, origins.size());
+        assertEquals(
+                MacroSyntaxProvenance.EmissionKind.HYGIENIC_IDENTIFIER,
+                origins.getFirst().emissionKind());
+    }
+
+    @Test
+    void checkedFunctionCaptureResolvesExactCallSiteKind() {
+        Ast.Program expanded = MacroExpander.expand(Parser.parse("""
+                fnc helper() -> int {
+                    return 42;
+                }
+
+                define macro reference(Identifier target) -> Syntax<Expr> {
+                    return capture_fnc(target);
+                }
+
+                fnc demo() -> int {
+                    return reference!(ident helper);
+                }
+                """));
+
+        Ast.FunctionDecl demo = expanded.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("demo"))
+                .findFirst()
+                .orElseThrow();
+        Ast.ReturnStmt returned =
+                assertInstanceOf(Ast.ReturnStmt.class, demo.body().getFirst());
+        Ast.NameExpr captured =
+                assertInstanceOf(Ast.NameExpr.class, returned.value());
+        assertEquals("helper", captured.name());
+
+        MacroIdentifierHygiene.CapturedFunction identity = assertInstanceOf(
+                MacroIdentifierHygiene.CapturedFunction.class,
+                MacroIdentifierHygiene.lookup(captured));
+        assertEquals(Parser.ROOT_MODULE, identity.callerModule());
+        assertEquals(Parser.ROOT_MODULE, identity.macroOwnerModule());
+        assertEquals("helper", identity.name());
+        assertEquals(1, identity.declarations().size());
+        assertEquals(Ast.Visibility.PRIVATE,
+                identity.declarations().getFirst().visibility());
+
+        assertEquals(
+                MacroSyntaxProvenance.EmissionKind.CHECKED_CAPTURE,
+                MacroSyntaxProvenance.lookup(captured).getFirst().emissionKind());
+    }
+
+    @Test
+    void externalMacroCannotCapturePrivateCallerFunction() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpander.expand(Parser.parse("""
+                        define module Producer as
+                            define pub macro reference(Identifier target) -> Syntax<Expr> {
+                                return capture_fnc(target);
+                            }
+                        end
+
+                        define module Consumer as
+                            fnc secret() -> int {
+                                return 7;
+                            }
+
+                            fnc demo() -> int {
+                                return Producer.reference!(ident secret);
+                            }
+                        end
+                        """)));
+
+        assertTrue(failure.getMessage().contains("capture_fnc"), failure::toString);
+        assertTrue(failure.getMessage().contains("private function family 'secret'"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("module boundary"),
+                failure::toString);
+    }
+
+    @Test
+    void checkedFunctionCaptureRejectsWrongDeclarationKind() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpander.expand(Parser.parse("""
+                        define type Helper as int
+
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+
+                        fnc demo() -> int {
+                            return reference!(ident Helper);
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains("could not resolve module-level function 'Helper'"),
+                failure::toString);
     }
 
     @Test
