@@ -238,6 +238,64 @@ final class DirectionalPipeEndpointSourceTest {
     }
 
     @Test
+    void builtinEndpointProtocolsParticipateInOrdinaryAssignability() {
+        typechecks("""
+                define class Source implements HasOutputChannel<int> as
+                    pub output: ReadChannel<int>;
+                end
+
+                define class Sink implements HasInputChannel<int> as
+                    pub input: WriteChannel<int>;
+                end
+
+                pub fnc use_output(HasOutputChannel<int> source): void {
+                    val ReadChannel<int> endpoint = source.output;
+                    return;
+                }
+
+                pub fnc use_input(HasInputChannel<int> sink): void {
+                    val WriteChannel<int> endpoint = sink.input;
+                    return;
+                }
+
+                pub fnc pass_concrete(Source source, Sink sink): void {
+                    use_output(source);
+                    use_input(sink);
+                    return;
+                }
+
+                pub fnc pass_channel(Channel<int> channel): void {
+                    use_output(channel);
+                    use_input(channel);
+                    return;
+                }
+                """);
+    }
+
+    @Test
+    void inheritedBuiltinEndpointProtocolsRemainPipeVisible() {
+        IllegalArgumentException bridge = rejects("""
+                define class BaseSource implements HasOutputChannel<int> as
+                    pub output: ReadChannel<int>;
+                end
+
+                define class DerivedSource extends BaseSource as
+                end
+
+                pub fnc connect(
+                    DerivedSource source,
+                    WriteChannel<int> sink
+                ): void {
+                    val graph = source pipe sink;
+                    return;
+                }
+                """);
+        assertTrue(bridge.getMessage().contains(
+                        "non-actor pipe transport requires bounded stream/channel bridge lowering"),
+                bridge::toString);
+    }
+
+    @Test
     void rawChannelCanParticipateAsBothDirectionalEndpointsButStillNeedsBridgeLowering() {
         IllegalArgumentException bridge = rejects("""
                 pub fnc connect(Channel<int> middle, WriteChannel<int> sink): void {
