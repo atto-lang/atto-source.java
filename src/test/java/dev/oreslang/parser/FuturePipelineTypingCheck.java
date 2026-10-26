@@ -55,6 +55,65 @@ public final class FuturePipelineTypingCheck {
                 != lifted.modules().get(0).declarations().get(2)) {
             throw new AssertionError("checked Future stage bound to the wrong declaration identity");
         }
+        // Type analysis may stage a plan internally, but it is not executable
+        // authority until the ownership pass succeeds.
+        TypeChecker.TypeCheckResult typeOnly = TypeChecker.checkTypesWithDiagnostics(
+                Parser.parse("""
+                        async fnc source(): int { return 1; }
+                        fnc keep(int value): int { return value; }
+                        fnc main(): void {
+                          val Future<int> pending = source() |> keep();
+                          return;
+                        }
+                        """));
+        Ast.FunctionDecl typeOnlyMain = (Ast.FunctionDecl)
+                typeOnly.program().modules().getFirst().declarations().get(2);
+        Ast.CallExpr typeOnlyPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) typeOnlyMain.body().getFirst()).initializer();
+        if (TypeChecker.CheckedFuturePipe.lookup(typeOnlyPipe)) {
+            throw new AssertionError(
+                    "type-only analysis published executable Future-pipeline authority");
+        }
+        if (!typeOnly.pendingFutureStages().containsKey(typeOnlyPipe)) {
+            throw new AssertionError("type-only analysis lost its staged pipeline plan");
+        }
+
+        // Ownership rejection after successful typing must also leave the
+        // staged pipeline unpublished.
+        TypeChecker.TypeCheckResult ownershipPending =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
+                        define class Payload as
+                          pub val int value = 1;
+                        end
+                        fnc consume(Payload value): void { return; }
+                        async fnc source(): int { return 1; }
+                        fnc keep(int value): int { return value; }
+                        fnc main(): void {
+                          val Future<int> pending = source() |> keep();
+                          let Payload payload = new Payload();
+                          consume(payload);
+                          stdio.println(payload.value);
+                          return;
+                        }
+                        """));
+        Ast.FunctionDecl ownershipMain = (Ast.FunctionDecl)
+                ownershipPending.program().modules().getFirst().declarations().get(4);
+        Ast.CallExpr ownershipPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) ownershipMain.body().getFirst()).initializer();
+        try {
+            TypeChecker.check(ownershipPending.program());
+            throw new AssertionError("ownership-invalid program unexpectedly admitted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("moved")) {
+                throw new AssertionError(
+                        "wrong ownership rejection: " + expected.getMessage(), expected);
+            }
+            if (TypeChecker.CheckedFuturePipe.lookup(ownershipPipe)) {
+                throw new AssertionError(
+                        "ownership-failed compilation published Future-pipeline authority");
+            }
+        }
+
         // A later bad declaration must invalidate the entire compilation
         // rather than leak a proof for an earlier successfully visited pipe.
         Ast.Program invalidWholeProgram = Parser.parse("""
