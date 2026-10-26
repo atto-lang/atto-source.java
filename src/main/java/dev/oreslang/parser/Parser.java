@@ -254,7 +254,8 @@ public final class Parser {
     }
 
     private Ast.ExportDecl parseExportDecl() {
-        Token exportToken = consumeContextualIdentifier("export", "expected 'export'");
+        Token exportToken = peek();
+        consumeContextualIdentifier("export", "expected 'export'");
 
         Ast.ExportScope scope = Ast.ExportScope.PUBLIC;
         if (match(LBRACKET) || match(LPAREN)) {
@@ -708,12 +709,12 @@ public final class Parser {
             if (match(FNC)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
-                return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
+                return trackDeclaration(parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind), modifiers);
             }
             if (match(ROUTINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
-                return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
+                return trackDeclaration(parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind), modifiers);
             }
 
             Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
@@ -723,7 +724,7 @@ public final class Parser {
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            return trackDeclaration(parseActorClass(actorKind, modifiers.visibility), modifiers);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -732,12 +733,12 @@ public final class Parser {
                 boolean isolated = actorToken.type() == ISOACTOR;
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
-                return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
+                return trackDeclaration(parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind), modifiers);
             }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
-            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
+            return trackDeclaration(parseFunction(annotations, modifiers, Ast.CallableKind.FNC), modifiers);
         }
         if (match(ROUTINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -746,36 +747,36 @@ public final class Parser {
                 boolean isolated = actorToken.type() == ISOACTOR;
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
-                return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
+                return trackDeclaration(parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind), modifiers);
             }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
-            return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+            return trackDeclaration(parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE), modifiers);
         }
         if (match(CONTRACT)) {
             validateOnlyVisibilityModifiers(modifiers, "contracts");
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-            return parseContract(modifiers.visibility);
+            return trackDeclaration(parseContract(modifiers.visibility), modifiers);
         }
         if (match(INTERFACE, TRAIT)) {
             Token.Type declarationKind = previous().type();
             validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
             rejectCallableStructuralAnnotation(annotations, "interface/trait declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "interface/trait declarations");
-            return parseDefinedInterface(modifiers.visibility, declarationKind);
+            return trackDeclaration(parseDefinedInterface(modifiers.visibility, declarationKind), modifiers);
         }
         if (match(TYPE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             validateOnlyVisibilityModifiers(modifiers, "type aliases");
             rejectCallableStructuralAnnotation(annotations, "type aliases");
             rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-            return parseTypeAlias(modifiers.visibility);
+            return trackDeclaration(parseTypeAlias(modifiers.visibility), modifiers);
         }
         if (isBindingKind(peek().type())) {
             validateOnlyVisibilityModifiers(modifiers, "module bindings");
-            return parseModuleBinding(annotations, modifiers.visibility);
+            return trackDeclaration(parseModuleBinding(annotations, modifiers.visibility), modifiers);
         }
         return null;
     }
