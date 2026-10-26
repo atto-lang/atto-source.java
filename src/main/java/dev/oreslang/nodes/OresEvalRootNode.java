@@ -911,6 +911,10 @@ public final class OresEvalRootNode extends RootNode {
                 return function.owner.prepareStaticValueInvocation(
                         function.klass, function.functionName, objectArguments(args), function.accessClass);
             }
+            if (callable instanceof SourceFunctionValue function) {
+                return function.owner.functionInvocation(
+                        function.function, objectArguments(args));
+            }
             return new Invocation(this, InvocationKind.INVOKABLE, null, callable, objectArguments(args));
         }
 
@@ -6648,7 +6652,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                    return new SourceFunctionValue(this, fn);
                 }
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
@@ -7976,6 +7980,29 @@ public final class OresEvalRootNode extends RootNode {
          * is captured; only the owning class and shared static slot family are
          * retained.  Invocation arity selects the closed-world static selector.
          */
+        /**
+         * Reified first-class source fnc. Keeping declaration identity here
+         * lets invokableInvocation recover a normal FUNCTION invocation so
+         * lexical TaskScope lineage is not erased by an opaque Java lambda.
+         */
+        private static final class SourceFunctionValue implements TailInvokable {
+            private final Evaluator owner;
+            private final Ast.FunctionDecl function;
+
+            private SourceFunctionValue(
+                    Evaluator owner,
+                    Ast.FunctionDecl function) {
+                this.owner = Objects.requireNonNull(owner, "function owner");
+                this.function = Objects.requireNonNull(function, "function");
+            }
+
+            @Override
+            public Object call(List<Object> arguments) {
+                return owner.invoke(
+                        owner.functionInvocation(function, arguments));
+            }
+        }
+
         private static final class StaticFunctionValue implements Invokable {
             private final Evaluator owner;
             private final Ast.ClassDecl klass;
@@ -8097,7 +8124,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    yield tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                    yield new SourceFunctionValue(this, fn);
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
@@ -8148,7 +8175,7 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' must be specialized by a direct call; "
                                     + "polymorphic function values are not supported yet");
                 }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                return new SourceFunctionValue(this, fn);
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
                 for (Ast.Decl decl : candidate.declarations()) {
@@ -8337,7 +8364,7 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' must be specialized by a direct call; "
                                     + "polymorphic function values are not supported yet");
                 }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                return new SourceFunctionValue(this, fn);
             }
 
             for (Ast.Decl decl : module.declarations()) {
