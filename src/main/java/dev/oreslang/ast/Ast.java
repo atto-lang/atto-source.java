@@ -25,13 +25,100 @@ public final class Ast {
         return name;
     }
 
-    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+    public enum ExportScope { FILE, PACKAGE, PUBLIC }
+
+    /**
+     * Source declaration family selected by a typed export. UNTYPED defers
+     * kind selection until the complete lexical namespace has been collected.
+     */
+    public enum ExportKind {
+        UNTYPED, MODULE, ACTOR, CLASS, FNC, ROUTINE, INTERFACE, CONTRACT,
+        TRAIT, STRUCT, TYPE, CONST, VAL, LET, SYMBOL, MODEL
+    }
+
+    /**
+     * One unresolved source export item. alias is an exported source binding
+     * name, never a runtime literal or native ABI spelling. Symbol selfIdentity
+     * preserves the accepted-but-redundant '#x as #x' source form.
+     */
+    public record ExportItem(
+            String localName,
+            String alias,
+            boolean symbolLiteral,
+            boolean selfIdentity) {
+        public ExportItem {
+            if (localName == null || localName.isBlank()) {
+                throw new IllegalArgumentException("export local name cannot be blank");
+            }
+            if (alias != null && alias.isBlank()) {
+                throw new IllegalArgumentException("export alias cannot be blank");
+            }
+            if (selfIdentity && !symbolLiteral) {
+                throw new IllegalArgumentException("only Symbol exports may assert self identity");
+            }
+        }
+
+        public String externalName() {
+            return alias == null ? localName : alias;
+        }
+    }
+
+    /** Parsed but unresolved declaration-namespace export metadata. */
+    public record ExportDecl(
+            ExportScope scope,
+            ExportKind kind,
+            List<ExportItem> items,
+            int line,
+            int column) {
+        public ExportDecl {
+            java.util.Objects.requireNonNull(scope, "export scope");
+            java.util.Objects.requireNonNull(kind, "export kind");
+            items = List.copyOf(items);
+            if (items.isEmpty()) throw new IllegalArgumentException("export declaration cannot be empty");
+            if (line < 1 || column < 1) throw new IllegalArgumentException("invalid export source position");
+        }
+    }
+
+    /**
+     * Parser provenance needed by export resolution. Current Visibility.PRIVATE
+     * represents both default-private and explicit private, so keep the source
+     * distinction outside declaration runtime shape until scoped visibility lands.
+     */
+    public record DeclarationMetadata(
+            String name,
+            ExportKind kind,
+            Visibility visibility,
+            boolean explicitVisibility) {
+        public DeclarationMetadata {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("declaration metadata name cannot be blank");
+            }
+            java.util.Objects.requireNonNull(kind, "declaration metadata kind");
+            java.util.Objects.requireNonNull(visibility, "declaration metadata visibility");
+        }
+    }
+
+    public record Program(
+            String namespace,
+            List<ImportDecl> imports,
+            List<ModuleDecl> modules,
+            List<ExportDecl> exports,
+            List<DeclarationMetadata> declarationMetadata) {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
+            exports = List.copyOf(exports);
+            declarationMetadata = List.copyOf(declarationMetadata);
         }
-        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
-        public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(namespace, imports, modules, List.of(), List.of());
+        }
+        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(null, imports, modules, List.of(), List.of());
+        }
+        public Program(List<ModuleDecl> modules) {
+            this(null, List.of(), modules, List.of(), List.of());
+        }
     }
 
     public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
@@ -45,14 +132,30 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+    public record ModuleDecl(
+            String name,
+            List<Annotation> annotations,
+            List<TypeRef> contracts,
+            List<Decl> declarations,
+            List<ExportDecl> exports,
+            List<DeclarationMetadata> declarationMetadata) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
+            exports = List.copyOf(exports);
+            declarationMetadata = List.copyOf(declarationMetadata);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
-        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts,
+                          List<Decl> declarations) {
+            this(name, annotations, contracts, declarations, List.of(), List.of());
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, List.of(), List.of(), declarations, List.of(), List.of());
+        }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, annotations, List.of(), declarations, List.of(), List.of());
+        }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
