@@ -589,4 +589,301 @@ final class OresSchedulerTest {
         assertEquals(1, pc.get(),
                 "detached continuation must never resume after producer completion");
     }
+
+    @Test
+    void producerCompletionDuringSuspendingTurnNeverReentersGuestInline() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            CountDownLatch inFirstTurn = new CountDownLatch(1);
+            CountDownLatch releaseFirstTurn = new CountDownLatch(1);
+            AtomicBoolean insideFirstTurn = new AtomicBoolean();
+            AtomicInteger turns = new AtomicInteger();
+            AtomicLong initialDispatch = new AtomicLong();
+
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                if (turns.getAndIncrement() == 0) {
+                    initialDispatch.set(OresScheduler.currentDispatchId());
+                    insideFirstTurn.set(true);
+                    inFirstTurn.countDown();
+                    try {
+                        assertTrue(releaseFirstTurn.await(5, TimeUnit.SECONDS));
+                        return OresScheduler.await(producer);
+                    } finally {
+                        insideFirstTurn.set(false);
+                    }
+                }
+                assertFalse(insideFirstTurn.get(),
+                        "producer completed while the prior guest turn was still executing");
+                assertSame(scheduler, OresScheduler.current());
+                assertNotEquals(initialDispatch.get(), OresScheduler.currentDispatchId(),
+                        "await must dispatch a fresh logical scheduler turn");
+                assertEquals(19, resume.value());
+                return OresScheduler.done(20);
+            });
+
+            try {
+                assertTrue(inFirstTurn.await(5, TimeUnit.SECONDS));
+                Thread producerThread = Thread.ofPlatform().start(
+                        () -> assertTrue(producer.completeFromRuntime(19)));
+                producerThread.join(5000);
+                assertFalse(producerThread.isAlive(), "producer completion stalled");
+                assertFalse(task.isDone(),
+                        "a completed producer must not reenter the active guest turn");
+            } finally {
+                releaseFirstTurn.countDown();
+            }
+
+            assertEquals(20, task.get(5, TimeUnit.SECONDS));
+            assertEquals(2, turns.get());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
+    void cancellationRevocationCompletesBeforeSuspendedAwaitResumes() throws Exception {
+        CountDownLatch revocationStarted = new CountDownLatch(1);
+        CountDownLatch permitRevocation = new CountDownLatch(1);
+        OresFuture<Integer> producer = new OresFuture<>(
+                () -> true,
+                () -> {
+                    revocationStarted.countDown();
+                    try {
+                        if (!permitRevocation.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("cancel hook could not finish");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            AtomicInteger turns = new AtomicInteger();
+            OresFuture<String> task = scheduler.start(resume -> {
+                if (turns.getAndIncrement() == 0) return OresScheduler.await(producer);
+                assertInstanceOf(java.util.concurrent.CancellationException.class,
+                        resume.failure());
+                return OresScheduler.done("revoked");
+            });
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (producer.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+            Thread canceller = Thread.ofPlatform().start(() -> assertTrue(producer.cancel(false)));
+            try {
+                assertTrue(revocationStarted.await(5, TimeUnit.SECONDS));
+                assertFalse(task.isDone(),
+                        "await must not resume before producer revocation is complete");
+                assertEquals(1, turns.get(),
+                        "no guest continuation may run during the cancellation hook");
+            } finally {
+                permitRevocation.countDown();
+            }
+            canceller.join(5000);
+            assertFalse(canceller.isAlive(), "cancellation hook could not unwind");
+            assertEquals("revoked", task.get(5, TimeUnit.SECONDS));
+            assertEquals(2, turns.get());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        } finally {
+            permitRevocation.countDown();
+        }
+    }
+
+    @Test
+    void awaitRegisteredDuringProducerCancellationHookResumesAfterRevocation() throws Exception {
+        CountDownLatch revocationStarted = new CountDownLatch(1);
+        CountDownLatch revocationMayFinish = new CountDownLatch(1);
+        OresFuture<Integer> producer = new OresFuture<>(
+                () -> true,
+                () -> {
+                    revocationStarted.countDown();
+                    try {
+                        if (!revocationMayFinish.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("producer revocation timeout");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+        AtomicBoolean cancelled = new AtomicBoolean();
+        Thread canceller = Thread.ofPlatform().start(
+                () -> cancelled.set(producer.cancel(false)));
+        try {
+            assertTrue(revocationStarted.await(5, TimeUnit.SECONDS));
+            assertTrue(producer.isCancelled(),
+                    "cancel terminal CAS precedes revocation completion");
+            try (OresScheduler scheduler = new OresScheduler(2)) {
+                AtomicInteger turns = new AtomicInteger();
+                OresFuture<String> task = scheduler.start(resume -> {
+                    if (turns.getAndIncrement() == 0) return OresScheduler.await(producer);
+                    assertInstanceOf(java.util.concurrent.CancellationException.class,
+                            resume.failure());
+                    return OresScheduler.done("revocation-finished");
+                });
+
+                long registeredDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (producer.pendingRuntimeWaiterCount() == 0
+                        && System.nanoTime() < registeredDeadline) Thread.sleep(1);
+                assertEquals(1, producer.pendingRuntimeWaiterCount(),
+                        "await after cancellation CAS must register behind revocation fence");
+                assertFalse(task.isDone(),
+                        "cancelled producer cannot resume guest before hook finishes");
+                assertEquals(1, turns.get());
+
+                revocationMayFinish.countDown();
+                canceller.join(5000);
+                assertFalse(canceller.isAlive(), "revocation thread failed to exit");
+                assertTrue(cancelled.get());
+                assertEquals("revocation-finished", task.get(5, TimeUnit.SECONDS));
+                assertEquals(2, turns.get());
+                assertEquals(0, producer.pendingRuntimeWaiterCount());
+            }
+        } finally {
+            revocationMayFinish.countDown();
+            canceller.join(5000);
+        }
+    }
+
+    @Test
+    void completionRacingAwaitRegistrationNeverLosesOrDuplicatesResume() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int round = 0; round < 192; round++) {
+                OresFuture<Integer> producer = new OresFuture<>();
+                CountDownLatch firstTurnEntered = new CountDownLatch(1);
+                CountDownLatch allowAwait = new CountDownLatch(1);
+                AtomicInteger turns = new AtomicInteger();
+                final int expected = round;
+                OresFuture<Integer> task = scheduler.start(resume -> {
+                    if (turns.getAndIncrement() == 0) {
+                        firstTurnEntered.countDown();
+                        assertTrue(allowAwait.await(5, TimeUnit.SECONDS));
+                        return OresScheduler.await(producer);
+                    }
+                    assertSame(scheduler, OresScheduler.current());
+                    assertNull(resume.failure());
+                    assertEquals(expected, resume.value());
+                    return OresScheduler.done(expected);
+                });
+                try {
+                    assertTrue(firstTurnEntered.await(5, TimeUnit.SECONDS));
+                    if (round % 3 == 0) {
+                        // Settlement strictly before scheduler waiter registration.
+                        assertTrue(producer.completeFromRuntime(expected));
+                        allowAwait.countDown();
+                    } else if (round % 3 == 1) {
+                        // Producer and suspending turn compete for publication.
+                        AtomicBoolean settled = new AtomicBoolean();
+                        Thread completer = Thread.ofPlatform().start(() -> {
+                            allowAwait.countDown();
+                            settled.set(producer.completeFromRuntime(expected));
+                        });
+                        completer.join(5000);
+                        assertFalse(completer.isAlive(), "producer stalled at round " + round);
+                        assertTrue(settled.get(), "producer did not settle at round " + round);
+                    } else {
+                        // Force the pending registration to exist before
+                        // settlement, covering the other side of the race.
+                        allowAwait.countDown();
+                        long registeredDeadline = System.nanoTime()
+                                + TimeUnit.SECONDS.toNanos(5);
+                        while (producer.pendingRuntimeWaiterCount() == 0
+                                && System.nanoTime() < registeredDeadline)
+                            Thread.sleep(1);
+                        assertEquals(1, producer.pendingRuntimeWaiterCount(),
+                                "await never registered at round " + round);
+                        assertTrue(producer.completeFromRuntime(expected));
+                    }
+                } finally {
+                    allowAwait.countDown();
+                }
+                assertEquals(expected, task.get(5, TimeUnit.SECONDS));
+                assertEquals(2, turns.get(), "duplicate or missing resume at round " + round);
+                assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                        "producer retained a waiter at round " + round);
+            }
+        }
+    }
+
+    @Test
+    void cancellationRacingAwaitRegistrationNeverLosesOrDuplicatesResume() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int round = 0; round < 96; round++) {
+                CountDownLatch revocationEntered = new CountDownLatch(1);
+                CountDownLatch finishRevocation = new CountDownLatch(1);
+                OresFuture<Integer> producer = new OresFuture<>(
+                        () -> true,
+                        () -> {
+                            revocationEntered.countDown();
+                            try {
+                                if (!finishRevocation.await(5, TimeUnit.SECONDS))
+                                    throw new AssertionError("revocation did not finish");
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(interrupted);
+                            }
+                        });
+                CountDownLatch firstTurnEntered = new CountDownLatch(1);
+                CountDownLatch allowAwait = new CountDownLatch(1);
+                AtomicInteger turns = new AtomicInteger();
+                OresFuture<Integer> task = scheduler.start(resume -> {
+                    if (turns.getAndIncrement() == 0) {
+                        firstTurnEntered.countDown();
+                        assertTrue(allowAwait.await(5, TimeUnit.SECONDS));
+                        return OresScheduler.await(producer);
+                    }
+                    assertInstanceOf(java.util.concurrent.CancellationException.class,
+                            resume.failure());
+                    return OresScheduler.done(1);
+                });
+
+                AtomicBoolean cancelled = new AtomicBoolean();
+                Thread canceller = null;
+                try {
+                    assertTrue(firstTurnEntered.await(5, TimeUnit.SECONDS));
+                    if (round % 3 == 0) {
+                        // Cancellation CAS and revocation begin before the
+                        // awaiting turn can install its waiter.
+                        canceller = Thread.ofPlatform().start(
+                                () -> cancelled.set(producer.cancel(false)));
+                        assertTrue(revocationEntered.await(5, TimeUnit.SECONDS));
+                        allowAwait.countDown();
+                    } else if (round % 3 == 1) {
+                        // Race the registration against cancellation.
+                        canceller = Thread.ofPlatform().start(() -> {
+                            allowAwait.countDown();
+                            cancelled.set(producer.cancel(false));
+                        });
+                        assertTrue(revocationEntered.await(5, TimeUnit.SECONDS));
+                    } else {
+                        // Await waiter is already installed when cancellation
+                        // revocation starts.
+                        allowAwait.countDown();
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                        while (producer.pendingRuntimeWaiterCount() == 0
+                                && System.nanoTime() < deadline) Thread.sleep(1);
+                        assertEquals(1, producer.pendingRuntimeWaiterCount());
+                        canceller = Thread.ofPlatform().start(
+                                () -> cancelled.set(producer.cancel(false)));
+                        assertTrue(revocationEntered.await(5, TimeUnit.SECONDS));
+                    }
+                    assertFalse(task.isDone(),
+                            "await resumed before revocation drained at round " + round);
+                    assertEquals(1, turns.get(),
+                            "guest continuation entered cancel hook at round " + round);
+                } finally {
+                    allowAwait.countDown();
+                    finishRevocation.countDown();
+                    if (canceller != null) {
+                        canceller.join(5000);
+                        assertFalse(canceller.isAlive(), "canceller stuck at round " + round);
+                    }
+                }
+                assertTrue(cancelled.get(), "cancel CAS lost at round " + round);
+                assertEquals(1, task.get(5, TimeUnit.SECONDS));
+                assertEquals(2, turns.get(), "duplicate resume at round " + round);
+                assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                        "waiter retained after cancellation at round " + round);
+            }
+        }
+    }
+
 }
