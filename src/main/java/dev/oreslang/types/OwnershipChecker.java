@@ -2933,8 +2933,23 @@ public final class OwnershipChecker {
         return captures;
     }
 
-    private void scanStatements(List<Ast.Stmt> statements, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures) {
+    private void scanStatements(
+            List<Ast.Stmt> statements,
+            Set<String> locals,
+            Scope outer,
+            String recursiveBinding,
+            CaptureSet captures) {
         Set<String> blockLocals = new HashSet<>(locals);
+        scanStatementsInScope(
+                statements, blockLocals, outer, recursiveBinding, captures);
+    }
+
+    private void scanStatementsInScope(
+            List<Ast.Stmt> statements,
+            Set<String> blockLocals,
+            Scope outer,
+            String recursiveBinding,
+            CaptureSet captures) {
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 // A lambda binding is recursive: its own name is local inside
@@ -3154,7 +3169,7 @@ public final class OwnershipChecker {
                             recursiveBinding,
                             captures);
                 }
-                scanStatements(
+                scanStatementsInScope(
                         arm.prefixStatements(),
                         armLocals,
                         outer,
