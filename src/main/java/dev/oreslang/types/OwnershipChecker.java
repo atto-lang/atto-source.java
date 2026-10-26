@@ -1556,6 +1556,12 @@ public final class OwnershipChecker {
             // A const/let read-only view must not gain mutation via .add/.set.
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
             if (memberReceiverType == null
+                    && (member.member().equals("send")
+                            || member.member().equals("send_async"))) {
+                memberReceiverType =
+                        stableProjectedReceiverType(member.receiver(), scope);
+            }
+            if (memberReceiverType == null
                     && (member.member().equals("add") || member.member().equals("set"))
                     && (member.receiver() instanceof Ast.MemberExpr
                         || member.receiver() instanceof Ast.IndexExpr)) {
@@ -3011,6 +3017,55 @@ public final class OwnershipChecker {
                 && scope.lookup(namespace.name()) == null) {
             return findClass(namespace.name() + "." + member.member());
         }
+        return null;
+    }
+
+    /**
+     * Resolve only side-effect-free field/index projection types for capability
+     * method dispatch. This does not create a borrow or evaluate an index; it
+     * exists so a mailbox boundary cannot disappear merely because ActorRef is
+     * stored in actor/class/record state instead of a local binding.
+     */
+    private Ast.TypeRef stableProjectedReceiverType(
+            Ast.Expr receiver,
+            Scope scope) {
+        Ast.TypeRef direct = receiverType(receiver, scope);
+        if (direct != null) return direct;
+
+        if (receiver instanceof Ast.MemberExpr member) {
+            Ast.TypeRef owner =
+                    stableProjectedReceiverType(member.receiver(), scope);
+            if (owner == null) return null;
+            if (owner.isBorrow()) owner = owner.borrowedTarget();
+
+            if (owner.isRecordType()) {
+                return owner.recordMembers().get(member.member());
+            }
+
+            Ast.ClassDecl klass = findClass(owner.name());
+            if (klass == null) return null;
+            ResolvedField target = findFieldTarget(
+                    klass, owner, member.member(), new LinkedHashSet<>());
+            if (target == null) return null;
+            return substituteType(
+                    ownershipFieldType(target.field()),
+                    genericBindings(
+                            target.owner().genericParameters(),
+                            target.ownerType().arguments()));
+        }
+
+        if (receiver instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef collection =
+                    stableProjectedReceiverType(indexed.receiver(), scope);
+            if (collection == null) return null;
+            if (collection.isBorrow()) collection = collection.borrowedTarget();
+            if ((collection.name().equals("Array")
+                            || collection.name().equals("List"))
+                    && collection.arguments().size() == 1) {
+                return collection.arguments().getFirst();
+            }
+        }
+
         return null;
     }
 
