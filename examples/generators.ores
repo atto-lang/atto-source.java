@@ -2,14 +2,14 @@ async fnc later(int value): int {
   return value;
 }
 
-generator fnc ids(): int {
+gen* ids(): Iterator<int> {
   yield 10;
   yield 20;
   yield 30;
   return;
 }
 
-async generator fnc async_ids(): int {
+async gen* async_ids(): AsyncIterator<int> {
   yield await later(40);
   yield await later(50);
   return;
