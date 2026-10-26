@@ -534,4 +534,54 @@ final class TreeShakerTest {
         assertInstanceOf(Ast.CallExpr.class, named.value());
     }
 
+
+    @Test
+    void treeShakerScansDependenciesOfEveryRetainedOverload() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc dependency(): int {
+                  return 40;
+                }
+
+                pub fnc choose(int a): int {
+                  return dependency() + a;
+                }
+
+                pub fnc choose(int a, int b): int {
+                  return a + b;
+                }
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".choose"));
+        assertTrue(
+                result.retained(Parser.ROOT_MODULE + ".dependency"),
+                "dependencies used only by a non-representative overload must survive");
+    }
+
+    @Test
+    void publicOverloadRootsWholeFamilyEvenWhenLaterOverloadIsPrivate() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                pub fnc choose(int a): int {
+                  return a;
+                }
+
+                fnc choose(int a, int b): int {
+                  return a + b;
+                }
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(
+                result.retained(Parser.ROOT_MODULE + ".choose"),
+                "one public overload roots the module+name family");
+        long overloads = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("choose"))
+                .count();
+        assertEquals(
+                2L,
+                overloads,
+                "name-level pruning must retain every overload in a rooted family");
+    }
+
 }
