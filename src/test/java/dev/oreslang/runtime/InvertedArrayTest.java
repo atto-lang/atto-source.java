@@ -271,6 +271,29 @@ final class InvertedArrayTest {
             assertThrows(IllegalArgumentException.class,
                     () -> InvertedArray.fromClass(declaration(source), 0), source);
         }
+
+        Ast.ClassDecl base = declaration("""
+                define inverted class Counter as
+                    value: f64;
+                    inc(f64 d): void { self.value = self.value + d; }
+                end
+                """);
+        Ast.MethodDecl method = base.methods().getFirst();
+        Ast.MethodDecl effectful = new Ast.MethodDecl(
+                method.name(), method.visibility(), method.isStatic(), method.isAbstract(),
+                method.async(), method.suspends(), method.structural(),
+                method.explicitReceiverType(), method.genericParameters(), method.parameters(),
+                method.returnType(), method.annotations(), method.body(),
+                new Ast.EffectSpec(java.util.List.of(Ast.TypeRef.simple("Error")),
+                        java.util.List.of(), java.util.List.of()));
+        Ast.ClassDecl direct = new Ast.ClassDecl(
+                base.name(), base.visibility(), base.isAbstract(), base.actorKind(),
+                base.genericParameters(), base.parents(), base.interfaces(), base.fields(),
+                base.constructor(), java.util.List.of(effectful),
+                base.actorConcurrency(), true);
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedArray.fromClass(direct, 0),
+                "host row planning must not silently discard modern checked-effect metadata");
     }
 
     @Test
