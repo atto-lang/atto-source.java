@@ -5250,15 +5250,23 @@ public final class TypeChecker {
 
     private PipelineEffectSummary pipelineEffectsForProducer(
             String unqualifiedName, Ast.FunctionDecl producer) {
+        Types.CheckedEffects known = resolvedPipelineEffects(producer.effects());
         if (!java.util.Objects.equals(
                 unqualifiedFunctionOwners.get(unqualifiedName), currentLexicalModule)) {
             return new PipelineEffectSummary(
-                    Types.CheckedEffects.none(),
+                    known,
                     PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN);
         }
+        // Calling an async function creates the Future whose checked effect
+        // contract we are recording. A synchronous Future<T>-returning
+        // function may merely forward an opaque Future from elsewhere, so its
+        // eventual asynchronous provenance remains unknown even though the
+        // synchronous call's own effect row is known.
         return new PipelineEffectSummary(
-                resolvedPipelineEffects(producer.effects()),
-                PipelineEffectProvenance.COMPLETE_STATIC);
+                known,
+                producer.async()
+                        ? PipelineEffectProvenance.COMPLETE_STATIC
+                        : PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN);
     }
 
     /**
