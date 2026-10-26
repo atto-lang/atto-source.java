@@ -154,6 +154,22 @@ final class DirectionalPipeEndpointSourceTest {
     }
 
     @Test
+    void protocolTypedValuesParticipateWithoutConcreteClassKnowledge() {
+        IllegalArgumentException bridge = rejects("""
+                pub fnc connect(
+                    HasOutputChannel<int> source,
+                    HasInputChannel<int> sink
+                ): void {
+                    val graph = source pipe sink;
+                    return;
+                }
+                """);
+        assertTrue(bridge.getMessage().contains(
+                        "non-actor pipe transport requires bounded stream/channel bridge lowering"),
+                bridge::toString);
+    }
+
+    @Test
     void rawChannelCanParticipateAsBothDirectionalEndpointsButStillNeedsBridgeLowering() {
         IllegalArgumentException bridge = rejects("""
                 pub fnc connect(Channel<int> middle, WriteChannel<int> sink): void {
