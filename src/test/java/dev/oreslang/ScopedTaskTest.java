@@ -193,6 +193,71 @@ final class ScopedTaskTest {
 
 
     @Test
+    void futureMapNamedCallbackCannotEscapeLexicalTaskScope() {
+        String source = """
+                async fnc base(): int {
+                    return 41;
+                }
+
+                suspends fnc spawn_from_map(int value): int {
+                    do nb {
+                        rt fail "future-map-child-failed";
+                    };
+                    return value + 1;
+                }
+
+                pub routine main(): void {
+                    task scope {
+                        val Future<int> mapped = base().map(spawn_from_map);
+                    }
+                    stdio.stdout.write("MUST_NOT_PRINT");
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        RuntimeException failure =
+                assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(
+                failure.toString().contains("future-map-child-failed")
+                        || (failure.getCause() != null
+                                && failure.getCause().toString()
+                                        .contains("future-map-child-failed")));
+    }
+
+    @Test
+    void futureOnSuccessLambdaCannotReuseStaleCapturedScopeParent() {
+        String source = """
+                async fnc base(): int {
+                    return 7;
+                }
+
+                pub routine main(): void {
+                    nb scope {
+                        val Future<int> observed = base().onSuccess(|int value| -> {
+                            do nb {
+                                rt fail "future-lambda-child-failed";
+                            };
+                            return;
+                        });
+                    }
+                    stdio.stdout.write("MUST_NOT_PRINT");
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        RuntimeException failure =
+                assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(
+                failure.toString().contains("future-lambda-child-failed")
+                        || (failure.getCause() != null
+                                && failure.getCause().toString()
+                                        .contains("future-lambda-child-failed")));
+    }
+
+
+    @Test
     void actorScopeIsRejectedStaticallyUntilActorIntegrationIsProven() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
