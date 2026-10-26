@@ -28,6 +28,11 @@ final class MacroCanonicalIdentity {
         token("format", FORMAT);
         token("semantics-abi", SEMANTICS_ABI);
         token("const-profile", "const-v1");
+        integer(MAX_NODES);
+        integer(MAX_DEPTH);
+        integer(MAX_BYTES);
+        integer(Ast.MacroIdentifierArgument.MAX_NAME_CHARS);
+        integer(MacroSourceUnitIdentity.MAX_UNIT_ID_CHARS);
         integer(CompileTimeConstEvaluator.MAX_STEPS);
         integer(CompileTimeConstEvaluator.MAX_DEPTH);
         integer(CompileTimeConstEvaluator.MAX_AGGREGATE_ELEMENTS);
