@@ -13,21 +13,23 @@ below is independently satisfied.
 | Source repository | `ores-truffle-oreslang/oreslang-source.java` |
 | Source numeric repository ID | `1400792274` |
 | Source PR | `#2033` |
-| Source PR head | `eee3c517779d9839c479eeea8482216c24cbacba` |
-| Source root Git tree | `15225884efd47797bd4a88f3b51a3273b60463d6` |
+| Source PR head | `6c54d3c2b2b24c1597fddabcbe0bf98aba074484` |
+| Source root Git tree | `39eee009b65772f958d2a401f0cdc224170b03c0` |
 | Source base/main observed | `f40b9c3a3b5b4691eb4f4a5d5d0558a112f237aa` |
 | Candidate carrier | `opto-sync-test/go-java-validation` |
 | Carrier numeric repository ID | `1323598177` |
 | Carrier visibility observed | `private` |
 | Carrier PR | `opto-sync-test/go-java-validation#25` |
-| Carrier PR head | `bcad0c9800f7c7adf97e6cd0f482e2724baec25a` |
+| Carrier PR head | `60d538aa9f80de94658880050bd73bf0f2d0a879` |
 | Carrier workflow blob | `4cfef14d5976b193a16c02a574c406defaeac874` |
-| PR #2033 test-plan blob | `16f7f5b0b58239611b9219a8949ff95804183069` |
+| PR #2033 test-plan blob | `34463ea91c6ab87d69f4337be23b51ed55b8d7ae` |
 
 The carrier test plan pins the current PR #2033 production/test blobs and runs a
 focused ActorGroup cleanup/pipe/supervisor suite followed by the full Maven
 test suite. The current plan also pins the exact ActorPipeTransportTest blob
-that contains the fatal-sibling structural-close regression.
+that contains the fatal-sibling structural-close regression and the exact
+ActorGroupManagedWorkersReconciliationTest blob that proves runtime admission
+sealing does not collapse the active worker-done lifecycle barrier.
 
 Current source-free validation receipts:
 - cleanup semantic harness head `0065d36ef776d2f9cfe439adfd06456476e75038`,
@@ -108,7 +110,7 @@ this proposal**.
    provenance, carrier ID/private state and exact carrier control-plane pins.
 6. Transfer only the exact source Git tree into a generation-specific private
    carrier commit/ref. Prove the nested destination subtree tree SHA equals
-   `15225884efd47797bd4a88f3b51a3273b60463d6` and pin the destination commit.
+   `39eee009b65772f958d2a401f0cdc224170b03c0` and pin the destination commit.
 7. Execute the immutable #2033 plan and require actual nonzero job steps:
    - focused `ActorGroupCleanupFailureTest` / pipe / supervisor coverage;
    - full Maven/JDK suite;
