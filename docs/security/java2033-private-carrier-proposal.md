@@ -36,9 +36,11 @@ Current source-free validation receipts:
   Sonus run `40349883441` / job `121666735498`: executed checkout,
   Java compile, and adversarial cleanup cases including cross-phase VM-fatal
   precedence with retained earlier evidence; PASS;
-- exact carrier-plan mirror head `ec6280c5f0703d6960068e87b4974884f63b3a66`,
-  Sonus run `40350715256` / job `121669699882`: executed checkout,
-  carrier verifier regression, and trusted-plan runner regression; PASS.
+- exact current carrier-plan mirror head
+  `b5375456591881a87e3e3f4cdec5af468f2e062c`, Sonus run
+  `40358615664` / job `121697702344`: executed checkout, carrier verifier
+  regression, and trusted-plan runner regression against plan blob
+  `34463ea91c6ab87d69f4337be23b51ed55b8d7ae`; PASS.
 Both are source-free and therefore do not certify the private Oreslang source. Source-free carrier regression code has executed successfully in a
 separate funded private repository, but that evidence is **carrier-code only**:
 it does not authorize private source placement and does not prove PR #2033.
@@ -82,9 +84,13 @@ At proposal creation time:
    recorded independent review submission.
 5. Platform-conformance P0 incidents #22, #77 and #127 remain OPEN and require
    independent disposition before private-source export resumes.
-6. Source-org Actions for PR #2033 still fail before job steps. Zero-step runs
-   are admission/infrastructure evidence only and are not implementation
-   failures or passing tests.
+6. Source-org Actions for PR #2033 still fail before job steps. On exact source
+   head `6c54d3c2b2b24c1597fddabcbe0bf98aba074484`, full ci run
+   `40358382678` has Maven test/AOT/ref64/hybrid/polyglot jobs at zero steps;
+   fast-ci `40358382787`, Graal conformance `40358382564`, and synthetic
+   smoke `40358382965` are likewise zero-step. These are
+   admission/infrastructure evidence only and are not implementation failures
+   or passing tests.
 
 Therefore **no private source transfer, mirror branch, source-bearing carrier
 commit, authorization ref, or source-bearing workflow rerun is permitted by
