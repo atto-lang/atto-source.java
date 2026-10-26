@@ -45,6 +45,23 @@ public final class NativeIo {
         return Files.exists(path);
     }
 
+    /** Byte size of one regular file under the caller's READ capability. */
+    public static long fileSize(OresContext context, String rawPath) {
+        Path path = canonicalExistingPath(rawPath);
+        context.requirePermission(
+                RuntimePermissions.Permission.READ,
+                path.toString(),
+                "fs.file_size_async");
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("fs.file_size_async requires regular file: " + path);
+        }
+        try {
+            return Files.size(path);
+        } catch (IOException failure) {
+            throw ioFailure("file size", path, failure);
+        }
+    }
+
     /**
      * Bounded, sorted immediate child names. This is deliberately NOT a path
      * walker: the guest checks each next component with is_symlink and is_dir.
