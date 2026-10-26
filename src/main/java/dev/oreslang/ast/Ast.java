@@ -61,6 +61,14 @@ public final class Ast {
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
 
+    /** Per-actor physical turn ceiling; aggregate transport concurrency remains separate. */
+    public enum MaxActorThreads {
+        LOW(1), MEDIUM(2), HIGH(3);
+        private final int value;
+        MaxActorThreads(int value) { this.value = value; }
+        public int value() { return value; }
+    }
+
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
     }
@@ -430,16 +438,31 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            MaxActorThreads maxActorThreads) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            maxActorThreads = java.util.Objects.requireNonNull(maxActorThreads);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
+            if (actorKind == ActorKind.NONE && maxActorThreads != MaxActorThreads.LOW)
+                throw new IllegalArgumentException("ordinary classes cannot request parallel actor turns");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Compatibility constructor for transport-aware callers predating physical-turn policy. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, MaxActorThreads.LOW);
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */
@@ -450,7 +473,7 @@ public final class Ast {
                          List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, genericParameters,
                     parents, interfaces, fields, constructor, methods,
-                    ActorConcurrency.serial(ActorTransport.GENERIC));
+                    ActorConcurrency.serial(ActorTransport.GENERIC), MaxActorThreads.LOW);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
