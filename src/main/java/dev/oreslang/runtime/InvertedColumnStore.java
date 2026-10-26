@@ -178,8 +178,8 @@ public final class InvertedColumnStore implements AutoCloseable {
     public synchronized Handle handleAt(int rowIndex) {
         open();
         if (rowIndex < 0 || rowIndex >= length) {
-            throw new IndexOutOfBoundsException(
-                    "inverted row index " + rowIndex + " outside [0," + length + ")");
+            throw new IllegalArgumentException(
+                    "inverted row index " + rowIndex + " outside length " + length);
         }
         int slot = rowSlots[rowIndex];
         if (slot < 0 || slot >= slotCount
