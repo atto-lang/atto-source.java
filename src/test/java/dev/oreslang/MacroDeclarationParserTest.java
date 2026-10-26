@@ -231,7 +231,7 @@ final class MacroDeclarationParserTest {
 
         assertTrue(failure.getMessage().contains("'quote' is reserved"),
                 failure::toString);
-        assertTrue(failure.getMessage().contains("compile-time macro quotation"),
+        assertTrue(failure.getMessage().contains("compile-time macro intrinsic"),
                 failure::toString);
     }
 
@@ -279,6 +279,34 @@ final class MacroDeclarationParserTest {
     }
 
     @Test
+    void identifierIntrinsicsCannotBeShadowedInsideMacroScope() {
+        for (String intrinsic : new String[]{"hygienic", "capture_fnc"}) {
+            IllegalArgumentException parameter = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("""
+                            define macro bad(Identifier %s) -> Syntax<Expr> {
+                                return %s(%s);
+                            }
+                            """.formatted(intrinsic, intrinsic, intrinsic)));
+            assertTrue(parameter.getMessage().contains("'" + intrinsic + "' is reserved"),
+                    parameter::toString);
+
+            IllegalArgumentException local = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("""
+                            define macro bad(Identifier value) -> Syntax<Expr> {
+                                const %s = value;
+                                return %s(value);
+                            }
+                            """.formatted(intrinsic, intrinsic)));
+            assertTrue(local.getMessage().contains("'" + intrinsic + "' is reserved"),
+                    local::toString);
+            assertTrue(local.getMessage().contains("cannot be rebound"),
+                    local::toString);
+        }
+    }
+
+    @Test
     void quoteAndUnquoteRemainOrdinaryRuntimeNamesOutsideMacroScope() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 fnc quote(int value) -> int {
@@ -289,8 +317,16 @@ final class MacroDeclarationParserTest {
                     return value;
                 }
 
+                fnc hygienic(int value) -> int {
+                    return value;
+                }
+
+                fnc capture_fnc(int value) -> int {
+                    return value;
+                }
+
                 fnc answer() -> int {
-                    return quote(unquote(42));
+                    return hygienic(capture_fnc(quote(unquote(42))));
                 }
                 """));
     }
