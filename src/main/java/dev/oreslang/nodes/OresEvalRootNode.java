@@ -20,6 +20,7 @@ import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.TaskPipeline;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
@@ -5050,11 +5051,104 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /** The direct producer, not an eagerly invoked intermediate stage. */
+        private Ast.Expr pureFuturePipeInput(Ast.CallExpr pipe) {
+            Ast.Expr upstream = pipe;
+            int depth = 0;
+            while (upstream instanceof Ast.CallExpr stage
+                    && TypeChecker.CheckedPureFuturePipe.lookup(stage)) {
+                if (++depth > 128) throw new IllegalStateException("checked pipeline exceeds 128 stages");
+                upstream = stage.arguments().getFirst();
+            }
+            return upstream;
+        }
+
+        /**
+         * Lower an entire checked chain into one scheduler Task. Its input is
+         * a borrowed observation: cancellation must not revoke that Future.
+         * No stage arguments, borrows, effects or actor continuations are
+         * admitted by this initial proof.
+         */
+        private Object startPureFuturePipe(Ast.CallExpr pipe, Object upstream) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "source Future pipeline actor affinity has not been proven");
+            }
+            if (!(upstream instanceof OresFuture<?> input)) {
+                throw new IllegalStateException(
+                        "checked Future pipeline producer did not yield a Future");
+            }
+            List<Ast.CallExpr> backwards = new ArrayList<>();
+            Ast.Expr current = pipe;
+            while (current instanceof Ast.CallExpr stage
+                    && TypeChecker.CheckedPureFuturePipe.lookup(stage)) {
+                if (backwards.size() >= 128) {
+                    throw new IllegalStateException("checked pipeline exceeds 128 stages");
+                }
+                backwards.add(stage);
+                current = stage.arguments().getFirst();
+            }
+            List<TaskPipeline.Stage> stages = new ArrayList<>(backwards.size());
+            for (int i = backwards.size() - 1; i >= 0; i--) {
+                Ast.CallExpr call = backwards.get(i);
+                if (!(call.callee() instanceof Ast.NameExpr name)
+                        || call.arguments().size() != 1) {
+                    throw new IllegalStateException("checked Future stage shape changed");
+                }
+                Ast.FunctionDecl target = TypeChecker.CheckedPureFuturePipe.target(call);
+                if (target == null || !target.name().equals(name.name())
+                        || target.parameters().size() != 1) {
+                    throw new IllegalStateException(
+                            "checked Future stage declaration proof is missing or incompatible");
+                }
+                // Invoke the exact AST declaration admitted by the type checker:
+                // no late name/arity lookup may substitute a different callable.
+                // An async stage creates work owned by this pipeline. Mark that
+                // Future owned so pipeline cancellation revokes it instead of
+                // merely detaching as it does from the borrowed input Future.
+                stages.add(value -> {
+                    Object produced = invoke(functionInvocation(target, List.of(value)));
+                    if (target.async()) {
+                        if (!(produced instanceof OresFuture<?> future)) {
+                            throw new IllegalStateException(
+                                    "checked async Future stage did not produce a Future");
+                        }
+                        return TaskPipeline.owned(future);
+                    }
+                    return produced;
+                });
+            }
+            OresScheduler scheduler = OresScheduler.current();
+            if (scheduler == null) scheduler = context.vm().rootScheduler();
+            return TaskPipeline.<Object>startInCurrentTaskOrRoot(
+                    scheduler, input, stages).result();
+        }
+
         private void evalSuspendableCall(
                 SourceTask task,
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (TypeChecker.CheckedPureFuturePipe.lookup(call)) {
+                if (ActorRuntime.inActorExecution()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "source Future pipeline actor affinity has not been proven"));
+                    return;
+                }
+                evalSuspendableExpr(task, pureFuturePipeInput(call), env,
+                        (t, source, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(t, startPureFuturePipe(call, source), null);
+                            } catch (RuntimeException | Error loweringFailure) {
+                                continuation.accept(t, null, loweringFailure);
+                            }
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -7535,6 +7629,14 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (TypeChecker.CheckedPureFuturePipe.lookup(call)) {
+                    if (ActorRuntime.inActorExecution()) {
+                        throw new IllegalStateException(
+                                "source Future pipeline actor affinity has not been proven");
+                    }
+                    Object source = eval(pureFuturePipeInput(call), env);
+                    return startPureFuturePipe(call, source);
+                }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
