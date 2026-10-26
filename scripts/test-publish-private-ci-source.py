@@ -124,6 +124,57 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "#127 remains unresolved"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_blocking_p0_incidents_reject_not_planned_closure(self):
+        states = {
+            22: ("closed", "not_planned"),
+            77: ("closed", "completed"),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#22 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[22] += 1
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_127_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[127] += 1
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_repository_identity_drift(self):
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(
+                repository_id=pub.BLOCKING_INCIDENT_REPOSITORY_ID + 1
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub.subprocess, "run") as run,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT("zed-pkg-test/java-app", self.root)
+            incidents.assert_not_called()
+            run.assert_not_called()
+            api.assert_not_called()
+
     def test_blocking_p0_incidents_reject_open_issue_171(self):
         states = {
             22: ("closed", "completed"),
@@ -188,57 +239,6 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
-    def test_blocking_p0_incidents_reject_not_planned_closure(self):
-        states = {
-            22: ("closed", "not_planned"),
-            77: ("closed", "completed"),
-        }
-        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
-            with self.assertRaisesRegex(pub.Denied, "#22 remains unresolved"):
-                ORIGINAL_REQUIRE_RESOLVED()
-
-    def test_blocking_p0_incidents_reject_issue_identity_drift(self):
-        ids = dict(pub.BLOCKING_INCIDENT_IDS)
-        ids[22] += 1
-        with patch.object(
-            pub, "gh_api",
-            side_effect=self.incident_api(issue_ids=ids),
-        ):
-            with self.assertRaisesRegex(pub.Denied, "incident identity"):
-                ORIGINAL_REQUIRE_RESOLVED()
-
-    def test_blocking_p0_incidents_reject_issue_127_identity_drift(self):
-        ids = dict(pub.BLOCKING_INCIDENT_IDS)
-        ids[127] += 1
-        with patch.object(
-            pub, "gh_api",
-            side_effect=self.incident_api(issue_ids=ids),
-        ):
-            with self.assertRaisesRegex(pub.Denied, "incident identity"):
-                ORIGINAL_REQUIRE_RESOLVED()
-
-    def test_blocking_p0_incidents_reject_repository_identity_drift(self):
-        with patch.object(
-            pub, "gh_api",
-            side_effect=self.incident_api(
-                repository_id=pub.BLOCKING_INCIDENT_REPOSITORY_ID + 1
-            ),
-        ):
-            with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
-                ORIGINAL_REQUIRE_RESOLVED()
-
-    def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
-        with (
-            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
-            patch.object(pub.subprocess, "run") as run,
-            patch.object(pub, "gh_api") as api,
-        ):
-            with self.assertRaisesRegex(pub.Denied, "quarantined"):
-                ORIGINAL_REQUIRE_PREFLIGHT("zed-pkg-test/java-app", self.root)
-            incidents.assert_not_called()
-            run.assert_not_called()
-            api.assert_not_called()
-
     def test_quarantined_recovery_carrier_rejected_before_any_source_access(self):
         with (
             patch.object(pub, "require_resolved_blocking_incidents") as incidents,
@@ -283,6 +283,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(pub.Denied, "blocking incident"):
                 ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
+            run.assert_not_called()
+
+    def test_preflight_treats_checkout_guard_as_data_only(self):
+        digest = b"x" * 32
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(
+                pub, "checked_policy_approval",
+                return_value=(digest, 246810),
+            ) as policy,
+            patch.object(pub, "checked_repo", return_value={"id": 246810}) as repo,
+            patch.object(pub.subprocess, "run") as run,
+        ):
+            ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
+            incidents.assert_called_once_with()
+            policy.assert_called_once_with(self.root, "trusted/ci")
+            repo.assert_called_once_with("trusted/ci", 246810)
             run.assert_not_called()
 
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
@@ -411,6 +428,42 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 A,
             )
 
+    def test_origin_rejects_main_move_during_attestation(self):
+        api, _ = self.verified_origin_api(protected=True)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        calls = [0]
+        def moved(route, method="GET", payload=None):
+            if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
+                calls[0] += 1
+                if calls[0] == 2:
+                    return {"name": "main", "protected": True,
+                            "commit": {"sha": B}}
+            return api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=moved):
+            with self.assertRaisesRegex(pub.Denied, "changed during"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+        self.assertEqual(calls[0], 2)
+
+    def test_origin_rejects_protection_change_during_attestation(self):
+        api, _ = self.verified_origin_api(protected=True, approvals=2)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        calls = [0]
+        def changed(route, method="GET", payload=None):
+            if route.endswith("/branches/main/protection"):
+                calls[0] += 1
+                result = api(route, method, payload)
+                if calls[0] == 2:
+                    result = dict(result)
+                    reviews = dict(result["required_pull_request_reviews"])
+                    reviews["required_approving_review_count"] = 1
+                    result["required_pull_request_reviews"] = reviews
+                return result
+            return api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed):
+            with self.assertRaisesRegex(pub.Denied, "protection changed during"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+        self.assertEqual(calls[0], 2)
+
     def test_origin_rejects_source_repository_id_replacement(self):
         api, _ = self.verified_origin_api(
             source_id=pub.SOURCE_REPOSITORY_ID + 1
@@ -445,6 +498,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=api):
             with self.assertRaisesRegex(pub.Denied, "independent security owner"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_mixed_independent_and_author_codeowners(self):
+        mixed = (
+            "\n".join(path + " @ORESoftware @the1mills"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n"
+        ).encode("utf-8")
+        api, _ = self.verified_origin_api(codeowners_file=mixed)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "solely owned"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_protection_fingerprint_handles_duplicate_context_app_ids(self):
+        api, _ = self.verified_origin_api(
+            contexts=[],
+            named_checks=[
+                {"context": "private-ci-gate", "app_id": None},
+                {"context": "private-ci-gate", "app_id": 15368},
+            ],
+        )
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            self.assertEqual(
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
+                A,
+            )
 
     def test_origin_rejects_nonterminal_security_codeowners(self):
         valid = (
@@ -561,7 +641,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     collect.assert_not_called()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_protected_origin_verification_before_and_after_upload(self):
+    def test_protected_origin_verification_before_every_write(self):
         api, routes = self.verified_origin_api(protected=True)
         with patch.object(pub, "verify_protected_origin",
                           side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
@@ -571,7 +651,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual((sha, count), (A, 1))
         branch_reads = [r for r in routes
                         if r == "repos/"+pub.SOURCE_REPO+"/branches/main"]
-        self.assertEqual(len(branch_reads), 2)
+        # Every attestation reads main twice (start/end), and publish performs
+        # one initial attestation plus one before each of five writes.
+        self.assertEqual(len(branch_reads), 12)
+        protection_reads = [r for r in routes
+                            if r == "repos/"+pub.SOURCE_REPO
+                            +"/branches/main/protection"]
+        self.assertEqual(len(protection_reads), 12)
 
     def test_protected_origin_recheck_rejects_last_minute_revocation(self):
         api, routes = self.verified_origin_api(protected=True)
@@ -579,7 +665,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def revoke(route, method="GET", payload=None):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
                 calls[0] += 1
-                if calls[0] == 2:
+                # Reads 1-2 are the initial stable attestation. Revoke at the
+                # start of the per-write attestation before the first blob.
+                if calls[0] == 3:
                     return {"name": "main", "protected": False,
                             "commit": {"sha": A}}
             return api(route, method, payload)
@@ -589,9 +677,44 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(pub.Denied, "not protected"):
                     pub.publish("trusted/ci", self.source,
                                 "ci/oreslang-test", self.root, A)
-        self.assertEqual(calls[0], 2)
+        self.assertEqual(calls[0], 3)
         self.assertFalse(any(r == "repos/trusted/ci/git/refs"
                              for m, r, _ in self.route_calls if m == "POST"))
+
+    def test_protected_origin_revocation_before_first_write_blocks_all_posts(self):
+        calls = [0]
+        def authority(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] > 1:
+                raise pub.Denied("source main is not protected; CODEOWNER approval is unenforced")
+            return A
+        with patch.object(pub, "verify_protected_origin", side_effect=authority):
+            with self.assertRaisesRegex(pub.Denied, "not protected"):
+                self.publish()
+        self.assertGreaterEqual(calls[0], 2)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_protected_origin_revocation_after_blob_blocks_next_write(self):
+        original = self.fake_api
+        revoked = [False]
+        def api(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                revoked[0] = True
+            return result
+        def authority(*args, **kwargs):
+            if revoked[0]:
+                raise pub.Denied("source main is not protected; CODEOWNER approval is unenforced")
+            return A
+        with patch.object(pub, "verify_protected_origin", side_effect=authority):
+            with patch.object(pub, "gh_api", side_effect=api):
+                with self.assertRaisesRegex(pub.Denied, "not protected"):
+                    pub.publish("trusted/ci", self.source,
+                                "ci/oreslang-test", self.root, A)
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_git_tree_proof_exactly_matches_all_local_files(self):
         data = (self.source / "hello.ores").read_bytes()
