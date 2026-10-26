@@ -52,4 +52,48 @@ final class ExplicitExportIncrementalAbiTest {
         assertTrue(second.rebuilt("main.ores"),
                 "external export alias changes are source ABI changes and must invalidate dependents");
     }
+    @Test
+    void changingExplicitlyExportedConstantInvalidatesImporterWithoutMetadataEncoding() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        String importer = """
+                import * as dep from "./lib.ores";
+                pub routine main(): void { return; }
+                """;
+
+        Map<String, String> first = new LinkedHashMap<>();
+        first.put("lib.ores", """
+                export const answer;
+                const int answer = 41;
+                """);
+        first.put("main.ores", importer);
+        assertTrue(compiler.compile(first).rebuilt("main.ores"));
+
+        Map<String, String> second = new LinkedHashMap<>();
+        second.put("lib.ores", """
+                export const answer;
+                const int answer = 42;
+                """);
+        second.put("main.ores", importer);
+        IncrementalCompiler.BuildResult result = compiler.compile(second);
+        assertTrue(result.rebuilt("lib.ores"));
+        assertTrue(result.rebuilt("main.ores"),
+                "constant value changes must conservatively invalidate dependents");
+    }
+
+    @Test
+    void unchangedImplicitPublicConstantDoesNotPreventIncrementalReuse() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("lib.ores", "pub const int answer = 42;");
+        sources.put("main.ores", """
+                import * as dep from "./lib.ores";
+                pub routine main(): void { return; }
+                """);
+
+        assertTrue(compiler.compile(sources).rebuilt("main.ores"));
+        IncrementalCompiler.BuildResult cached = compiler.compile(sources);
+        assertTrue(cached.reused().contains("lib.ores"));
+        assertTrue(cached.reused().contains("main.ores"));
+    }
+
 }
