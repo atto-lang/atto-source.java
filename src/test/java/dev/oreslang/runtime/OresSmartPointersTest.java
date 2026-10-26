@@ -133,6 +133,43 @@ final class OresSmartPointersTest {
     }
 
     @Test
+    void weakUpgradeAndCloseOnSameHandleAreSerialized() throws Exception {
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            for (int iteration = 0; iteration < 512; ++iteration) {
+                var owner = OresSmartPointers.arc(42);
+                var weak = owner.downgrade();
+                var start = new CountDownLatch(1);
+                var upgradeFuture = workers.submit(() -> {
+                    start.await();
+                    try {
+                        return weak.upgrade().orElse(null);
+                    } catch (IllegalStateException closedBeforeUpgrade) {
+                        return null;
+                    }
+                });
+                var closeFuture = workers.submit(() -> {
+                    start.await();
+                    weak.close();
+                    return null;
+                });
+                start.countDown();
+                var upgraded = upgradeFuture.get(10, TimeUnit.SECONDS);
+                closeFuture.get(10, TimeUnit.SECONDS);
+                if (upgraded != null) {
+                    assertEquals(42, upgraded.value().intValue());
+                    upgraded.close();
+                }
+                assertTrue(weak.closed());
+                assertThrows(IllegalStateException.class, weak::upgrade);
+                owner.close();
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void rcIsCarrierLocalAndWeakDoesNotKeepPayloadAlive() throws Exception {
         var rc = OresSmartPointers.rc("local");
         var clone = rc.retain();
