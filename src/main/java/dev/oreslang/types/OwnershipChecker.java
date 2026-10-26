@@ -1564,6 +1564,42 @@ public final class OwnershipChecker {
                 // loan cannot be bypassed by holder.items.add(...) or set(...).
                 memberReceiverType = borrowPlace(member.receiver(), scope).type();
             }
+            if (memberReceiverType != null
+                    && memberReceiverType.name().equals("ActorRef")
+                    && (member.member().equals("send")
+                            || member.member().equals("send_async"))) {
+                // Actor mailbox submission is an ownership boundary. Evaluate
+                // the capability as a read, but transfer affine payload
+                // ownership at the send/send_async call itself rather than at
+                // a later await. This matches Task submit-time ownership and
+                // prevents a pending Future from retaining a live caller loan.
+                checkExpr(member.receiver(), scope, false);
+                if (call.arguments().size() != 1) {
+                    throw error("ActorRef." + member.member()
+                            + " expects exactly one mailbox value");
+                }
+                ValueInfo payload = checkExpr(
+                        call.arguments().getFirst(),
+                        scope,
+                        true);
+                if (containsMutexGuardType(payload.type)) {
+                    throw error("ActorRef." + member.member()
+                            + " cannot transport MutexGuard");
+                }
+                if (isBorrowValue(payload)) {
+                    throw error("ActorRef." + member.member()
+                            + " cannot transport a borrowed reference; "
+                            + "mailbox payloads must own/copy/share their data");
+                }
+                Ast.TypeRef result = member.member().equals("send_async")
+                        ? new Ast.TypeRef(
+                                "Future",
+                                List.of(Ast.TypeRef.simple("void")),
+                                false)
+                        : Ast.TypeRef.simple("void");
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+
             if (memberReceiverType != null) {
                 Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
                         ? memberReceiverType.borrowedTarget() : memberReceiverType;
