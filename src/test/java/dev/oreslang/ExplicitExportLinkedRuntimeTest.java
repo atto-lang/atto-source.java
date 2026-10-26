@@ -265,6 +265,40 @@ final class ExplicitExportLinkedRuntimeTest {
     }
 
 
+
+    @Test
+    void linkedClassAliasRewritesItsOwnPublicSignatureIdentity() throws Exception {
+        Path lib = temp.resolve("self-type.ores");
+        Path main = temp.resolve("self-type-main.ores");
+
+        Files.writeString(lib, """
+                export class InternalBox as Box;
+
+                define class InternalBox as
+                  pub constructor() {
+                    return;
+                  }
+
+                  pub identity(): InternalBox {
+                    return self;
+                  }
+                end
+                """);
+
+        Files.writeString(main, """
+                import class Box from "./self-type.ores";
+
+                pub fnc main(): void {
+                  val Box first = new Box();
+                  val Box second = first.identity();
+                  return;
+                }
+                """);
+
+        LinkedProgramRunner.validate(main);
+    }
+
+
     @Test
     void inlinePubAndExplicitAliasExposeBothNames() throws Exception {
         Path lib = temp.resolve("both.ores");
