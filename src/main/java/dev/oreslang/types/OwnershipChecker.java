@@ -251,9 +251,9 @@ public final class OwnershipChecker {
                 for (Ast.FieldDecl field : klass.fields()) {
                     if (field.initializer() == null) continue;
                     ValueInfo value = checkExpr(field.initializer(), initializerScope, true);
-                    if (isBorrowValue(value)) {
+                    if (isBorrowValue(value) || containsBorrowType(value.type)) {
                         throw error("class field '" + klass.name() + "." + field.name()
-                                + "' cannot store a borrowed initializer result");
+                                + "' cannot store a borrowed initializer result (including nested borrows)");
                     }
                     if (containsMutexGuardType(value.type)) {
                         throw error("class field '" + klass.name() + "." + field.name()
@@ -510,7 +510,8 @@ public final class OwnershipChecker {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot yield while holding a MutexGuard; release the guard before suspension");
             }
-            if (scope.hasLiveBorrow()) {
+            if (scope.hasLiveBorrow() || scope.visibleStates().stream().anyMatch(
+                    state -> !state.moved && containsBorrowType(state.type))) {
                 throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
             }
             ValueInfo value = checkExpr(yielded.value(), scope, true);

@@ -55,6 +55,16 @@ final class StaticBorrowEscapeBoundaryTest {
     }
 
     @Test
+    void generatorCannotSuspendWithBorrowHiddenInsideParameter() {
+        rejects("""
+                fnc gen* leaked(Option<borrow int> wrapped): Iterator<int> {
+                  yield 1;
+                  return;
+                }
+                """, "cannot yield while a borrow is live");
+    }
+
+    @Test
     void nestedBorrowedReturnCannotEscapeAsOwnedWrapper() {
         rejects("""
                 fnc leaked(Option<borrow int> borrowed): Option<borrow int> {
