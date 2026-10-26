@@ -205,7 +205,23 @@ public final class IncrementalCompiler {
                 }
 
                 String localName = ImportRules.localName(imported, externalName);
-                if (linked.putIfAbsent(localName, resolved) != null) {
+                // The importer consumes a source-export-authorized public view,
+                // not the declaration-site spelling/visibility. Preserve the
+                // original members and constructor visibility so exporting the
+                // class does not export private members or constructors.
+                Ast.ClassDecl linkedView = new Ast.ClassDecl(
+                        localName,
+                        Ast.Visibility.PUBLIC,
+                        resolved.isAbstract(),
+                        resolved.actorKind(),
+                        resolved.genericParameters(),
+                        resolved.parents(),
+                        resolved.interfaces(),
+                        resolved.fields(),
+                        resolved.constructor(),
+                        resolved.methods(),
+                        resolved.actorConcurrency());
+                if (linked.putIfAbsent(localName, linkedView) != null) {
                     throw new IllegalArgumentException(
                             "duplicate linked class import binding '" + localName + "'");
                 }
@@ -277,8 +293,15 @@ public final class IncrementalCompiler {
                 validatePortableImportedContract(match, targetId);
 
                 String localName = ImportRules.localName(imported, externalName);
-                Ast.InterfaceDecl previous = result.putIfAbsent(localName, match);
-                if (previous != null && previous != match) {
+                Ast.InterfaceDecl linkedView = new Ast.InterfaceDecl(
+                        localName,
+                        Ast.Visibility.PUBLIC,
+                        match.genericParameters(),
+                        match.parents(),
+                        match.members(),
+                        true);
+                Ast.InterfaceDecl previous = result.putIfAbsent(localName, linkedView);
+                if (previous != null) {
                     throw new IllegalArgumentException(
                             "duplicate imported contract metadata for local name '"
                                     + localName + "'");
