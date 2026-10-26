@@ -147,6 +147,35 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void contextualSymbolCanRemainAnUntypedLocalExportName() {
+        Ast.Program program = Parser.parse("""
+                export symbol as PublicSymbol;
+                fnc symbol(): int { return 1; }
+                """);
+
+        Ast.ExportDecl declaration = root(program).exports().getFirst();
+        assertEquals(null, declaration.kind());
+        assertEquals("symbol", declaration.items().getFirst().localName());
+        assertEquals("PublicSymbol", declaration.items().getFirst().externalName());
+
+        Ast.ExportBinding binding =
+                ExportResolver.resolve(program).bindingsFor(owner(program)).getFirst();
+        assertEquals(Ast.ExportKind.FNC, binding.localKind());
+        assertEquals("PublicSymbol", binding.externalName());
+    }
+
+    @Test
+    void contextualSymbolInsideGroupCanRemainAnOrdinaryLocalName() {
+        Ast.Program program = Parser.parse("""
+                export {symbol as PublicSymbol};
+                fnc symbol(): int { return 1; }
+                """);
+        Ast.ExportDecl declaration = root(program).exports().getFirst();
+        assertEquals(null, declaration.kind());
+        assertEquals("symbol", declaration.items().getFirst().localName());
+    }
+
+    @Test
     void resolvesForwardExportAndAliasAfterNamespaceCollection() {
         Ast.Program program = Parser.parse("""
                 export class Internal as Public;
