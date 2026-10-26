@@ -245,8 +245,14 @@ public final class ExportMetadataCollector {
         }
 
         if (declaration instanceof Ast.FieldDecl field) {
+            if (field.bindingKind() == Ast.BindingKind.CONST
+                    && field.visibility() == Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "[EXPORT_CONST_ABI_VALUE_UNENCODED] public const member metadata requires canonical compile-time value encoding");
+            }
             field(out, "binding");
             field(out, field.name());
+            field(out, field.visibility().name());
             field(out, field.bindingKind().name());
             flags(out, field.mutableReferent());
             appendType(out, field.type());
