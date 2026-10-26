@@ -18,10 +18,11 @@ final class MacroCanonicalIdentity {
     static final String SEMANTICS_ABI = "ores-macro-semantics-v1";
     static final int MAX_NODES = 4_096;
     static final int MAX_DEPTH = 128;
-    static final int MAX_CHARS = 1_048_576;
+    static final int MAX_BYTES = 1_048_576;
 
     private final StringBuilder out = new StringBuilder();
     private int nodes;
+    private long encodedBytes;
 
     private MacroCanonicalIdentity() {
         token("format", FORMAT);
@@ -233,30 +234,66 @@ final class MacroCanonicalIdentity {
         appendBounded(";");
     }
 
-    /** Length-prefix every free-form string so concatenation is unambiguous. */
+    /**
+     * Length-prefix every free-form string by UTF-8 byte count so the canonical
+     * digest stream is backend-neutral and unambiguous.
+     */
     private void token(String label, String value) {
         java.util.Objects.requireNonNull(label, "canonical label");
         java.util.Objects.requireNonNull(value, "canonical value");
-        long required = (long) decimalDigits(label.length()) + 1L + label.length()
-                + 1L + decimalDigits(value.length()) + 1L + value.length() + 1L;
-        if ((long) out.length() + required > MAX_CHARS) {
-            throw new IllegalArgumentException(
-                    "canonical macro content encoding exceeds "
-                            + MAX_CHARS + " characters");
-        }
-        out.append(label.length()).append(':').append(label)
+        int labelBytes = utf8Length(label);
+        int valueBytes = utf8Length(value);
+        long required = (long) decimalDigits(labelBytes) + 1L + labelBytes
+                + 1L + decimalDigits(valueBytes) + 1L + valueBytes + 1L;
+        reserveBytes(required);
+        out.append(labelBytes).append(':').append(label)
                 .append('=')
-                .append(value.length()).append(':').append(value)
+                .append(valueBytes).append(':').append(value)
                 .append(';');
     }
 
     private void appendBounded(String text) {
-        if ((long) out.length() + text.length() > MAX_CHARS) {
+        int bytes = utf8Length(text);
+        reserveBytes(bytes);
+        out.append(text);
+    }
+
+    private void reserveBytes(long bytes) {
+        if (bytes < 0 || encodedBytes + bytes > MAX_BYTES) {
             throw new IllegalArgumentException(
                     "canonical macro content encoding exceeds "
-                            + MAX_CHARS + " characters");
+                            + MAX_BYTES + " UTF-8 bytes");
         }
-        out.append(text);
+        encodedBytes += bytes;
+    }
+
+    private static int utf8Length(String value) {
+        long bytes = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch <= 0x7f) {
+                bytes += 1;
+            } else if (ch <= 0x7ff) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(ch)) {
+                if (++i >= value.length()
+                        || !Character.isLowSurrogate(value.charAt(i))) {
+                    throw new IllegalArgumentException(
+                            "canonical macro content contains invalid UTF-16");
+                }
+                bytes += 4;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException(
+                        "canonical macro content contains invalid UTF-16");
+            } else {
+                bytes += 3;
+            }
+            if (bytes > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(
+                        "canonical macro content string is too large");
+            }
+        }
+        return (int) bytes;
     }
 
     private static int decimalDigits(int value) {
