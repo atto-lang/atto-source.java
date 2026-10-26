@@ -191,6 +191,51 @@ public final class MacroIdentifierHygiene {
         return encodedTarget;
     }
 
+    /**
+     * Validate the complete checked function-capture expression.
+     *
+     * <p>Authorizing the receiver alone would let AST surgery reuse that
+     * receiver with a different member name. Capture authority therefore binds
+     * the exact MemberExpr identity, module receiver and captured declaration.</p>
+     */
+    public static synchronized CapturedFunction authorizedCapturedFunction(
+            Ast.MemberExpr expression) {
+        java.util.Objects.requireNonNull(expression, "captured function expression");
+        expunge();
+        Identity identity = IDENTITIES.get(new IdentityKey(expression, null));
+        if (!(expression.receiver() instanceof Ast.NameExpr receiver)) {
+            if (identity instanceof CapturedFunction) {
+                throw new IllegalArgumentException(
+                        "checked capture lost its compiler-internal module receiver");
+            }
+            return null;
+        }
+
+        String encodedTarget = Ast.internalModuleReferenceTarget(receiver.name());
+        if (encodedTarget == null) {
+            if (identity instanceof CapturedFunction) {
+                throw new IllegalArgumentException(
+                        "checked capture lost its compiler-internal module receiver");
+            }
+            return null;
+        }
+
+        if (!(identity instanceof CapturedFunction captured)) {
+            throw new IllegalArgumentException(
+                    "unauthorized compiler-internal module member reference; "
+                            + "checked capture authority binds the exact MemberExpr identity");
+        }
+        String authorizedTarget = authorizedInternalModuleReferenceTarget(receiver);
+        if (!captured.hygiene().callerModule().equals(authorizedTarget)
+                || !captured.name().equals(expression.member())
+                || captured.declarations().size() != 1
+                || !captured.declarations().getFirst().name().equals(expression.member())) {
+            throw new IllegalArgumentException(
+                    "checked capture member/declaration authority mismatch");
+        }
+        return captured;
+    }
+
     public static Ast.NameExpr generated(
             MacroSyntaxProvenance.HygieneIdentity hygiene,
             String hint,
