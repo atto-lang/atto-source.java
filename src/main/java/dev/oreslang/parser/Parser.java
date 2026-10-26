@@ -123,7 +123,7 @@ public final class Parser {
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
-        java.util.LinkedHashSet<String> rootExplicitlyPrivateNames = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> rootExplicitlyPrivateSymbols = new java.util.LinkedHashSet<>();
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
@@ -148,7 +148,7 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                 validateClassModifiers(modifiers);
-                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols,
                         parseClass(
                                 modifiers.visibility,
                                 modifiers.isAbstract,
@@ -165,7 +165,7 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols,
                         parseContract(modifiers.visibility), declarationPrefixStart);
                 continue;
             }
@@ -178,7 +178,7 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "interfaces");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols,
                         parseDefinedInterface(modifiers.visibility, INTERFACE), declarationPrefixStart);
                 continue;
             }
@@ -188,7 +188,7 @@ public final class Parser {
                 rejectUnloweredRuntimeEntityDeclaration();
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
-                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols,
                             parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix),
                             declarationPrefixStart);
                     continue;
@@ -210,7 +210,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "contracts");
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols,
                             parseContract(modifiers.visibility), declarationPrefixStart);
                     continue;
                 }
@@ -219,7 +219,7 @@ public final class Parser {
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                     validateClassModifiers(modifiers);
-                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols,
                             parseClass(
                                     modifiers.visibility,
                                     modifiers.isAbstract,
@@ -233,7 +233,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols,
                             parseDefinedInterface(modifiers.visibility, declarationKind), declarationPrefixStart);
                     continue;
                 }
@@ -242,7 +242,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "type aliases");
                     rejectCallableStructuralAnnotation(annotations, "type aliases");
                     rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols,
                             parseTypeAlias(modifiers.visibility), declarationPrefixStart);
                     continue;
                 }
@@ -251,7 +251,7 @@ public final class Parser {
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
             if (declaration == null) throw error(peek(), "expected module or top-level declaration");
-            addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames, declaration, declarationPrefixStart);
+            addRootDeclaration(rootDeclarations, rootExplicitlyPrivateSymbols, declaration, declarationPrefixStart);
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
@@ -261,7 +261,7 @@ public final class Parser {
                     List.of(),
                     List.of(),
                     rootExports,
-                    List.copyOf(rootExplicitlyPrivateNames),
+                    List.copyOf(rootExplicitlyPrivateSymbols),
                     rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
@@ -400,13 +400,13 @@ public final class Parser {
 
     private void addRootDeclaration(
             List<Ast.Decl> declarations,
-            java.util.Set<String> explicitlyPrivateNames,
+            java.util.Set<String> explicitlyPrivateSymbols,
             Ast.Decl declaration,
             int declarationPrefixStart) {
         declarations.add(declaration);
         String name = declarationName(declaration);
         if (hasExplicitPrivateModifierBeforeName(declarationPrefixStart, name)) {
-            explicitlyPrivateNames.add(name);
+            explicitlyPrivateSymbols.add(declarationPrivateKey(declaration));
         }
     }
 
@@ -425,6 +425,37 @@ public final class Parser {
         if (declaration instanceof Ast.InterfaceDecl d) return d.name();
         if (declaration instanceof Ast.FieldDecl d) return d.name();
         if (declaration instanceof Ast.TypeAliasDecl d) return d.name();
+        throw new IllegalStateException("unknown declaration kind " + declaration.getClass().getName());
+    }
+
+    private String declarationPrivateKey(Ast.Decl declaration) {
+        return declarationExportKind(declaration).name() + "\0" + declarationName(declaration);
+    }
+
+    private Ast.ExportKind declarationExportKind(Ast.Decl declaration) {
+        if (declaration instanceof Ast.ClassDecl d) {
+            return d.actorKind() == Ast.ActorKind.NONE
+                    ? Ast.ExportKind.CLASS
+                    : Ast.ExportKind.ACTOR;
+        }
+        if (declaration instanceof Ast.FunctionDecl d) {
+            return d.kind() == Ast.CallableKind.FNC
+                    ? Ast.ExportKind.FUNCTION
+                    : Ast.ExportKind.ROUTINE;
+        }
+        if (declaration instanceof Ast.InterfaceDecl d) {
+            return d.moduleContract()
+                    ? Ast.ExportKind.CONTRACT
+                    : Ast.ExportKind.INTERFACE;
+        }
+        if (declaration instanceof Ast.TypeAliasDecl) return Ast.ExportKind.TYPE;
+        if (declaration instanceof Ast.FieldDecl d) {
+            return switch (d.bindingKind()) {
+                case CONST -> Ast.ExportKind.CONST;
+                case VAL -> Ast.ExportKind.VAL;
+                case LET -> Ast.ExportKind.LET;
+            };
+        }
         throw new IllegalStateException("unknown declaration kind " + declaration.getClass().getName());
     }
 
@@ -512,7 +543,7 @@ public final class Parser {
         match(AS);
         List<Ast.ExportDecl> exports = new ArrayList<>();
         List<Ast.Decl> declarations = new ArrayList<>();
-        java.util.LinkedHashSet<String> explicitlyPrivateNames = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> explicitlyPrivateSymbols = new java.util.LinkedHashSet<>();
         List<ForwardType> enclosing = moduleForwards;
         List<ForwardType> forwards = new ArrayList<>();
         moduleForwards = forwards;
@@ -527,7 +558,7 @@ public final class Parser {
                     declarations.add(declaration);
                     if (hasExplicitPrivateModifierBeforeName(
                             lastModuleMemberPrefixStart, declarationName(declaration))) {
-                        explicitlyPrivateNames.add(declarationName(declaration));
+                        explicitlyPrivateSymbols.add(declarationPrivateKey(declaration));
                     }
                 }
             }
@@ -538,7 +569,7 @@ public final class Parser {
         }
         return new Ast.ModuleDecl(
                 name, annotations, contracts, exports,
-                List.copyOf(explicitlyPrivateNames), declarations);
+                List.copyOf(explicitlyPrivateSymbols), declarations);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
