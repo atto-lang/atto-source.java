@@ -346,6 +346,59 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "independent security owner"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
+    def test_checked_in_current_codeowners_matches_security_gate(self):
+        # Integration check against the real policy in this exact checkout.
+        policy = (MODULE.parent.parent / ".github" / "CODEOWNERS").read_bytes()
+        pub.require_security_codeowners(policy)
+
+    def test_security_codeowners_accepts_later_broad_security_rules(self):
+        rules = (
+            "\n".join(path + " @ORESoftware"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n/scripts/ @ORESoftware\n"
+            + "/.github/workflows/ @ORESoftware\n"
+        )
+        pub.require_security_codeowners(rules.encode("utf-8"))
+
+    def test_security_codeowners_rejects_last_matching_untrusted_owner(self):
+        rules = (
+            "\n".join(path + " @ORESoftware"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n* @the1mills\n"
+        )
+        with self.assertRaisesRegex(pub.Denied, "terminal"):
+            pub.require_security_codeowners(rules.encode("utf-8"))
+
+    def test_security_codeowners_rejects_mixed_security_owner_list(self):
+        rules = "\n".join(
+            path + (" @ORESoftware @the1mills"
+                    if path == "/scripts/publish-private-ci-source-v3.py"
+                    else " @ORESoftware")
+            for path in pub.SECURITY_CODEOWNER_PATHS
+        ) + "\n"
+        with self.assertRaisesRegex(pub.Denied, "unmodeled or unsafe"):
+            pub.require_security_codeowners(rules.encode("utf-8"))
+
+    def test_security_codeowners_rejects_unsupported_glob_override(self):
+        rules = (
+            "\n".join(path + " @ORESoftware"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n/scripts/** @the1mills\n"
+        )
+        with self.assertRaisesRegex(pub.Denied, "unmodeled or unsafe"):
+            pub.require_security_codeowners(rules.encode("utf-8"))
+
+    def test_security_codeowners_requires_path_specific_review(self):
+        rules = (
+            "* @ORESoftware\n"
+            + "\n".join(path + " @ORESoftware"
+                          for path in pub.SECURITY_CODEOWNER_PATHS
+                          if path != "/scripts/publish-private-ci-source-v3.py")
+            + "\n"
+        )
+        with self.assertRaisesRegex(pub.Denied, "exact private-export"):
+            pub.require_security_codeowners(rules.encode("utf-8"))
+
     def test_origin_rejects_nonterminal_security_codeowners(self):
         valid = (
             "\n".join(path + " @ORESoftware"
