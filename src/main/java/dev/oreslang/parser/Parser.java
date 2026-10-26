@@ -129,6 +129,7 @@ public final class Parser {
                 continue;
             }
             List<Ast.Annotation> annotations = parseAnnotations();
+            int declarationPrefixStart = current;
             Modifiers modifiers = parseModifiers();
 
             if (isContextualIdentifier("declare")) {
@@ -149,7 +150,7 @@ public final class Parser {
                                 modifiers.visibility,
                                 modifiers.isAbstract,
                                 modifiers.visibility != Ast.Visibility.PUBLIC),
-                        modifiers);
+                        declarationPrefixStart);
                 continue;
             }
 
@@ -162,7 +163,7 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
                 addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
-                        parseContract(modifiers.visibility), modifiers);
+                        parseContract(modifiers.visibility), declarationPrefixStart);
                 continue;
             }
 
@@ -175,7 +176,7 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
                 addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
-                        parseDefinedInterface(modifiers.visibility, INTERFACE), modifiers);
+                        parseDefinedInterface(modifiers.visibility, INTERFACE), declarationPrefixStart);
                 continue;
             }
 
@@ -186,7 +187,7 @@ public final class Parser {
                 if (match(ACTOR, ISOACTOR)) {
                     addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
                             parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix),
-                            modifiers);
+                            declarationPrefixStart);
                     continue;
                 }
                 if (modifiers.shared) {
@@ -207,7 +208,7 @@ public final class Parser {
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
                     addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
-                            parseContract(modifiers.visibility), modifiers);
+                            parseContract(modifiers.visibility), declarationPrefixStart);
                     continue;
                 }
                 if (match(CLASS)) {
@@ -220,7 +221,7 @@ public final class Parser {
                                     modifiers.visibility,
                                     modifiers.isAbstract,
                                     modifiers.visibility != Ast.Visibility.PUBLIC),
-                            modifiers);
+                            declarationPrefixStart);
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -230,7 +231,7 @@ public final class Parser {
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
                     addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
-                            parseDefinedInterface(modifiers.visibility, declarationKind), modifiers);
+                            parseDefinedInterface(modifiers.visibility, declarationKind), declarationPrefixStart);
                     continue;
                 }
                 if (match(TYPE)) {
@@ -239,7 +240,7 @@ public final class Parser {
                     rejectCallableStructuralAnnotation(annotations, "type aliases");
                     rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                     addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
-                            parseTypeAlias(modifiers.visibility), modifiers);
+                            parseTypeAlias(modifiers.visibility), declarationPrefixStart);
                     continue;
                 }
                 throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
@@ -247,7 +248,7 @@ public final class Parser {
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
             if (declaration == null) throw error(peek(), "expected module or top-level declaration");
-            addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames, declaration, modifiers);
+            addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames, declaration, declarationPrefixStart);
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
@@ -398,12 +399,21 @@ public final class Parser {
             List<Ast.Decl> declarations,
             java.util.Set<String> explicitlyPrivateNames,
             Ast.Decl declaration,
-            Modifiers modifiers) {
+            int declarationPrefixStart) {
         declarations.add(declaration);
-        if (modifiers.visibilitySeen
-                && modifiers.visibility == Ast.Visibility.PRIVATE) {
-            explicitlyPrivateNames.add(declarationName(declaration));
+        String name = declarationName(declaration);
+        if (hasExplicitPrivateModifierBeforeName(declarationPrefixStart, name)) {
+            explicitlyPrivateNames.add(name);
         }
+    }
+
+    private boolean hasExplicitPrivateModifierBeforeName(int start, String declarationName) {
+        for (int i = start; i < current; i++) {
+            Token token = tokens.get(i);
+            if (token.lexeme().equals(declarationName)) return false;
+            if (token.type() == PRIVATE) return true;
+        }
+        return false;
     }
 
     private String declarationName(Ast.Decl declaration) {
@@ -499,6 +509,7 @@ public final class Parser {
         match(AS);
         List<Ast.ExportDecl> exports = new ArrayList<>();
         List<Ast.Decl> declarations = new ArrayList<>();
+        java.util.LinkedHashSet<String> explicitlyPrivateNames = new java.util.LinkedHashSet<>();
         List<ForwardType> enclosing = moduleForwards;
         List<ForwardType> forwards = new ArrayList<>();
         moduleForwards = forwards;
@@ -508,15 +519,24 @@ public final class Parser {
                     exports.add(parseExportDecl());
                     continue;
                 }
+                int declarationPrefixStart = current;
                 Ast.Decl declaration = parseModuleMember();
-                if (declaration != null) declarations.add(declaration);
+                if (declaration != null) {
+                    declarations.add(declaration);
+                    if (hasExplicitPrivateModifierBeforeName(
+                            declarationPrefixStart, declarationName(declaration))) {
+                        explicitlyPrivateNames.add(declarationName(declaration));
+                    }
+                }
             }
             consume(END, "expected 'end' to close module " + name);
             validateForwardTypes(forwards, declarations, "module " + name);
         } finally {
             moduleForwards = enclosing;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, exports, List.of(), declarations);
+        return new Ast.ModuleDecl(
+                name, annotations, contracts, exports,
+                List.copyOf(explicitlyPrivateNames), declarations);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
