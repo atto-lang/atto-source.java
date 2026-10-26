@@ -102,8 +102,6 @@ public final class TypeChecker {
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
     private int loopDepth;
-    /** Lexical structured-concurrency depth for direct-call fail-closed checks. */
-    private int taskScopeDepth;
     private boolean inDiscardingSelectArm;
     // Scoped collector, active only while checking an unannotated Task block.
     private List<Type> inferredTaskReturnTypes;
@@ -1861,12 +1859,7 @@ public final class TypeChecker {
                         "task scope is not enabled inside actor execution until "
                                 + "actor quota/hot-reload structured-scope integration is proven");
             }
-            if (block.taskScope()) taskScopeDepth++;
-            try {
-                checkBlock(block.body(), env, generics, expectedReturn, self);
-            } finally {
-                if (block.taskScope()) taskScopeDepth--;
-            }
+            checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
         if (stmt instanceof Ast.BreakStmt) {
@@ -2520,11 +2513,6 @@ public final class TypeChecker {
                 Ast.FunctionDecl target = findFunction(functionName.name(), arity);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
-                    if (taskScopeDepth > 0 && target.generator()) {
-                        throw new IllegalArgumentException(
-                                "generator activation inside task scope is disabled until "
-                                        + "producer terminal/physical-retirement integration is proven");
-                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
@@ -2565,11 +2553,6 @@ public final class TypeChecker {
                         namespace.name() + "." + qualifiedCall.member(),
                         arity);
                 if (target != null) {
-                    if (taskScopeDepth > 0 && target.generator()) {
-                        throw new IllegalArgumentException(
-                                "generator activation inside task scope is disabled until "
-                                        + "producer terminal/physical-retirement integration is proven");
-                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
