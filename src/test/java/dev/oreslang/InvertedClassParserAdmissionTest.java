@@ -57,6 +57,22 @@ final class InvertedClassParserAdmissionTest {
     }
 
     @Test
+    void chainedBracketReadsWritesAndHandleSubscriptsStayUnloweredGuestSyntax() {
+        Ast.Program parsed = Parser.parse("""
+                define inverted class Particle as
+                    x: i32;
+                end
+                fnc probe(InvertedArray<Particle> rows, RowHandle<Particle> h, int i): int {
+                    rows[i].x = rows[h].x + 1;
+                    return rows[i].x;
+                }
+                """);
+        assertEquals(2, parsed.modules().getFirst().declarations().size());
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed),
+                "parser support for [] must not bypass the inverted-class lowering gate");
+    }
+
+    @Test
     void executableInvertedClassesFailClosedUntilSoaLowering() {
         for (String source : new String[] {
                 """
