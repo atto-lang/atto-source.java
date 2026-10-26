@@ -2257,6 +2257,56 @@ public final class TypeChecker {
         }
     }
 
+    private record PipeProtocolTypes(Type input, Type output) { }
+
+    private Type mergePipeProtocolDomain(
+            Type current, Type candidate, String direction, Named ownerType) {
+        if (candidate == null) return current;
+        if (current == null) return candidate;
+        if (!current.equals(candidate)) {
+            throw new IllegalArgumentException(
+                    "pipe stage " + ownerType + " inherits conflicting " + direction
+                            + " endpoint domains: " + current + " versus " + candidate);
+        }
+        return current;
+    }
+
+    private PipeProtocolTypes pipeProtocolsForClass(
+            Named classType, Set<Named> seen) {
+        if (!seen.add(classType)) return new PipeProtocolTypes(null, null);
+        Ast.ClassDecl klass = findClass(classType.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+            return new PipeProtocolTypes(null, null);
+        }
+
+        Type input = null;
+        Type output = null;
+        for (Ast.TypeRef interfaceRef : klass.interfaces()) {
+            if (!isBuiltinPipeEndpointInterface(interfaceRef.name())) continue;
+            Named endpoint = concreteClassReference(interfaceRef, klass, classType);
+            if (endpoint.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "invalid pipe endpoint protocol on " + klass.name());
+            }
+            Type payload = endpoint.arguments().getFirst();
+            if (endpoint.name().equals("HasInputChannel")) {
+                input = mergePipeProtocolDomain(input, payload, "input", classType);
+            } else {
+                output = mergePipeProtocolDomain(output, payload, "output", classType);
+            }
+        }
+
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Named parentType = concreteClassReference(parentRef, klass, classType);
+            PipeProtocolTypes inherited = pipeProtocolsForClass(parentType, seen);
+            input = mergePipeProtocolDomain(input, inherited.input(), "input", classType);
+            output = mergePipeProtocolDomain(output, inherited.output(), "output", classType);
+        }
+        return new PipeProtocolTypes(input, output);
+    }
+
     private PipeEndpointContracts.Endpoint pipeEndpointFor(Type raw) {
         Type type = deref(raw);
         if (!(type instanceof Named named)) {
@@ -2306,30 +2356,18 @@ public final class TypeChecker {
                     "pipe stage type " + type + " has invalid generic arity");
         }
 
-        Map<String, Type> bindings = classGenericBindings(klass, named);
-        Type input = null;
-        Type output = null;
-        Set<String> classGenerics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
-        for (Ast.TypeRef interfaceRef : klass.interfaces()) {
-            if (!isBuiltinPipeEndpointInterface(interfaceRef.name())) continue;
-            Type resolved = resolve(interfaceRef, classGenerics, self);
-            Type specialized = substituteGenerics(resolved, bindings);
-            if (!(specialized instanceof Named endpoint)
-                    || endpoint.arguments().size() != 1) {
-                throw new IllegalArgumentException(
-                        "invalid pipe endpoint protocol on " + klass.name());
-            }
-            Type payload = endpoint.arguments().getFirst();
-            if (interfaceRef.name().equals("HasInputChannel")) input = payload;
-            else output = payload;
+        PipeProtocolTypes protocols =
+                pipeProtocolsForClass(named, new LinkedHashSet<>());
+        if (protocols.input() != null && protocols.output() != null) {
+            return PipeEndpointContracts.transform(
+                    protocols.input(), protocols.output());
         }
-
-        if (input != null && output != null) {
-            return PipeEndpointContracts.transform(input, output);
+        if (protocols.input() != null) {
+            return PipeEndpointContracts.sink(protocols.input());
         }
-        if (input != null) return PipeEndpointContracts.sink(input);
-        if (output != null) return PipeEndpointContracts.source(output);
+        if (protocols.output() != null) {
+            return PipeEndpointContracts.source(protocols.output());
+        }
         throw new IllegalArgumentException(
                 "pipe stage type " + type
                         + " does not implement HasInputChannel<T> or HasOutputChannel<T>");
@@ -3745,6 +3783,23 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if (sumReceiver instanceof Named endpointProtocol
+                    && endpointProtocol.arguments().size() == 1
+                    && isBuiltinPipeEndpointInterface(endpointProtocol.name())) {
+                Type payload = endpointProtocol.arguments().getFirst();
+                if (endpointProtocol.name().equals("HasInputChannel")) {
+                    if (member.member().equals("input")) {
+                        return new Named("WriteChannel", List.of(payload));
+                    }
+                    throw new IllegalArgumentException(
+                            "unknown HasInputChannel member '" + member.member() + "'");
+                }
+                if (member.member().equals("output")) {
+                    return new Named("ReadChannel", List.of(payload));
+                }
+                throw new IllegalArgumentException(
+                        "unknown HasOutputChannel member '" + member.member() + "'");
+            }
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
@@ -8763,6 +8818,24 @@ public final class TypeChecker {
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
 
+    private boolean builtinPipeEndpointAssignable(
+            Named actual, Named expected) {
+        if (!isBuiltinPipeEndpointInterface(expected.name())
+                || expected.arguments().size() != 1) {
+            return false;
+        }
+
+        Type expectedPayload = expected.arguments().getFirst();
+        if (actual.name().equals("Channel") && actual.arguments().size() == 1) {
+            return actual.arguments().getFirst().equals(expectedPayload);
+        }
+
+        Ast.ClassDecl klass = findClass(actual.name());
+        return klass != null
+                && klass.actorKind() == Ast.ActorKind.NONE
+                && classTypeImplements(actual, expected, new LinkedHashSet<>());
+    }
+
     private boolean assignable(Type actual, Type expected) {
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
@@ -8806,6 +8879,12 @@ public final class TypeChecker {
 
         if (actual instanceof Record sourceShape && expected instanceof Record targetShape) {
             return structuralRecordAssignable(sourceShape, targetShape);
+        }
+
+        if (actual instanceof Named actualNamed
+                && expected instanceof Named expectedNamed
+                && builtinPipeEndpointAssignable(actualNamed, expectedNamed)) {
+            return true;
         }
 
         if (Types.isAssignable(actual, expected)) return true;
