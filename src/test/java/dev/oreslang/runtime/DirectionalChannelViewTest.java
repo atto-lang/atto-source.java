@@ -102,8 +102,9 @@ final class DirectionalChannelViewTest {
         // even while the one-slot registration budget is full.
         var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.read(reader))
                 .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        assertEquals(ChannelRuntime.SelectOperation.READ, selected.join().operation());
-        assertEquals(71, selected.join().value());
+        var delivered = selected.join();
+        assertEquals(ChannelRuntime.SelectOperation.READ, delivered.operation());
+        assertEquals(71, delivered.value());
         pendingWrite.join();
         assertEquals(0, channel.size());
         assertEquals(0, channel.pendingRegistrations());
@@ -123,6 +124,22 @@ final class DirectionalChannelViewTest {
         assertEquals(1, channel.pendingRegistrations());
         assertTrue(channel.input().tryWrite(83));
         assertEquals(83, nextRead.join());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void cancelledDirectionalWriteCannotPublishIntoLaterReader() {
+        var channel = new ChannelRuntime.Channel<Integer>(0, 1);
+        var pendingWrite = channel.input().writeAsync(101);
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(pendingWrite.cancel(false));
+        assertEquals(0, channel.pendingRegistrations());
+
+        assertTrue(channel.output().tryRead().isEmpty(),
+                "canceled write must not leave a phantom value");
+        var replacementWrite = channel.input().writeAsync(102);
+        assertEquals(102, channel.output().readAsync().join());
+        replacementWrite.join();
         assertEquals(0, channel.pendingRegistrations());
     }
 
