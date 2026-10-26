@@ -50,6 +50,7 @@ public final class OwnershipChecker {
     private final long taskCheckEpoch;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
+    private String currentLexicalModule;
     private boolean currentAsyncGenerator;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
@@ -189,9 +190,15 @@ public final class OwnershipChecker {
 
     private void validate(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+            String previousModule = currentLexicalModule;
+            currentLexicalModule = module.name();
+            try {
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
+                    else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+                }
+            } finally {
+                currentLexicalModule = previousModule;
             }
         }
     }
@@ -1670,8 +1677,7 @@ public final class OwnershipChecker {
                         kindOfType(callResult),
                         null);
             }
-            if (functions.containsKey(name.name())
-                    || ambiguousFunctions.contains(name.name())) {
+            if (resolveUnqualifiedFunctionKey(name.name()) != null) {
                 throw error(
                         "function " + name.name()
                                 + " has no overload accepting the supplied fixed argument shape");
@@ -3977,13 +3983,9 @@ public final class OwnershipChecker {
             String name,
             List<Ast.Expr> arguments,
             Scope scope) {
-        if (ambiguousFunctions.contains(name)) {
-            throw error(
-                    "ambiguous function " + name
-                            + "; qualify it with its module");
-        }
-        LinkedHashMap<Integer, Ast.FunctionDecl> family =
-                functions.get(name);
+        String familyKey = resolveUnqualifiedFunctionKey(name);
+        Map<Integer, Ast.FunctionDecl> family =
+                familyKey == null ? null : functions.get(familyKey);
         if (family == null) return null;
         List<FixedProductCallPlan.InputSlot> inputs =
                 callInputSlots(arguments, scope);
@@ -4162,6 +4164,17 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return false;
+    }
+
+    private String resolveUnqualifiedFunctionKey(String name) {
+        String module = currentLexicalModule == null
+                ? Parser.ROOT_MODULE
+                : currentLexicalModule;
+        String local = module + "." + name;
+        if (functions.containsKey(local)) return local;
+        String root = Parser.ROOT_MODULE + "." + name;
+        if (!root.equals(local) && functions.containsKey(root)) return root;
+        return null;
     }
 
     private Ast.FunctionDecl findFunction(String name, int arity) {
