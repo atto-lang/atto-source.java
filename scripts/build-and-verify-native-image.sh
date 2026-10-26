@@ -112,6 +112,13 @@ if ! cmp -s "$build_info_stdout" "$build_info_expected"; then
 fi
 cat "$build_info_stdout"
 
+# Byte-level provenance check for native stderr. AWK line parsing alone can
+# accept an embedded NUL or CR in a plausible capability/JIT message. The
+# specific checked-in fixtures use printable ASCII plus LF only.
+native_diagnostic_clean_bytes() {
+  LC_ALL=C tr -cd '\12\40-\176' < "$1" | cmp -s - "$1"
+}
+
 # Native guest smokes must have clean stderr as well as the expected stdout.
 # A zero exit plus correct stdout must not hide a runtime diagnostic on stderr.
 # The file is isolated per invocation; it is removed when the verifier exits.
@@ -221,6 +228,7 @@ fi
 # not proof of linked actor admission. Enforce one stderr record, anchored at
 # its beginning, so grep cannot find an isolated matching line in a traceback.
 if [ -s "$guest_stdout" ] ||
+   ! native_diagnostic_clean_bytes "$guest_stderr" ||
    ! LC_ALL=C awk '
      NR != 1 { bad=1; next }
      $0 !~ /^Oreslang isolate denies capability (SHARED_MEMORY|ACTOR_SHARE_READONLY)([[:space:]:]|$)/ { bad=1 }
@@ -317,18 +325,16 @@ if [ "$jit_status" -ne 2 ]; then
   exit 1
 fi
 case "$mode" in
-  aot) expected_jit_reason="This executable was built AOT-only; --mode=jit cannot enable runtime compilation." ;;
-  hybrid) expected_jit_reason="Native hybrid executables accept --mode=hybrid or --mode=aot, not JVM --mode=jit" ;;
+  aot) expected_jit_line="oreslang: This executable was built AOT-only; --mode=jit cannot enable runtime compilation. Rebuild with native-hybrid." ;;
+  hybrid) expected_jit_line="oreslang: Native hybrid executables accept --mode=hybrid or --mode=aot, not JVM --mode=jit" ;;
 esac
-# Refusal must originate at the beginning of the one stderr diagnostic.
-# A substring within an unrelated CLI error, or a separate legitimate-looking
-# line after a parse error, cannot establish that --mode=jit was refused for
-# this binary's embedded execution policy.
-expected_jit_prefix="oreslang: $expected_jit_reason"
+# Require the complete single diagnostic, not a prefix followed by unrelated
+# fatal text. Also reject NUL/CR/control bytes that text-line AWK can ignore.
 if [ -s "$guest_stdout" ] ||
-   ! LC_ALL=C awk -v expected="$expected_jit_prefix" '
+   ! native_diagnostic_clean_bytes "$guest_stderr" ||
+   ! LC_ALL=C awk -v expected="$expected_jit_line" '
      NR != 1 { bad=1; next }
-     index($0, expected) != 1 { bad=1 }
+     $0 != expected { bad=1 }
      END { if (NR != 1 || bad) exit 1 }
    ' "$guest_stderr"; then
   echo "native executable refused JIT without the required build-mode diagnostic" >&2
