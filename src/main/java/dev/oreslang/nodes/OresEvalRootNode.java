@@ -5849,7 +5849,7 @@ public final class OresEvalRootNode extends RootNode {
                     payload);
         }
 
-        private ChannelRuntime.SelectSet asSelectSet(private ChannelRuntime.SelectSet asSelectSet(Object value) {
+        private ChannelRuntime.SelectSet asSelectSet(Object value) {
             if (value instanceof ChannelRuntime.SelectSet set) return set;
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
