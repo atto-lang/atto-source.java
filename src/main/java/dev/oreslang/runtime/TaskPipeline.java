@@ -213,11 +213,20 @@ public final class TaskPipeline {
             boolean ownsInput) {
         Objects.requireNonNull(starter, "starter");
         Objects.requireNonNull(input, "input");
-        Objects.requireNonNull(stages, "stages");
-        if (stages.size() > 128) {
-            throw new IllegalArgumentException("pipeline exceeds 128 stages");
+        // A compiler-lowered rt take has already transferred this Future.
+        // Rejection while validating the stage container must retire the
+        // moved input just like a later scheduler admission failure does.
+        final List<Stage> chain;
+        try {
+            Objects.requireNonNull(stages, "stages");
+            if (stages.size() > 128) {
+                throw new IllegalArgumentException("pipeline exceeds 128 stages");
+            }
+            chain = List.copyOf(stages);
+        } catch (RuntimeException | Error validationFailure) {
+            if (ownsInput) input.cancel(false);
+            throw validationFailure;
         }
-        List<Stage> chain = List.copyOf(stages);
 
         AtomicReference<OresFuture<?>> ownedStage = new AtomicReference<>();
         // A scheduler may dispatch the child inline. Publish the exposed bridge
