@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.MacroExpansionPlanner;
+import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
@@ -247,6 +248,55 @@ final class MacroInvocationPlannerTest {
                 Ast.BinaryExpr.class, returned.value());
         assertEquals("+", expanded.operator());
         assertFalse(containsMacroInvocation(expanded));
+    }
+
+    @Test
+    void unusedSupportedMacroIsValidatedAndErasedFromExecutableProgram() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+                        fnc answer() -> int {
+                            return 42;
+                        }
+                        """));
+
+        assertEquals(1, checked.modules().getFirst().declarations().size());
+        Ast.FunctionDecl fn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        assertEquals("answer", fn.name());
+    }
+
+    @Test
+    void identityExpansionPreservesQuotedExpressionAstExactly() {
+        Ast.Program withMacro = Parser.parse("""
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+                fnc sample() -> int {
+                    return identity!(syntax expr consume(
+                        [1, 2][0],
+                        infer<T> struct { x: 3 },
+                        |int value| -> value + 1
+                    ));
+                }
+                """);
+
+        Ast.Program handwritten = Parser.parse("""
+                fnc sample() -> int {
+                    return consume(
+                        [1, 2][0],
+                        infer<T> struct { x: 3 },
+                        |int value| -> value + 1
+                    );
+                }
+                """);
+
+        Ast.Program expanded = assertDoesNotThrow(() -> MacroExpander.expand(withMacro));
+        assertEquals(handwritten, expanded,
+                "identity expansion must preserve every quoted AST field and semantic tag");
     }
 
     @Test
