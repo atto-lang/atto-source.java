@@ -19,6 +19,17 @@ define interface HasOutputChannel<T> as
 end
 ```
 
+The underlying Java host API must preserve the same capability boundary.
+`ChannelRuntime.ReadChannel<T>` and `WriteChannel<T>` do **not** publicly
+expose their backing `Channel<T>`: doing so would allow a caller holding
+only a readable endpoint to write/close it (or a writable endpoint to
+read/close it). `ChannelRuntime.ReadCase<T>.channel()` exposes only
+`ReadChannel<T>`; `WriteCase<T>.channel()` exposes only
+`WriteChannel<T>`. The trusted select coordinator retains private
+access to the same backing channel and atomic arbitration lock. This
+protects the normal Java API capability boundary, not privileged JVM
+reflection in a trusted host process.
+
 The names above describe two *directional protocols*, not concrete Java
 `ChannelRuntime.Channel` allocations. The endpoints are required properties,
 not implicit getter calls: resolving a `pipe` graph must not execute arbitrary
