@@ -141,6 +141,52 @@ final class DirectionalPipeEndpointSourceTest {
     }
 
     @Test
+    void endpointProtocolRequiresExplicitClassDeclarationAndNeverAcceptsActorRef() {
+        // A matching public field is not compiler-validated protocol
+        // conformance: ordinary classes must opt in explicitly.
+        IllegalArgumentException structuralSpoof = rejects("""
+                define class ShapeOnly as
+                    pub output: ReadChannel<int>;
+                end
+
+                pub fnc consume(HasOutputChannel<int> source): void {
+                    val ReadChannel<int> endpoint = source.output;
+                    return;
+                }
+
+                pub fnc try_spoof(ShapeOnly source): void {
+                    consume(source);
+                    return;
+                }
+                """);
+        assertTrue(structuralSpoof.getMessage().contains("argument 1"),
+                structuralSpoof::toString);
+
+        // ActorRef has its own authenticated, compiler-owned routing domain.
+        // An actor handle must not become a guest channel protocol merely
+        // because both kinds of endpoint can appear in pipe graphs.
+        IllegalArgumentException actorSpoof = rejects("""
+                define actor Worker as
+                    receive(ActorMail<int> mail): void {
+                        return;
+                    }
+                end
+
+                pub fnc consume(HasOutputChannel<int> source): void {
+                    val ReadChannel<int> endpoint = source.output;
+                    return;
+                }
+
+                pub fnc try_spoof(ActorRef<Worker> worker): void {
+                    consume(worker);
+                    return;
+                }
+                """);
+        assertTrue(actorSpoof.getMessage().contains("argument 1"),
+                actorSpoof::toString);
+    }
+
+    @Test
     void genericAndInheritedEndpointProtocolsConcretizeBeforePipeChecking() {
         IllegalArgumentException bridge = rejects("""
                 define class GenericSource<T> implements HasOutputChannel<T> as
