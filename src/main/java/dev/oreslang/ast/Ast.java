@@ -91,6 +91,29 @@ public final class Ast {
         }
     }
 
+    public enum ExportOrigin { IMPLICIT_PUB, EXPLICIT_EXPORT }
+
+    public record ExportBinding(
+            String ownerNamespaceId,
+            String localSymbolId,
+            String localName,
+            ExportKind localKind,
+            String externalName,
+            ExportScope scope,
+            ExportOrigin origin,
+            int line,
+            int column) {
+        public ExportBinding {
+            java.util.Objects.requireNonNull(ownerNamespaceId, "export owner namespace");
+            java.util.Objects.requireNonNull(localSymbolId, "export local symbol id");
+            java.util.Objects.requireNonNull(localName, "export local name");
+            java.util.Objects.requireNonNull(localKind, "export local kind");
+            java.util.Objects.requireNonNull(externalName, "export external name");
+            java.util.Objects.requireNonNull(scope, "export scope");
+            java.util.Objects.requireNonNull(origin, "export origin");
+        }
+    }
+
     public record ModuleDecl(
             String name,
             List<Annotation> annotations,
