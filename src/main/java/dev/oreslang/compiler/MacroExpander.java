@@ -30,6 +30,8 @@ import java.util.Set;
 public final class MacroExpander {
     private static final int MAX_EXPANSIONS = 1_024;
     private static final int MAX_EXPANSION_DEPTH = 64;
+    private static final int MAX_TEMPLATE_DEPTH = 64;
+    private static final int MAX_TEMPLATE_NODES = 2_048;
 
     private final Map<String, Ast.MacroDecl> macros = new HashMap<>();
     private final Set<String> active = new HashSet<>();
@@ -160,7 +162,12 @@ public final class MacroExpander {
             syntaxParameters.add(parameter.name());
         }
         Ast.Expr template = quoteTemplate(macro.body().getFirst());
-        return template != null && safeTemplateExpression(template, syntaxParameters);
+        if (template == null) return false;
+        Map<String, Integer> uses = new HashMap<>();
+        if (!safeTemplateExpression(template, syntaxParameters, uses)) return false;
+        // No caller syntax is discarded before ordinary semantic and ownership
+        // checks. A source expression is never silently removed by a template.
+        return syntaxParameters.stream().allMatch(name -> uses.getOrDefault(name, 0) > 0);
     }
 
     private Ast.Expr quoteTemplate(Ast.Stmt statement) {
@@ -176,38 +183,87 @@ public final class MacroExpander {
         return call.arguments().getFirst();
     }
 
-    private boolean safeTemplateExpression(Ast.Expr expression, Set<String> syntaxParameters) {
-        if (expression instanceof Ast.LiteralExpr) return true;
-        if (expression instanceof Ast.UnaryExpr unary) {
-            return safeTemplateExpression(unary.operand(), syntaxParameters);
+    private record TemplateNode(Ast.Expr expression, int depth) { }
+
+    /**
+     * Iterative, quota-limited validation to avoid recursive compiler-stack
+     * exhaustion from a large but syntactically well-formed quote template.
+     * Counts every splice so the caller expression cannot be erased.
+     */
+    private boolean safeTemplateExpression(
+            Ast.Expr expression,
+            Set<String> syntaxParameters,
+            Map<String, Integer> uses) {
+        java.util.ArrayDeque<TemplateNode> pending = new java.util.ArrayDeque<>();
+        pending.push(new TemplateNode(expression, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            TemplateNode next = pending.pop();
+            if (++nodes > MAX_TEMPLATE_NODES || next.depth() >= MAX_TEMPLATE_DEPTH) {
+                throw new IllegalArgumentException(
+                        "compile-time macro template budget exceeded (nodes/depth); "
+                                + "runtime fallback is forbidden");
+            }
+            Ast.Expr node = next.expression();
+            int childDepth = next.depth() + 1;
+            if (node instanceof Ast.LiteralExpr literal) {
+                Object value = literal.value();
+                if (!(value instanceof Long || value instanceof Double
+                        || value instanceof String || value instanceof Boolean
+                        || value instanceof dev.oreslang.runtime.OresSymbol)) return false;
+                if (value instanceof String text
+                        && text.length() > CompileTimeConstEvaluator.MAX_STRING_CHARS) {
+                    throw new IllegalArgumentException(
+                            "compile-time macro template literal string budget exceeded; "
+                                    + "runtime fallback is forbidden");
+                }
+                continue;
+            }
+            if (node instanceof Ast.UnaryExpr unary) {
+                pending.push(new TemplateNode(unary.operand(), childDepth));
+                continue;
+            }
+            if (node instanceof Ast.BinaryExpr binary) {
+                pending.push(new TemplateNode(binary.right(), childDepth));
+                pending.push(new TemplateNode(binary.left(), childDepth));
+                continue;
+            }
+            if (node instanceof Ast.ConditionalExpr conditional) {
+                pending.push(new TemplateNode(conditional.whenFalse(), childDepth));
+                pending.push(new TemplateNode(conditional.whenTrue(), childDepth));
+                pending.push(new TemplateNode(conditional.condition(), childDepth));
+                continue;
+            }
+            if (node instanceof Ast.ListExpr list) {
+                for (Ast.Expr child : list.elements()) {
+                    pending.push(new TemplateNode(child, childDepth));
+                }
+                continue;
+            }
+            if (node instanceof Ast.TupleExpr tuple) {
+                for (Ast.Expr child : tuple.elements()) {
+                    pending.push(new TemplateNode(child, childDepth));
+                }
+                continue;
+            }
+            if (node instanceof Ast.ObjectExpr object
+                    && object.kind() != Ast.ObjectKind.EXPLICIT_STRUCT) {
+                for (Ast.ObjectField field : object.fields()) {
+                    pending.push(new TemplateNode(field.value(), childDepth));
+                }
+                continue;
+            }
+            if (node instanceof Ast.CallExpr call && isDirectUnquote(call)
+                    && call.arguments().getFirst() instanceof Ast.NameExpr name
+                    && syntaxParameters.contains(name.name())) {
+                uses.merge(name.name(), 1, Integer::sum);
+                continue;
+            }
+            // No new identifiers, guest calls, unbound captures, actor handles,
+            // runtime capabilities or unchecked compiler invocations.
+            return false;
         }
-        if (expression instanceof Ast.BinaryExpr binary) {
-            return safeTemplateExpression(binary.left(), syntaxParameters)
-                    && safeTemplateExpression(binary.right(), syntaxParameters);
-        }
-        if (expression instanceof Ast.ConditionalExpr conditional) {
-            return safeTemplateExpression(conditional.condition(), syntaxParameters)
-                    && safeTemplateExpression(conditional.whenTrue(), syntaxParameters)
-                    && safeTemplateExpression(conditional.whenFalse(), syntaxParameters);
-        }
-        if (expression instanceof Ast.ListExpr list) {
-            return list.elements().stream()
-                    .allMatch(item -> safeTemplateExpression(item, syntaxParameters));
-        }
-        if (expression instanceof Ast.TupleExpr tuple) {
-            return tuple.elements().stream()
-                    .allMatch(item -> safeTemplateExpression(item, syntaxParameters));
-        }
-        if (expression instanceof Ast.ObjectExpr object) {
-            return object.kind() != Ast.ObjectKind.EXPLICIT_STRUCT
-                    && object.fields().stream()
-                    .allMatch(field -> safeTemplateExpression(field.value(), syntaxParameters));
-        }
-        if (expression instanceof Ast.CallExpr call && isDirectUnquote(call)) {
-            return call.arguments().getFirst() instanceof Ast.NameExpr name
-                    && syntaxParameters.contains(name.name());
-        }
-        return false;
+        return true;
     }
 
     private boolean isDirectUnquote(Ast.CallExpr call) {
@@ -383,6 +439,29 @@ public final class MacroExpander {
             Ast.Expr template = quoteTemplate(macro.body().getFirst());
             if (template == null) {
                 throw new IllegalStateException("validated macro template lost quote body");
+            }
+            // A duplicated splice is safe only for a syntactically trivial
+            // caller expression. General expressions could re-run effects,
+            // move a value twice or duplicate actor-state access.
+            Map<String, Integer> uses = new HashMap<>();
+            Set<String> names = syntaxBindings.keySet();
+            if (!safeTemplateExpression(template, names, uses)) {
+                throw unsupported(invocation.name(), "template quotation is not hygienic");
+            }
+            for (Map.Entry<String, Ast.Expr> entry : syntaxBindings.entrySet()) {
+                int count = uses.getOrDefault(entry.getKey(), 0);
+                if (count == 0) {
+                    throw unsupported(invocation.name(),
+                            "syntax parameter '" + entry.getKey()
+                                    + "' would be discarded before semantic checking");
+                }
+                if (count > 1 && !(entry.getValue() instanceof Ast.NameExpr
+                        || entry.getValue() instanceof Ast.LiteralExpr)) {
+                    throw unsupported(invocation.name(),
+                            "repeated unquote of nontrivial syntax parameter '"
+                                    + entry.getKey()
+                                    + "' may duplicate effects or ownership transfers");
+                }
             }
             emitted = instantiateTemplate(template, syntaxBindings);
         }
