@@ -580,7 +580,7 @@ mod tests {
             strictNonblockingIoFuture("fs.read_text_async");
         "#;
         let normalized = normalize_java(source, true).unwrap();
-        assert!(!EVAL_FORBIDDEN_CODE.iter().any(|needle| normalized.contains(needle)));
+        assert!(!EVAL_FORBIDDEN_CODE.iter().any(|needle| normalized.contains(*needle)));
     }
     #[test]
     fn java_code_edge_guard_rejects_blocking_dispatch() {
