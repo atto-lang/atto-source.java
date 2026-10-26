@@ -59,7 +59,7 @@ public final class IncrementalCompiler {
             hashes.put(entry.getKey(), digest(entry.getValue()));
             Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
             parsed.put(entry.getKey(), program);
-            abiHashes.put(entry.getKey(), abiDigest(program));
+            abiHashes.put(entry.getKey(), abiDigest(program, entry.getValue()));
         }
 
         Map<String, Map<String, String>> normalizedImportResolutions =
@@ -553,7 +553,7 @@ public final class IncrementalCompiler {
         }
     }
 
-    private static String abiDigest(Ast.Program program) {
+    private static String abiDigest(Ast.Program program, String completeSource) {
         StringBuilder abi = new StringBuilder("ores-abi-v3\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
@@ -561,7 +561,8 @@ public final class IncrementalCompiler {
         // when the underlying declaration is default-private. Alias, scope,
         // local identity, kind, origin, and the exported family signature must
         // invalidate dependents. This metadata is not a host/native export table.
-        for (ExportMetadataCollector.Entry export : ExportMetadataCollector.collect(program)) {
+        for (ExportMetadataCollector.Entry export :
+                ExportMetadataCollector.collectForIncrementalAbi(program, completeSource)) {
             abi.append("source-export ")
                     .append(export.ownerNamespaceId()).append(' ')
                     .append(export.localSymbolId()).append(' ')
