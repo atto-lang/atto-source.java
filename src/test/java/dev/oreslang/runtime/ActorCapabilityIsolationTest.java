@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -366,6 +367,35 @@ final class ActorCapabilityIsolationTest {
         assertTrue(error.getMessage().contains("ACTOR_SHARE_READONLY"));
     }
 
+
+    @Test
+    void privateActorCannotLaunderSharedMemoryThroughCheckedMacroCapture() {
+        Ast.Program expanded = MacroExpander.expand(Parser.parse("""
+                pub fnc build_shared(): void {
+                  val shared = SharedMutex.new(1);
+                  stdio.println(shared);
+                  return;
+                }
+
+                define macro reference(Identifier target) -> Syntax<Expr> {
+                  return capture_fnc(target);
+                }
+
+                isoactor PrivateWorker {
+                  pub fnc run(): void {
+                    val callback = reference!(ident build_shared);
+                    callback();
+                    return;
+                  }
+                }
+                """));
+
+        SecurityException error = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(expanded, IsolatePolicy.developer()));
+
+        assertTrue(error.getMessage().contains("SHARED_MEMORY"), error.getMessage());
+    }
 
     @Test
     void privateActorCannotLaunderSharedMemoryThroughStaticMethodValue() {
