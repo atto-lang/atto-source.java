@@ -432,13 +432,11 @@ final class MacroInvocationPlannerTest {
                             return value;
                         }
 
-                        define untrusted actor Worker as
-                            pub run(): void {
-                                identity!(syntax expr stdio.println("blocked"));
-                                return;
-                            }
-                        end
-                        """, IsolatePolicy.developer()));
+                        fnc blocked() -> void {
+                            identity!(syntax expr stdio.println("blocked"));
+                            return;
+                        }
+                        """, IsolatePolicy.untrustedActor()));
 
         assertTrue(failure.getMessage().contains("STDOUT"), failure::toString);
     }
