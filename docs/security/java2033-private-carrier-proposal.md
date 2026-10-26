@@ -36,21 +36,21 @@ first.
 
 Current source-free validation receipts:
 - funded private `sonus-auris-test/clients-api-contract` run
-  `40368574539`, JDK 25 job `121732831510`: executed checkout, immutable
+  `40370440955`, JDK 25 job `121739415786`: executed checkout, immutable
   `actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961`,
   Temurin 25.0.4.1 compile, the actor cleanup/worker-barrier model, and the
   shutdown-vs-buffered-output arbitration model; PASS with
   `SOURCE_FREE_ACTOR_CLEANUP_PASS` and
   `SOURCE_FREE_OUTPUT_ARBITRATION_PASS`. The job explicitly asserts no
   `private-oreslang-source` and no `src/main/java/dev/oreslang` tree;
-- the same funded run, carrier-control job `121732831964`: asserted all seven
+- the same funded run, carrier-control job `121739415441`: asserted all seven
   current carrier/control files byte-identical by Git blob SHA to carrier
   #25 head `b64ba33bd86cde3a434b76278c196694c543adaa`, ran 6/6 carrier
   verifier regressions and 6/6 trusted-plan runner regressions, and validated
   current plan blob `7612dee74280443ef95a99890c057ae7938c65a8`
-  pins ActorRuntime blob `43b2c6fb9c7f594a32812d2a6c7f8f64cd03fe22`
+  pins ActorRuntime blob `66b9a4ab5ebb4006e65a1caef74e33cc66c3fd5f`
   plus ActorOutputStreamTest blob
-  `64572e929c7367eb37f08745b363e20c93ed7fc0`; PASS with
+  `f9079cdcd2615b3716dd923c640c3a72b568acac`; PASS with
   `CURRENT_JAVA2033_PLAN_PASS`.
 Both are source-free and therefore do not certify the private Oreslang source.
 They prove the cleanup/output semantic model and carrier control plane only;
@@ -97,9 +97,9 @@ At proposal creation time:
    independent disposition before private-source export resumes.
 6. Source-org Actions for PR #2033 still fail before job steps. On exact source
    head `31bb2de7e84184ad9051844b2cfef1cfe1db32f2`, full ci run
-   `40367191942` has Maven test/AOT/ref64/hybrid/polyglot jobs at zero steps;
-   fast-ci `40367191565`, Graal conformance `40367191739`, and synthetic
-   smoke `40367192066` are likewise zero-step. These are
+   `40369386035` has Maven test/AOT/ref64/hybrid/polyglot jobs at zero steps;
+   fast-ci `40369385985`, Graal conformance `40369385824`, and synthetic
+   smoke `40369386021` are likewise zero-step. These are
    admission/infrastructure evidence only and are not implementation failures
    or passing tests.
 
