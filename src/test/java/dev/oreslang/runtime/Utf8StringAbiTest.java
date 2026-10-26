@@ -54,6 +54,34 @@ final class Utf8StringAbiTest {
     }
 
     @Test
+    void publicUtf8BytesCarrierRejectsMalformedInputs() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Utf8StringAbi.Utf8Bytes(new byte[] {(byte) 0xc0, (byte) 0xaf}, 2));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Utf8StringAbi.Utf8Bytes(new byte[] {(byte) 0xed, (byte) 0xa0, (byte) 0x80}, 3));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Utf8StringAbi.Utf8Bytes(new byte[] {'a'}, 2));
+    }
+
+    @Test
+    void byteArrayCarriersFreezeInputsAndDoNotExposeMutableBackingStorage() {
+        byte[] utf8 = new byte[] {(byte) 0xc3, (byte) 0xa9};
+        Utf8StringAbi.Utf8Bytes bytes = new Utf8StringAbi.Utf8Bytes(utf8, utf8.length);
+        utf8[0] = (byte) 0xff;
+        byte[] leakedBytes = bytes.bytes();
+        leakedBytes[0] = (byte) 0xff;
+        assertArrayEquals(new byte[] {(byte) 0xc3, (byte) 0xa9}, bytes.bytes());
+
+        byte[] rawCString = new byte[] {'a', 'b', 0};
+        Utf8StringAbi.CString cstring = new Utf8StringAbi.CString(rawCString, 2);
+        rawCString[0] = 0;
+        byte[] leakedCString = cstring.storage();
+        leakedCString[1] = 0;
+        assertArrayEquals(new byte[] {'a', 'b', 0}, cstring.storage());
+        assertEquals("ab", Utf8StringAbi.fromCString(cstring));
+    }
+
+    @Test
     void cStringConstructorRejectsForgedExtentAndPayload() {
         assertThrows(IllegalArgumentException.class,
                 () -> new Utf8StringAbi.CString(new byte[] {'x'}, 0));
