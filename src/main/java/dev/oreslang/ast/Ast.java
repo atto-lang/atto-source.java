@@ -119,9 +119,9 @@ public final class Ast {
             if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
                 throw new IllegalArgumentException("invalid macro parameter name");
             }
-            if (name.equals("quote")) {
+            if (name.equals("quote") || name.equals("unquote")) {
                 throw new IllegalArgumentException(
-                        "'quote' is reserved for compile-time macro quotation");
+                        "'" + name + "' is reserved for compile-time macro quotation");
             }
         }
     }
