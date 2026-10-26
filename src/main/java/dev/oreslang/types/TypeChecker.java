@@ -1,6 +1,8 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
+import dev.oreslang.compiler.ExportResolver;
+import dev.oreslang.compiler.SourceExportTable;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
@@ -72,6 +74,8 @@ public final class TypeChecker {
     /** Importer-local class names admitted from another source unit. */
     private final Set<String> linkedImportedClassNames = new HashSet<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+    /** Complete unit for resolved source-export projection into module types. */
+    private Ast.Program checkedProgram;
     /** Lexical compile-time type aliases local to the block currently being checked. */
     private Env currentTypeScope;
     /** Names declared by named inference, including aliases not yet initialized. */
@@ -446,6 +450,7 @@ public final class TypeChecker {
     }
 
     private void validate(Ast.Program program) {
+        checkedProgram = program;
         // Classes, traits/interfaces and transparent type aliases all occupy
         // the *type* namespace. Keeping them in distinct lookup maps must not
         // permit same-scope spelling collisions or ambiguous nominal identity.
@@ -632,46 +637,83 @@ public final class TypeChecker {
     }
 
     private Record moduleShape(Ast.ModuleDecl module) {
-        Map<String, Type> members = new LinkedHashMap<>();
-        Map<String, Integer> callableCounts = new HashMap<>();
-        for (Ast.Decl decl : module.declarations()) {
-            if (decl instanceof Ast.FunctionDecl fn
+        // A module member's source-visible spelling is its resolved export
+        // spelling, not necessarily its lexical declaration name. Retain the
+        // existing implicit-public view and project explicit PUBLIC aliases
+        // through the authoritative post-namespace binding resolver.
+        Map<String, List<Ast.Decl>> visible = new LinkedHashMap<>();
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.FunctionDecl fn
                     && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
-                callableCounts.merge(fn.name(), 1, Integer::sum);
+                visible.computeIfAbsent(fn.name(), ignored -> new ArrayList<>()).add(fn);
+            } else if (declaration instanceof Ast.FieldDecl field
+                    && field.visibility() == Ast.Visibility.PUBLIC) {
+                visible.computeIfAbsent(field.name(), ignored -> new ArrayList<>()).add(field);
             }
         }
-        for (Ast.Decl decl : module.declarations()) {
-            if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
-                    && fn.actorKind() == Ast.ActorKind.NONE) {
-                Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
-                if (fn.trapped() && signature instanceof Function trappedSignature) {
-                    signature = new Function(
-                            trappedSignature.parameters(),
-                            trappedSignature.mutableParameters(),
-                            trappedSignature.async(),
-                            trapResult(true, trappedSignature.result()),
-                            trappedSignature.effects());
-                }
 
-                // Only concretely reifiable fnc declarations become raw
-                // function-valued namespace members. Routines remain
-                // direct-call-only, and generic fnc values still require
-                // direct-call specialization because polymorphic function
-                // values are not implemented.
-                if (fn.kind() == Ast.CallableKind.FNC
-                        && fn.genericParameters().isEmpty()
-                        && callableCounts.getOrDefault(fn.name(), 0) == 1) {
-                    mergeMember(members, fn.name(), signature, "module " + module.name());
+        if (!module.exports().isEmpty()) {
+            for (ExportResolver.ExportBinding binding :
+                    ExportResolver.resolve(checkedProgram).bindings(module.name())) {
+                if (binding.scope() != Ast.ExportScope.PUBLIC) continue;
+                if (binding.localKind() != Ast.ExportKind.FNC
+                        && binding.localKind() != Ast.ExportKind.ROUTINE
+                        && binding.localKind() != Ast.ExportKind.CONST
+                        && binding.localKind() != Ast.ExportKind.VAL
+                        && binding.localKind() != Ast.ExportKind.LET) continue;
+                for (Ast.Decl declaration : SourceExportTable.localDeclarations(
+                        checkedProgram, binding)) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && fn.actorKind() == Ast.ActorKind.NONE
+                            || declaration instanceof Ast.FieldDecl) {
+                        List<Ast.Decl> family = visible.computeIfAbsent(
+                                binding.externalName(), ignored -> new ArrayList<>());
+                        if (!family.contains(declaration)) family.add(declaration);
+                    }
                 }
-                mergeMember(members,
-                        methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
-                        signature,
-                        "module " + module.name());
-            } else if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
-                Type type = field.type() == null ? typeOf(field.initializer(), new Env(null), Set.of(), null) : resolve(field.type(), Set.of(), null);
-                mergeMember(members, field.name(), type, "module " + module.name());
+            }
+        }
+
+        Map<String, Type> members = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Ast.Decl>> entry : visible.entrySet()) {
+            String externalName = entry.getKey();
+            List<Ast.Decl> family = entry.getValue();
+            long callableCount = family.stream()
+                    .filter(declaration -> declaration instanceof Ast.FunctionDecl)
+                    .count();
+            for (Ast.Decl declaration : family) {
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    Type signature = callableContractType(
+                            fn.genericParameters(), fn.parameters(), fn.returnType(),
+                            fn.async(), fn.generator(), Set.of(), null);
+                    if (fn.trapped() && signature instanceof Function trappedSignature) {
+                        signature = new Function(
+                                trappedSignature.parameters(),
+                                trappedSignature.mutableParameters(),
+                                trappedSignature.async(),
+                                trapResult(true, trappedSignature.result()),
+                                trappedSignature.effects());
+                    }
+
+                    // Only monomorphic single fnc families can be reified as
+                    // a raw member value. Routines remain direct-call-only.
+                    if (fn.kind() == Ast.CallableKind.FNC
+                            && fn.genericParameters().isEmpty()
+                            && callableCount == 1) {
+                        mergeMember(members, externalName, signature,
+                                "module " + module.name());
+                    }
+                    mergeMember(members, methodContractKey(
+                                    externalName, fn.parameters().size(),
+                                    fn.genericParameters().size()),
+                            signature, "module " + module.name());
+                } else if (declaration instanceof Ast.FieldDecl field) {
+                    Type type = field.type() == null
+                            ? typeOf(field.initializer(), new Env(null), Set.of(), null)
+                            : resolve(field.type(), Set.of(), null);
+                    mergeMember(members, externalName, type, "module " + module.name());
+                }
             }
         }
         return new Record(members);
