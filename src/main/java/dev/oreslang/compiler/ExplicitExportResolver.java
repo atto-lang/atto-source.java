@@ -154,20 +154,6 @@ public final class ExplicitExportResolver {
                             + "' cannot be exported");
                 }
 
-                // Named-module declaration visibility provenance is not yet retained by
-                // Java main. Do not guess whether PRIVATE means default-private or an
-                // explicit private modifier.
-                if (!module.name().equals(dev.oreslang.parser.Parser.ROOT_MODULE)) {
-                    for (int index : candidates) {
-                        if (declarationVisibility(declarations.get(index)) == Ast.Visibility.PRIVATE) {
-                            throw semantic("named-module export of private-by-default declaration '"
-                                    + item.localName()
-                                    + "' requires visibility-origin metadata before Java can distinguish "
-                                    + "default-private from explicit-private");
-                        }
-                    }
-                }
-
                 Ast.Visibility familyVisibility = declarationVisibility(declarations.get(candidates.getFirst()));
                 for (int index : candidates) {
                     if (declarationVisibility(declarations.get(index)) != familyVisibility) {
