@@ -553,7 +553,13 @@ public final class MacroExpander {
                     returnType.type(),
                     List.of(),
                     List.of(new Ast.ReturnStmt(expandedBody)));
-            MacroDeclarationProvenance.record(generated, origin);
+            MacroDeclarationProvenance.record(
+                    generated,
+                    origin,
+                    new MacroDeclarationProvenance.ExposedName(
+                            identifier.name(),
+                            identifier.site(),
+                            "declare_fnc"));
             occupied.add(identifier.name());
             return generated;
         } finally {
