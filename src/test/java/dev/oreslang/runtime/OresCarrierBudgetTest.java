@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 final class OresCarrierBudgetTest {
@@ -119,6 +120,44 @@ final class OresCarrierBudgetTest {
             assertEquals(0, vm.carrierPermitSnapshot().totalHeld(),
                     "CONTROL permit must retire only after its physical worker exits");
         } finally {
+            prior.restore();
+        }
+    }
+
+    @Test void physicalStopVirtualTasksDoNotConsumePlatformCarrierPermits() throws Exception {
+        Props prior = Props.capture();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean virtual = new AtomicBoolean();
+        try {
+            enableBudgetedJvm("5");
+            OresVM vm = OresVM.create(Runnable::run);
+            try {
+                vm.executePhysicalStop(() -> {
+                    virtual.set(Thread.currentThread().isVirtual());
+                    entered.countDown();
+                    try {
+                        release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertTrue(virtual.get(), "physical STOP revoker must remain virtual-thread lifecycle work");
+
+                var snapshot = vm.carrierPermitSnapshot();
+                assertEquals(1, snapshot.totalHeld(),
+                        "virtual physical STOP work must not consume a dedicated platform carrier permit");
+                assertEquals(1, snapshot.controlHeld());
+                assertEquals(0, snapshot.lifecycleHeld());
+                assertEquals(4, snapshot.free());
+            } finally {
+                release.countDown();
+                vm.close();
+            }
+            assertEquals(0, vm.carrierPermitSnapshot().totalHeld());
+        } finally {
+            release.countDown();
             prior.restore();
         }
     }
