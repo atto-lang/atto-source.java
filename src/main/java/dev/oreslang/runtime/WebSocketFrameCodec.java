@@ -1,6 +1,10 @@
 package dev.oreslang.runtime;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -69,6 +73,108 @@ public final class WebSocketFrameCodec {
         public byte[] payload() {
             return Arrays.copyOf(payload, payload.length);
         }
+    }
+
+    /**
+     * Incrementally read exactly one client frame from a stream. Header and
+     * extended length are validated before payload allocation, so a peer cannot
+     * force allocation above maxFrameBytes merely by advertising a huge length.
+     */
+    public static Frame readClientFrame(InputStream input, int maxFrameBytes)
+            throws IOException {
+        if (input == null) throw new IllegalArgumentException("WebSocket input is required");
+        requirePositiveLimit(maxFrameBytes, "maxFrameBytes");
+
+        int first = readRequiredByte(input, "WebSocket frame first byte");
+        int second = readRequiredByte(input, "WebSocket frame second byte");
+        boolean fin = (first & 0x80) != 0;
+        int rsv = first & 0x70;
+        int opcode = first & 0x0f;
+        requireOpcode(opcode);
+        if (rsv != 0) {
+            throw new IllegalArgumentException(
+                    "WebSocket RSV bits require a negotiated extension");
+        }
+        if ((second & 0x80) == 0) {
+            throw new IllegalArgumentException(
+                    "client WebSocket frames must be masked");
+        }
+
+        int marker = second & 0x7f;
+        long payloadLength;
+        if (marker <= 125) {
+            payloadLength = marker;
+        } else if (marker == 126) {
+            int high = readRequiredByte(input, "16-bit WebSocket payload length");
+            int low = readRequiredByte(input, "16-bit WebSocket payload length");
+            payloadLength = ((long) high << 8) | low;
+            if (payloadLength < 126) {
+                throw new IllegalArgumentException(
+                        "non-canonical 16-bit WebSocket payload length");
+            }
+        } else {
+            int high = readRequiredByte(input, "64-bit WebSocket payload length");
+            if ((high & 0x80) != 0) {
+                throw new IllegalArgumentException(
+                        "WebSocket payload length exceeds signed 63-bit range");
+            }
+            payloadLength = high;
+            for (int i = 1; i < 8; i++) {
+                payloadLength = (payloadLength << 8)
+                        | readRequiredByte(input, "64-bit WebSocket payload length");
+            }
+            if (payloadLength <= 0xffffL) {
+                throw new IllegalArgumentException(
+                        "non-canonical 64-bit WebSocket payload length");
+            }
+        }
+
+        validateFrameShape(fin, opcode, payloadLength, maxFrameBytes);
+        if (payloadLength > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                    "WebSocket frame payload exceeds JVM array bound");
+        }
+
+        byte[] mask = readExactly(input, 4, "WebSocket masking key");
+        byte[] payload = readExactly(
+                input, (int) payloadLength, "WebSocket frame payload");
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] ^= mask[i & 3];
+        }
+        validateTerminalPayload(fin, opcode, payload);
+        return new Frame(fin, opcode, payload);
+    }
+
+    /** Write one complete server frame without creating an intermediate wire array. */
+    public static void writeServerFrame(
+            OutputStream output,
+            boolean fin,
+            int opcode,
+            byte[] payload,
+            int maxFrameBytes) throws IOException {
+        if (output == null) throw new IllegalArgumentException("WebSocket output is required");
+        if (payload == null) throw new IllegalArgumentException("WebSocket payload is required");
+        requirePositiveLimit(maxFrameBytes, "maxFrameBytes");
+        requireOpcode(opcode);
+        validateFrameShape(fin, opcode, payload.length, maxFrameBytes);
+        validateTerminalPayload(fin, opcode, payload);
+
+        output.write((fin ? 0x80 : 0) | opcode);
+        if (payload.length <= 125) {
+            output.write(payload.length);
+        } else if (payload.length <= 0xffff) {
+            output.write(126);
+            output.write(payload.length >>> 8);
+            output.write(payload.length);
+        } else {
+            output.write(127);
+            long length = payload.length;
+            for (int i = 0; i < 8; i++) {
+                output.write((int) (length >>> (56 - (i * 8))) & 0xff);
+            }
+        }
+        output.write(payload);
+        output.flush();
     }
 
     /**
@@ -240,6 +346,26 @@ public final class WebSocketFrameCodec {
 
     private static void requirePositiveLimit(int limit, String name) {
         if (limit < 1) throw new IllegalArgumentException(name + " must be positive");
+    }
+
+    private static int readRequiredByte(InputStream input, String what)
+            throws IOException {
+        int value = input.read();
+        if (value < 0) throw new EOFException("truncated " + what);
+        return value;
+    }
+
+    private static byte[] readExactly(InputStream input, int length, String what)
+            throws IOException {
+        byte[] bytes = new byte[length];
+        int offset = 0;
+        while (offset < length) {
+            int read = input.read(bytes, offset, length - offset);
+            if (read < 0) throw new EOFException("truncated " + what);
+            if (read == 0) continue;
+            offset += read;
+        }
+        return bytes;
     }
 
     private static void requireAvailable(byte[] wire, int offset, int length, String what) {
