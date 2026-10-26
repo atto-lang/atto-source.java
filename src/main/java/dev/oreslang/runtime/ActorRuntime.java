@@ -504,10 +504,15 @@ public final class ActorRuntime implements AutoCloseable {
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
+    private final OresCarrierBudget carrierBudget;
+    private final OresCarrierPermitPool carrierPermitPool;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
     private final PhysicalStopDispatcher physicalStopDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
+    // NIO completion records are host-only work. They reuse actor carrier
+    // capacity but never become actor mailbox or CONTROL turns.
+    private volatile Runnable nioCompletionCapacityHook = () -> { };
     /** Physical native I/O operation/loan gate for the actor incarnation. */
     private volatile java.util.function.Predicate<ActorId> nativeIoLoanRetired =
             ignored -> true;
@@ -581,6 +586,18 @@ public final class ActorRuntime implements AutoCloseable {
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher,
             PhysicalStopDispatcher physicalStopDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                physicalStopDispatcher, null, null);
+    }
+
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            PhysicalStopDispatcher physicalStopDispatcher,
+            OresCarrierBudget carrierBudget,
+            OresCarrierPermitPool carrierPermitPool) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
@@ -588,6 +605,27 @@ public final class ActorRuntime implements AutoCloseable {
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.carrierBudget = carrierBudget;
+        this.carrierPermitPool = carrierPermitPool;
+        if ((carrierBudget == null) != (carrierPermitPool == null)) {
+            throw new IllegalArgumentException(
+                    "carrier budget and physical permit coordinator must be configured together");
+        }
+        if (carrierBudget != null) {
+            if (!OresCarrierBudget.explicitWorkConservingJvmTopology()) {
+                throw new IllegalStateException(
+                        "global carrier budget requires explicit JVM non-affine actor topology");
+            }
+            if (carrierPermitPool.maximum() != carrierBudget.maximum()) {
+                throw new IllegalArgumentException(
+                        "physical permit coordinator maximum does not match VM carrier budget");
+            }
+            if (dispatcherConfig.privateParallelism() != carrierBudget.privateMaximum()
+                    || dispatcherConfig.sharedParallelism() != carrierBudget.sharedMaximum()) {
+                throw new IllegalArgumentException(
+                        "actor dispatcher minima do not match VM carrier budget partition");
+            }
+        }
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         this.physicalStopDispatcher = physicalStopDispatcher;
