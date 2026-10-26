@@ -12,7 +12,8 @@ public final class OresCompiler {
     private OresCompiler() { }
 
     public static Ast.Program parseAndTypeCheck(String source) {
-        return analyze(Parser.parse(source));
+        return analyze(MacroSourceUnitIdentity.attach(
+                Parser.parse(source), MacroSourceUnitIdentity.MEMORY_UNIT));
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
@@ -38,7 +39,8 @@ public final class OresCompiler {
     }
 
     public static AnalysisResult parseAndTypeCheckWithDiagnostics(String source) {
-        return analyzeWithDiagnostics(Parser.parse(source));
+        return analyzeWithDiagnostics(MacroSourceUnitIdentity.attach(
+                Parser.parse(source), MacroSourceUnitIdentity.MEMORY_UNIT));
     }
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
