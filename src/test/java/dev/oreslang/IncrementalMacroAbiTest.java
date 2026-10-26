@@ -61,12 +61,12 @@ final class IncrementalMacroAbiTest {
     }
 
     @Test
-    void publicMacroBodyChangeInvalidatesDependentCompilation() {
+    void publicMacroBodyIdentityChangeInvalidatesDependentCompilation() {
         IncrementalCompiler compiler = new IncrementalCompiler();
 
         String firstProducer = """
-                define pub macro literal(Const<int> value) -> Syntax<Expr> {
-                    return quote(value);
+                define pub macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
                 }
 
                 pub fnc api_value() -> int {
@@ -78,25 +78,22 @@ final class IncrementalMacroAbiTest {
         assertTrue(first.rebuilt("producer.ores"));
         assertTrue(first.rebuilt("consumer.ores"));
 
-        String changedBody = """
-                define pub macro literal(Const<int> value) -> Syntax<Expr> {
-                    return value;
+        String changedBodyIdentity = """
+                define pub macro identity(Syntax<Expr> item) -> Syntax<Expr> {
+                    return item;
                 }
 
                 pub fnc api_value() -> int {
                     return 1;
                 }
                 """;
+        IncrementalCompiler.BuildResult second =
+                assertDoesNotThrow(() -> compiler.compile(sources(changedBodyIdentity)));
 
-        // The changed body is intentionally unsupported by the evaluator for
-        // this signature, but ABI invalidation is computed from parsed public
-        // compile-time API before semantic admission. Verify the ABI itself
-        // changes without claiming the invalid program can complete a build.
-        IllegalArgumentException rejected = assertThrows(
-                IllegalArgumentException.class,
-                () -> compiler.compile(sources(changedBody)));
-        assertTrue(rejected.getMessage().contains("define macro 'literal'"),
-                rejected::toString);
+        assertTrue(second.rebuilt("producer.ores"));
+        assertTrue(second.rebuilt("consumer.ores"),
+                "public macro implementation identity changes must invalidate import dependents");
+        assertFalse(second.reused("consumer.ores"));
     }
 
     @Test
