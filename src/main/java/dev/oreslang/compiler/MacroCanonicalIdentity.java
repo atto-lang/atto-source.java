@@ -15,6 +15,7 @@ import java.util.List;
  */
 final class MacroCanonicalIdentity {
     static final String FORMAT = "ores-macro-content-v1";
+    static final String SEMANTICS_ABI = "ores-macro-semantics-v1";
     static final int MAX_NODES = 4_096;
     static final int MAX_DEPTH = 128;
     static final int MAX_CHARS = 1_048_576;
@@ -24,6 +25,21 @@ final class MacroCanonicalIdentity {
 
     private MacroCanonicalIdentity() {
         token("format", FORMAT);
+        token("semantics-abi", SEMANTICS_ABI);
+        token("const-profile", "const-v1");
+        integer(CompileTimeConstEvaluator.MAX_STEPS);
+        integer(CompileTimeConstEvaluator.MAX_DEPTH);
+        integer(CompileTimeConstEvaluator.MAX_AGGREGATE_ELEMENTS);
+        integer(CompileTimeConstEvaluator.MAX_STRING_CHARS);
+        longInteger(CompileTimeConstEvaluator.MAX_ESTIMATED_BYTES);
+        integer(CompileTimeConstEvaluator.MAX_CONST_TYPE_NODES);
+        integer(CompileTimeConstEvaluator.MAX_CONST_TYPE_DEPTH);
+        integer(MacroExpander.MAX_EXPANSIONS);
+        integer(MacroExpander.MAX_EXPANSION_DEPTH);
+        integer(MacroExpander.MAX_TEMPLATE_NODES);
+        integer(MacroExpander.MAX_TEMPLATE_DEPTH);
+        integer(MacroSyntaxProvenance.MAX_PROVENANCE_NODES);
+        integer(MacroSyntaxProvenance.MAX_PROVENANCE_DEPTH);
     }
 
     static String encode(Ast.MacroDecl macro) {
@@ -204,32 +220,56 @@ final class MacroCanonicalIdentity {
     }
 
     private void bool(boolean value) {
-        out.append(value ? "1;" : "0;");
-        budget();
+        appendBounded(value ? "1;" : "0;");
     }
 
     private void integer(int value) {
-        out.append(value).append(';');
-        budget();
+        appendBounded(Integer.toString(value));
+        appendBounded(";");
+    }
+
+    private void longInteger(long value) {
+        appendBounded(Long.toString(value));
+        appendBounded(";");
     }
 
     /** Length-prefix every free-form string so concatenation is unambiguous. */
     private void token(String label, String value) {
         java.util.Objects.requireNonNull(label, "canonical label");
         java.util.Objects.requireNonNull(value, "canonical value");
-        out.append(label.length()).append(':').append(label)
-                .append('=')
-                .append(value.length()).append(':').append(value)
-                .append(';');
-        budget();
-    }
-
-    private void budget() {
-        if (out.length() > MAX_CHARS) {
+        long required = (long) decimalDigits(label.length()) + 1L + label.length()
+                + 1L + decimalDigits(value.length()) + 1L + value.length() + 1L;
+        if ((long) out.length() + required > MAX_CHARS) {
             throw new IllegalArgumentException(
                     "canonical macro content encoding exceeds "
                             + MAX_CHARS + " characters");
         }
+        out.append(label.length()).append(':').append(label)
+                .append('=')
+                .append(value.length()).append(':').append(value)
+                .append(';');
+    }
+
+    private void appendBounded(String text) {
+        if ((long) out.length() + text.length() > MAX_CHARS) {
+            throw new IllegalArgumentException(
+                    "canonical macro content encoding exceeds "
+                            + MAX_CHARS + " characters");
+        }
+        out.append(text);
+    }
+
+    private static int decimalDigits(int value) {
+        if (value < 10) return 1;
+        if (value < 100) return 2;
+        if (value < 1_000) return 3;
+        if (value < 10_000) return 4;
+        if (value < 100_000) return 5;
+        if (value < 1_000_000) return 6;
+        if (value < 10_000_000) return 7;
+        if (value < 100_000_000) return 8;
+        if (value < 1_000_000_000) return 9;
+        return 10;
     }
 
     private IllegalArgumentException unsupported(String detail) {
