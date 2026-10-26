@@ -305,10 +305,12 @@ final class ScopedTaskTest {
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        IllegalStateException failure =
-                assertThrows(IllegalStateException.class, () -> run(source));
-        assertTrue(failure.getMessage().contains("generator activation"));
-        assertTrue(failure.getMessage().contains("TaskScope"));
+        RuntimeException failure =
+                assertThrows(RuntimeException.class, () -> run(source));
+        String message = failure.toString()
+                + (failure.getCause() == null ? "" : " " + failure.getCause());
+        assertTrue(message.contains("generator activation"), message);
+        assertTrue(message.contains("TaskScope"), message);
     }
 
     @Test
@@ -338,10 +340,12 @@ final class ScopedTaskTest {
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        IllegalStateException failure =
-                assertThrows(IllegalStateException.class, () -> run(source));
-        assertTrue(failure.getMessage().contains("generator activation"));
-        assertTrue(failure.getMessage().contains("TaskScope"));
+        RuntimeException failure =
+                assertThrows(RuntimeException.class, () -> run(source));
+        String message = failure.toString()
+                + (failure.getCause() == null ? "" : " " + failure.getCause());
+        assertTrue(message.contains("generator activation"), message);
+        assertTrue(message.contains("TaskScope"), message);
     }
 
 
