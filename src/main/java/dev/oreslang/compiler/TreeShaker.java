@@ -379,7 +379,10 @@ public final class TreeShaker {
                 for (Ast.Expr argument : created.arguments()) {
                     arguments.add(substitute(argument, substitutions, shadowed));
                 }
-                return new Ast.NewExpr(created.type(), arguments);
+                Ast.NewExpr substituted =
+                        new Ast.NewExpr(created.type(), arguments);
+                Ast.copyCheckedMetadata(created, substituted);
+                return substituted;
             }
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(substitute(awaited.expression(), substitutions, shadowed));
@@ -993,7 +996,10 @@ public final class TreeShaker {
                 for (Ast.Expr argument : created.arguments()) {
                     arguments.add(rewriteExpression(argument, module, locals));
                 }
-                return new Ast.NewExpr(created.type(), arguments);
+                Ast.NewExpr rewritten =
+                        new Ast.NewExpr(created.type(), arguments);
+                Ast.copyCheckedMetadata(created, rewritten);
+                return rewritten;
             }
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(rewriteExpression(awaited.expression(), module, locals));
