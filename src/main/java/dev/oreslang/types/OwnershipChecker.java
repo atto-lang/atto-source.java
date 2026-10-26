@@ -2381,92 +2381,258 @@ public final class OwnershipChecker {
     // Argument-root comparison alone does not protect f(&mut q, q.method()).
     private record CallArgumentLoan(VarState root, boolean mutable) { }
 
-    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
+    private void checkArguments(
+            List<Ast.Expr> arguments,
+            List<Ast.Param> params,
+            Scope scope,
+            String callable) {
+        checkArguments(arguments, params, scope, callable, false);
+    }
+
+    private void checkArguments(
+            List<Ast.Expr> arguments,
+            List<Ast.Param> params,
+            Scope scope,
+            String callable,
+            boolean permitLabeledProducts) {
+        List<FixedProductCallPlan.InputSlot> inputs = new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.NamedArgExpr named) {
+                if (!permitLabeledProducts) {
+                    throw error(callable
+                            + " does not support named arguments on this callable surface");
+                }
+                inputs.add(FixedProductCallPlan.InputSlot.named(named.name()));
+                continue;
+            }
+
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef type = syntacticType(spread.expression(), scope);
+                if (type.isBorrow()) type = type.borrowedTarget();
+                if (type.isReadonlyRecordType()
+                        && spread.expression() instanceof Ast.ObjectExpr object
+                        && object.structuralRecord()) {
+                    if (!permitLabeledProducts) {
+                        throw error(callable
+                                + " does not support record spread on this callable surface");
+                    }
+                    for (String name : type.recordMembers().keySet()) {
+                        inputs.add(FixedProductCallPlan.InputSlot.named(name));
+                    }
+                } else if (type.isTupleType()) {
+                    for (int i = 0; i < type.arguments().size(); i++) {
+                        inputs.add(FixedProductCallPlan.InputSlot.positional());
+                    }
+                } else {
+                    throw error(callable
+                            + " spread requires a statically known tuple or a supported "
+                            + "direct closed record pack");
+                }
+                continue;
+            }
+
+            inputs.add(FixedProductCallPlan.InputSlot.positional());
+        }
+
+        if (inputs.size() != params.size()) {
+            throw error(callable + " expanded argument arity mismatch: expected "
+                    + params.size() + ", got " + inputs.size());
+        }
+
+        List<Ast.Param> sourceParameters = params;
+        if (inputs.stream().anyMatch(input -> input.label() != null)) {
+            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(),
+                    inputs);
+            List<Ast.Param> reordered = new ArrayList<>(params.size());
+            for (FixedProductCallPlan.BoundSlot slot : plan.sourceOrder()) {
+                reordered.add(params.get(slot.parameterIndex()));
+            }
+            sourceParameters = List.copyOf(reordered);
+        }
+
         int parameterIndex = 0;
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
         try {
-            for (Ast.Expr argument : arguments) {
-                if (argument instanceof Ast.SpreadExpr spread) {
-                    Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
-                    if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
+            for (Ast.Expr rawArgument : arguments) {
+                if (rawArgument instanceof Ast.SpreadExpr spread) {
+                    Ast.TypeRef spreadType =
+                            syntacticType(spread.expression(), scope);
+                    if (spreadType.isBorrow()) {
+                        Ast.TypeRef referent = spreadType.borrowedTarget();
+                        if (!isCopyType(referent)) {
+                            throw error(callable
+                                    + " cannot spread non-Copy elements from a borrowed "
+                                    + "fixed product; pass owned values explicitly");
+                        }
+                        spreadType = referent;
+                    }
+
+                    if (spreadType.isReadonlyRecordType()
+                            && spread.expression() instanceof Ast.ObjectExpr object
+                            && object.structuralRecord()) {
+                        if (!permitLabeledProducts) {
+                            throw error(callable
+                                    + " does not support record spread on this callable surface");
+                        }
+                        Map<String, Ast.TypeRef> fields =
+                                spreadType.recordMembers();
+                        if (fields.isEmpty()) {
+                            throw error(callable
+                                    + " record spread requires a nonempty closed pack");
+                        }
+                        if (parameterIndex + fields.size()
+                                > sourceParameters.size()) {
+                            throw error(callable
+                                    + " record spread exceeds checked parameter arity");
+                        }
+                        if (fields.values().stream().anyMatch(
+                                type -> !isCopyType(type))) {
+                            throw error(callable
+                                    + " record spread must be Copy-only; move-only fields "
+                                    + "need explicit argument transfer");
+                        }
+                        for (int i = 0; i < fields.size(); i++) {
+                            Ast.Param target =
+                                    sourceParameters.get(parameterIndex + i);
+                            if (target.structural()
+                                    || target.type().isBorrow()) {
+                                throw error(callable
+                                        + " record spread cannot bind "
+                                        + "structural/borrowed parameters");
+                            }
+                        }
+                        ValueInfo aggregate =
+                                checkExpr(spread.expression(), scope, false);
+                        if (!aggregate.type.isReadonlyRecordType()
+                                || containsMutexGuardType(aggregate.type)) {
+                            throw error(callable
+                                    + " record spread lost its readonly closed-record proof");
+                        }
+                        parameterIndex += fields.size();
+                        continue;
+                    }
+
                     if (!spreadType.isTupleType()) {
                         throw error(callable
-                                + " spread requires a statically known tuple; runtime-length collections "
-                                + "need an explicitly variadic callable");
+                                + " spread requires a statically known tuple; "
+                                + "runtime-length collections need an explicitly variadic callable");
                     }
 
                     int width = spreadType.arguments().size();
-                    if (parameterIndex + width > params.size()) return; // TypeChecker reports arity.
+                    if (parameterIndex + width > sourceParameters.size()) {
+                        throw error(callable
+                                + " tuple spread exceeds checked parameter arity");
+                    }
                     for (int i = 0; i < width; i++) {
-                        Ast.Param target = params.get(parameterIndex + i);
-                        if (target.structural() || target.type().isBorrow()) {
-                            throw error(callable + " argument " + (parameterIndex + i + 1)
-                                    + " cannot currently receive tuple spread into a structural/borrowed parameter; "
-                                    + "pass that argument explicitly");
+                        Ast.Param target =
+                                sourceParameters.get(parameterIndex + i);
+                        if (target.structural()
+                                || target.type().isBorrow()) {
+                            throw error(callable + " argument "
+                                    + (parameterIndex + i + 1)
+                                    + " cannot receive tuple spread into a "
+                                    + "structural/borrowed parameter; pass it explicitly");
                         }
                     }
 
-                    ValueInfo aggregate = checkExpr(spread.expression(), scope, true);
+                    ValueInfo aggregate =
+                            checkExpr(spread.expression(), scope, true);
                     if (containsMutexGuardType(aggregate.type)) {
-                        throw error(callable + " spread cannot consume a guard-bearing tuple");
+                        throw error(callable
+                                + " spread cannot consume a guard-bearing tuple");
                     }
                     parameterIndex += width;
                     continue;
                 }
 
-                if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-                Ast.Param param = params.get(parameterIndex);
+                Ast.Expr argument =
+                        rawArgument instanceof Ast.NamedArgExpr named
+                                ? named.value()
+                                : rawArgument;
+                if (rawArgument instanceof Ast.NamedArgExpr
+                        && !permitLabeledProducts) {
+                    throw error(callable
+                            + " does not support named arguments on this callable surface");
+                }
+
+                if (parameterIndex >= sourceParameters.size()) {
+                    throw error(callable
+                            + " supplied an argument beyond checked parameter arity");
+                }
+
+                Ast.Param param = sourceParameters.get(parameterIndex);
                 VarState loanOwner = param.type().isBorrow()
-                        ? invocationLoanRoot(argument, scope) : null;
-                boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
+                        ? invocationLoanRoot(argument, scope)
+                        : null;
+                boolean mutable =
+                        param.type().isBorrow()
+                                && param.type().mutableBorrow();
                 if (loanOwner != null) {
                     Boolean previous = invocationLoans.get(loanOwner);
                     if (previous != null && (previous || mutable)) {
-                        throw error(callable + " has overlapping mutable borrow arguments at position "
+                        throw error(callable
+                                + " has overlapping mutable borrow arguments at position "
                                 + (parameterIndex + 1));
                     }
                 }
-                checkArgument(argument, param, scope, callable, parameterIndex + 1);
+
+                checkArgument(
+                        argument,
+                        param,
+                        scope,
+                        callable,
+                        parameterIndex + 1);
                 if (loanOwner != null) {
-                    // Borrowed arguments remain live until the call completes,
-                    // including forwarded incoming &mut parameters. Their
-                    // incoming lifetime is longer than this specific call and
-                    // is not itself protection against nested argument reads.
-                    // A local retained borrow already owns a lexical lease;
-                    // unlike incoming parameters it must not be double-leased.
-                    boolean explicit = argument instanceof Ast.UnaryExpr unary
-                            && (unary.operator().equals("&") || unary.operator().equals("&mut"));
-                    explicit |= argument instanceof Ast.RuntimeCallExpr runtime
-                            && runtime.operation().equals("borrow")
-                            && runtime.arguments().size() == 1;
-                    boolean forwarded = argument instanceof Ast.NameExpr name
-                            && isIncomingBorrow(scope.lookup(name.name()));
+                    boolean explicit =
+                            argument instanceof Ast.UnaryExpr unary
+                                    && (unary.operator().equals("&")
+                                            || unary.operator().equals("&mut"));
+                    explicit |=
+                            argument instanceof Ast.RuntimeCallExpr runtime
+                                    && runtime.operation().equals("borrow")
+                                    && runtime.arguments().size() == 1;
+                    boolean forwarded =
+                            argument instanceof Ast.NameExpr name
+                                    && isIncomingBorrow(
+                                            scope.lookup(name.name()));
                     if (explicit || forwarded) {
                         beginPersistentBorrow(loanOwner, mutable);
-                        activeLoans.add(new CallArgumentLoan(ownershipRoot(loanOwner), mutable));
+                        activeLoans.add(
+                                new CallArgumentLoan(
+                                        ownershipRoot(loanOwner),
+                                        mutable));
                     }
                     invocationLoans.put(loanOwner, mutable);
                 }
                 parameterIndex++;
             }
+
+            if (parameterIndex != sourceParameters.size()) {
+                throw error(callable
+                        + " did not bind every checked argument slot");
+            }
         } finally {
-            // Restore the parent scope on every path: successful call,
-            // failed argument and nested validation exception alike.
             for (int i = activeLoans.size() - 1; i >= 0; i--) {
                 CallArgumentLoan loan = activeLoans.get(i);
                 if (loan.mutable()) {
-                    if (!loan.root().mutableBorrowed)
-                        throw new IllegalStateException("missing exclusive call argument loan");
+                    if (!loan.root().mutableBorrowed) {
+                        throw new IllegalStateException(
+                                "missing exclusive call argument loan");
+                    }
                     loan.root().mutableBorrowed = false;
                 } else {
-                    if (loan.root().immutableBorrows <= 0)
-                        throw new IllegalStateException("missing shared call argument loan");
+                    if (loan.root().immutableBorrows <= 0) {
+                        throw new IllegalStateException(
+                                "missing shared call argument loan");
+                    }
                     loan.root().immutableBorrows--;
                 }
             }
         }
     }
+
 
     private VarState invocationLoanRoot(Ast.Expr expression, Scope scope) {
         Ast.Expr place = null;
@@ -3689,11 +3855,22 @@ public final class OwnershipChecker {
             Scope scope) {
         ArrayList<Ast.TypeRef> result = new ArrayList<>();
         for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.NamedArgExpr named) {
+                result.add(syntacticType(named.value(), scope));
+                continue;
+            }
             if (argument instanceof Ast.SpreadExpr spread) {
-                Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
-                if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
+                Ast.TypeRef spreadType =
+                        syntacticType(spread.expression(), scope);
+                if (spreadType.isBorrow()) {
+                    spreadType = spreadType.borrowedTarget();
+                }
                 if (spreadType.isTupleType()) {
                     result.addAll(spreadType.arguments());
+                } else if (spreadType.isReadonlyRecordType()
+                        && spread.expression() instanceof Ast.ObjectExpr object
+                        && object.structuralRecord()) {
+                    result.addAll(spreadType.recordMembers().values());
                 } else {
                     result.add(Ast.TypeRef.inferred());
                 }
