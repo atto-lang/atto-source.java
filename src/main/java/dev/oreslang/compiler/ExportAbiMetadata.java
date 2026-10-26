@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -101,7 +102,7 @@ public final class ExportAbiMetadata {
         Map<String, String> result = new LinkedHashMap<>();
         for (var entry : signatures.entrySet()) {
             List<String> family = new ArrayList<>(entry.getValue());
-            family.sort(String::compareTo);
+            family.sort(ExportAbiMetadata::compareUtf8);
             StringBuilder canonical = new StringBuilder();
             field(canonical, "oreslang.export.signature.v1");
             for (String item : family) field(canonical, item);
@@ -190,6 +191,10 @@ public final class ExportAbiMetadata {
             strings(out, alias.genericParameters());
             type(out, alias.target());
         } else if (declaration instanceof Ast.FieldDecl field) {
+            if (field.bindingKind() == Ast.BindingKind.CONST) {
+                throw new IllegalArgumentException(
+                        "[EXPORT_CONST_ABI_VALUE_UNENCODED] exported const metadata requires canonical compile-time value encoding");
+            }
             field(out, field.bindingKind().name());
             flags(out, field.mutableReferent());
             type(out, field.type());
@@ -297,6 +302,12 @@ public final class ExportAbiMetadata {
     private static void field(StringBuilder out, String value) {
         byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
         out.append(bytes.length).append(':').append(value).append(';');
+    }
+
+    private static int compareUtf8(String left, String right) {
+        return Arrays.compareUnsigned(
+                left.getBytes(StandardCharsets.UTF_8),
+                right.getBytes(StandardCharsets.UTF_8));
     }
 
     private static String sha256(String value) {
