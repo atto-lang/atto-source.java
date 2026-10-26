@@ -457,6 +457,17 @@ public final class Ast {
                     parents, interfaces, fields, constructor, methods, actorConcurrency, false);
         }
 
+        /** Compatibility constructor for pre-concurrency layout-aware AST producers. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, boolean inverted) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    ActorConcurrency.serial(ActorTransport.GENERIC), inverted);
+        }
+
         /** Compatibility constructor for all existing AST/JIT compiler clients. */
         public ClassDecl(String name, Visibility visibility, boolean isAbstract,
                          ActorKind actorKind, List<String> genericParameters,
