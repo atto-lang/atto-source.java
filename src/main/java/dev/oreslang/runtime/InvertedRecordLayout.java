@@ -105,6 +105,13 @@ public final class InvertedRecordLayout {
         return buffer.array();
     }
 
+    private static boolean decodeCanonicalBool(byte encoded, String name) {
+        if (encoded != 0 && encoded != 1) {
+            throw new IllegalArgumentException("noncanonical boolean in inverted record member '" + name + "'");
+        }
+        return encoded == 1;
+    }
+
     private static IllegalArgumentException invalid(String name) {
         return new IllegalArgumentException("wrong type for inverted record member '" + name + "'");
     }
@@ -122,7 +129,7 @@ public final class InvertedRecordLayout {
                 case I64 -> buffer.getLong(member.offset());
                 case F32 -> buffer.getFloat(member.offset());
                 case F64 -> buffer.getDouble(member.offset());
-                case BOOL -> buffer.get(member.offset()) != 0;
+                case BOOL -> decodeCanonicalBool(buffer.get(member.offset()), member.name());
                 case RECORD -> throw new IllegalStateException("recursive member layout is not admitted");
             };
             value.put(member.name(), decoded);
