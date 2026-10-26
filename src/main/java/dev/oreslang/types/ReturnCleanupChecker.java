@@ -321,7 +321,7 @@ public final class ReturnCleanupChecker {
                 // ledger: an outer defer runs only after this match has already
                 // published its result.
                 State armState = new State();
-                statements(arm.body(), armScope, false, inDefer, true, armState);
+                statements(arm.loweringBody(), armScope, false, inDefer, true, armState);
                 validatePendingReturns(armState);
 
                 // If the entire MatchExpr itself executes from an enclosing
