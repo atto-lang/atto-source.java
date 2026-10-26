@@ -30,6 +30,24 @@ access to the same backing channel and atomic arbitration lock. This
 protects the normal Java API capability boundary, not privileged JVM
 reflection in a trusted host process.
 
+The source evaluator (`OresEvalRootNode`) is in a **different Java
+package**, so it must not depend on private `backingChannel()` methods.
+Guest `readch`, `writech`, and static `select` lower through explicit
+`ReadChannel<T>` / `WriteChannel<T>` views (a full `Channel<T>`
+is projected to its cached `output` / `input` view). Suspended,
+nonblocking, immediate, and synchronous paths use these same directional
+operations. There is no new queue or privileged unwrap in guest lowering.
+
+**Java host compatibility notice:** `ReadCase.channel()` and
+`WriteCase.channel()` change their Java return types from `Channel<T>`
+to directional views. This is intentionally **source/binary incompatible**
+with host integrations that directly called the old record component
+getter. Migrate such code to `ReadChannel<T>` and
+`WriteChannel<T>`; never restore the unrestricted getter as a
+compatibility alias. Existing `ChannelRuntime.read(Channel<T>)` and
+`write(Channel<T>, T)` factory calls remain supported.
+
+
 The names above describe two *directional protocols*, not concrete Java
 `ChannelRuntime.Channel` allocations. The endpoints are required properties,
 not implicit getter calls: resolving a `pipe` graph must not execute arbitrary
