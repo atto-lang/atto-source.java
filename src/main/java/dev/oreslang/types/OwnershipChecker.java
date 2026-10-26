@@ -2476,18 +2476,15 @@ public final class OwnershipChecker {
                         + " expanded argument arity mismatch: expected "
                         + params.size() + ", got " + inputs.size());
             }
-            sourceParameters = params;
-            if (inputs.stream().anyMatch(input -> input.label() != null)) {
-                FixedProductCallPlan plan = FixedProductCallPlan.bind(
-                        params.stream().map(Ast.Param::name).toList(),
-                        inputs);
-                List<Ast.Param> reordered =
-                        new ArrayList<>(params.size());
-                for (FixedProductCallPlan.BoundSlot slot : plan.sourceOrder()) {
-                    reordered.add(params.get(slot.parameterIndex()));
-                }
-                sourceParameters = List.copyOf(reordered);
+            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(),
+                    inputs);
+            List<Ast.Param> reordered =
+                    new ArrayList<>(params.size());
+            for (FixedProductCallPlan.BoundSlot slot : plan.sourceOrder()) {
+                reordered.add(params.get(slot.parameterIndex()));
             }
+            sourceParameters = List.copyOf(reordered);
         }
 
         int parameterIndex = 0;
