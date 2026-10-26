@@ -1,5 +1,7 @@
 package dev.oreslang.types;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -55,7 +57,17 @@ public final class Types {
      */
     public record Record(Map<String, Type> members, boolean readOnly, AggregateKind kind) implements Type {
         public Record {
-            members = Map.copyOf(members);
+            Objects.requireNonNull(members, "record members");
+            LinkedHashMap<String, Type> orderedMembers = new LinkedHashMap<>();
+            for (var entry : members.entrySet()) {
+                String name = Objects.requireNonNull(entry.getKey(), "record member name");
+                Type type = Objects.requireNonNull(entry.getValue(), "record member type");
+                orderedMembers.put(name, type);
+            }
+            // Field order is not part of record type identity, but compiler
+            // diagnostics and source-ordered product expansion must remain
+            // deterministic. Map.copyOf does not promise iteration order.
+            members = Collections.unmodifiableMap(orderedMembers);
             kind = Objects.requireNonNull(kind, "aggregate kind");
             if (kind == AggregateKind.STRUCT && readOnly) {
                 throw new IllegalArgumentException(
