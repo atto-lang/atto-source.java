@@ -172,7 +172,7 @@ final class AuthenticatedActorStreamSourceTest {
     @Test
     void nonActorStageCannotBorrowAuthenticatedActorPipeAuthority() throws Exception {
         String source = fixture().replace(
-                "ActorUtils.pipe(\\n        spawn Source(),\\n        spawn Transform(),\\n        spawn Sink()\\n    )",
+                "ActorUtils.pipe(\n        spawn Source(),\n        spawn Transform(),\n        spawn Sink()\n    )",
                 "ActorUtils.pipe(spawn Source(), 42, spawn Sink())");
         assertNotEquals(fixture(), source);
         IllegalArgumentException rejected = assertThrows(
