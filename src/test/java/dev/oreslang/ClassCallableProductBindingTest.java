@@ -296,25 +296,27 @@ final class ClassCallableProductBindingTest {
     }
 
     @Test
-    void genericLabeledMethodCallsRemainFailClosed() {
+    void genericLabeledMethodCallsRemainFailClosedAtOwnershipLowering() {
+        var typed = TypeChecker.check(Parser.parse("""
+                define class Codec as
+                    pub identity<T>(T value): T {
+                        return value;
+                    }
+                end
+
+                pub routine main(): void {
+                    const codec = new Codec();
+                    stdio.stdout.write(codec.identity(value: 42));
+                    return;
+                }
+                """));
+
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Codec as
-                            pub identity<T>(T value): T {
-                                return value;
-                            }
-                        end
-
-                        pub routine main(): void {
-                            const codec = new Codec();
-                            stdio.stdout.write(codec.identity(value: 42));
-                            return;
-                        }
-                        """)));
+                () -> OwnershipChecker.check(typed));
         assertTrue(
                 failure.getMessage().contains("generic")
-                        || failure.getMessage().contains("named"),
+                        || failure.getMessage().contains("source-to-ABI"),
                 failure.getMessage());
     }
 
