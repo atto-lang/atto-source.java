@@ -53,9 +53,18 @@ final class InvertedOneLevelLayoutTest {
             assertEquals(5.0, array.read(first, "mass"));
             assertEquals(3, array.snapshot(first).size());
 
+            // Bracket lowering keeps nested fixed records as one opaque AoS
+            // column element and returns the same detached immutable decode as
+            // handle-based access.
+            assertEquals(position, array.index(0).get("position"));
+            assertEquals(velocity, array.index(0).get("velocity"));
+            assertThrows(UnsupportedOperationException.class,
+                    () -> ((Map<String,Object>) array.index(0).get("position")).put("x", 42.0));
+            array.index(0).set(
+                    "position", Map.of("x", 9.0, "y", 10.0, "alive", false));
+
             assertThrows(UnsupportedOperationException.class,
                     () -> ((Map<String,Object>) array.read(first, "position")).put("x", 42.0));
-            array.write(first, "position", Map.of("x", 9.0, "y", 10.0, "alive", false));
             assertEquals(Map.of("x", 9.0, "y", 10.0, "alive", false),
                     array.bindField("position").get(first));
             try (var positionLoan = array.borrowRead("position");
