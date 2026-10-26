@@ -568,11 +568,10 @@ public final class Parser {
                     throw error(peek(), "macro parameters are immutable compiler values; mut/structural is not permitted");
                 }
                 Token parameterName = consume(IDENT, "expected macro parameter name after compiler-only meta type");
-                if (parameterName.lexeme().equals("quote")
-                        || parameterName.lexeme().equals("unquote")) {
+                if (isMacroIntrinsicName(parameterName.lexeme())) {
                     throw error(parameterName,
                             "'" + parameterName.lexeme()
-                                    + "' is reserved for compile-time macro quotation");
+                                    + "' is reserved for a compile-time macro intrinsic");
                 }
                 if (!parameterNames.add(parameterName.lexeme())) {
                     throw error(parameterName, "duplicate macro parameter '" + parameterName.lexeme() + "'");
@@ -770,11 +769,18 @@ public final class Parser {
         }
     }
 
+    private boolean isMacroIntrinsicName(String name) {
+        return "quote".equals(name)
+                || "unquote".equals(name)
+                || "hygienic".equals(name)
+                || "capture_fnc".equals(name);
+    }
+
     private void rejectMacroQuoteBinding(String name) {
-        if ("quote".equals(name) || "unquote".equals(name)) {
+        if (isMacroIntrinsicName(name)) {
             throw error(previous(),
                     "'" + name
-                            + "' is reserved for compile-time macro quotation and cannot be rebound in a macro body");
+                            + "' is reserved for a compile-time macro intrinsic and cannot be rebound in a macro body");
         }
     }
 
