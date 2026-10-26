@@ -1325,16 +1325,64 @@ public final class OwnershipChecker {
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
-            List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
+            Ast.ClassDecl klass = findClass(created.type().name());
+            boolean productConstructorSyntax =
+                    created.arguments().stream().anyMatch(
+                            argument -> argument instanceof Ast.NamedArgExpr
+                                    || argument instanceof Ast.SpreadExpr);
+            if (klass != null
+                    && klass.constructor() != null
+                    && klass.genericParameters().isEmpty()) {
+                for (Ast.Expr raw : created.arguments()) {
+                    Ast.Expr source =
+                            raw instanceof Ast.NamedArgExpr named
+                                    ? named.value()
+                                    : raw instanceof Ast.SpreadExpr spread
+                                            ? spread.expression()
+                                            : raw;
+                    Ast.TypeRef sourceType = syntacticType(source, scope);
+                    if (containsMutexGuardType(sourceType)) {
+                        throw error(
+                                "MutexGuard cannot be stored in a constructed object");
+                    }
+                }
+                checkArguments(
+                        created.arguments(),
+                        klass.constructor().parameters(),
+                        scope,
+                        "constructor " + klass.name(),
+                        true);
+                return new ValueInfo(
+                        created.type(),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+            if (productConstructorSyntax) {
+                if (klass == null || klass.constructor() == null) {
+                    throw error(
+                            "named/spread construction requires an explicit guest constructor");
+                }
+                throw error(
+                        "named/spread construction on generic classes remains fail-closed "
+                                + "until ownership inference consumes the checked source-to-ABI plan");
+            }
+
+            List<Ast.TypeRef> argumentTypes =
+                    new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
                 if (containsMutexGuardType(info.type)) {
-                    throw error("MutexGuard cannot be stored in a constructed object");
+                    throw error(
+                            "MutexGuard cannot be stored in a constructed object");
                 }
                 argumentTypes.add(info.type);
             }
-            Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
-            return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
+            Ast.TypeRef constructedType =
+                    inferConstructedType(created, argumentTypes);
+            return new ValueInfo(
+                    constructedType,
+                    ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.TaskExpr task) {
             if (task.domain() == Ast.ExecutionDomain.GPU) {
