@@ -109,7 +109,7 @@ final class ImportGraph {
                 Ast.Program target = programs.get(targetId);
                 if (imported.wildcard()) continue;
                 for (String name : imported.names()) {
-                    int matches = exportedMatches(target, imported.kind(), name);
+                    int matches = SourceExportTable.matchingPublic(target, imported.kind(), name).size();
                     if (matches == 0) {
                         throw new IllegalArgumentException("import " + imported.kind().name().toLowerCase()
                                 + " '" + name + "' from '" + imported.path() + "' in '" + importer
@@ -123,62 +123,6 @@ final class ImportGraph {
                 }
             }
         }
-    }
-
-    private static int exportedMatches(Ast.Program program, Ast.ImportKind kind, String name) {
-        int matches = 0;
-        for (Ast.ModuleDecl module : program.modules()) {
-            if (kind == Ast.ImportKind.MODULE) {
-                if (module.name().equals(name)) matches++;
-                continue;
-            }
-
-            for (Ast.Decl decl : module.declarations()) {
-                boolean matched = switch (kind) {
-                    case FUNCTION -> decl instanceof Ast.FunctionDecl fn
-                            && fn.visibility() == Ast.Visibility.PUBLIC
-                            && fn.kind() == Ast.CallableKind.FNC
-                            && fn.actorKind() == Ast.ActorKind.NONE
-                            && fn.genericParameters().isEmpty()
-                            && fn.name().equals(name);
-                    case ACTOR -> decl instanceof Ast.ClassDecl klass
-                            && klass.actorKind() != Ast.ActorKind.NONE
-                            && klass.visibility() == Ast.Visibility.PUBLIC
-                            && klass.name().equals(name);
-                    case CLASS -> decl instanceof Ast.ClassDecl klass
-                            && klass.visibility() == Ast.Visibility.PUBLIC
-                            && klass.actorKind() == Ast.ActorKind.NONE
-                            && klass.name().equals(name);
-                    case INTERFACE -> decl instanceof Ast.InterfaceDecl iface
-                            && !iface.moduleContract()
-                            && iface.visibility() == Ast.Visibility.PUBLIC
-                            && iface.name().equals(name);
-                    case CONTRACT -> decl instanceof Ast.InterfaceDecl iface
-                            && iface.moduleContract()
-                            && iface.visibility() == Ast.Visibility.PUBLIC
-                            && iface.name().equals(name);
-                    case TYPE -> decl instanceof Ast.TypeAliasDecl alias
-                            && alias.visibility() == Ast.Visibility.PUBLIC
-                            && alias.name().equals(name);
-                    case TYPES -> (decl instanceof Ast.InterfaceDecl iface
-                                    && iface.visibility() == Ast.Visibility.PUBLIC
-                                    && iface.name().equals(name))
-                            || (decl instanceof Ast.TypeAliasDecl alias
-                                    && alias.visibility() == Ast.Visibility.PUBLIC
-                                    && alias.name().equals(name));
-                    case TRAIT, STRUCT -> false;
-                    case ALL -> (decl instanceof Ast.FunctionDecl fn
-                                    && fn.visibility() == Ast.Visibility.PUBLIC
-                                    && fn.name().equals(name))
-                            || (decl instanceof Ast.ClassDecl klass
-                                    && klass.visibility() == Ast.Visibility.PUBLIC
-                                    && klass.name().equals(name));
-                    case MODULE -> false;
-                };
-                if (matched) matches++;
-            }
-        }
-        return matches;
     }
 
     /**
