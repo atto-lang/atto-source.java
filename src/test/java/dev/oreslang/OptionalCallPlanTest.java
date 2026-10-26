@@ -86,24 +86,41 @@ final class OptionalCallPlanTest {
                 new OptionalCallPlan.BoundSlot(1, 0, "a"));
 
         OptionalCallPlan valid =
-                new OptionalCallPlan(source, List.of(1, -1, 0));
+                new OptionalCallPlan(
+                        source,
+                        List.of(1, -1, 0),
+                        List.of(false, true, false));
         assertEquals(1, valid.omittedCount());
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new OptionalCallPlan(source, List.of(0, -1, 1)));
+                () -> new OptionalCallPlan(
+                        source,
+                        List.of(0, -1, 1),
+                        List.of(false, true, false)));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new OptionalCallPlan(
                         List.of(
                                 new OptionalCallPlan.BoundSlot(0, 0, "a"),
                                 new OptionalCallPlan.BoundSlot(0, 2, "c")),
-                        List.of(0, -1, 0)));
+                        List.of(0, -1, 0),
+                        List.of(false, true, false)));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new OptionalCallPlan(
                         List.of(new OptionalCallPlan.BoundSlot(0, 0, "a")),
-                        List.of(0, 4)));
+                        List.of(0, 4),
+                        List.of(false, true)));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OptionalCallPlan(
+                        List.of(
+                                new OptionalCallPlan.BoundSlot(0, 0, "a"),
+                                new OptionalCallPlan.BoundSlot(1, 2, "c")),
+                        List.of(0, -1, 1),
+                        List.of(false, false, false)));
     }
 
     @Test
