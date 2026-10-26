@@ -1088,7 +1088,7 @@ public final class Ast {
          * Consumers must catch it at the value-arm boundary.
          */
         public List<Stmt> loweringBody() {
-            ArrayList<Stmt> lowered = new ArrayList<>(prefixStatements);
+            java.util.ArrayList<Stmt> lowered = new java.util.ArrayList<>(prefixStatements);
             lowered.add(new ReturnStmt(value));
             return List.copyOf(lowered);
         }
