@@ -548,13 +548,16 @@ def publish(repository, source, branch, trusted_root, source_commit):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
-        # Incident closure is mutable: a P0 can reopen after preflight.
-        # Guard every blob/tree/commit/ref write, not only the first one.
+        # Every authorization input is mutable after preflight. Re-attest the
+        # complete protected source authority before each source-bearing write.
         require_resolved_blocking_incidents()
         if checked_policy_approval(trusted_root, repository) != (
                 approved_policy, approved_repository_id):
             raise Denied("private CI destination approval policy changed during transfer")
         checked_repo(repository, approved_repository_id)
+        verify_protected_origin(
+            repository, approved_policy, approved_repository_id
+        )
 
     elements = []
     for rel, data, mode in files:
@@ -593,11 +596,6 @@ def publish(repository, source, branch, trusted_root, source_commit):
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
-    # Re-verify protected origin at the publication boundary, after any
-    # uploaded blobs but before attaching them to an executable CI branch.
-    verify_protected_origin(
-        repository, approved_policy, approved_repository_id
-    )
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
