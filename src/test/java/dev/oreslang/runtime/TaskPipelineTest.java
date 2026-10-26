@@ -35,6 +35,34 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void rejectedStageListsRevokeMovedInputButPreserveBorrowedInput() {
+        OresFuture<Integer> borrowed = new OresFuture<>();
+        OresFuture<Integer> oversizedMoved = new OresFuture<>();
+        OresFuture<Integer> nullStageMoved = new OresFuture<>();
+        List<TaskPipeline.Stage> oversized = java.util.Collections.nCopies(
+                129, value -> value);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TaskPipeline.startTracked(scheduler, borrowed, oversized));
+            assertFalse(borrowed.isDone(),
+                    "stage validation must not cancel a borrowed producer");
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> TaskPipeline.startOwnedInCurrentTaskOrRoot(
+                            scheduler, oversizedMoved, oversized));
+            assertTrue(oversizedMoved.isCancelled(),
+                    "the moved input must be revoked on length rejection");
+
+            assertThrows(NullPointerException.class,
+                    () -> TaskPipeline.startOwnedInCurrentTaskOrRoot(
+                            scheduler, nullStageMoved,
+                            java.util.Arrays.asList(value -> value, null)));
+            assertTrue(nullStageMoved.isCancelled(),
+                    "the moved input must be revoked if stage copying fails");
+        }
+    }
+
+    @Test
     void executesDeferredMixedStagesInOneSchedulerTaskDomain() throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
         OresFuture<Integer> nested = new OresFuture<>();
