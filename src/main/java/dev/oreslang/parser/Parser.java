@@ -3448,6 +3448,11 @@ public final class Parser {
             consume(GT, "match result parameter requires exactly one type argument and closing '>'");
         }
 
+        // Historical value-match sources could spell `match<T> first value over`.
+        // MatchExpr is source-ordered already, so retain the marker only as a
+        // compatibility parse surface; it carries no separate runtime mode.
+        matchContextualIdentifier("first");
+
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
         Ast.Expr subject;
