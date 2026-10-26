@@ -1,0 +1,105 @@
+package dev.oreslang.compiler;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class IncrementalDiagnosticsTest {
+    private static String sixIndependentParserErrors() {
+        StringBuilder code = new StringBuilder("define module diagnostics as\n");
+        for (int n = 1; n <= 6; n++) {
+            code.append("  pub fnc bad").append(n)
+                    .append("(): int { return 1 + ; }\n");
+        }
+        return code.append("end\n").toString();
+    }
+
+    @Test
+    void sixRealSyntaxErrorsWithinOneSourceProduceFiveThenSix() {
+        Map<String, String> sources = Map.of("src/diagnostics.ores", sixIndependentParserErrors());
+        var compiler = new IncrementalCompiler();
+        CompilationDiagnosticsException five = assertThrows(
+                CompilationDiagnosticsException.class,
+                () -> compiler.compileWithDiagnostics(sources, 5));
+        assertEquals(5, five.diagnostics().size());
+        assertTrue(five.mayHaveMore());
+        assertEquals(List.of(2, 3, 4, 5, 6),
+                five.diagnostics().stream().map(d -> d.primary().line()).toList());
+        assertTrue(five.diagnostics().stream()
+                .allMatch(d -> d.phase() == DiagnosticCollector.Phase.PARSE));
+
+        CompilationDiagnosticsException ten = assertThrows(
+                CompilationDiagnosticsException.class,
+                () -> compiler.compileWithDiagnostics(sources, 10));
+        assertEquals(6, ten.diagnostics().size());
+        assertEquals(List.of(2, 3, 4, 5, 6, 7),
+                ten.diagnostics().stream().map(d -> d.primary().line()).toList());
+        assertFalse(ten.mayHaveMore());
+
+        CompilationDiagnosticsException one = assertThrows(
+                CompilationDiagnosticsException.class,
+                () -> compiler.compileWithDiagnostics(sources, 1));
+        assertEquals(1, one.diagnostics().size());
+        assertTrue(one.mayHaveMore());
+    }
+
+    @Test
+    void multipleFilesAreOrderedRegardlessOfInputMapIteration() {
+        var inputs = new LinkedHashMap<String, String>();
+        inputs.put("z.ores", sixIndependentParserErrors());
+        inputs.put("a.ores", sixIndependentParserErrors());
+        var failure = assertThrows(CompilationDiagnosticsException.class,
+                () -> new IncrementalCompiler().compileWithDiagnostics(inputs, 5));
+        assertEquals(5, failure.diagnostics().size());
+        assertTrue(failure.diagnostics().stream()
+                .allMatch(d -> d.primary().unitId().endsWith("a.ores")));
+    }
+
+    @Test
+    void nonBracedMalformedSourceStopsRatherThanInventingSiblingErrors() {
+        var collector = new DiagnosticCollector(10);
+        String malformed = "define module broken as\n"
+                + "  pub fnc first(): int\n"
+                + "    return 1 + ;\n"
+                + "  end\n"
+                + "  pub fnc second(): int { return 1 + ; }\n"
+                + "end\n";
+        assertTrue(dev.oreslang.parser.Parser.collectSyntaxDiagnostics(
+                malformed, "broken.ores", collector));
+        assertEquals(1, collector.diagnostics().size());
+        assertTrue(collector.mayHaveMore());
+    }
+
+    @Test
+    void cleanParseStillUsesNormalSemanticAndOwnershipChecks() {
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compileWithDiagnostics(
+                        Map.of("broken.ores", """
+                                define module broken as
+                                  pub fnc amount(): int { return "wrong"; }
+                                end
+                                """), 5));
+        assertFalse(failure instanceof CompilationDiagnosticsException,
+                "type failure must not be reclassified as a recovered parse error");
+    }
+
+    @Test
+    void rejectedCompilationNeverCommitsPartialCacheState() {
+        var compiler = new IncrementalCompiler();
+        assertThrows(CompilationDiagnosticsException.class,
+                () -> compiler.compileWithDiagnostics(
+                        Map.of("broken.ores", sixIndependentParserErrors()), 5));
+        // Independent valid source must compile after rejection without relying
+        // on a partial parse unit or incorrectly cached graph.
+        var valid = compiler.compileWithDiagnostics(Map.of("good.ores", """
+                define module good as
+                  pub fnc one(): int { return 1; }
+                end
+                """), 5);
+        assertTrue(valid.units().keySet().stream().anyMatch(id -> id.endsWith("good.ores")));
+    }
+}
