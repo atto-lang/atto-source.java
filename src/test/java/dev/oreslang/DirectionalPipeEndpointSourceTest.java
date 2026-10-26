@@ -105,6 +105,42 @@ final class DirectionalPipeEndpointSourceTest {
     }
 
     @Test
+    void actorClassesCannotSelfAssertPipeAuthorityAndEndpointCapabilitiesAreNotMailboxData() {
+        IllegalArgumentException actorImpl = rejects("""
+                define actor Bad implements HasInputChannel<int> as
+                    receive(ActorMail<int> mail): void {
+                        return;
+                    }
+                end
+                """);
+        assertTrue(actorImpl.getMessage().contains(
+                        "ActorRef pipe endpoints are compiler-synthesized"),
+                actorImpl::toString);
+
+        IllegalArgumentException capabilityPayload = rejects("""
+                define actor Bad as
+                    receive(ActorMail<ReadChannel<int>> mail): void {
+                        return;
+                    }
+                end
+                """);
+        assertTrue(capabilityPayload.getMessage().contains(
+                        "cannot use ReadChannel across an actor boundary"),
+                capabilityPayload::toString);
+
+        IllegalArgumentException protocolPayload = rejects("""
+                define actor Bad as
+                    receive(ActorMail<HasOutputChannel<int>> mail): void {
+                        return;
+                    }
+                end
+                """);
+        assertTrue(protocolPayload.getMessage().contains(
+                        "cannot use HasOutputChannel across an actor boundary"),
+                protocolPayload::toString);
+    }
+
+    @Test
     void heterogeneousTransformChecksAdjacentDomainsBeforeTransportLowering() {
         IllegalArgumentException bridge = rejects("""
                 define class Source implements HasOutputChannel<int> as
