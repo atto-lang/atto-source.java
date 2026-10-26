@@ -6,8 +6,10 @@ on:
     paths:
       - src/main/java/dev/oreslang/runtime/WebSocketFrameCodec.java
       - src/main/java/dev/oreslang/runtime/WebSocketHandshake.java
+      - src/main/java/dev/oreslang/runtime/WebSocketSessionState.java
       - src/test/java/dev/oreslang/runtime/WebSocketFrameCodecTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketHandshakeTest.java
+      - src/test/java/dev/oreslang/runtime/WebSocketSessionStateTest.java
       - docs/WEBSOCKET_TRANSPORT_V1.md
       - .github/workflows/websocket-frame-codec.yml
 
@@ -57,4 +59,4 @@ jobs:
           version: '25.3'
           distribution: graalvm
       - name: Execute bounded WebSocket wire contracts
-        run: mvn -B -ntp -Dtest='dev.oreslang.runtime.WebSocketFrameCodecTest,dev.oreslang.runtime.WebSocketHandshakeTest' test
+        run: mvn -B -ntp -Dtest='dev.oreslang.runtime.WebSocketFrameCodecTest,dev.oreslang.runtime.WebSocketHandshakeTest,dev.oreslang.runtime.WebSocketSessionStateTest' test
