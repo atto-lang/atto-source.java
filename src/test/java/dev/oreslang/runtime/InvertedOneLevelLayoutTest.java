@@ -136,6 +136,18 @@ final class InvertedOneLevelLayoutTest {
     }
 
     @Test
+    void rejectsNoncanonicalBooleanBytesAtRecordDecodeBoundary() {
+        Ast.TypeRef valueType = Ast.TypeRef.recordType(
+                Map.of("enabled", Ast.TypeRef.simple("bool")));
+        InvertedRecordLayout layout = InvertedRecordLayout.fromType(valueType);
+        assertEquals(Map.of("enabled", false), layout.decode(new byte[] {0}));
+        assertEquals(Map.of("enabled", true), layout.decode(new byte[] {1}));
+        assertThrows(IllegalArgumentException.class, () -> layout.decode(new byte[] {2}));
+        assertThrows(IllegalArgumentException.class, () -> layout.decode(new byte[] {-1}));
+        assertThrows(IllegalArgumentException.class, () -> layout.decode(new byte[0]));
+    }
+
+    @Test
     void recordPayloadsAreDefensivelyCopiedAtPhysicalStoreBoundary() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.ColumnSpec.record(4))) {
             byte[] original = {1, 2, 3, 4};
