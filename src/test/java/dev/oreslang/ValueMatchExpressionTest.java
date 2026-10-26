@@ -262,14 +262,11 @@ final class ValueMatchExpressionTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> ReturnCleanupChecker.check(Parser.parse("""
-                    define class Box as
-                    end
-
-                    fnc f(bool selected): Box {
-                        let mut Box result = new Box();
+                    fnc f(bool selected): int {
+                        let int result = 1;
                         defer match<int> selected over
                             on true -> ::
-                                result = new Box();
+                                result = 2;
                                 return 1;
                             end
                             on false -> 0;
