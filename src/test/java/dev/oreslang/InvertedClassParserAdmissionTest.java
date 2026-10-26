@@ -88,6 +88,10 @@ final class InvertedClassParserAdmissionTest {
                 "define inverted abstract class Foo as end",
                 "define inverted class Foo extends Bar as end",
                 "define inverted class Foo implements A as end",
+                "define actor inverted class Foo as end",
+                "define shared actor inverted class Foo as end",
+                "define private actor inverted class Foo as end",
+                "define untrusted actor inverted class Foo as end",
                 """
                 define inverted class Foo as
                     constructor() {}
@@ -199,6 +203,10 @@ final class InvertedClassParserAdmissionTest {
         assertFalse(classDecl.inverted());
         assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
                 "Invalid", Ast.Visibility.PRIVATE, true, Ast.ActorKind.NONE,
+                java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                java.util.List.of(), null, java.util.List.of(), true));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                "InvalidActor", Ast.Visibility.PRIVATE, false, Ast.ActorKind.SHARED,
                 java.util.List.of(), java.util.List.of(), java.util.List.of(),
                 java.util.List.of(), null, java.util.List.of(), true));
         assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
