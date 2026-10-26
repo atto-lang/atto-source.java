@@ -32,22 +32,20 @@ permissions:
 jobs:
   exact-head:
     name: exact-head export parser and resolver
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Never run fork PR code on the organization's trusted self-hosted runner.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, oreslang-jdk25]
+    timeout-minutes: 20
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Set up GraalVM
-        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
-        with:
-          version: '25.3'
-          java-version: '25'
-          distribution: 'graalvm'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          cache: maven
+      - name: Confirm runner toolchain
+        run: |
+          java -version
+          mvn -version
       - name: Compile exact head
         run: mvn -B -ntp -DskipTests compile
       - name: Run explicit export regression
