@@ -48,6 +48,43 @@ final class InvertedColumnStoreTest {
     }
 
     @Test
+    void randomizedDenseSubscriptsMatchAStableHandleOracle() {
+        var random = new Random(0x5EED);
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I64)) {
+            List<InvertedColumnStore.Handle> handles = new ArrayList<>();
+            List<Long> values = new ArrayList<>();
+            for (int step = 0; step < 1200; step++) {
+                if (handles.isEmpty() || (handles.size() < 64 && random.nextBoolean())) {
+                    long value = step * 1009L - 500L;
+                    handles.add(store.push(value));
+                    values.add(value);
+                } else {
+                    int chosen = random.nextInt(handles.size());
+                    var erased = handles.get(chosen);
+                    int last = handles.size() - 1;
+                    store.eraseSwap(erased);
+                    if (chosen != last) {
+                        handles.set(chosen, handles.get(last));
+                        values.set(chosen, values.get(last));
+                    }
+                    handles.remove(last);
+                    values.remove(last);
+                    assertThrows(IllegalArgumentException.class, () -> store.get(erased, 0));
+                }
+                assertEquals(handles.size(), store.size());
+                for (int i = 0; i < handles.size(); i++) {
+                    var byIndex = store.handleAt(i);
+                    assertEquals(handles.get(i).slot(), byIndex.slot());
+                    assertEquals(handles.get(i).generation(), byIndex.generation());
+                    assertEquals(values.get(i), store.get(byIndex, 0));
+                }
+                assertThrows(IndexOutOfBoundsException.class,
+                        () -> store.handleAt(store.size()));
+            }
+        }
+    }
+
+    @Test
     void checkedSubscriptsDoNotExposeInvalidHandlesAfterTeardown() {
         var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32);
         var old = store.push(7);
