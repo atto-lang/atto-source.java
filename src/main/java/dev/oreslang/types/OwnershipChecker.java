@@ -203,7 +203,7 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
-        currentAsyncGenerator = fn.generator() && fn.async();
+        currentAsyncGenerator = fn.generator() && (fn.async() || fn.suspends());
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
@@ -1626,7 +1626,7 @@ public final class OwnershipChecker {
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
-                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.suspends(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
@@ -1646,7 +1646,7 @@ public final class OwnershipChecker {
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
-                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.suspends(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
@@ -1721,7 +1721,7 @@ public final class OwnershipChecker {
                             signature.parameters(),
                             scope,
                             "static function " + staticClass.name() + "." + staticFunction.name());
-                    Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
+                    Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), staticFunction.suspends(), staticFunction.generator());
                     return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
             }
@@ -1924,7 +1924,7 @@ public final class OwnershipChecker {
                 }
                 Ast.TypeRef result = signature.result().name().equals("self")
                         ? concreteReceiver : signature.result();
-                Ast.TypeRef callResult = callableResultType(result, method.async(), false);
+                Ast.TypeRef callResult = callableResultType(result, method.async(), method.suspends(), method.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
@@ -4580,11 +4580,13 @@ public final class OwnershipChecker {
     private Ast.TypeRef callableResultType(
             Ast.TypeRef result,
             boolean async,
+            boolean suspends,
             boolean generator) {
         if (generator) {
-            Ast.TypeRef element = generatorYieldType(result, async);
+            boolean asynchronousIterator = async || suspends;
+            Ast.TypeRef element = generatorYieldType(result, asynchronousIterator);
             return new Ast.TypeRef(
-                    async ? "AsyncIterator" : "Iterator",
+                    asynchronousIterator ? "AsyncIterator" : "Iterator",
                     List.of(element),
                     false);
         }
