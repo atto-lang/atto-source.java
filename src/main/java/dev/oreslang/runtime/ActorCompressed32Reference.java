@@ -48,7 +48,8 @@ final class ActorCompressed32Reference {
 
     static long decodeChecked(long word, long logicalSpanBytes, long accessBytes) {
         long offset = decodeStored(word);
-        if (logicalSpanBytes < 0 || accessBytes <= 0 || offset > logicalSpanBytes
+        if (logicalSpanBytes < 0 || logicalSpanBytes > MAX_SPAN_BYTES
+                || accessBytes <= 0 || offset > logicalSpanBytes
                 || accessBytes > logicalSpanBytes - offset) {
             throw new SecurityException("compressed actor reference outside logical arena");
         }
