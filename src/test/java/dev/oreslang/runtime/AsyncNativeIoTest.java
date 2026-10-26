@@ -458,6 +458,40 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void requestShutdownUnblocksRegisteredServerSocketAcceptBeforePhysicalJoin()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        try (var listener = new ServerSocket(
+                0, 1, InetAddress.getLoopbackAddress())) {
+            io.register(listener);
+            var acceptEntered = new CountDownLatch(1);
+            var acceptExited = new CountDownLatch(1);
+            var accepting = io.submit("server.accept", () -> {
+                try (AsyncNativeIo.IoLoan lease = io.borrow(listener)) {
+                    acceptEntered.countDown();
+                    try {
+                        return listener.accept();
+                    } finally {
+                        acceptExited.countDown();
+                    }
+                }
+            });
+
+            assertTrue(acceptEntered.await(2, TimeUnit.SECONDS));
+            assertFalse(accepting.isDone());
+            io.requestShutdown();
+            assertTrue(acceptExited.await(2, TimeUnit.SECONDS),
+                    "transport wakeup must exit blocking accept without a client");
+            assertInstanceOf(Exception.class,
+                    assertThrows(ExecutionException.class,
+                            () -> accepting.get(2, TimeUnit.SECONDS)).getCause());
+            io.close();
+            assertTrue(listener.isClosed());
+        } finally {
+            io.close();
+        }
+    }
+
     @Test void queuedOperationDiscardIsDistinctFromRunningPhysicalRetirement()
             throws Exception {
         var io = new AsyncNativeIo(3, 1, 2);
