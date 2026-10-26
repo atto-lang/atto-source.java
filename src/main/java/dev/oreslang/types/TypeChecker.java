@@ -4,6 +4,7 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.compiler.ExportResolver;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
@@ -198,6 +199,7 @@ public final class TypeChecker {
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
+        ExportResolver.resolve(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
@@ -249,6 +251,7 @@ public final class TypeChecker {
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
+        ExportResolver.resolve(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
