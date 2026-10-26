@@ -17,3 +17,10 @@
 /.github/workflows/ @ORESoftware
 /scripts/ @ORESoftware
 /pom.xml @ORESoftware
+
+# Compiler/runtime trust boundary and language-contract surfaces.
+/src/ @ORESoftware
+/contracts/ @ORESoftware
+/stdlib/ @ORESoftware
+/integration/ @ORESoftware
+/.oreslang/ @ORESoftware
