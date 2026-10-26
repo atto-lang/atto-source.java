@@ -5092,6 +5092,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            if (call.arguments().stream().anyMatch(Ast.NamedValueArgumentExpr.class::isInstance)) {
+                continuation.accept(task, null, new IllegalArgumentException(
+                        "named value arguments require a statically resolved direct function"));
+                return;
+            }
+
             if (call.callee() instanceof Ast.MemberExpr member) {
                 evalSuspendableExpr(
                         task,
@@ -6948,6 +6954,11 @@ public final class OresEvalRootNode extends RootNode {
                     return functionInvocation(direct,
                             bindNamedCallValues(call.arguments(), direct.parameters(), args));
                 }
+            }
+
+            if (call.arguments().stream().anyMatch(Ast.NamedValueArgumentExpr.class::isInstance)) {
+                throw new IllegalArgumentException(
+                        "named value arguments require a statically resolved direct function");
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
