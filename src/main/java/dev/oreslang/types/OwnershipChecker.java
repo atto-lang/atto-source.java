@@ -3971,6 +3971,11 @@ public final class OwnershipChecker {
             String name,
             List<Ast.Expr> arguments,
             Scope scope) {
+        if (ambiguousFunctions.contains(name)) {
+            throw error(
+                    "ambiguous function " + name
+                            + "; qualify it with its module");
+        }
         LinkedHashMap<Integer, Ast.FunctionDecl> family =
                 functions.get(name);
         if (family == null) return null;
@@ -4103,7 +4108,11 @@ public final class OwnershipChecker {
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
                         substituteType(param.type(), bindings),
-                        param.name(), param.structural(), param.mutable()))
+                        param.name(),
+                        param.structural(),
+                        param.mutable(),
+                        param.omittable(),
+                        param.optionTypeSugar()))
                 .toList();
         return new CallSignature(specialized, substituteType(result, bindings));
     }
