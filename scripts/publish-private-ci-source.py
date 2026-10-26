@@ -44,7 +44,11 @@ QUARANTINED_DESTINATIONS = (
     "agent-pontifex-test/agent-pontifex-e2e-tests",
     "led-dynamo/leddy-e2e",
 )
-QUARANTINED_DESTINATION_IDS = (1323575966,)
+QUARANTINED_DESTINATION_IDS = (
+    1323575966,  # zed-pkg-test/java-app
+    1370782550,  # agent-pontifex-test/agent-pontifex-e2e-tests
+    1324139596,  # led-dynamo/leddy-e2e
+)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
