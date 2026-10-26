@@ -280,7 +280,7 @@ final class MacroDeclarationParserTest {
 
     @Test
     void identifierIntrinsicsCannotBeShadowedInsideMacroScope() {
-        for (String intrinsic : new String[]{"hygienic", "capture_fnc"}) {
+        for (String intrinsic : new String[]{"hygienic", "capture_fnc", "declare_fnc"}) {
             IllegalArgumentException parameter = assertThrows(
                     IllegalArgumentException.class,
                     () -> Parser.parse("""
@@ -325,8 +325,12 @@ final class MacroDeclarationParserTest {
                     return value;
                 }
 
+                fnc declare_fnc(int value) -> int {
+                    return value;
+                }
+
                 fnc answer() -> int {
-                    return hygienic(capture_fnc(quote(unquote(42))));
+                    return declare_fnc(hygienic(capture_fnc(quote(unquote(42)))));
                 }
                 """));
     }
