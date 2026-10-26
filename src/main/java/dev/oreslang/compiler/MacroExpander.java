@@ -13,7 +13,7 @@ import java.util.Set;
  * First executable, full-AOT macro evaluator slice.
  *
  * <p>This intentionally supports a small, hygienic Syntax&lt;Expr&gt; evaluator:
- * caller-supplied syntax passthrough and primitive Const&lt;T&gt; literal quotation.
+ * caller-supplied syntax passthrough and bounded deterministic Const&lt;T&gt; quotation.
  *
  * <pre>
  * define macro identity(Syntax&lt;Expr&gt; value) -> Syntax&lt;Expr&gt; {
@@ -21,7 +21,7 @@ import java.util.Set;
  * }
  * </pre>
  *
- * Returned syntax is caller-owned AST or a compiler-proven primitive literal;
+ * Returned syntax is caller-owned AST or compiler-evaluated closed constant AST;
  * neither form introduces an identifier or permits textual capture. All other macro
  * bodies/result positions fail closed. Expansion happens before ordinary
  * type/effect/ownership checks and leaves no macro declarations/invocations in
@@ -87,7 +87,7 @@ public final class MacroExpander {
                     throw unsupported(
                             macro.name(),
                             "the first evaluator slice only admits Syntax<Expr> identity "
-                                    + "or Const<T> literal quotation ('return quote(value);')");
+                                    + "or bounded Const<T> quotation ('return quote(value);')");
                 }
             }
         }
@@ -111,11 +111,8 @@ public final class MacroExpander {
     }
 
     /**
-     * Compiler-only literal quotation: a macro accepting Const<T> can emit a
-     * *proven literal* as executable syntax without a runtime macro engine.
-     *
-     * Other closed expressions intentionally remain unavailable until a
-     * bounded, value-preserving compile-time evaluator is implemented.
+     * Compiler-only constant quotation: a macro accepting Const<T> can emit
+     * deterministic, compiler-evaluated closed AST without a runtime macro engine.
      */
     private boolean isConstLiteralQuote(Ast.MacroDecl macro) {
         if (macro.resultKind().list()
@@ -207,14 +204,19 @@ public final class MacroExpander {
             emitted = quoted.expression();
         } else {
             if (!(invocation.arguments().getFirst()
-                    instanceof Ast.MacroConstArgument constant)
-                    || !(constant.expression() instanceof Ast.LiteralExpr literal)) {
+                    instanceof Ast.MacroConstArgument constant)) {
+                throw new IllegalArgumentException(
+                        "macro '" + invocation.name() + "' requires Const<T>");
+            }
+            try {
+                emitted = CompileTimeConstEvaluator.evaluate(
+                        constant.expression()).expression();
+            } catch (CompileTimeConstEvaluator.Failure failure) {
                 throw unsupported(
                         invocation.name(),
-                        "Const<T> quote currently requires a proven primitive literal; "
-                                + "closed expressions need a bounded comptime evaluator");
+                        "Const<T> quotation failed deterministic evaluation: "
+                                + failure.getMessage());
             }
-            emitted = literal;
         }
 
         String activeKey = module + "\0" + invocation.name()
@@ -226,8 +228,9 @@ public final class MacroExpander {
                             + "'; runtime fallback is forbidden");
         }
         try {
-            // Emits verified literal or caller-owned syntax: no generated source
-            // strings, newly introduced identifiers, or runtime evaluation.
+            // Emits deterministic compiler-owned constant AST or caller-owned
+            // syntax: no generated source strings, newly introduced identifiers,
+            // ambient authority, or runtime evaluation.
             return rewriteExpression(module, emitted, depth + 1);
         } finally {
             active.remove(activeKey);
