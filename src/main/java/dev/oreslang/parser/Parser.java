@@ -105,13 +105,29 @@ public final class Parser {
         }
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
-        while (match(IMPORT)) imports.add(parseImport());
+        List<Ast.ExportDecl> rootExports = new ArrayList<>();
+        while (true) {
+            if (match(IMPORT)) {
+                imports.add(parseImport());
+                continue;
+            }
+            if (isContextualIdentifier("export")) {
+                rootExports.add(parseExportDecl());
+                continue;
+            }
+            break;
+        }
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
+        java.util.LinkedHashSet<String> rootExplicitlyPrivateNames = new java.util.LinkedHashSet<>();
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
+            if (isContextualIdentifier("export")) {
+                rootExports.add(parseExportDecl());
+                continue;
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -128,10 +144,12 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                 validateClassModifiers(modifiers);
-                rootDeclarations.add(parseClass(
-                        modifiers.visibility,
-                        modifiers.isAbstract,
-                        modifiers.visibility != Ast.Visibility.PUBLIC));
+                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                        parseClass(
+                                modifiers.visibility,
+                                modifiers.isAbstract,
+                                modifiers.visibility != Ast.Visibility.PUBLIC),
+                        modifiers);
                 continue;
             }
 
@@ -143,7 +161,8 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                rootDeclarations.add(parseContract(modifiers.visibility));
+                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                        parseContract(modifiers.visibility), modifiers);
                 continue;
             }
 
@@ -155,7 +174,8 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "interfaces");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                rootDeclarations.add(parseDefinedInterface(modifiers.visibility, INTERFACE));
+                addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                        parseDefinedInterface(modifiers.visibility, INTERFACE), modifiers);
                 continue;
             }
 
@@ -164,7 +184,9 @@ public final class Parser {
                 rejectUnloweredRuntimeEntityDeclaration();
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
-                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                            parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix),
+                            modifiers);
                     continue;
                 }
                 if (modifiers.shared) {
@@ -184,7 +206,8 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "contracts");
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                    rootDeclarations.add(parseContract(modifiers.visibility));
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                            parseContract(modifiers.visibility), modifiers);
                     continue;
                 }
                 if (match(CLASS)) {
@@ -192,10 +215,12 @@ public final class Parser {
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                     validateClassModifiers(modifiers);
-                    rootDeclarations.add(parseClass(
-                            modifiers.visibility,
-                            modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                            parseClass(
+                                    modifiers.visibility,
+                                    modifiers.isAbstract,
+                                    modifiers.visibility != Ast.Visibility.PUBLIC),
+                            modifiers);
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -204,7 +229,8 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                    rootDeclarations.add(parseDefinedInterface(modifiers.visibility, declarationKind));
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                            parseDefinedInterface(modifiers.visibility, declarationKind), modifiers);
                     continue;
                 }
                 if (match(TYPE)) {
@@ -212,7 +238,8 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "type aliases");
                     rejectCallableStructuralAnnotation(annotations, "type aliases");
                     rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-                    rootDeclarations.add(parseTypeAlias(modifiers.visibility));
+                    addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames,
+                            parseTypeAlias(modifiers.visibility), modifiers);
                     continue;
                 }
                 throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
@@ -220,15 +247,172 @@ public final class Parser {
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
             if (declaration == null) throw error(peek(), "expected module or top-level declaration");
-            rootDeclarations.add(declaration);
+            addRootDeclaration(rootDeclarations, rootExplicitlyPrivateNames, declaration, modifiers);
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         if (!rootDeclarations.isEmpty()) {
-            modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
+            modules.add(new Ast.ModuleDecl(
+                    ROOT_MODULE,
+                    List.of(),
+                    List.of(),
+                    rootExports,
+                    List.copyOf(rootExplicitlyPrivateNames),
+                    rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(namespace, imports, modules);
+    }
+
+    private Ast.ExportDecl parseExportDecl() {
+        consumeContextualIdentifier("export", "expected 'export'");
+
+        Ast.ExportScope scope = Ast.ExportScope.PUBLIC;
+        if (match(LBRACKET, LPAREN)) {
+            Token.Type close = previous().type() == LBRACKET ? RBRACKET : RPAREN;
+            Token scopeToken = consume(IDENT, "expected export scope file/pkg/package");
+            scope = switch (scopeToken.lexeme()) {
+                case "file" -> Ast.ExportScope.FILE;
+                case "pkg", "package" -> Ast.ExportScope.PACKAGE;
+                default -> throw error(scopeToken, "unknown export scope '" + scopeToken.lexeme() + "'");
+            };
+            consume(close, "unterminated export scope");
+            if (check(LBRACKET) || check(LPAREN)) {
+                throw error(peek(), "an export declaration may specify only one scope");
+            }
+        }
+
+        if (check(STAR)) throw error(peek(), "wildcard export is reserved for future re-export syntax");
+        if (check(FROM)) throw error(peek(), "export from is reserved for future re-export syntax");
+
+        Ast.ExportKind kind = parseOptionalExportKind();
+        if (kind == Ast.ExportKind.INFERRED
+                && isRuntimeValueTypeName(peek())
+                && current + 1 < tokens.size()
+                && (isIdentifierLikeToken(tokens.get(current + 1).type())
+                    || tokens.get(current + 1).type() == SYMBOL_LITERAL)) {
+            throw error(peek(), "'" + peek().lexeme()
+                    + "' is a value type, not an exportable declaration kind");
+        }
+
+        List<Ast.ExportItem> items = new ArrayList<>();
+        if (match(LBRACE)) {
+            if (check(RBRACE)) throw error(peek(), "export selection cannot be empty");
+            for (;;) {
+                if (check(LBRACE)) throw error(peek(), "nested export groups are not allowed");
+                if (isExportKindStart()) {
+                    throw error(peek(), "declaration kind belongs before an export group, not inside it");
+                }
+                items.add(parseExportItem(kind));
+                if (!match(COMMA)) break;
+                if (check(RBRACE)) break; // one trailing comma is canonical-compatible
+                if (check(COMMA)) throw error(peek(), "repeated comma in export selection");
+            }
+            consume(RBRACE, "expected '}' after exported names");
+        } else {
+            items.add(parseExportItem(kind));
+        }
+
+        if (check(DOT) || check(DOUBLE_COLON) || check(SLASH)) {
+            throw error(peek(), "qualified export targets are reserved for future re-export syntax");
+        }
+        if (check(LT) || check(GT)) {
+            throw error(peek(), "generic instantiations are not valid export targets");
+        }
+        if (check(LPAREN)) {
+            throw error(peek(), "callable signatures are not valid export targets; export the overload family name");
+        }
+        consume(SEMICOLON, "export declaration must end with ';'");
+        return new Ast.ExportDecl(scope, kind, items);
+    }
+
+    private Ast.ExportKind parseOptionalExportKind() {
+        if (match(MODULE)) return Ast.ExportKind.MODULE;
+        if (match(ACTOR)) return Ast.ExportKind.ACTOR;
+        if (match(CLASS)) return Ast.ExportKind.CLASS;
+        if (match(FNC)) return Ast.ExportKind.FUNCTION;
+        if (match(ROUTINE)) return Ast.ExportKind.ROUTINE;
+        if (match(INTERFACE)) return Ast.ExportKind.INTERFACE;
+        if (match(CONTRACT)) return Ast.ExportKind.CONTRACT;
+        if (match(TRAIT)) return Ast.ExportKind.TRAIT;
+        if (match(STRUCT)) return Ast.ExportKind.STRUCT;
+        if (match(TYPE)) return Ast.ExportKind.TYPE;
+        if (match(CONST)) return Ast.ExportKind.CONST;
+        if (match(VAL)) return Ast.ExportKind.VAL;
+        if (match(LET)) return Ast.ExportKind.LET;
+        if (matchContextualIdentifier("symbol")) return Ast.ExportKind.SYMBOL;
+        if (matchContextualIdentifier("model")) return Ast.ExportKind.MODEL;
+        return Ast.ExportKind.INFERRED;
+    }
+
+    private boolean isExportKindStart() {
+        if (check(MODULE) || check(ACTOR) || check(CLASS) || check(FNC)
+                || check(ROUTINE) || check(INTERFACE) || check(CONTRACT)
+                || check(TRAIT) || check(STRUCT) || check(TYPE)
+                || check(CONST) || check(VAL) || check(LET)) return true;
+        return isContextualIdentifier("symbol") || isContextualIdentifier("model");
+    }
+
+    private boolean isRuntimeValueTypeName(Token token) {
+        if (!isIdentifierLikeToken(token.type())) return false;
+        return switch (token.lexeme()) {
+            case "string", "int", "float", "bool", "boolean", "void" -> true;
+            default -> false;
+        };
+    }
+
+    private Ast.ExportItem parseExportItem(Ast.ExportKind kind) {
+        if (match(SYMBOL_LITERAL)) {
+            Token symbol = previous();
+            if (kind != Ast.ExportKind.INFERRED && kind != Ast.ExportKind.SYMBOL) {
+                throw error(symbol, "Symbol literal export requires 'export symbol' or an untyped export");
+            }
+            if (match(AS)) {
+                if (match(SYMBOL_LITERAL)) {
+                    Token target = previous();
+                    if (!target.lexeme().equals(symbol.lexeme())) {
+                        throw error(target, "Symbol export identity must match exactly; aliases cannot manufacture a new Symbol");
+                    }
+                    return new Ast.ExportItem(symbol.lexeme(), symbol.lexeme(), true, true);
+                }
+                throw error(peek(), "Symbol exports do not support binding aliases; only '#name as #name' self identity is accepted");
+            }
+            return new Ast.ExportItem(symbol.lexeme(), null, true, false);
+        }
+
+        Token local = consume(IDENT, "expected exported declaration name");
+        String external = null;
+        if (match(AS)) {
+            if (check(SYMBOL_LITERAL)) {
+                throw error(peek(), "a declaration binding cannot be aliased to a Symbol identity");
+            }
+            if (check(STRING)) {
+                throw error(peek(), "runtime string literals cannot be export aliases");
+            }
+            external = consume(IDENT, "export alias must be an identifier").lexeme();
+        }
+        return new Ast.ExportItem(local.lexeme(), external, false, false);
+    }
+
+    private void addRootDeclaration(
+            List<Ast.Decl> declarations,
+            java.util.Set<String> explicitlyPrivateNames,
+            Ast.Decl declaration,
+            Modifiers modifiers) {
+        declarations.add(declaration);
+        if (modifiers.visibilitySeen
+                && modifiers.visibility == Ast.Visibility.PRIVATE) {
+            explicitlyPrivateNames.add(declarationName(declaration));
+        }
+    }
+
+    private String declarationName(Ast.Decl declaration) {
+        if (declaration instanceof Ast.FunctionDecl d) return d.name();
+        if (declaration instanceof Ast.ClassDecl d) return d.name();
+        if (declaration instanceof Ast.InterfaceDecl d) return d.name();
+        if (declaration instanceof Ast.FieldDecl d) return d.name();
+        if (declaration instanceof Ast.TypeAliasDecl d) return d.name();
+        throw new IllegalStateException("unknown declaration kind " + declaration.getClass().getName());
     }
 
     private Ast.ImportDecl parseImport() {
@@ -313,12 +497,17 @@ public final class Parser {
         // Canonical module syntax is "define module Name as ... end".
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
+        List<Ast.ExportDecl> exports = new ArrayList<>();
         List<Ast.Decl> declarations = new ArrayList<>();
         List<ForwardType> enclosing = moduleForwards;
         List<ForwardType> forwards = new ArrayList<>();
         moduleForwards = forwards;
         try {
             while (!check(END) && !check(EOF)) {
+                if (isContextualIdentifier("export")) {
+                    exports.add(parseExportDecl());
+                    continue;
+                }
                 Ast.Decl declaration = parseModuleMember();
                 if (declaration != null) declarations.add(declaration);
             }
@@ -327,7 +516,7 @@ public final class Parser {
         } finally {
             moduleForwards = enclosing;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
+        return new Ast.ModuleDecl(name, annotations, contracts, exports, List.of(), declarations);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
