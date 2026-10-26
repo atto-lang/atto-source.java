@@ -906,7 +906,30 @@ final class MacroInvocationPlannerTest {
                         }
                         """)));
 
-        assertTrue(failure.getMessage().contains("could not resolve module-level function 'helper'"),
+        assertTrue(failure.getMessage().contains("could not resolve ordinary module-level function 'helper'"),
+                failure::toString);
+    }
+
+    @Test
+    void checkedFunctionCaptureDoesNotGrantActorAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpander.expand(Parser.parse("""
+                        actor fnc helper() -> int {
+                            return 7;
+                        }
+
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+
+                        fnc demo() -> int {
+                            return reference!(ident helper);
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains(
+                "could not resolve ordinary module-level function 'helper'"),
                 failure::toString);
     }
 
