@@ -22,6 +22,7 @@ on:
       - "src/test/java/dev/oreslang/ExplicitExportSyntaxTest.java"
       - "src/test/java/dev/oreslang/ExplicitExportLinkedRuntimeTest.java"
       - "src/test/java/dev/oreslang/ExplicitExportIncrementalAbiTest.java"
+      - "src/test/java/dev/oreslang/ExplicitExportModuleShapeTest.java"
       - "src/test/java/dev/oreslang/MixedSourceInteropTest.java"
       - "docs/grammar.ebnf"
       - ".github/workflows/explicit-exports-v1.yml"
@@ -54,4 +55,4 @@ jobs:
       - name: Compile exact head
         run: mvn -B -ntp -DskipTests compile
       - name: Run explicit export regression
-        run: mvn -B -ntp -Dtest=ExplicitExportSyntaxTest,ExplicitExportLinkedRuntimeTest,ExplicitExportIncrementalAbiTest,MixedSourceInteropTest test
+        run: mvn -B -ntp -Dtest=ExplicitExportSyntaxTest,ExplicitExportLinkedRuntimeTest,ExplicitExportIncrementalAbiTest,ExplicitExportModuleShapeTest,MixedSourceInteropTest test
