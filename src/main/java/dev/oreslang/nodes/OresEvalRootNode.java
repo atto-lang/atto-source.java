@@ -3230,7 +3230,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (iterator != null) {
                     object.owner.requireClassMemberVisible(iterator.visibility(),
                             object.owner.declaringClass(iterator), env.accessClass(), "method", iterator.name());
-                    return sourceAsyncGenerator(callMethod(object, iterator, List.of()), env);
+                    return sourceAsyncGenerator(
+                            object.owner.invoke(
+                                    object.owner.methodInvocation(object, iterator, List.of()),
+                                    env.taskScope,
+                                    env.taskScopeParent),
+                            env);
                 }
             }
             Iterable<?> synchronous = iterableValues(value, env);
@@ -5085,6 +5090,11 @@ public final class OresEvalRootNode extends RootNode {
 
             List<Object> normalized = normalizeFunctionArguments(fn, args);
             if (fn.generator()) {
+                if (taskScope != null) {
+                    throw new IllegalStateException(
+                            "generator activation inside TaskScope is disabled until "
+                                    + "producer terminal/physical-retirement integration is proven");
+                }
                 if (fn.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalStateException(
                             "actor callables cannot expose generator activations across mailbox turns");
@@ -8658,7 +8668,10 @@ public final class OresEvalRootNode extends RootNode {
                         env == null ? null : env.accessClass(),
                         "method",
                         iterator.name());
-                Object produced = callMethod(object, iterator, List.of());
+                Object produced = object.owner.invoke(
+                        object.owner.methodInvocation(object, iterator, List.of()),
+                        env == null ? null : env.taskScope,
+                        env == null ? null : env.taskScopeParent);
                 return iterableValues(produced, env);
             }
             throw new IllegalArgumentException("value is not synchronously iterable");
@@ -8677,7 +8690,12 @@ public final class OresEvalRootNode extends RootNode {
                         env == null ? null : env.accessClass(),
                         "method",
                         iterator.name());
-                return asyncIterableValues(callMethod(object, iterator, List.of()), env);
+                return asyncIterableValues(
+                        object.owner.invoke(
+                                object.owner.methodInvocation(object, iterator, List.of()),
+                                env == null ? null : env.taskScope,
+                                env == null ? null : env.taskScopeParent),
+                        env);
             }
             if (!(value instanceof GeneratorRuntime.AsyncGenerator<?> generator)) {
                 return asyncSynchronousIterableValues(value, env);
