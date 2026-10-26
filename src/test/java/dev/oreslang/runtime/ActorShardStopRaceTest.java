@@ -17,6 +17,145 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(30)
 final class ActorShardStopRaceTest {
     @Test
+    void shardActorIdCompatibilityStillRequiresExactExecutingRef() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch allocated = new CountDownLatch(1);
+            CountDownLatch foreignChecked = new CountDownLatch(1);
+            AtomicReference<ActorShardColumns> retained = new AtomicReference<>();
+            AtomicReference<ActorRuntime.ActorId> ownerId = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> owner = runtime.spawnSharedTrusted(
+                    ctx -> (message, turn) -> {
+                        try {
+                            ActorShardColumns shard = new ActorShardColumns(
+                                    ActorShardColumns.Layout.SOA, 8, 1, 1);
+                            retained.set(shard);
+                            ownerId.set(ctx.self().id());
+                            assertSame(ctx.self(), ActorRuntime.currentActorRef(),
+                                    "runtime must expose the exact executing ActorRef internally");
+                            assertTrue(shard.ownedBy(runtime, ctx.self().id()),
+                                    "legacy ActorId wrapper may authorize only through exact current ref");
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            allocated.countDown();
+                        }
+                    });
+
+            owner.send(1);
+            assertTrue(allocated.await(5, TimeUnit.SECONDS));
+            owner.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+
+            ActorRuntime.ActorRef<Integer> foreign = runtime.spawnSharedTrusted(
+                    ctx -> (message, turn) -> {
+                        try {
+                            assertFalse(retained.get().ownedBy(runtime, ownerId.get()),
+                                    "another exact ActorRef must not gain authority by presenting the owner's ActorId");
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            foreignChecked.countDown();
+                        }
+                    });
+            foreign.send(1);
+            assertTrue(foreignChecked.await(5, TimeUnit.SECONDS));
+            foreign.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+
+            assertFalse(retained.get().ownedBy(runtime, ownerId.get()),
+                    "ambient host code must not gain shard authority from ActorId alone");
+
+            owner.gracefulStop().get(5, TimeUnit.SECONDS);
+            foreign.gracefulStop().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void forgedSameIdAndGenerationRefCannotOwnShardLease() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch allocated = new CountDownLatch(1);
+            AtomicReference<ActorShardColumns> retained = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> owner = runtime.spawnSharedTrusted(
+                    ctx -> (message, turn) -> {
+                        retained.set(new ActorShardColumns(
+                                ActorShardColumns.Layout.SOA, 4, 1, 1));
+                        allocated.countDown();
+                    });
+
+            owner.send(1);
+            assertTrue(allocated.await(5, TimeUnit.SECONDS));
+            owner.drain().get(5, TimeUnit.SECONDS);
+
+            var constructor = owner.getClass().getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<Integer> forged =
+                    (ActorRuntime.ActorRef<Integer>) constructor.newInstance(
+                            runtime, owner.id(), owner.kind(), owner.generation());
+
+            Field reservationField =
+                    ActorShardColumns.class.getDeclaredField("reservation");
+            reservationField.setAccessible(true);
+            ActorRuntime.ActorShardLease lease =
+                    (ActorRuntime.ActorShardLease) reservationField.get(retained.get());
+
+            assertTrue(lease.ownedBy(runtime, owner));
+            assertFalse(lease.ownedBy(runtime, forged),
+                    "same runtime/id/generation fields are not an exact ActorRef capability");
+
+            owner.gracefulStop().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void privateShardLeaseIsRevokedBeforeDoneBecomesObservable() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch allocated = new CountDownLatch(1);
+            AtomicReference<ActorDenseIndexColumns> retained = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> owner = runtime.spawnPrivate(
+                    ctx -> (message, turn) -> {
+                        ActorDenseIndexColumns shard = new ActorDenseIndexColumns(
+                                ActorShardColumns.Layout.SOA, 8, 1, 1);
+                        shard.writeIndex(0, 0, 7);
+                        retained.set(shard);
+                        allocated.countDown();
+                    });
+
+            owner.send(1);
+            assertTrue(allocated.await(5, TimeUnit.SECONDS));
+            owner.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(runtime.privateMemoryBytes() > 0);
+
+            owner.gracefulStop().get(5, TimeUnit.SECONDS);
+            owner.getDone().get(5, TimeUnit.SECONDS);
+
+            Field reservationField =
+                    ActorDenseIndexColumns.class.getDeclaredField("reservation");
+            reservationField.setAccessible(true);
+            ActorRuntime.ActorShardLease lease =
+                    (ActorRuntime.ActorShardLease) reservationField.get(retained.get());
+            Field revokedField =
+                    ActorRuntime.ActorShardLease.class.getDeclaredField("revoked");
+            revokedField.setAccessible(true);
+            var revoked =
+                    (java.util.concurrent.atomic.AtomicBoolean) revokedField.get(lease);
+
+            assertTrue(revoked.get(),
+                    "DONE must not become observable before private shard revocation");
+            assertEquals(0, runtime.privateMemoryBytes(),
+                    "private shard bytes must retire before DONE");
+            assertThrows(SecurityException.class,
+                    () -> retained.get().readIndex(0, 0));
+        }
+    }
+
+    @Test
     void inFlightCloseAndConcurrentStopDoNotLeaveRetainedBacking() throws Exception {
         Field backing = ActorShardColumns.class.getDeclaredField("storage");
         backing.setAccessible(true);
