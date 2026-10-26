@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresSymbol;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +22,7 @@ final class CompileTimeConstEvaluator {
     static final int MAX_STEPS = 512;
     static final int MAX_DEPTH = 64;
     static final int MAX_AGGREGATE_ELEMENTS = 256;
+    static final long MAX_ESTIMATED_BYTES = 1_048_576L;
 
     enum FailureKind {
         RUNTIME_DEPENDENT,
@@ -51,6 +53,7 @@ final class CompileTimeConstEvaluator {
 
     private int steps;
     private int aggregateElements;
+    private long estimatedBytes;
 
     private CompileTimeConstEvaluator() { }
 
@@ -321,6 +324,7 @@ final class CompileTimeConstEvaluator {
             }
             values.add(evaluated.expression());
         }
+        accountBytes(32L + values.size() * 8L);
         return new Evaluation(
                 new Ast.ListExpr(values),
                 new Ast.TypeRef("List", List.of(elementType), false));
@@ -335,6 +339,7 @@ final class CompileTimeConstEvaluator {
             values.add(evaluated.expression());
             types.add(evaluated.type());
         }
+        accountBytes(32L + values.size() * 8L);
         return new Evaluation(
                 new Ast.TupleExpr(values),
                 Ast.TypeRef.tupleType(types));
@@ -356,6 +361,11 @@ final class CompileTimeConstEvaluator {
             types.put(field.name(), evaluated.type());
         }
 
+        long objectBytes = 48L + fields.size() * 16L;
+        for (Ast.ObjectField field : fields) {
+            objectBytes += field.name().getBytes(StandardCharsets.UTF_8).length;
+        }
+        accountBytes(objectBytes);
         Ast.TypeRef type = object.structuralRecord()
                 ? Ast.TypeRef.readonlyRecordType(types)
                 : Ast.TypeRef.structType(types);
@@ -365,6 +375,20 @@ final class CompileTimeConstEvaluator {
     }
 
     private Evaluation scalar(Object value, String type) {
+        if (value instanceof Double floating && !Double.isFinite(floating)) {
+            throw new Failure(
+                    FailureKind.UNSUPPORTED,
+                    "non-finite compile-time float is not admitted by the "
+                            + "cross-backend deterministic Const<T> profile");
+        }
+        long bytes = 24L;
+        if (value instanceof Boolean) bytes = 16L;
+        else if (value instanceof String string) {
+            bytes += string.getBytes(StandardCharsets.UTF_8).length;
+        } else if (value instanceof OresSymbol symbol) {
+            bytes += symbol.name().getBytes(StandardCharsets.UTF_8).length;
+        }
+        accountBytes(bytes);
         return new Evaluation(new Ast.LiteralExpr(value), Ast.TypeRef.simple(type));
     }
 
@@ -461,12 +485,34 @@ final class CompileTimeConstEvaluator {
     }
 
     private void addAggregateElements(int count) {
-        aggregateElements += count;
+        try {
+            aggregateElements = Math.addExact(aggregateElements, count);
+        } catch (ArithmeticException overflow) {
+            throw new Failure(
+                    FailureKind.RESOURCE,
+                    "compile-time constant aggregate element accounting overflow");
+        }
         if (aggregateElements > MAX_AGGREGATE_ELEMENTS) {
             throw new Failure(
                     FailureKind.RESOURCE,
                     "compile-time constant aggregate element budget exceeds "
                             + MAX_AGGREGATE_ELEMENTS);
+        }
+    }
+
+    private void accountBytes(long bytes) {
+        try {
+            estimatedBytes = Math.addExact(estimatedBytes, Math.max(0L, bytes));
+        } catch (ArithmeticException overflow) {
+            throw new Failure(
+                    FailureKind.RESOURCE,
+                    "compile-time constant memory accounting overflow");
+        }
+        if (estimatedBytes > MAX_ESTIMATED_BYTES) {
+            throw new Failure(
+                    FailureKind.RESOURCE,
+                    "compile-time constant estimated memory budget exceeds "
+                            + MAX_ESTIMATED_BYTES + " bytes");
         }
     }
 }
