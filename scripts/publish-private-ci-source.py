@@ -93,7 +93,7 @@ def require_security_codeowners(contents):
             continue
         fields = rule.split()
         if (len(fields) != 2
-                or not re.fullmatch(r"(?:\\*|/[A-Za-z0-9._/-]+)", fields[0])
+                or not re.fullmatch(r"(?:\*|/[A-Za-z0-9._/-]+)", fields[0])
                 or "//" in fields[0]
                 or "/../" in fields[0] or "/./" in fields[0]
                 or fields[0].endswith("/..") or fields[0].endswith("/.")
