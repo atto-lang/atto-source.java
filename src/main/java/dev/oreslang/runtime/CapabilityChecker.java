@@ -549,7 +549,7 @@ public final class CapabilityChecker {
     private static String memberPath(Ast.Expr expr) {
         if (expr instanceof Ast.NameExpr n) {
             String resolvedModule =
-                    Ast.internalModuleReferenceTarget(n.name());
+                    dev.oreslang.compiler.MacroIdentifierHygiene.authorizedInternalModuleReferenceTarget(n);
             return resolvedModule == null ? n.name() : resolvedModule;
         }
         if (expr instanceof Ast.MemberExpr m) {
