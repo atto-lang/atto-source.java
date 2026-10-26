@@ -131,14 +131,14 @@ public final class ExportResolver {
                 Ast.Visibility visibility = declarationVisibility(declarations.getFirst());
                 for (Ast.Decl declaration : declarations) {
                     if (declarationVisibility(declaration) != visibility) {
-                        throw semantic("OVERLOAD_VISIBILITY_CONFLICT",
+                        throw semantic("EXPORT_OVERLOAD_VISIBILITY_CONFLICT",
                                 "logical export family '" + name + "' mixes public and private declarations");
                     }
                 }
                 if (declarations.size() > 1
                         && kind != Ast.ExportKind.FNC
                         && kind != Ast.ExportKind.ROUTINE) {
-                    throw semantic("DUPLICATE_LOCAL_EXPORT_SYMBOL",
+                    throw semantic("EXPORT_DUPLICATE_LOCAL_SYMBOL",
                             "multiple local declarations share " + kind.name().toLowerCase()
                                     + " name '" + name + "'");
                 }
@@ -157,7 +157,7 @@ public final class ExportResolver {
             Ast.ExportDecl export,
             Ast.ExportItem item) {
         if (item.symbol()) {
-            throw semantic("SYMBOL_DECLARATION_NOT_LOWERED",
+            throw semantic("EXPORT_SYMBOL_DECLARATION_NOT_LOWERED",
                     "Symbol export syntax is parsed, but Java main does not yet expose a first-class Symbol declaration for "
                             + item.localName());
         }
@@ -314,7 +314,7 @@ public final class ExportResolver {
                     List<LocalFamily> referencedFamilies = localTypes.get(typeName);
                     if (referencedFamilies == null || referencedFamilies.isEmpty()) continue;
                     if (referencedFamilies.size() != 1) {
-                        throw semantic("AMBIGUOUS_EXPORTED_SIGNATURE_TYPE",
+                        throw semantic("EXPORT_AMBIGUOUS_SIGNATURE_TYPE",
                                 "exported signature references ambiguous local type '" + typeName + "'");
                     }
                     LocalFamily referencedFamily = referencedFamilies.getFirst();
