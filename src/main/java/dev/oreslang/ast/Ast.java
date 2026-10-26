@@ -580,6 +580,7 @@ public final class Ast {
             boolean isAbstract,
             boolean async,
             boolean suspends,
+            boolean generator,
             boolean structural,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
@@ -588,6 +589,18 @@ public final class Ast {
             List<Annotation> annotations,
             List<Stmt> body,
             EffectSpec effects) {
+        /** Preserve the pre-generator canonical constructor ABI. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean suspends,
+                          boolean structural, TypeRef explicitReceiverType,
+                          List<String> genericParameters, List<Param> parameters,
+                          TypeRef returnType, List<Annotation> annotations,
+                          List<Stmt> body, EffectSpec effects) {
+            this(name, visibility, isStatic, isAbstract, async, suspends, false, structural,
+                    explicitReceiverType, genericParameters, parameters,
+                    returnType, annotations, body, effects);
+        }
+
         /** Existing methods retain empty effects until declared by source. */
         public MethodDecl(String name, Visibility visibility, boolean isStatic,
                           boolean isAbstract, boolean async, boolean suspends,
@@ -595,7 +608,7 @@ public final class Ast {
                           List<String> genericParameters, List<Param> parameters,
                           TypeRef returnType, List<Annotation> annotations,
                           List<Stmt> body) {
-            this(name, visibility, isStatic, isAbstract, async, suspends, structural,
+            this(name, visibility, isStatic, isAbstract, async, suspends, false, structural,
                     explicitReceiverType, genericParameters, parameters,
                     returnType, annotations, body, EffectSpec.none());
         }
@@ -606,7 +619,7 @@ public final class Ast {
                           TypeRef explicitReceiverType, List<String> genericParameters,
                           List<Param> parameters, TypeRef returnType,
                           List<Annotation> annotations, List<Stmt> body) {
-            this(name, visibility, isStatic, isAbstract, async, false, structural,
+            this(name, visibility, isStatic, isAbstract, async, false, false, structural,
                     explicitReceiverType, genericParameters, parameters, returnType, annotations, body);
         }
 
@@ -631,7 +644,7 @@ public final class Ast {
                 TypeRef returnType,
                 List<Annotation> annotations,
                 List<Stmt> body) {
-            this(name, visibility, isStatic, isAbstract, async, false, explicitReceiverType,
+            this(name, visibility, isStatic, isAbstract, async, false, false, explicitReceiverType,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
