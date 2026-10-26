@@ -1,6 +1,6 @@
 # Named value arguments and named type metadata: pre-1.0 contract
 
-Status: **proposed contract / implementation not yet enabled**. This is an audit artifact, not a claim that the compiler accepts named value arguments.
+Status: **partial Java implementation on draft PR #2082 (2026-10-26), not release-enabled or end-to-end CI verified**. Top-level, statically resolved direct functions now have parser, type/ownership binder and interpreter paths; methods, constructors, first-class callable values, imports and named record spread remain unimplemented or explicitly rejected. LLVM has independent fixtures; no cross-backend parity is claimed.
 
 ## Canonical delimiters and surfaces
 
