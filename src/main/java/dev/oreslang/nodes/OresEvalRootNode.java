@@ -5108,7 +5108,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (target == null || !target.name().equals(name.name())
                         || target.parameters().size() != 1
                         || plan.inputOwnership()
-                                != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM
+                                != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD
                         || !plan.stageEffects().isEmpty()) {
                     throw new IllegalStateException(
                             "checked Future stage plan is missing or incompatible");
