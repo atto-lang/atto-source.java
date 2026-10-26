@@ -129,6 +129,70 @@ final class ScopedTaskTest {
     }
 
     @Test
+    void suspendingHelperChildFailureCannotEscapeCallingScope() {
+        String source = """
+                suspends fnc spawn_child(): void {
+                    do nb {
+                        rt fail "helper-child-failed";
+                    };
+                    return;
+                }
+
+                pub routine main(): void {
+                    nb scope {
+                        spawn_child();
+                    }
+                    stdio.stdout.write("MUST_NOT_PRINT");
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        RuntimeException failure =
+                assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(
+                failure.toString().contains("helper-child-failed")
+                        || (failure.getCause() != null
+                                && failure.getCause().toString()
+                                        .contains("helper-child-failed")));
+    }
+
+    @Test
+    void nestedSuspendingHelpersRetainLiveScopeParentPermit() {
+        String source = """
+                suspends fnc inner(): void {
+                    do nb {
+                        rt fail "nested-helper-child-failed";
+                    };
+                    return;
+                }
+
+                suspends fnc outer(): void {
+                    inner();
+                    return;
+                }
+
+                pub routine main(): void {
+                    task scope {
+                        outer();
+                    }
+                    stdio.stdout.write("MUST_NOT_PRINT");
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        RuntimeException failure =
+                assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(
+                failure.toString().contains("nested-helper-child-failed")
+                        || (failure.getCause() != null
+                                && failure.getCause().toString()
+                                        .contains("nested-helper-child-failed")));
+    }
+
+
+    @Test
     void actorScopeIsRejectedStaticallyUntilActorIntegrationIsProven() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
