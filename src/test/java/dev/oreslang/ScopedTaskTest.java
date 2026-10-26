@@ -199,7 +199,7 @@ final class ScopedTaskTest {
                     return 41;
                 }
 
-                suspends fnc spawn_from_map(int value): int {
+                fnc spawn_from_map(int value): int {
                     do nb {
                         rt fail "future-map-child-failed";
                     };
