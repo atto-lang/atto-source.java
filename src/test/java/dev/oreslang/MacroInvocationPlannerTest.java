@@ -728,6 +728,77 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void identifierFreeTypedQuoteTemplateSplicesSyntaxParameters() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro twice(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote(unquote(value) + unquote(value));
+                        }
+                        fnc answer(int input) -> int {
+                            return twice!(syntax expr input);
+                        }
+                        """));
+
+        Ast.FunctionDecl function = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, function.body().getFirst());
+        Ast.BinaryExpr expanded = assertInstanceOf(
+                Ast.BinaryExpr.class, returned.value());
+        assertEquals("+", expanded.operator());
+        assertEquals("input",
+                assertInstanceOf(Ast.NameExpr.class, expanded.left()).name());
+        assertEquals("input",
+                assertInstanceOf(Ast.NameExpr.class, expanded.right()).name());
+
+        List<MacroSyntaxProvenance.Origin> origins =
+                MacroSyntaxProvenance.lookup(expanded);
+        assertEquals(1, origins.size());
+        assertEquals(MacroSyntaxProvenance.EmissionKind.TEMPLATE_QUOTE,
+                origins.getFirst().emissionKind());
+        assertEquals("twice", origins.getFirst().hygiene().macroName());
+    }
+
+    @Test
+    void typedQuoteTemplateCannotIntroduceUnhygienicIdentifier() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro bad(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote(helper(unquote(value)));
+                        }
+                        fnc answer(int input) -> int {
+                            return bad!(syntax expr input);
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("identifier-free"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
+    void typedUnquoteIntrinsicRequiresDirectCallOrigin() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro bad(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote(value |> unquote());
+                        }
+                        fnc answer(int input) -> int {
+                            return bad!(syntax expr input);
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("identifier-free"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
     void expansionProvenanceDistinguishesSpliceFromConstQuote() {
         Ast.Program splice = assertDoesNotThrow(
                 () -> OresCompiler.parseAndTypeCheck("""
