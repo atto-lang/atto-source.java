@@ -627,7 +627,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 if contexts is not None:
                     policy["contexts"] = contexts
                 v3.legacy.require_issuer_bound_actions_checks(
-                    policy, "fixture"
+                    policy, "fixture", "private-ci-policy"
                 )
 
         rejected = (
@@ -659,17 +659,33 @@ class PrivateCiV3Test(unittest.TestCase):
         for policy in rejected:
             with self.subTest(policy=policy), self.assertRaises(v3.Denied):
                 v3.legacy.require_issuer_bound_actions_checks(
-                    policy, "fixture"
+                    policy, "fixture", "private-ci-policy"
                 )
+
+        with self.assertRaisesRegex(v3.Denied, "security CI check missing"):
+            v3.legacy.require_issuer_bound_actions_checks(
+                {
+                    "strict": True,
+                    "contexts": [],
+                    "checks": [
+                        {
+                            "context": "unrelated-actions-job",
+                            "app_id": v3.legacy.GITHUB_ACTIONS_APP_ID,
+                        }
+                    ],
+                },
+                "fixture",
+                "private-ci-policy",
+            )
 
     def test_carrier_rejects_untrusted_required_ci_issuer(self):
         carrier = contract()
         protection = {
             "required_status_checks": {
                 "strict": True,
-                "contexts": ["carrier-security"],
+                "contexts": ["verifier-tests"],
                 "checks": [
-                    {"context": "carrier-security", "app_id": 999999}
+                    {"context": "verifier-tests", "app_id": 999999}
                 ],
             },
             "required_pull_request_reviews": {
@@ -705,10 +721,10 @@ class PrivateCiV3Test(unittest.TestCase):
         protection = {
             "required_status_checks": {
                 "strict": True,
-                "contexts": ["carrier-security"],
+                "contexts": ["verifier-tests"],
                 "checks": [
                     {
-                        "context": "carrier-security",
+                        "context": "verifier-tests",
                         "app_id": v3.legacy.GITHUB_ACTIONS_APP_ID,
                     }
                 ],
