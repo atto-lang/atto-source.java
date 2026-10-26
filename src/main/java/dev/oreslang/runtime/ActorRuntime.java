@@ -923,7 +923,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "ActorRef belongs to a different ActorRuntime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         return cell == null ? Optional.empty() : Optional.ofNullable(cell.codeImage);
     }
 
@@ -935,7 +935,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "ActorRef belongs to a different ActorRuntime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         return cell != null
                 && cell.mailbox instanceof ChannelRuntime.Channel<?>
                 && cell.continuationMailbox instanceof ChannelRuntime.Channel<?>;
@@ -2788,7 +2788,7 @@ public final class ActorRuntime implements AutoCloseable {
                             + "; cannot " + operation
                             + " from this execution context");
         }
-        ActorCell<?> target = actors.get(handle.ref.id());
+        ActorCell<?> target = exactCell(handle.ref);
         if (target != null && target.parent != caller) {
             throw new SecurityException(
                     "ActorHandle no longer names a direct structured child");
@@ -3132,7 +3132,7 @@ public final class ActorRuntime implements AutoCloseable {
             requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
             synchronized (authorityLock) {
                 requireOpen();
-                ActorCell<?> cell = actors.get(worker.id());
+                ActorCell<?> cell = exactCell(worker);
                 if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
@@ -3223,7 +3223,7 @@ public final class ActorRuntime implements AutoCloseable {
                             "cannot transfer worker after stop/cancellation was admitted");
                 }
                 if (!managedWorkers.containsKey(worker.id())) return false;
-                ActorCell<?> cell = actors.get(worker.id());
+                ActorCell<?> cell = exactCell(worker);
                 if (cell == null || cell.stopped.get()) {
                     throw new IllegalStateException("cannot transfer a stopped worker");
                 }
@@ -5326,7 +5326,7 @@ public final class ActorRuntime implements AutoCloseable {
                 true);
 
         @SuppressWarnings("unchecked")
-        ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
+        ActorCell<M> cell = (ActorCell<M>) exactCell(ref);
         if (cell == null) {
             completion.failFromRuntime(
                     new IllegalStateException(
