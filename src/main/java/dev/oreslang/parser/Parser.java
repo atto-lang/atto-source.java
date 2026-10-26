@@ -567,6 +567,9 @@ public final class Parser {
                     throw error(peek(), "macro parameters are immutable compiler values; mut/structural is not permitted");
                 }
                 Token parameterName = consume(IDENT, "expected macro parameter name after compiler-only meta type");
+                if (parameterName.lexeme().equals("quote")) {
+                    throw error(parameterName, "'quote' is reserved for compile-time macro quotation");
+                }
                 if (!parameterNames.add(parameterName.lexeme())) {
                     throw error(parameterName, "duplicate macro parameter '" + parameterName.lexeme() + "'");
                 }
