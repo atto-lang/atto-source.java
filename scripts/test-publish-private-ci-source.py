@@ -185,6 +185,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
             run.assert_not_called()
 
+    def test_preflight_treats_checkout_guard_as_data_only(self):
+        digest = b"x" * 32
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(
+                pub, "checked_policy_approval",
+                return_value=(digest, 246810),
+            ) as policy,
+            patch.object(pub, "checked_repo", return_value={"id": 246810}) as repo,
+            patch.object(pub.subprocess, "run") as run,
+        ):
+            ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
+            incidents.assert_called_once_with()
+            policy.assert_called_once_with(self.root, "trusted/ci")
+            repo.assert_called_once_with("trusted/ci", 246810)
+            run.assert_not_called()
+
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
         with (
             patch.object(pub.os, "O_DIRECTORY", 1, create=True),

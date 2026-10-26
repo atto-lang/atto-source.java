@@ -88,7 +88,7 @@ def require_security_codeowners(contents):
         if (len(fields) < 2 or fields[0] != expected_path
                 or SECURITY_CODEOWNER not in fields[1:]):
             raise Denied(
-                "protected CODEOWNERS must end with exact export rules owned by the independent security owner"
+                "protected CODEOWNERS must end with terminal exact export rules owned by the independent security owner"
             )
 
 
@@ -172,22 +172,18 @@ def require_resolved_blocking_incidents():
 
 
 def require_preflight(repository, root):
+    """Authorize without executing code from the candidate checkout.
+
+    The Bash destination checker remains a human/CI diagnostic, but a
+    privileged publisher must not execute checkout-controlled shell before
+    protected-origin authorization. Read the reviewed policy as data through
+    descriptor-safe Python and bind the destination's immutable repository ID.
+    """
     if repository.casefold() in {item.casefold() for item in QUARANTINED_DESTINATIONS}:
         raise Denied("destination is quarantined by private-source incident policy")
     require_resolved_blocking_incidents()
-    guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
-    try:
-        p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("destination policy check unavailable") from exc
-    if p.returncode != 0:
-        raise Denied("destination not approved by checked-in private policy")
     _, approved_repository_id = checked_policy_approval(root, repository)
     checked_repo(repository, approved_repository_id)
-
 
 def _parse_policy_approval(contents, repository, label):
     if not isinstance(contents, bytes):

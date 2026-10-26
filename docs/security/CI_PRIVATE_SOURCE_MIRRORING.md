@@ -61,6 +61,15 @@ Run the checked transfer from trusted, reviewed source, not an untrusted PR
 checkout. If an approval policy can be modified by the code under test, treat
 the result as untrusted.
 
+The legacy publisher also treats checkout policy as **data only**: it does not
+execute `scripts/check-private-ci-destination.sh` from the candidate checkout
+as part of privileged authorization. The shell checker remains a source-free
+operator/CI diagnostic. Publication reads the approval through no-follow
+descriptor-safe Python, validates the pinned destination repository identity,
+then independently verifies protected-origin governance before reading private
+source bytes. A PR-controlled shell script must never be an authorization
+primitive for its own export.
+
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
