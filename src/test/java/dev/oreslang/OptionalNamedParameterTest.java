@@ -73,6 +73,63 @@ final class OptionalNamedParameterTest {
     }
 
     @Test
+    void implicitArgumentsTupleContainsMaterializedDefaultSlots()
+            throws Exception {
+        String code = """
+                @DefaultArgVals(b: 2)
+                fnc inspect(int a, int b?, int c): int {
+                    return arguments[1];
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(inspect(10, c: 30));
+                    return;
+                }
+                """;
+
+        assertEquals("2", checkedExecution(code));
+    }
+
+    @Test
+    void omittedOptionSlotMaterializesAsNoneInsideCallee()
+            throws Exception {
+        String code = """
+                fnc missing(string? value?): bool {
+                    return value.is_none();
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(missing());
+                    return;
+                }
+                """;
+
+        assertEquals("true", checkedExecution(code));
+    }
+
+    @Test
+    void asyncDirectCallUsesSameOmissionPlanAndDefaults()
+            throws Exception {
+        String code = """
+                @DefaultArgVals(b: 2)
+                fnc calculate(int a, int b?, int c): int {
+                    return a + b + c;
+                }
+
+                async fnc forwarded(): int {
+                    return calculate(c: 30, a: 10);
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(await forwarded());
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
     void sourceEffectsStayLexicalWhileDefaultFillsAbiHole() throws Exception {
         String code = """
                 fnc first(): int {
