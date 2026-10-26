@@ -44,6 +44,19 @@ final class MacroDeclarationParserTest {
     }
 
     @Test
+    void compilerMetaTypesCannotLeakIntoRuntimeAbi() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc bad(Type runtime_type) -> void {
+                            return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("compiler-only macro meta type"), failure::toString);
+        assertTrue(failure.getMessage().contains("eliminated before AOT code generation"), failure::toString);
+    }
+
+    @Test
     void rejectsRuntimeMacroParametersAndInvalidResultKinds() {
         IllegalArgumentException runtimeParameter = assertThrows(
                 IllegalArgumentException.class,
