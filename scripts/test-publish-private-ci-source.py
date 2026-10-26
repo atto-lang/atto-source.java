@@ -478,7 +478,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     collect.assert_not_called()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_protected_origin_verification_before_and_after_upload(self):
+    def test_protected_origin_verification_before_every_write(self):
         api, routes = self.verified_origin_api(protected=True)
         with patch.object(pub, "verify_protected_origin",
                           side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
@@ -488,7 +488,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual((sha, count), (A, 1))
         branch_reads = [r for r in routes
                         if r == "repos/"+pub.SOURCE_REPO+"/branches/main"]
-        self.assertEqual(len(branch_reads), 2)
+        # Initial attestation plus one re-attestation before each of the
+        # blob, isolated-tree, root-tree, commit, and ref writes.
+        self.assertEqual(len(branch_reads), 6)
 
     def test_protected_origin_recheck_rejects_last_minute_revocation(self):
         api, routes = self.verified_origin_api(protected=True)
