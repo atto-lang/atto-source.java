@@ -8694,7 +8694,7 @@ public final class ActorRuntime implements AutoCloseable {
                             // catches behavior fields that were null/immutable
                             // at construction but later retain a mutable JVM
                             // object across turns.
-                            validatePrivateBehaviorState(ref.id(), behavior);
+                            validatePrivateBehaviorState(ref, behavior);
                         }
                     }
                     // A source receive that suspended is not processed until
