@@ -20,16 +20,19 @@ public final class MacroExpansionPlanner {
     public enum Context { DECLARATION, EXPRESSION }
 
     public record HygieneMark(
-            String module,
+            String callerModule,
+            String macroOwnerModule,
             String macroName,
             int line,
             int column,
             int sourceOrdinal) {
         public HygieneMark {
-            if (module == null || module.isBlank()
+            if (callerModule == null || callerModule.isBlank()
+                    || macroOwnerModule == null || macroOwnerModule.isBlank()
                     || macroName == null || macroName.isBlank()
+                    || macroName.indexOf('.') >= 0
                     || line < 1 || column < 1 || sourceOrdinal < 0) {
-                throw new IllegalArgumentException("invalid macro hygiene identity");
+                throw new IllegalArgumentException("invalid canonical macro hygiene identity");
             }
         }
     }
@@ -135,7 +138,12 @@ public final class MacroExpansionPlanner {
         int sourceOrdinal = ordinal++;
         workItems.add(new WorkItem(
                 module, macro, context, site,
-                hygieneMark(module, name, site, sourceOrdinal)));
+                hygieneMark(
+                        module,
+                        macroOwnerModule(module, name),
+                        macro.name(),
+                        site,
+                        sourceOrdinal)));
     }
 
     private Ast.MacroDecl resolve(String module, String name) {
@@ -470,12 +478,26 @@ public final class MacroExpansionPlanner {
         };
     }
 
+    private String macroOwnerModule(String callerModule, String invocationName) {
+        int separator = invocationName.lastIndexOf('.');
+        return separator >= 0
+                ? invocationName.substring(0, separator)
+                : callerModule;
+    }
+
     private HygieneMark hygieneMark(
-            String module,
-            String name,
+            String callerModule,
+            String macroOwnerModule,
+            String macroName,
             Ast.SourceSite site,
             int sourceOrdinal) {
         return new HygieneMark(
-                module, name, site.line(), site.column(), sourceOrdinal);
+                callerModule,
+                macroOwnerModule,
+                macroName,
+                site.line(),
+                site.column(),
+                sourceOrdinal);
     }
+
 }
