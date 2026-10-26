@@ -38,9 +38,9 @@ final class InvertedColumnStoreTest {
     @Test
     void denseIndexResolutionIsBoundsCheckedAndTracksSwapDelete() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
-            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(Integer.MIN_VALUE));
-            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(0));
-            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(Integer.MAX_VALUE));
+            assertThrows(IllegalArgumentException.class, () -> store.handleAt(Integer.MIN_VALUE));
+            assertThrows(IllegalArgumentException.class, () -> store.handleAt(0));
+            assertThrows(IllegalArgumentException.class, () -> store.handleAt(Integer.MAX_VALUE));
 
             var first = store.push(10);
             var middle = store.push(20);
@@ -66,7 +66,7 @@ final class InvertedColumnStoreTest {
             assertEquals(middle.slot(), recycled.slot());
             assertNotEquals(middle.generation(), recycled.generation());
             assertEquals(recycled.slot(), store.handleAt(1).slot());
-            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(2));
+            assertThrows(IllegalArgumentException.class, () -> store.handleAt(2));
         }
     }
 
