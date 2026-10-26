@@ -36,7 +36,8 @@ public final class MacroIdentifierHygiene {
             String internalName) implements Identity {
         public Generated {
             java.util.Objects.requireNonNull(hygiene, "generated identifier hygiene");
-            if (hint == null || hint.isBlank() || hint.equals("_") || hint.startsWith("$")) {
+            if (hint == null || hint.isBlank() || hint.equals("_") || hint.startsWith("$")
+                    || hint.length() > Ast.MacroIdentifierArgument.MAX_NAME_CHARS) {
                 throw new IllegalArgumentException("invalid generated identifier hint");
             }
             if (localOrdinal < 0) {
@@ -144,7 +145,8 @@ public final class MacroIdentifierHygiene {
             String hint,
             int localOrdinal) {
         java.util.Objects.requireNonNull(hygiene, "generated identifier hygiene");
-        if (hint == null || hint.isBlank() || hint.equals("_") || hint.startsWith("$")) {
+        if (hint == null || hint.isBlank() || hint.equals("_") || hint.startsWith("$")
+                || hint.length() > Ast.MacroIdentifierArgument.MAX_NAME_CHARS) {
             throw new IllegalArgumentException("invalid generated identifier hint");
         }
         if (localOrdinal < 0) {
