@@ -459,9 +459,12 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
-        return publishAfterOwnership(
-                checkTypesWithLinkedMetadataWithDiagnostics(
-                        program, linkedClasses, linkedAliases, linkedContracts));
+        TypeCheckResult checked = checkTypesWithLinkedMetadataWithDiagnostics(
+                program, linkedClasses, linkedAliases, linkedContracts);
+        OwnershipChecker.checkWithImportedClasses(
+                checked.program(), linkedClasses, checked.shortInferredAliases());
+        CheckedFuturePipe.publish(checked.pendingFutureStages());
+        return checked;
     }
 
     /** Linked classes and module contracts share the same admission pipeline. */
