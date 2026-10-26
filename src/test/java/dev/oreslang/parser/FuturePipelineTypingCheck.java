@@ -240,6 +240,66 @@ public final class FuturePipelineTypingCheck {
                 }
                 """, "borrowed Future pipeline input requires a Send + Share payload");
 
+        // Explicit rt take transfers the root Future. Send-only Box<T> may
+        // therefore cross that root edge, and the next edge is pipeline-owned
+        // rather than being reclassified as another borrowed observation.
+        Ast.Program consumedChain = TypeChecker.check(Parser.parse("""
+                fnc keep_box(Box<int> value): Box<int> { return value; }
+                fnc discard(Box<int> value): int { return 1; }
+                fnc main(Future<Box<int>> source): void {
+                  val Future<int> pending = rt take source |> keep_box() |> discard();
+                  return;
+                }
+                """));
+        Ast.FunctionDecl consumedMain = (Ast.FunctionDecl)
+                consumedChain.modules().getFirst().declarations().get(2);
+        Ast.CallExpr consumedOuter = (Ast.CallExpr)
+                ((Ast.BindingStmt) consumedMain.body().getFirst()).initializer();
+        Ast.CallExpr consumedRoot = (Ast.CallExpr)
+                consumedOuter.arguments().getFirst();
+        TypeChecker.PipelinePlan consumedRootPlan =
+                TypeChecker.CheckedFuturePipe.plan(consumedRoot);
+        TypeChecker.PipelinePlan consumedOuterPlan =
+                TypeChecker.CheckedFuturePipe.plan(consumedOuter);
+        if (consumedRootPlan == null
+                || consumedRootPlan.inputOwnership()
+                        != TypeChecker.PipelineInputOwnership.CONSUMED_UPSTREAM_OWNED_PAYLOAD) {
+            throw new AssertionError("rt take root lost consuming pipeline ownership");
+        }
+        if (consumedOuterPlan == null
+                || consumedOuterPlan.inputOwnership()
+                        != TypeChecker.PipelineInputOwnership.OWNED_PIPELINE_VALUE) {
+            throw new AssertionError("later pipeline edge did not become pipeline-owned");
+        }
+        if (consumedRootPlan.effectProvenance()
+                != TypeChecker.PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN
+                || consumedOuterPlan.effectProvenance()
+                        != TypeChecker.PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN) {
+            throw new AssertionError("rt take incorrectly upgraded opaque Future effect provenance");
+        }
+
+        // The pipeline proof must reuse canonical rt take move tracking. A
+        // source binding cannot be observed again after it was transferred.
+        rejected("""
+                fnc discard(Box<int> value): int { return 1; }
+                fnc main(Future<Box<int>> source): void {
+                  val Future<int> pending = rt take source |> discard();
+                  val Future<Box<int>> reused = source;
+                  return;
+                }
+                """, "moved");
+
+        // Keep the first implementation fail-closed: taking an already-lifted
+        // pipeline would need distinct cancellation/ownership reassociation.
+        rejected("""
+                fnc keep(int value): int { return value; }
+                fnc twice(int value): int { return value * 2; }
+                fnc main(Future<int> source): void {
+                  val Future<int> pending = rt take (source |> keep()) |> twice();
+                  return;
+                }
+                """, "taking an already-lifted pipeline is not yet supported");
+
         Ast.Program syncFutureStage = TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
                 async fnc delayed(int value): int {

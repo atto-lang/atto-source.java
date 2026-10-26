@@ -132,6 +132,23 @@ final class SourcePureFuturePipelineExecutionTest {
     }
 
     @Test
+    void explicitTakeRootExecutesThroughConsumingPipelineLowering() throws Exception {
+        assertEquals("22", run("""
+                async fnc source(): int {
+                  rt cooperate;
+                  return 21;
+                }
+                fnc increment(int value): int { return value + 1; }
+                pub async routine main(): void {
+                  val Future<int> pending = rt take source() |> increment();
+                  val int result = await pending;
+                  stdio.stdout.write(result);
+                  return;
+                }
+                """, "future-pipe-consuming-root.ores"));
+    }
+
+    @Test
     void directFutureArgumentIsNotImplicitlyLifted() throws Exception {
         assertEquals("7", run("""
                 async fnc source(): int { return 21; }
