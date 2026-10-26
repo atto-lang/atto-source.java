@@ -146,6 +146,25 @@ final class HttpGenerationDrainV1 {
             synchronized (owner) { return finished; }
         }
 
+        /**
+         * Roll back an admission that never became attached to a transport or
+         * handler. This is the only path allowed to retire an exchange before
+         * handler/transport quiescence: no resource pins or completion signal
+         * may have occurred yet.
+         */
+        void abandonBeforeUse() {
+            synchronized (owner) {
+                if (finished) return;
+                if (handlerQuiescent || transportQuiescent || cancelRequested
+                        || resourcePins != 0)
+                    throw new IllegalStateException("HTTP generation admission already in use");
+                if (exchanges <= 0)
+                    throw new IllegalStateException("exchange count underflow");
+                --exchanges;
+                finished = true;
+            }
+        }
+
         private void finishIfPossible() {
             if (!finished && handlerQuiescent && transportQuiescent) {
                 if (exchanges <= 0) throw new IllegalStateException("exchange count underflow");
