@@ -11,12 +11,25 @@ final class DirectionalChannelViewTest {
 
         assertSame(channel.input(), channel.input());
         assertSame(channel.output(), channel.output());
-        assertSame(channel, channel.input().backingChannel());
-        assertSame(channel, channel.output().backingChannel());
-
         assertTrue(channel.input().tryWrite(17));
         assertEquals(17, channel.output().tryRead().orElseThrow());
         assertEquals(0, channel.size());
+    }
+
+    @Test
+    void directionalViewsDoNotExposeBackingOrWrongDirectionAuthority() {
+        assertThrows(NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("backingChannel"));
+        assertThrows(NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("backingChannel"));
+        assertThrows(NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("tryWrite", Object.class));
+        assertThrows(NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("close"));
+        assertThrows(NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("tryRead"));
+        assertThrows(NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("close"));
     }
 
     @Test
