@@ -129,5 +129,71 @@ final class InternalModuleReferenceAuthorityTest {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(expanded));
         assertDoesNotThrow(() -> CapabilityChecker.check(
                 expanded, IsolatePolicy.developer()));
+    }    @Test
+    void authorizedReceiverCannotBeReusedForDifferentModuleMember() {
+        Ast.Program expanded = MacroExpander.expand(Parser.parse("""
+                pub fnc helper() -> int {
+                    return 42;
+                }
+
+                define macro reference(Identifier target) -> Syntax<Expr> {
+                    return capture_fnc(target);
+                }
+
+                fnc demo() -> void {
+                    reference!(ident helper);
+                    return;
+                }
+                """));
+
+        Ast.FunctionDecl originalDemo = expanded.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("demo"))
+                .findFirst()
+                .orElseThrow();
+        Ast.MemberExpr captured = assertInstanceOf(
+                Ast.MemberExpr.class,
+                assertInstanceOf(
+                        Ast.ExprStmt.class,
+                        originalDemo.body().getFirst()).expression());
+        Ast.NameExpr authorizedReceiver = assertInstanceOf(
+                Ast.NameExpr.class, captured.receiver());
+
+        Ast.FunctionDecl helper = fn(
+                "helper",
+                Ast.Visibility.PUBLIC,
+                List.of(new Ast.ReturnStmt(null)));
+        Ast.FunctionDecl other = fn(
+                "other",
+                Ast.Visibility.PUBLIC,
+                List.of(new Ast.ReturnStmt(null)));
+        Ast.MemberExpr widened =
+                new Ast.MemberExpr(authorizedReceiver, "other");
+        Ast.FunctionDecl forgedDemo = fn(
+                "forged_demo",
+                Ast.Visibility.PRIVATE,
+                List.of(
+                        new Ast.ExprStmt(widened),
+                        new Ast.ReturnStmt(null)));
+        Ast.Program forged = new Ast.Program(
+                List.of(new Ast.ModuleDecl(
+                        Parser.ROOT_MODULE,
+                        List.of(helper, other, forgedDemo))));
+
+        IllegalArgumentException typeFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(forged));
+        assertTrue(typeFailure.getMessage().contains(
+                "exact MemberExpr identity"), typeFailure::toString);
+
+        IllegalArgumentException capabilityFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> CapabilityChecker.check(
+                        forged, IsolatePolicy.developer()));
+        assertTrue(capabilityFailure.getMessage().contains(
+                "exact MemberExpr identity"), capabilityFailure::toString);
     }
+
+
 }
