@@ -25,10 +25,12 @@ and `?.`/`??` never turn panics, throws, raises or cancellations into None.
 
 Initial Java runtime supports static fields only, not `?.method()`, optional
 indexing, assignment through `?.`, or arbitrary dynamic property lookup.
-The ownership pass requires a **provably Copy projected field**, to avoid
-moving affine data through a live owner without partial-move/loan evidence.
-This admits scalar and Copy Option/Result fields but excludes affine class,
-actor state, and unresolved generic field payloads. Broaden only after
+The ownership pass requires a **provably Copy projected field**, or a
+recursively Copy-safe immutable/readonly record field. This permits nested
+`Option<record>` chains without introducing mutable aliases. Ordinary
+mutable structs, affine classes, actor state and unresolved generics remain
+excluded pending partial-move/loan evidence. This narrow projection proof
+does not alter the language-wide Copy classifier. Broaden only after
 ownership/lifetime/drop safety proofs; unsupported shapes must reject.
 
 ## Required validation before merge

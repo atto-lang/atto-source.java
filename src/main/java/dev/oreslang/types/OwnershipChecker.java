@@ -1266,7 +1266,7 @@ public final class OwnershipChecker {
                     }
                 }
                 // Until affine projection/partial-move evidence exists, only Copy fields.
-                if (fieldType == null || !isCopyType(fieldType))
+                if (fieldType == null || !safeOptionalFieldProjection(fieldType))
                     throw error("?. field projection requires a statically proven Copy field");
                 Ast.TypeRef result = fieldType.name().equals("Option")
                         && fieldType.arguments().size() == 1 ? fieldType
@@ -4718,6 +4718,25 @@ public final class OwnershipChecker {
         Ast.ClassDecl actorTarget = findClass(target.name());
         return actorTarget != null
                 && actorTarget.actorKind() != Ast.ActorKind.NONE;
+    }
+
+    /**
+     * Narrow immutable-record projection proof for ?. chains. Ordinary mutable
+     * structs and identity-bearing class fields remain non-Copy. This helper
+     * does not change the language-wide ownership Copy classifier.
+     */
+    private boolean safeOptionalFieldProjection(Ast.TypeRef type) {
+        if (isCopyType(type)) return true;
+        if (type == null || type.isBorrow() || type.inferArguments()) return false;
+        if (type.isRecordType()) {
+            return type.aggregateMembers().values().stream()
+                    .allMatch(this::safeOptionalFieldProjection);
+        }
+        if (type.name().equals("Option") && type.arguments().size() == 1)
+            return safeOptionalFieldProjection(type.arguments().getFirst());
+        if (type.name().equals("Result") && type.arguments().size() == 2)
+            return type.arguments().stream().allMatch(this::safeOptionalFieldProjection);
+        return false;
     }
 
     private boolean isCopyType(Ast.TypeRef type) {

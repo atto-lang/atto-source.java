@@ -45,6 +45,29 @@ final class OptionSafeMemberChainLanguageTest {
     }
 
     @Test
+    void traversesFourLevelReadonlyRecordOptionsAndShortCircuits() throws Exception {
+        String source = """
+                fnc selectName(
+                    Option<{bar: Option<{baz: Option<{x: string}>}>}> foo
+                ): Option<string> {
+                  return foo?.bar?.baz?.x;
+                }
+                pub fnc main(): void {
+                  val Option<{x: string}> leaf = Some(record{x: "deep"});
+                  val Option<{baz: Option<{x: string}>}> mid = Some(record{baz: leaf});
+                  val Option<{bar: Option<{baz: Option<{x: string}>}>}> root = Some(record{bar: mid});
+                  stdio.stdout.write(selectName(root).unwrap());
+                  stdio.stdout.write(":");
+                  val Option<{bar: Option<{baz: Option<{x: string}>}>}> empty = None;
+                  stdio.stdout.write(selectName(empty).is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("deep:true", run(source));
+    }
+
+    @Test
     void coalesceIsLazyAndRespectsTernary() throws Exception {
         String source = """
                 fnc fallback(): string {
