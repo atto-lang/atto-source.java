@@ -814,12 +814,12 @@ final class MacroInvocationPlannerTest {
                         end
 
                         define macro duplicate(Syntax<Expr> value) -> Syntax<Expr> {
-                            return quote(unquote(value) + unquote(value));
+                            return quote([unquote(value), unquote(value)]);
                         }
 
-                        fnc bad() -> int {
+                        fnc bad() -> List<Box> {
                             let Box box = new Box();
-                            return duplicate!(syntax expr rt take box).value;
+                            return duplicate!(syntax expr rt take box);
                         }
                         """));
 
