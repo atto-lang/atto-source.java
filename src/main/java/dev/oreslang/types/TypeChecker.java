@@ -1868,6 +1868,36 @@ public final class TypeChecker {
         }
     }
 
+
+    /**
+     * Check statements in an already-created lexical environment. Value-match
+     * block prefixes use this so locals declared before the terminal ARM_RESULT
+     * remain visible to that result expression.
+     */
+    private void checkStatementsInExistingScope(
+            List<Ast.Stmt> body,
+            Env env,
+            Set<String> generics,
+            Type expectedReturn,
+            Type self) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.BindingStmt binding && binding.inferredTypeName() != null) {
+                inferredTypeNames.add(binding.inferredTypeName());
+                env.reserveInferredType(binding.inferredTypeName());
+            }
+        }
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.BindingStmt binding
+                    && isShortNamedAggregateInference(binding, env, generics)) {
+                String name = binding.declaredType().name();
+                shortInferredTypeNames.put(binding, name);
+                inferredTypeNames.add(name);
+                env.reserveInferredType(name);
+            }
+            checkStatement(stmt, env, generics, expectedReturn, self);
+        }
+    }
+
     /**
      * A short name introduces an alias only when the name is truly absent.
      * Existing aliases, class/interface names, generics, builtins, and an
@@ -4383,8 +4413,6 @@ public final class TypeChecker {
                         "value match result parameter must be a known, non-void value type");
             }
             if (declaredResult instanceof Borrow) {
-                // Inferred value matches already reject branch-local loan escape.
-                // An explicit type must not circumvent that check by erasing &T.
                 throw new IllegalArgumentException(
                         "value match cannot produce an explicit borrowed result until loan escape is proven");
             }
@@ -4402,41 +4430,62 @@ public final class TypeChecker {
                                 Primitive.BOOL,
                                 "value match guard");
                     }
-                    Type actual = declaredResult == null
-                            ? typeOf(arm.value(), armEnv, generics, self)
-                            : typeOfAgainstExpected(arm.value(), declaredResult, armEnv, generics, self);
+
+                    // V1 rejects earlier arm returns at parse time. Check the
+                    // statement prefix as an isolated control region so a
+                    // break/continue cannot target a loop outside MatchExpr,
+                    // while preserving async/suspends authority of the caller.
+                    int previousLoopDepth = loopDepth;
+                    Env previousTypeScope = currentTypeScope;
+                    loopDepth = 0;
+                    currentTypeScope = armEnv;
+                    Type actual;
+                    try {
+                        checkStatementsInExistingScope(
+                                arm.prefixStatements(),
+                                armEnv,
+                                generics,
+                                Primitive.VOID,
+                                self);
+                        actual = declaredResult == null
+                                ? typeOf(arm.value(), armEnv, generics, self)
+                                : typeOfAgainstExpected(
+                                        arm.value(), declaredResult, armEnv, generics, self);
+                    } finally {
+                        currentTypeScope = previousTypeScope;
+                        loopDepth = previousLoopDepth;
+                    }
+
                     if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
                         throw new IllegalArgumentException(
                                 "value match arms must return a statically known non-void value");
                     }
                     if (declaredResult != null) {
-                        // An explicit result type constrains each arm, but
-                        // cannot erase readonly/ownership capabilities.
-                        requireReadonlyCapabilityPreserved(actual, declaredResult, "value match arm");
+                        requireReadonlyCapabilityPreserved(
+                                actual, declaredResult, "value match arm");
                         requireAssignable(actual, declaredResult, "value match arm");
                     } else if (result == null) {
                         result = actual;
                     } else {
-                        // Preserve the existing invariant inference contract
-                        // when no result parameter was supplied.
                         requireReadonlyCapabilityPreserved(actual, result, "value match arm");
                         requireAssignable(actual, result, "value match arm");
                         requireAssignable(result, actual, "value match arm");
                     }
+
+                    // Reuse canonical exhaustiveness/reachability and statement
+                    // typing with the real lexical body. Its terminal ReturnStmt
+                    // is contextual ARM_RESULT for this MatchExpr.
                     proofArms.add(new Ast.MatchArm(
-                            arm.pattern(), arm.guard(),
-                            List.of(new Ast.ReturnStmt(arm.value()))));
+                            arm.pattern(), arm.guard(), arm.body()));
                 }
-                // Reuse the canonical finite-domain reachability and
-                // exhaustive-pattern checker. These arm returns are checked
-                // against MatchExpr's result, not the enclosing function.
+
                 checkMatch(
                         new Ast.MatchStmt(valueMatch.subject(), true, proofArms),
                         subject, env, generics, result, self);
                 return result;
             } finally {
-                // Only the selected arm executes at runtime. Type-checking
-                // all branches cannot establish outer definite-init facts.
+                // Only the selected arm executes at runtime. Type-checking all
+                // branches cannot establish outer definite-initialization facts.
                 env.restoreInitialization(before);
             }
         }
@@ -7066,9 +7115,13 @@ public final class TypeChecker {
                     || hasSuspendingSumCallbackSyntax(conditional.whenFalse());
         if (expr instanceof Ast.MatchExpr match) {
             if (hasSuspendingSumCallbackSyntax(match.subject())) return true;
-            for (Ast.MatchValueArm arm : match.arms())
+            for (Ast.MatchValueArm arm : match.arms()) {
+                // Inline sum callbacks do not yet audit arbitrary statement
+                // blocks. Fail closed instead of ignoring a block prefix.
+                if (!arm.prefixStatements().isEmpty()) return true;
                 if ((arm.guard() != null && hasSuspendingSumCallbackSyntax(arm.guard()))
                         || hasSuspendingSumCallbackSyntax(arm.value())) return true;
+            }
             return false;
         }
         if (expr instanceof Ast.TypeTestExpr test)
