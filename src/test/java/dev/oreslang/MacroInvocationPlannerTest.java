@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.compiler.MacroExpander;
+import dev.oreslang.compiler.MacroSyntaxProvenance;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -617,6 +618,51 @@ final class MacroInvocationPlannerTest {
                 failure::toString);
         assertTrue(failure.getMessage().contains("runtime evaluation fallback is forbidden"),
                 failure::toString);
+    }
+
+    @Test
+    void expansionProvenanceDistinguishesSpliceFromConstQuote() {
+        Ast.Program splice = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+                        fnc answer() -> int {
+                            return identity!(syntax expr 42);
+                        }
+                        """));
+        Ast.FunctionDecl spliceFunction = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                splice.modules().getFirst().declarations().getFirst());
+        Ast.Expr spliceExpr = assertInstanceOf(
+                Ast.ReturnStmt.class, spliceFunction.body().getFirst()).value();
+        List<MacroSyntaxProvenance.Origin> spliceOrigins =
+                MacroSyntaxProvenance.lookup(spliceExpr);
+        assertEquals(1, spliceOrigins.size());
+        assertEquals(MacroSyntaxProvenance.EmissionKind.CALL_SITE_SPLICE,
+                spliceOrigins.getFirst().emissionKind());
+        assertEquals("identity", spliceOrigins.getFirst().hygiene().macroName());
+
+        Ast.Program quoted = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const 40 + 2);
+                        }
+                        """));
+        Ast.FunctionDecl quoteFunction = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                quoted.modules().getFirst().declarations().getFirst());
+        Ast.Expr quoteExpr = assertInstanceOf(
+                Ast.ReturnStmt.class, quoteFunction.body().getFirst()).value();
+        List<MacroSyntaxProvenance.Origin> quoteOrigins =
+                MacroSyntaxProvenance.lookup(quoteExpr);
+        assertEquals(1, quoteOrigins.size());
+        assertEquals(MacroSyntaxProvenance.EmissionKind.CONST_QUOTE,
+                quoteOrigins.getFirst().emissionKind());
+        assertEquals("literal", quoteOrigins.getFirst().hygiene().macroName());
     }
 
     @Test
