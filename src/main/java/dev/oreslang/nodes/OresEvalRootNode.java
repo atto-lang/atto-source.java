@@ -1256,15 +1256,13 @@ public final class OresEvalRootNode extends RootNode {
                         .toList();
             }
 
-            private List<Object> inAbiOrder(Ast.FunctionDecl function) {
-                CheckedCallPlan plan = CheckedCallPlan.bind(
-                        function.parameters().stream()
-                                .map(Ast.Param::name)
-                                .toList(),
-                        function.parameters().stream()
-                                .map(Ast.Param::omittable)
-                                .toList(),
-                        inputs());
+            private List<Object> inAbiOrder(
+                    Ast.Expr callSite,
+                    Ast.FunctionDecl function) {
+                CheckedCallPlan plan = verifiedPlan(
+                        callSite,
+                        function.parameters(),
+                        "function " + function.name());
                 Map<String, Ast.TypeRef> defaults =
                         defaultArgumentValues(function);
                 ArrayList<Object> ordered =
@@ -1288,6 +1286,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private List<Object> inAbiOrder(
+                    Ast.Expr callSite,
                     List<Ast.Param> parameters,
                     String label) {
                 if (parameters.stream().anyMatch(Ast.Param::omittable)) {
@@ -1296,17 +1295,45 @@ public final class OresEvalRootNode extends RootNode {
                                     + " omittable member/constructor parameters remain "
                                     + "fail-closed at runtime");
                 }
-                CheckedCallPlan plan = CheckedCallPlan.required(
-                        parameters.stream()
-                                .map(Ast.Param::name)
-                                .toList(),
-                        inputs());
+                CheckedCallPlan plan =
+                        verifiedPlan(
+                                callSite,
+                                parameters,
+                                label);
                 ArrayList<Object> ordered =
                         new ArrayList<>(values.size());
                 for (int source : plan.abiToSource()) {
                     ordered.add(values.get(source));
                 }
                 return java.util.Collections.unmodifiableList(ordered);
+            }
+
+            private CheckedCallPlan verifiedPlan(
+                    Ast.Expr callSite,
+                    List<Ast.Param> parameters,
+                    String label) {
+                CheckedCallPlan reconstructed =
+                        CheckedCallPlan.bind(
+                                parameters.stream()
+                                        .map(Ast.Param::name)
+                                        .toList(),
+                                parameters.stream()
+                                        .map(Ast.Param::omittable)
+                                        .toList(),
+                                inputs());
+                CheckedCallPlan published =
+                        CheckedCallPlan.lookup(callSite);
+                if (published == null) {
+                    throw new IllegalStateException(
+                            label
+                                    + " is missing its TypeChecker-published call plan");
+                }
+                if (!published.equals(reconstructed)) {
+                    throw new IllegalStateException(
+                            label
+                                    + " runtime/typechecked call-plan disagreement");
+                }
+                return published;
             }
 
             private List<Object> requireUnlabeled(String label) {
@@ -5457,7 +5484,7 @@ public final class OresEvalRootNode extends RootNode {
                                 Invocation invocation =
                                         functionInvocation(
                                                 direct,
-                                                values.inAbiOrder(direct));
+                                                values.inAbiOrder(call, direct));
                                 completeSourceInvocation(
                                         t,
                                         invocation,
@@ -5699,6 +5726,7 @@ public final class OresEvalRootNode extends RootNode {
                             object,
                             method,
                             directArgs.inAbiOrder(
+                                    call,
                                     method.parameters(),
                                     "method "
                                             + object.klass.name()
@@ -6156,6 +6184,7 @@ public final class OresEvalRootNode extends RootNode {
                                     + " named/spread binding on generic classes remains fail-closed");
                 }
                 args = directArgs.inAbiOrder(
+                        created,
                         constructor.parameters(),
                         "constructor " + klass.name());
             } else {
@@ -7411,7 +7440,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return functionInvocation(
                         direct,
-                        args.inAbiOrder(direct));
+                        args.inAbiOrder(call, direct));
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
@@ -7495,6 +7524,7 @@ public final class OresEvalRootNode extends RootNode {
                                 object,
                                 method,
                                 directArgs.inAbiOrder(
+                                        call,
                                         method.parameters(),
                                         "method "
                                                 + object.klass.name()
@@ -7557,6 +7587,7 @@ public final class OresEvalRootNode extends RootNode {
                     return klass.owner().staticFunctionInvocation(
                             fn,
                             directArgs.inAbiOrder(
+                                    call,
                                     fn.parameters(),
                                     "static function "
                                             + klass.klass().name()
@@ -7592,6 +7623,7 @@ public final class OresEvalRootNode extends RootNode {
                                 object,
                                 method,
                                 directArgs.inAbiOrder(
+                                        call,
                                         method.parameters(),
                                         "method "
                                                 + object.klass.name()
