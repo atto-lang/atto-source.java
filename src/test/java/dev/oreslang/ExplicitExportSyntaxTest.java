@@ -398,6 +398,22 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void privateTypeAliasIsNotLibraryRootUnlessExplicitlyExported() {
+        var privateOnly = OresCompiler.compileForBuild("""
+                define type Hidden = int;
+                pub fnc main(): int { return 0; }
+                """, BuildOptions.library(Map.of()));
+        assertFalse(privateOnly.retainedSymbols().contains(Parser.ROOT_MODULE + ".Hidden"));
+
+        var explicitlyExported = OresCompiler.compileForBuild("""
+                export type Hidden;
+                define type Hidden = int;
+                pub fnc main(): int { return 0; }
+                """, BuildOptions.library(Map.of()));
+        assertTrue(explicitlyExported.retainedSymbols().contains(Parser.ROOT_MODULE + ".Hidden"));
+    }
+
+    @Test
     void publicExplicitExportIsATreeShakerLibraryRoot() {
         var result = OresCompiler.compileForBuild("""
                 export class Box;
