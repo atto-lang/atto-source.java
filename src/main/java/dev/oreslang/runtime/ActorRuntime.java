@@ -5156,22 +5156,39 @@ public final class ActorRuntime implements AutoCloseable {
         requireActorLifecycleAuthority(ref, "gracefulStop");
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) return ref.done();
-        final OresFuture<Void> barrier;
-        final ActorSealedException sealedFailure = new ActorSealedException(ref.id());
+
         final Runnable failRejectedAsyncSends;
+        final OresFuture<Void> prepublicationDrained;
         synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized || cell.sealing) return ref.done();
+            if (cell.stopped.get() || cell.finalized || cell.sealing) {
+                return ref.done();
+            }
             cell.sealing = true;
-            // Fence pending/unborn producers before taking the drain target.
-            // They were never admitted and are not part of that watermark.
-            failRejectedAsyncSends = cell.sealAsyncSendAdmission(sealedFailure);
-            // Reserve a single shutdown waiter even when public observers hit
-            // their per-actor quota. Repeated gracefulStop calls reuse ref.done().
-            barrier = cell.drainAcceptedMessages(true);
+            ActorSealedException sealedFailure =
+                    new ActorSealedException(ref.id());
+            // First stop new WAITING admissions. A producer whose credit already
+            // transferred is preexisting and is allowed to finish publication.
+            failRejectedAsyncSends =
+                    cell.sealAsyncSendAdmission(sealedFailure);
+            prepublicationDrained =
+                    cell.awaitAsyncSendAdmissionsDrained();
         }
+
         failRejectedAsyncSends.run();
-        barrier.whenCompleteRuntime((ignored, failure) -> {
-            if (failure == null) cell.stop();
+
+        prepublicationDrained.whenCompleteRuntime((ignored, prepublishFailure) -> {
+            if (prepublishFailure != null) {
+                cell.fail(OresFuture.unwrap(prepublishFailure));
+                return;
+            }
+            // Only now is nextUserMessageSequence a complete watermark for all
+            // admissions that predated graceful sealing.
+            OresFuture<Void> barrier = cell.drainAcceptedMessages(true);
+            barrier.whenCompleteRuntime((ignoredDrain, drainFailure) -> {
+                if (drainFailure == null) cell.stop();
+                else cell.fail(OresFuture.unwrap(drainFailure));
+            });
+            cell.schedule();
         });
         cell.schedule();
         return ref.done();
@@ -5516,7 +5533,10 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     synchronized (cell.lifecycleLock) {
                         if (cell.stopped.get() || cell.finalized) throw terminated(ref);
-                        if (cell.sealing) throw new ActorSealedException(ref.id());
+                        // A slot already transferred before graceful sealing is
+                        // an irrevocable preexisting admission. Graceful stop
+                        // waits for this pre-publication loan before taking its
+                        // drain watermark. Abrupt stop is still rejected above.
                         if (cell.forceKillFenced) {
                             throw new IllegalStateException(
                                     "actor " + ref.id()
@@ -7186,6 +7206,8 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeTurns;
         /** Target-side payload/credit loan retained before envelope publication. */
         private int activeAsyncSendAdmissions;
+        /** Completes outside lifecycleLock when the sealed pre-publication cohort retires. */
+        private OresFuture<Void> asyncSendAdmissionsDrained;
         private boolean carrierActive;
         /** Physical worker currently owning this actor lane, guarded by lifecycleLock.
          * Not an affinity requirement: a later turn may use a different worker. */
@@ -7293,15 +7315,22 @@ public final class ActorRuntime implements AutoCloseable {
             @Override
             public void close() {
                 if (!released.compareAndSet(false, true)) return;
+                OresFuture<Void> drained = null;
                 synchronized (lifecycleLock) {
                     if (activeAsyncSendAdmissions <= 0) {
                         throw new IllegalStateException(
                                 "actor async-send admission loan underflow for " + ref.id());
                     }
                     --activeAsyncSendAdmissions;
+                    if (activeAsyncSendAdmissions == 0
+                            && asyncSendAdmissionsDrained != null) {
+                        drained = asyncSendAdmissionsDrained;
+                        asyncSendAdmissionsDrained = null;
+                    }
                     if (stopped.get()) finalizeStopLocked();
                     lifecycleLock.notifyAll();
                 }
+                if (drained != null) drained.completeFromRuntime(null);
             }
         }
 
@@ -7324,6 +7353,19 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 ++activeAsyncSendAdmissions;
                 return new AsyncSendAdmissionLoan();
+            }
+        }
+
+        private OresFuture<Void> awaitAsyncSendAdmissionsDrained() {
+            synchronized (lifecycleLock) {
+                if (activeAsyncSendAdmissions == 0) {
+                    return OresFuture.completed(null);
+                }
+                if (asyncSendAdmissionsDrained == null) {
+                    asyncSendAdmissionsDrained =
+                            new OresFuture<>(() -> false, () -> { });
+                }
+                return asyncSendAdmissionsDrained;
             }
         }
 
