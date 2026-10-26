@@ -46,12 +46,16 @@ final class StaticBorrowEscapeBoundaryTest {
 
     @Test
     void generatorCannotDelegateBorrowBearingElements() {
+        // An Iterator<borrow T> parameter is a live borrowed aggregate, so
+        // generator-frame admission rejects it before yield* is evaluated.
+        // The yielded-element guard separately protects expression-produced
+        // iterators that were not already visible as live locals.
         rejects("""
                 fnc gen* leaked(Iterator<borrow int> items): Iterator<int> {
                   yield* items;
                   return;
                 }
-                """, "cannot yield borrowed references");
+                """, "cannot yield while a borrow is live");
     }
 
     @Test
