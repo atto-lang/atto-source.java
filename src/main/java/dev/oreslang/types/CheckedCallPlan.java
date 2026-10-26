@@ -207,9 +207,9 @@ public record CheckedCallPlan(
                     if (slot.projectionIndex() < 0
                             || previousProjectionIndex < 0
                             || slot.projectionIndex()
-                                    <= previousProjectionIndex) {
+                                    != previousProjectionIndex + 1) {
                         throw new IllegalArgumentException(
-                                "checked call projection provenance is not strictly ordered");
+                                "checked call projection provenance must be contiguous and ordered");
                     }
                 } else if (slot.projectionIndex() > 0) {
                     throw new IllegalArgumentException(
