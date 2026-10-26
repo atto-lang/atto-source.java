@@ -573,6 +573,25 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void quoteIntrinsicRequiresDirectCallOrigin() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return value |> quote();
+                        }
+                        fnc answer() -> int {
+                            return literal!(const 42);
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("first evaluator slice"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
     void quoteCannotArbitrarilyTransformOrCallGuestCodeAtCompileTime() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
