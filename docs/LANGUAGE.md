@@ -439,6 +439,63 @@ argument. The initial executable Java/Graal surface is direct source functions;
 method, imported, callable-value, and qualified-module named calls remain
 fail-closed until those dispatch paths consume the same checked binding plan.
 
+### Option-valued vs omittable parameters
+
+Parameter type optionality and call-slot presence are separate contracts. In a
+canonical type-first declaration, the question mark after the **type** is
+`Option<T>` sugar, while the question mark after the **parameter name** means
+the caller may omit that formal slot:
+
+```ores
+fnc required_option(string? label): int {
+  // label is required and has type Option<string>
+  return 1;
+}
+
+fnc optional_option(string? label?): int {
+  // label may be omitted; omission supplies None
+  return 2;
+}
+
+@DefaultArgVals(retries: 3)
+fnc request(string url, int retries?): int {
+  // scalar omission uses the checked declaration default
+  return retries;
+}
+```
+
+Thus `T? name`, `T name?`, and `T? name?` are three distinct forms.
+Omission never means “invent a zero value.” An omittable non-`Option` scalar
+must have a closed `@DefaultArgVals(name: literal)` declaration default.
+This first lowering admits only int, bool, string, and `None` literals.
+An omittable `Option<T>` with no explicit default receives `None`.
+
+Defaults are inserted **after** all supplied source expressions have evaluated
+once in lexical order. Missing slots therefore have no hidden guest expression,
+effect, borrow, or ownership event. The call is then materialized at the full
+declaration ABI width.
+
+```ores
+@DefaultArgVals(b: 2)
+fnc calculate(int a, int b?, int c): int {
+  return a + b + c;
+}
+
+calculate(10, c: 30);  // equivalent ABI values: (10, 2, 30)
+```
+
+Overload selection remains arity-first and deterministic. An exact declared
+arity wins before omission fallback is considered. If there is no exact arity,
+a call may use omission only when exactly one larger declaration accepts the
+supplied positional/named shape. Multiple viable omission shapes are ambiguous;
+labels never select an overload.
+
+The current executable omission surface is intentionally narrower than parsing:
+direct source functions are supported; generic omittable functions, methods,
+static functions, constructors, interfaces, actor callables and lambdas remain
+fail-closed until their dispatch/ownership ABIs consume the same omission-aware
+plan.
+
 The canonical comparison operators deliberately separate value equality from identity:
 
 - `a eq b` is canonical value equality.
