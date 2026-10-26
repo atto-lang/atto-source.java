@@ -796,18 +796,18 @@ final class MacroInvocationPlannerTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> MacroExpander.expand(Parser.parse("""
-                        define type Helper as int
+                        const int helper = 1;
 
                         define macro reference(Identifier target) -> Syntax<Expr> {
                             return capture_fnc(target);
                         }
 
                         fnc demo() -> int {
-                            return reference!(ident Helper);
+                            return reference!(ident helper);
                         }
                         """)));
 
-        assertTrue(failure.getMessage().contains("could not resolve module-level function 'Helper'"),
+        assertTrue(failure.getMessage().contains("could not resolve module-level function 'helper'"),
                 failure::toString);
     }
 
