@@ -206,6 +206,38 @@ final class DirectionalPipeEndpointSourceTest {
     }
 
     @Test
+    void laterTypeMismatchIsNotMaskedByEarlierUnimplementedBridge() {
+        IllegalArgumentException mismatch = rejects("""
+                define class Source implements HasOutputChannel<int> as
+                    pub output: ReadChannel<int>;
+                end
+
+                define class Transform
+                    implements HasInputChannel<int>, HasOutputChannel<string>
+                as
+                    pub input: WriteChannel<int>;
+                    pub output: ReadChannel<string>;
+                end
+
+                define class WrongSink implements HasInputChannel<int> as
+                    pub input: WriteChannel<int>;
+                end
+
+                pub fnc connect(
+                    Source source,
+                    Transform transform,
+                    WrongSink sink
+                ): void {
+                    val graph = source pipe transform pipe sink;
+                    return;
+                }
+                """);
+        assertTrue(mismatch.getMessage().contains(
+                        "pipe endpoint domains must match exactly"),
+                mismatch::toString);
+    }
+
+    @Test
     void rawChannelCanParticipateAsBothDirectionalEndpointsButStillNeedsBridgeLowering() {
         IllegalArgumentException bridge = rejects("""
                 pub fnc connect(Channel<int> middle, WriteChannel<int> sink): void {
