@@ -216,10 +216,16 @@ if [ "$invalid_actor_status" -ne 1 ]; then
   echo "expected private actor capability denial with CLI status 1, got $invalid_actor_status" >&2
   exit 1
 fi
-# A rejection message on stdout, or a capability phrase embedded in an
-# unrelated parse diagnostic, is not evidence of linked actor admission.
+# A rejection message on stdout, a capability phrase embedded in a parse
+# diagnostic, or a correct-looking line alongside an unrelated diagnostic is
+# not proof of linked actor admission. Enforce one stderr record, anchored at
+# its beginning, so grep cannot find an isolated matching line in a traceback.
 if [ -s "$guest_stdout" ] ||
-   ! grep -Eq '^Oreslang isolate denies capability (SHARED_MEMORY|ACTOR_SHARE_READONLY)([[:space:]:]|$)' "$guest_stderr"; then
+   ! LC_ALL=C awk '
+     NR != 1 { bad=1; next }
+     $0 !~ /^Oreslang isolate denies capability (SHARED_MEMORY|ACTOR_SHARE_READONLY)([[:space:]:]|$)/ { bad=1 }
+     END { if (NR != 1 || bad) exit 1 }
+   ' "$guest_stderr"; then
   echo "private actor negative fixture failed without a capability-denial diagnostic" >&2
   exit 1
 fi
@@ -314,9 +320,17 @@ case "$mode" in
   aot) expected_jit_reason="This executable was built AOT-only; --mode=jit cannot enable runtime compilation." ;;
   hybrid) expected_jit_reason="Native hybrid executables accept --mode=hybrid or --mode=aot, not JVM --mode=jit" ;;
 esac
-# Refusal must originate on stderr, never be laundered through stdout.
+# Refusal must originate at the beginning of the one stderr diagnostic.
+# A substring within an unrelated CLI error, or a separate legitimate-looking
+# line after a parse error, cannot establish that --mode=jit was refused for
+# this binary's embedded execution policy.
+expected_jit_prefix="oreslang: $expected_jit_reason"
 if [ -s "$guest_stdout" ] ||
-   ! grep -F "$expected_jit_reason" "$guest_stderr" >/dev/null; then
+   ! LC_ALL=C awk -v expected="$expected_jit_prefix" '
+     NR != 1 { bad=1; next }
+     index($0, expected) != 1 { bad=1 }
+     END { if (NR != 1 || bad) exit 1 }
+   ' "$guest_stderr"; then
   echo "native executable refused JIT without the required build-mode diagnostic" >&2
   exit 1
 fi
