@@ -30,10 +30,12 @@ final class HotCodeGenerationRetentionV1Test {
         request.handlerQuiescent();
         request.transportQuiescent();
         assertFalse(httpV1.readyToRetire());
+        var oldCleanup = budget.physicalCleanupCompleted(old, "loader:image-a");
         assertThrows(IllegalStateException.class,
-                () -> budget.acknowledgePhysicalCleanup(old, httpV1, true));
+                () -> budget.acknowledgePhysicalCleanup(
+                        old, 1, httpV1, oldCleanup));
         callback.close();
-        budget.acknowledgePhysicalCleanup(old, httpV1, true);
+        budget.acknowledgePhysicalCleanup(old, 1, httpV1, oldCleanup);
         assertEquals(40, budget.status().heldBytes());
         var third = budget.reserve(3, sha('c'), 20);
         budget.activated(third);
@@ -46,10 +48,11 @@ final class HotCodeGenerationRetentionV1Test {
         var budget = new HotCodeGenerationRetentionV1(1, 10);
         var staged = budget.reserve(1, sha('a'), 10);
         assertThrows(IllegalStateException.class,
-                () -> budget.acknowledgePhysicalCleanup(staged, null, false));
+                () -> budget.acknowledgePhysicalCleanup(staged, 1, null, null));
         assertThrows(IllegalStateException.class,
                 () -> budget.reserve(2, sha('b'), 1));
-        budget.acknowledgePhysicalCleanup(staged, null, true);
+        var cleanup = budget.physicalCleanupCompleted(staged, "loader:staged-a");
+        budget.acknowledgePhysicalCleanup(staged, 1, null, cleanup);
         var retry = budget.reserve(2, sha('b'), 10);
         assertEquals(2, retry.generation());
         assertThrows(IllegalStateException.class,
@@ -62,8 +65,10 @@ final class HotCodeGenerationRetentionV1Test {
         budget.activated(serving);
         var ledger = new HttpGenerationDrainV1(1, 1, 1);
         ledger.beginDrain();
+        var cleanup = budget.physicalCleanupCompleted(serving, "loader:serving-a");
         assertThrows(IllegalStateException.class,
-                () -> budget.acknowledgePhysicalCleanup(serving, ledger, true));
+                () -> budget.acknowledgePhysicalCleanup(
+                        serving, 1, ledger, cleanup));
         assertEquals(25, budget.status().heldBytes());
     }
 
@@ -84,7 +89,9 @@ final class HotCodeGenerationRetentionV1Test {
     @Test void abortedReservationGenerationCannotBeReused() {
         var budget = new HotCodeGenerationRetentionV1(1, 100);
         var abandoned = budget.reserve(7, sha('a'), 12);
-        budget.acknowledgePhysicalCleanup(abandoned, null, true);
+        budget.acknowledgePhysicalCleanup(
+                abandoned, 7, null,
+                budget.physicalCleanupCompleted(abandoned, "loader:abandoned-a"));
         assertThrows(IllegalStateException.class,
                 () -> budget.reserve(7, sha('b'), 12));
         var next = budget.reserve(8, sha('b'), 12);
@@ -107,9 +114,10 @@ final class HotCodeGenerationRetentionV1Test {
         stream.handlerQuiescent();
         stream.transportQuiescent();
         assertThrows(IllegalStateException.class,
-                () -> budget.acknowledgePhysicalCleanup(old, stalled, false));
+                () -> budget.acknowledgePhysicalCleanup(old, 1, stalled, null));
         assertEquals(80, budget.status().heldBytes());
-        budget.acknowledgePhysicalCleanup(old, stalled, true);
+        var cleanup = budget.physicalCleanupCompleted(old, "loader:quarantined-a");
+        budget.acknowledgePhysicalCleanup(old, 1, stalled, cleanup);
         assertEquals(40, budget.status().heldBytes());
     }
 
@@ -122,13 +130,14 @@ final class HotCodeGenerationRetentionV1Test {
         a.draining(old);
         var wrong = new HttpGenerationDrainV1(2, 1, 1);
         wrong.beginDrain();
+        var cleanup = a.physicalCleanupCompleted(old, "loader:old-a");
         assertThrows(IllegalStateException.class,
-                () -> a.acknowledgePhysicalCleanup(old, wrong, true));
+                () -> a.acknowledgePhysicalCleanup(old, 1, wrong, cleanup));
         var right = new HttpGenerationDrainV1(1, 1, 1);
         right.beginDrain();
-        a.acknowledgePhysicalCleanup(old, right, true);
+        a.acknowledgePhysicalCleanup(old, 1, right, cleanup);
         assertThrows(IllegalStateException.class,
-                () -> a.acknowledgePhysicalCleanup(old, right, true));
+                () -> a.acknowledgePhysicalCleanup(old, 1, right, cleanup));
         assertThrows(IllegalStateException.class,
                 () -> a.reserve(1, sha('b'), 10)); // cannot recycle epoch after cleanup
         var replacement = a.reserve(2, sha('b'), 10);
@@ -150,9 +159,45 @@ final class HotCodeGenerationRetentionV1Test {
         assertThrows(UnsupportedOperationException.class, () -> snapshot.retained().clear());
         assertEquals(HotCodeGenerationRetentionV1.Phase.STAGED,
                 snapshot.retained().get(0).phase());
-        budget.acknowledgePhysicalCleanup(large, null, true);
+        budget.acknowledgePhysicalCleanup(
+                large, 1, null,
+                budget.physicalCleanupCompleted(large, "loader:large-a"));
         assertEquals(0, budget.status().heldBytes());
         assertEquals(1, snapshot.retained().size());
+    }
+
+    @Test void imageGenerationAndRouteEpochMayDifferAfterAbortedImage() {
+        var budget = new HotCodeGenerationRetentionV1(2, 100);
+        var image7 = budget.reserve(7, sha('a'), 10);
+        budget.activated(image7);
+        budget.draining(image7);
+        var route2 = new HttpGenerationDrainV1(2, 1, 1);
+        route2.beginDrain();
+
+        var receipt = budget.physicalCleanupCompleted(image7, "loader:image7-route2");
+        assertEquals(7, receipt.imageGeneration());
+        assertEquals(sha('a'), receipt.imageSha256());
+        budget.acknowledgePhysicalCleanup(image7, 2, route2, receipt);
+        assertTrue(budget.status().retained().isEmpty());
+    }
+
+    @Test void cleanupReceiptCannotCrossImagesOwnersOrReplay() {
+        var a = new HotCodeGenerationRetentionV1(2, 100);
+        var b = new HotCodeGenerationRetentionV1(2, 100);
+        var first = a.reserve(1, sha('a'), 10);
+        var second = a.reserve(2, sha('b'), 10);
+        var foreign = b.reserve(1, sha('a'), 10);
+        var firstReceipt = a.physicalCleanupCompleted(first, "loader:first");
+
+        assertThrows(IllegalStateException.class,
+                () -> a.acknowledgePhysicalCleanup(second, 2, null, firstReceipt));
+        assertThrows(IllegalStateException.class,
+                () -> b.acknowledgePhysicalCleanup(foreign, 1, null, firstReceipt));
+
+        a.acknowledgePhysicalCleanup(first, 1, null, firstReceipt);
+        assertThrows(IllegalStateException.class,
+                () -> a.acknowledgePhysicalCleanup(first, 1, null, firstReceipt));
+        assertEquals(1, a.status().retained().size());
     }
 
     @Test void concurrentStagersCannotOverbookImageCount() throws Exception {
