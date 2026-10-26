@@ -526,6 +526,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService untrustedDispatcher;
     private final ActorPhysicalTurnGate physicalTurnGate;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    /** Host/runtime callbacks executing actor retirement must never park on actor receipts. */
+    private static final ThreadLocal<ActorCell<?>> finalizingOnThread = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
     private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
@@ -2536,10 +2538,17 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+
+            long remaining = unit.toNanos(timeout);
+            long deadline = System.nanoTime() + Math.max(0L, remaining);
+            while (!doneFuture.isDone()) {
+                if (remaining <= 0L) return false;
+                if (Thread.interrupted()) throw new InterruptedException();
+                java.util.concurrent.locks.LockSupport.parkNanos(
+                        Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(1L)));
+                remaining = deadline - System.nanoTime();
+            }
+            return true;
         }
 
         public void send(M message) {
@@ -4388,6 +4397,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireBlockingHostContext(String operation) {
+        if (finalizingOnThread.get() != null) {
+            throw new IllegalStateException(
+                    operation + " cannot block from inside actor retirement publication");
+        }
         if (inActorExecution()
                 || inActorGroupMailmanExecution()
                 || OresScheduler.current() != null) {
@@ -4397,6 +4410,10 @@ public final class ActorRuntime implements AutoCloseable {
                             + "and scheduler turns must use nonblocking cancellation plus "
                             + "Future/Awaitable suspension");
         }
+    }
+
+    static boolean inActorRetirementCallback() {
+        return finalizingOnThread.get() != null;
     }
 
     private void requireActorLifecycleAuthority(
@@ -5543,27 +5560,27 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("untrusted actors cannot stop other actors");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return;
+        if (cell != null) cell.stop();
 
-        cell.stop();
+        // Actor turns and retirement callbacks may request STOP, but must never
+        // synchronously wait on the receipt they are responsible for publishing.
+        if (currentActor.get() != null || finalizingOnThread.get() != null) return;
 
-        // Only a host/supervisor stop is a synchronization point. Actor turns
-        // may stop self/descendants but must never park a bounded carrier while
-        // waiting for another actor to finalize.
-        if (currentActor.get() != null) return;
-
+        // Registry removal is not a completion receipt: final retirement removes
+        // the cell before READY/DONE publication. Always wait on the ActorRef-owned
+        // DONE state, including when a racing finalizer already unregistered it.
         try {
-            cell.awaitFinalized(CLOSE_WAIT_NANOS);
+            if (!ref.awaitTermination(CLOSE_WAIT_NANOS, TimeUnit.NANOSECONDS)) {
+                throw new IllegalStateException(
+                        "actor " + ref.id()
+                                + " or one of its child actors did not publish DONE "
+                                + "within the stop deadline");
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(
-                    "interrupted while waiting for actor " + ref.id() + " to finalize",
+                    "interrupted while awaiting DONE for actor " + ref.id(),
                     interrupted);
-        }
-        if (!cell.finalized()) {
-            throw new IllegalStateException(
-                    "actor " + ref.id()
-                            + " or one of its child actors did not finalize within the stop deadline");
         }
     }
 
@@ -7633,6 +7650,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Cancellation, fatal failure and runtime close revoke all further
          * guest finalization callbacks, even if teardown already began. */
         private boolean gracefulTeardownRevoked;
+        /** All quiescence gates passed; exactly one post-monitor finalizer is scheduled. */
+        private boolean finalizationScheduled;
         private boolean finalized;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
@@ -7986,6 +8005,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void finalizeStopLocked() {
             if (finalized
+                    || finalizationScheduled
                     || sourceSchedulerClosing
                     || sourceStopCleanupPending
                     || pendingOperationRevocationPending
@@ -8042,54 +8062,208 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
-            finalized = true;
-            sourceScheduler = null;
-            sourceTaskMailbox.close();
-            try { drainMailboxReservations(); }
-            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
-            staticSelectCursors.clear();
-            codeActorState = null;
-            try { outputStream.close(ref.terminationCause.get()); }
-            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
-            for (ActorShardLease lease : List.copyOf(shardLeases)) {
-                try { lease.revokeFromActorStop(); }
-                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+
+            // From this point forward no callback-capable cleanup may execute
+            // under lifecycleLock. Claim exactly one post-monitor finalizer.
+            finalizationScheduled = true;
+            try {
+                Thread.ofVirtual()
+                        .name("ores-actor-" + ref.id() + "-finalize")
+                        .start(this::completeFinalizationOutsideLock);
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                finalizationScheduled = false;
+                throw fatal;
+            } catch (Throwable schedulingFailure) {
+                finalizationScheduled = false;
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor finalization worker could not be scheduled",
+                        schedulingFailure));
             }
-            shardLeases.clear();
-            for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
-                try { snapshot.revokeFromActorStop(); }
-                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
-            }
-            shardSnapshotLeases.clear();
-            if (memorySlice != null) {
-                try { memorySlice.close(); }
-                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
-            }
-            try { actorExitHook.accept(executionDomain); }
-            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
-            try { unregisterActor(this); }
-            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
-            if (parent != null) {
-                try { parent.childFinalized(this); }
-                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
-            }
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                ref.readyFuture.failFromRuntime(
-                        terminal == null ? new ActorTerminatedException(ref.id(), kind, null) : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
+        }
+
+        private void completeFinalizationOutsideLock() {
+            if (Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "actor finalization must not run under lifecycleLock");
+            }
+
+            ActorCell<?> previousFinalizer = finalizingOnThread.get();
+            finalizingOnThread.set(this);
+            Throwable fatal = null;
+            try {
+                synchronized (lifecycleLock) {
+                    if (!finalizationScheduled || finalized) return;
+                    sourceScheduler = null;
+                    staticSelectCursors.clear();
+                    codeActorState = null;
+                }
+
+                try { sourceTaskMailbox.close(); }
+                catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                    if (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError) fatal = failure;
+                }
+                try { drainFinalMailboxReservationsOutsideLock(); }
+                catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                    if (fatal == null && (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError)) fatal = failure;
+                }
+                try { outputStream.close(ref.terminationCause.get()); }
+                catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                    if (fatal == null && (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError)) fatal = failure;
+                }
+                for (ActorShardLease lease : List.copyOf(shardLeases)) {
+                    try { lease.revokeFromActorStop(); }
+                    catch (Throwable failure) {
+                        recordFinalizationFailure(failure);
+                        if (fatal == null && (failure instanceof VirtualMachineError
+                                || failure instanceof ThreadDeath
+                                || failure instanceof LinkageError)) fatal = failure;
+                    }
+                }
+                shardLeases.clear();
+                for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
+                    try { snapshot.revokeFromActorStop(); }
+                    catch (Throwable failure) {
+                        recordFinalizationFailure(failure);
+                        if (fatal == null && (failure instanceof VirtualMachineError
+                                || failure instanceof ThreadDeath
+                                || failure instanceof LinkageError)) fatal = failure;
+                    }
+                }
+                shardSnapshotLeases.clear();
+                if (memorySlice != null) {
+                    try { memorySlice.close(); }
+                    catch (Throwable failure) {
+                        recordFinalizationFailure(failure);
+                        if (fatal == null && (failure instanceof VirtualMachineError
+                                || failure instanceof ThreadDeath
+                                || failure instanceof LinkageError)) fatal = failure;
+                    }
+                }
+                try { actorExitHook.accept(executionDomain); }
+                catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                    if (fatal == null && (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError)) fatal = failure;
+                }
+                try { unregisterActor(this); }
+                catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                    if (fatal == null && (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError)) fatal = failure;
+                }
+
+                // Physical retirement is complete before any lifecycle receipt
+                // becomes terminal. Mark it under the monitor, then publish all
+                // callback-capable Futures after releasing the monitor.
+                synchronized (lifecycleLock) {
+                    finalized = true;
+                    lifecycleLock.notifyAll();
+                }
+
+                Throwable terminal = ref.terminationCause.get();
+                if (!ref.readyFuture.isDone()) {
+                    ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(ref.id(), kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(terminal);
+                finalizedFuture.completeFromRuntime(null);
+
+                // Parent structured completion is released only after the child
+                // has published its own DONE/finalization receipts.
+                if (parent != null) {
+                    try { parent.childFinalized(this); }
+                    catch (Throwable failure) {
+                        recordFinalizationFailure(failure);
+                        if (fatal == null && (failure instanceof VirtualMachineError
+                                || failure instanceof ThreadDeath
+                                || failure instanceof LinkageError)) fatal = failure;
+                    }
+                }
+
+                if (fatal instanceof VirtualMachineError vm) throw vm;
+                if (fatal instanceof ThreadDeath death) throw death;
+                if (fatal instanceof LinkageError linkage) throw linkage;
+            } finally {
+                synchronized (lifecycleLock) {
+                    if (!finalized && !sourceStopCleanupAborted) {
+                        sourceStopCleanupAborted = true;
+                        recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                                "actor finalization exited before physical retirement completed"));
+                    }
+                    finalizationScheduled = false;
+                    lifecycleLock.notifyAll();
+                }
+                if (previousFinalizer == null) finalizingOnThread.remove();
+                else finalizingOnThread.set(previousFinalizer);
+            }
+        }
+
+        private void drainFinalMailboxReservationsOutsideLock() {
+            if (Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "final mailbox cleanup must not hold lifecycleLock");
+            }
+
+            List<MessageEnvelope> continuations = new ArrayList<>();
+            List<MessageEnvelope> userMail = new ArrayList<>();
+            List<MessageEnvelope> sourceTasks = new ArrayList<>();
+
+            while (continuationMailbox.drainOne(continuations::add)) { }
+            while (mailbox.drainOne(userMail::add)) { }
+            while (sourceTaskMailbox.drainOne(sourceTasks::add)) { }
+
+            synchronized (lifecycleLock) {
+                sourceHandoffRequested = false;
+                sourceReceiveSuspended = false;
+                activeMail = null;
+            }
+
+            List<Throwable> failures = new ArrayList<>();
+            for (MessageEnvelope continuation : continuations) {
+                try { continuation.close(); }
+                catch (Throwable failure) { failures.add(failure); }
+                try { releaseMailboxSlot(true); }
+                catch (Throwable failure) { failures.add(failure); }
+            }
+            for (MessageEnvelope envelope : userMail) {
+                try { envelope.close(); }
+                catch (Throwable failure) { failures.add(failure); }
+                try { releaseMailboxSlot(false); }
+                catch (Throwable failure) { failures.add(failure); }
+            }
+            for (MessageEnvelope continuation : sourceTasks) {
+                try { continuation.close(); }
+                catch (Throwable failure) { failures.add(failure); }
+                try { releaseMailboxSlot(true); }
+                catch (Throwable failure) { failures.add(failure); }
+            }
+
+            if (!failures.isEmpty()) {
+                Throwable first = failures.getFirst();
+                for (int i = 1; i < failures.size(); i++) {
+                    Throwable next = failures.get(i);
+                    if (next != first) first.addSuppressed(next);
+                }
+                if (first instanceof Error error) throw error;
+                if (first instanceof RuntimeException runtime) throw runtime;
+                throw new IllegalStateException("actor final mailbox cleanup failed", first);
+            }
         }
 
         private void sourceTaskCleanupQuiesced() {
