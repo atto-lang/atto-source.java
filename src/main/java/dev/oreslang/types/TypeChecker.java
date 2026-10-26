@@ -487,6 +487,16 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
         for (Ast.ModuleDecl module : program.modules()) {
+            rejectDefaultArgAnnotation(
+                    module.annotations(),
+                    "module '" + module.name() + "'");
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FieldDecl field) {
+                    rejectDefaultArgAnnotation(
+                            field.annotations(),
+                            "module binding '" + module.name() + "." + field.name() + "'");
+                }
+            }
             String previousModule = currentLexicalModule;
             currentLexicalModule = module.name();
             try {
@@ -1385,7 +1395,24 @@ public final class TypeChecker {
         // initialized final slot becomes immutable before any body executes.
         // This scope is local to klass; inherited initializers are validated
         // against their own declaring class and cannot capture child params.
+        for (Ast.FieldDecl field : klass.fields()) {
+            rejectDefaultArgAnnotation(
+                    field.annotations(),
+                    "class field '" + klass.name() + "." + field.name() + "'");
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            rejectDefaultArgAnnotation(
+                    method.annotations(),
+                    (method.isStatic() ? "static function '" : "method '")
+                            + klass.name() + "." + method.name() + "'");
+        }
+
         Ast.ConstructorDecl constructor = klass.constructor();
+        if (constructor != null) {
+            rejectDefaultArgAnnotation(
+                    constructor.annotations(),
+                    "constructor for class '" + klass.name() + "'");
+        }
         if (constructor != null
                 && constructor.parameters().stream().anyMatch(Ast.Param::omittable)) {
             throw new IllegalArgumentException(
@@ -10192,6 +10219,18 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    private static void rejectDefaultArgAnnotation(
+            List<Ast.Annotation> annotations,
+            String target) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("DefaultArgVals")) {
+                throw new IllegalArgumentException(
+                        "@DefaultArgVals is executable direct-function call metadata "
+                                + "and is not supported on " + target);
+            }
+        }
     }
 
     private Map<String, Ast.TypeRef> defaultArgumentValues(
