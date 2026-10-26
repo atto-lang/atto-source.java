@@ -1,7 +1,8 @@
 # Future-aware value pipelines and trap/await ordering
 
-Status: **partial host/runtime implementation; source syntax and parity
-remain unimplemented and unverified**. The Java runtime now has the staging
+Status: **partial source-level Java/GraalVM implementation, unverified
+by exact-head JUnit CI; complete effect, ownership, actor and backend parity
+remain unimplemented**. The Java runtime now has the staging
 helper `dev.oreslang.runtime.TaskPipeline.start`: one `OresScheduler.Task`
 executes deferred stages, awaiting any Future returned by a stage without
 allocating a new task for each stage. The helper returns an exposed Future
@@ -12,12 +13,42 @@ source-visible Task or TaskScope, although the trusted Java runtime now exposes
 `TaskPipeline.startInScope` (a TaskScope child), with `PipelineHandle.getDone()`
 as the underlying Task's physical quiescence witness. This does **not**
 establish physical retirement of any independently scheduled FFI/child work
-which lacks a separate owned lifetime receipt.
+which lacks a separate owned lifetime receipt. For Java/GraalVM, non-actor
+SourceTask admission now uses tracked child handles; the restricted source
+pipeline is admitted through `TaskPipeline.startInCurrentTaskOrRoot` and
+joins its active tracked parent Task's cancellation/physical-retirement tree.
+Non-actor source Future composition helpers also use tracked parent-aware
+admission; a composed Future no longer silently escapes through an untracked
+scheduler Task. Canceling an exposed tracked Task result now requests
+revocation of its owned descendants as well. A parent whose result has
+already settled but still owns physically active children may also revoke
+those children while preserving the parent's settled value; its `getDone()`
+still waits for physical retirement. Implicitly parent-owned work may not
+cross schedulers without an explicit ownership/admission contract.
+A synchronous/root host entry with no tracked
+parent still creates a **root** pipeline: this is not an actor/lifetime
+ownership proof and must not be generalized to escaping borrows or FFI.
 
 The parser retains `Ast.CallExpr.origin` for value-pipe argument injection
 and Option/Result receiver combinators, distinct from ordinary calls and actor
-`pipe`. This is syntax provenance only, not a typed/effect-checked pipeline
-plan. `CallExpr.rewrite` retains that origin but drops identity-bound checked
+`pipe`. Syntax provenance alone is not authorization. The type checker now
+issues `TypeChecker.CheckedPureFuturePipe` identity-bound proofs to a **restricted**
+`Future<int> |> pureUnaryIntFunction()` subset: synchronous **or asynchronous**,
+non-generic, no captures, no effectful bodies, no additional stage arguments
+and no actor execution. A checked async stage may contain cooperative scheduler
+yield points and may `await` a same-module pure async unary-int helper; the
+helper is recursively checked under the same closed restrictions. Stages must also be declared in the current lexical module:
+imported/cross-module execution has not yet proven evaluator/environment
+ownership. Adjacent checked stages lower to one TaskPipeline task, preserving
+borrowed input-Future ownership. Proofs bind exact checked declarations and
+rewritten ASTs lose authorization. Proof issuance is private to TypeChecker:
+host code may inspect the checked declaration but cannot call a public
+`record` method to authorize an unchecked AST. Chained value pipes are
+checked from the inner stage outward, and proofs are staged per compiler
+instance and published atomically only after the entire type-check pass
+succeeds; later invalid declarations cannot publish an earlier prefix. Detection of Future-producing calls is
+restricted to known async/Future declarations rather than speculatively
+rechecking arbitrary scalar functions. `CallExpr.rewrite` retains that origin but drops identity-bound checked
 proofs; replacements require rechecking. Explicit checked-metadata transfers
 reject changed call origins before copying any proof.
 
@@ -26,11 +57,20 @@ JDK 21 and verifies parser/AST and frontend typing boundaries. The JUnit
 `FuturePipelineProvenanceTest` wraps the same checks. Neither proves guest
 runtime execution, Future lifting, cancellation, or actor scheduling.
 
-The existing Java source-language `|>` operator still eagerly injects the
-left value as the first argument of the stage call. The proposed *source-level*
-statically checked lifting rule remains unimplemented: there is no
-`Task.pipeline` source intrinsic or compiler-to-runtime lowering, and no
-Java/LLVM/JS/Wasm executable parity. Do not claim the sample below runs.
+Ordinary (non-Future) source `|>` still injects the left operand eagerly.
+If such an eager scalar stage returns `Future<int>`, the next checked pipe
+stage switches into Future-aware lowering; for example
+`21 |> start_async() |> finish()` invokes `start_async(21)` eagerly and
+defers `finish` until that Future succeeds. Only the narrow, checked pure-int
+subset above has compiler-to-runtime lifting. Within that subset, an async
+stage's `Future<int>` is flattened by
+the same single `TaskPipeline` task, and the compiler marks the stage-created
+Future as pipeline-owned so cancellation revokes it while leaving the borrowed
+producer Future alone. Future stages with effect declarations, extra arguments,
+non-int payloads, HasFuture projections, actor affinity or loan/capture
+requirements still fail closed. There is no general
+`Task.pipeline` source intrinsic or Java/LLVM/JS/Wasm executable parity.
+Do not claim the general example below runs.
 
 ## Canonical spelling
 
@@ -76,8 +116,11 @@ val Option<C> safe = trap await (load() |> save() |> notify());
 ```
 
 Conceptual lowering is `load().flat_map(save).flat_map(notify)`, with checked
-types/effects/ownership and safe actor-bound scheduling. The parser currently
-lowers `|>` to ordinary `save(load())`, so this is *not* yet supported.
+types/effects/ownership and safe actor-bound scheduling. Java/GraalVM now
+executes this behavior for the restricted checked pure-`int` subset,
+including mixed synchronous/asynchronous stages and an async stage that awaits
+a checked pure async helper. General typed pipelines remain intentionally
+fail-closed outside that subset.
 
 ### Evaluation order, failure, and lifetime obligations
 
@@ -140,6 +183,25 @@ has stopped. Treat its `TaskOutcome` as the **internal** task's outcome and
 `result()` as the public pipeline outcome; the bridge can classify upstream
 cancellation as cancelled even though the internal task unwound with a
 failure. Do not substitute the internal outcome for the public result.
+
+For inline scheduler implementations, the exposed bridge identity must be
+published **before** TaskHandle admission. Otherwise the first already-running
+await can be omitted from cycle detection, and cancellation can race handle
+binding. The runtime now publishes that bridge first, reconciles cancellation
+after TaskHandle admission, and includes focused inline-complete/inline-pending
+regressions. These tests are committed, but require an executing JDK 25 runner.
+
+**Structured root-task lifetime:** SourceTask functions and methods now
+enter tracked scheduler tasks, and compiler-lowered pipelines use
+`TaskPipeline.startInCurrentTaskOrRoot`. A running tracked parent captures
+its cancellation authority before child admission; cancelling its exposed
+result revokes descendant pipeline work, and the parent's `getDone()` waits
+for descendants' scheduler-confirmed physical retirement. A top-level
+synchronous entry point instead creates a separately tracked root pipeline.
+The borrowed input Future is not cancelled. Exact-head host and guest tests
+remain necessary: this linkage does not prove physical completion of
+arbitrary independently owned FFI operations or actor arena cleanup, and
+actor-affine pipeline lowering is still rejected.
 
 The runtime also tracks active pipeline bridge-await edges by Future identity,
 rejecting both direct self-await and multi-pipeline cycles, and removes edges
