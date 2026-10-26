@@ -165,6 +165,30 @@ public final class InvertedColumnStore implements AutoCloseable {
         return length;
     }
 
+    /**
+     * Resolve the current dense bracket index to an opaque logical row handle.
+     *
+     * <p>This is the host lowering primitive for an admitted inverted-array
+     * {@code array[index]} projection. The returned handle follows the logical
+     * row across reserve and swap-delete movement, while generation checks keep
+     * a deleted/reused slot from reviving an older projection. Negative
+     * indices and {@code index == size()} are rejected; there is deliberately
+     * no Python-style negative-index coercion or unchecked integer wrapping.
+     */
+    public synchronized Handle handleAt(int rowIndex) {
+        open();
+        if (rowIndex < 0 || rowIndex >= length) {
+            throw new IndexOutOfBoundsException(
+                    "inverted row index " + rowIndex + " outside [0," + length + ")");
+        }
+        int slot = rowSlots[rowIndex];
+        if (slot < 0 || slot >= slotCount
+                || !live[slot] || slotRows[slot] != rowIndex) {
+            throw new IllegalStateException("corrupt inverted dense-row mapping");
+        }
+        return new Handle(capability, owner, slot, generations[slot]);
+    }
+
     public synchronized int capacity() {
         open();
         return capacity;
