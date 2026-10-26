@@ -773,7 +773,8 @@ public final class Parser {
         return "quote".equals(name)
                 || "unquote".equals(name)
                 || "hygienic".equals(name)
-                || "capture_fnc".equals(name);
+                || "capture_fnc".equals(name)
+                || "declare_fnc".equals(name);
     }
 
     private void rejectMacroQuoteBinding(String name) {
