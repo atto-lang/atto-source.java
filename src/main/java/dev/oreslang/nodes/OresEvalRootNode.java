@@ -820,10 +820,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
+            return invoke(initial, null, null);
+        }
+
+        private Object invoke(
+                Invocation initial,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             Invocation current = initial;
             int tailHops = 0;
             while (true) {
-                Object result = current.owner().executeRaw(current);
+                Object result = current.owner().executeRaw(
+                        current, taskScope, taskScopeParent);
                 if (!(result instanceof TailCall tail)) return result;
                 current = tail.invocation();
                 tailHops++;
@@ -834,23 +842,40 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object executeRaw(Invocation invocation) {
+            return executeRaw(invocation, null, null);
+        }
+
+        private Object executeRaw(
+                Invocation invocation,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             return switch (invocation.kind()) {
                 case FUNCTION -> callFunctionRaw(
                         (Ast.FunctionDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case FUNCTION_BODY -> callFunctionBodyRaw(
                         (Ast.FunctionDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case METHOD -> callMethodRaw(
                         (OresObject) invocation.receiver(),
                         (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case STATIC_FUNCTION -> callStaticFunctionRaw(
                         (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case STATIC_FUNCTION_BODY -> callStaticFunctionBodyRaw(
                         (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
             };
         }
@@ -1016,6 +1041,7 @@ public final class OresEvalRootNode extends RootNode {
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
+            private TaskScope inheritedTaskScope;
             private TaskScope.Registration scopeRegistration;
             private final Object taskScopeLock = new Object();
             private final Set<TaskScope> activeTaskScopes =
@@ -1188,6 +1214,11 @@ public final class OresEvalRootNode extends RootNode {
                                 function != null
                                         ? "function " + function.name()
                                         : "method " + method.name());
+                    }
+
+                    if (inheritedTaskScope != null) {
+                        params.taskScope = inheritedTaskScope;
+                        params.taskScopeParent = scopeRegistration;
                     }
 
                     List<Ast.Stmt> body =
@@ -4561,7 +4592,10 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             try {
-                Object result = invoke(invocation);
+                Object result = invoke(
+                        invocation,
+                        env.taskScope,
+                        env.taskScopeParent);
                 if (result instanceof OresFuture<?> future
                         && !declaredFuture) {
                     // A settled Future is a value, not a suspension: do not
