@@ -126,6 +126,9 @@ final class HotCodeGenerationRetentionV1 {
     synchronized CleanupReceipt physicalCleanupCompleted(
             Ticket ticket, String loaderResourceId) {
         require(ticket);
+        if (ticket.phase == Phase.SERVING)
+            throw new IllegalStateException(
+                    "serving image cannot have a physical cleanup receipt");
         return new CleanupReceipt(this, ticket, loaderResourceId);
     }
 
