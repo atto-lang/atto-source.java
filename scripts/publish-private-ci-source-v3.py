@@ -64,6 +64,7 @@ CONTROL_PLANE_PATHS = (
 )
 MAX_CONTROL_PLANE_FILE = 512 * 1024
 MAX_GH_API_RESPONSE_BYTES = 24 * 1024 * 1024
+CARRIER_POLICY_CHECK = "verifier-tests"
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -418,7 +419,9 @@ def checked_carrier_main(repository, contract):
         raise Denied(
             "carrier main does not enforce CODEOWNER review and strict required CI"
         )
-    legacy.require_issuer_bound_actions_checks(checks, "carrier main")
+    legacy.require_issuer_bound_actions_checks(
+        checks, "carrier main", CARRIER_POLICY_CHECK
+    )
     admins = protection.get("enforce_admins")
     force = protection.get("allow_force_pushes")
     delete = protection.get("allow_deletions")
