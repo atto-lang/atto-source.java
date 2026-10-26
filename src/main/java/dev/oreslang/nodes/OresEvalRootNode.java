@@ -10,6 +10,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.FixedProductCallPlan;
+import dev.oreslang.types.OptionalCallPlan;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -451,6 +452,121 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != null) return local;
             }
             return findClass(parentRef.name());
+        }
+
+        private static Map<String, Ast.TypeRef> defaultArgumentValues(
+                Ast.FunctionDecl function) {
+            LinkedHashMap<String, Ast.TypeRef> defaults =
+                    new LinkedHashMap<>();
+            for (Ast.Annotation annotation : function.annotations()) {
+                if (!annotation.name().equals("DefaultArgVals")) continue;
+                for (Ast.TypeRef entry : annotation.arguments()) {
+                    if (!entry.isNamedParameter()) {
+                        throw new IllegalStateException(
+                                "malformed @DefaultArgVals metadata on "
+                                        + function.name());
+                    }
+                    Ast.TypeRef previous = defaults.putIfAbsent(
+                            entry.namedParameterName(),
+                            entry.namedParameterValue());
+                    if (previous != null) {
+                        throw new IllegalStateException(
+                                "duplicate runtime default metadata for "
+                                        + entry.namedParameterName());
+                    }
+                }
+            }
+            return java.util.Collections.unmodifiableMap(defaults);
+        }
+
+        private static Object runtimeDefaultValue(
+                Ast.Param parameter,
+                Ast.TypeRef literal) {
+            if (literal == null) {
+                if (parameter.type().name().equals("Option")
+                        && parameter.type().arguments().size() == 1) {
+                    return new OptionValue(false, null);
+                }
+                throw new IllegalStateException(
+                        "omitted parameter '" + parameter.name()
+                                + "' has no checked runtime default");
+            }
+            if (literal.isIntLiteral()) return literal.intLiteralValue();
+            if (literal.isBoolLiteral()) return literal.boolLiteralValue();
+            if (literal.isStringLiteral()) return literal.stringLiteralValue();
+            if (literal.name().equals("None")
+                    && literal.arguments().isEmpty()
+                    && !literal.inferArguments()) {
+                return new OptionValue(false, null);
+            }
+            throw new IllegalStateException(
+                    "unsupported checked runtime default for parameter '"
+                            + parameter.name() + "'");
+        }
+
+        private Ast.FunctionDecl selectDirectFunction(
+                String name,
+                List<FixedProductCallPlan.InputSlot> inputs) {
+            if (ambiguousFunctions.contains(name)) {
+                throw new IllegalArgumentException(
+                        "ambiguous function " + name
+                                + "; qualify it with its module");
+            }
+            LinkedHashMap<Integer, Ast.FunctionDecl> family =
+                    functions.get(name);
+            if (family == null) return null;
+
+            Ast.FunctionDecl exact = family.get(inputs.size());
+            if (exact != null) {
+                if (exact.parameters().stream()
+                        .anyMatch(Ast.Param::omittable)) {
+                    OptionalCallPlan.bind(
+                            exact.parameters().stream()
+                                    .map(Ast.Param::name)
+                                    .toList(),
+                            exact.parameters().stream()
+                                    .map(Ast.Param::omittable)
+                                    .toList(),
+                            inputs);
+                } else if (inputs.stream()
+                        .anyMatch(slot -> slot.label() != null)) {
+                    FixedProductCallPlan.bind(
+                            exact.parameters().stream()
+                                    .map(Ast.Param::name)
+                                    .toList(),
+                            inputs);
+                }
+                return exact;
+            }
+
+            List<Ast.FunctionDecl> matches = new ArrayList<>();
+            for (Ast.FunctionDecl candidate : family.values()) {
+                if (candidate.parameters().size() <= inputs.size()
+                        || candidate.parameters().stream()
+                                .noneMatch(Ast.Param::omittable)) {
+                    continue;
+                }
+                try {
+                    OptionalCallPlan.bind(
+                            candidate.parameters().stream()
+                                    .map(Ast.Param::name)
+                                    .toList(),
+                            candidate.parameters().stream()
+                                    .map(Ast.Param::omittable)
+                                    .toList(),
+                            inputs);
+                    matches.add(candidate);
+                } catch (IllegalArgumentException ignored) {
+                    // Not a viable omission shape.
+                }
+            }
+            if (matches.size() > 1) {
+                throw new IllegalArgumentException(
+                        "function " + name
+                                + " is ambiguous across omittable declaration arities; "
+                                + "labels do not select overloads");
+            }
+            return matches.isEmpty() ? null : matches.getFirst();
         }
 
         private boolean hasFunctionFamily(String name) {
@@ -1130,9 +1246,46 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private List<Object> inAbiOrder(Ast.FunctionDecl function) {
-                if (inputs.stream().noneMatch(slot -> slot.label() != null)) {
+                boolean optional =
+                        function.parameters().stream()
+                                .anyMatch(Ast.Param::omittable);
+                if (!optional
+                        && inputs.stream()
+                                .noneMatch(slot -> slot.label() != null)) {
                     return values;
                 }
+
+                if (optional) {
+                    OptionalCallPlan plan = OptionalCallPlan.bind(
+                            function.parameters().stream()
+                                    .map(Ast.Param::name)
+                                    .toList(),
+                            function.parameters().stream()
+                                    .map(Ast.Param::omittable)
+                                    .toList(),
+                            inputs);
+                    Map<String, Ast.TypeRef> defaults =
+                            defaultArgumentValues(function);
+                    ArrayList<Object> ordered =
+                            new ArrayList<>(function.parameters().size());
+                    for (int i = 0;
+                            i < function.parameters().size();
+                            i++) {
+                        int source = plan.abiToSource().get(i);
+                        if (source >= 0) {
+                            ordered.add(values.get(source));
+                        } else {
+                            ordered.add(runtimeDefaultValue(
+                                    function.parameters().get(i),
+                                    defaults.get(
+                                            function.parameters()
+                                                    .get(i)
+                                                    .name())));
+                        }
+                    }
+                    return java.util.Collections.unmodifiableList(ordered);
+                }
+
                 FixedProductCallPlan plan = FixedProductCallPlan.bind(
                         function.parameters().stream()
                                 .map(Ast.Param::name)
@@ -5248,14 +5401,13 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             try {
                                 Ast.FunctionDecl direct =
-                                        findFunction(
+                                        selectDirectFunction(
                                                 name.name(),
-                                                values.values().size());
+                                                values.inputs());
                                 if (direct == null) {
                                     throw new IllegalArgumentException(
                                             "no function " + name.name()
-                                                    + " with expanded arity "
-                                                    + values.values().size());
+                                                    + " accepts the supplied fixed argument shape");
                                 }
                                 Invocation invocation =
                                         functionInvocation(
@@ -7130,12 +7282,13 @@ public final class OresEvalRootNode extends RootNode {
                 DirectArguments args =
                         evaluateDirectArguments(call.arguments(), env);
                 Ast.FunctionDecl direct =
-                        findFunction(directName.name(), args.values().size());
+                        selectDirectFunction(
+                                directName.name(),
+                                args.inputs());
                 if (direct == null) {
                     throw new IllegalArgumentException(
                             "no function " + directName.name()
-                                    + " with expanded arity "
-                                    + args.values().size());
+                                    + " accepts the supplied fixed argument shape");
                 }
                 return functionInvocation(
                         direct,
