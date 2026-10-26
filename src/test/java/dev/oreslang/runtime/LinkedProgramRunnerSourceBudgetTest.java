@@ -6,10 +6,56 @@ import java.nio.file.Path;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class LinkedProgramRunnerSourceBudgetTest {
     @TempDir Path temp;
+
+    @Test
+    void linkedValidationCapabilityChecksExpandedMacroProgram() throws Exception {
+        Path source = temp.resolve("macro-ok.ores");
+        Files.writeString(source, """
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+
+                fnc answer() -> int {
+                    return identity!(syntax expr 42);
+                }
+                """);
+
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(
+                source,
+                Map.of(),
+                IsolatePolicy.untrustedActor(),
+                PermissionCheckMode.COMPILE));
+    }
+
+    @Test
+    void linkedValidationCannotHideRestrictedCapabilityBehindMacroExpansion() throws Exception {
+        Path source = temp.resolve("macro-capability.ores");
+        Files.writeString(source, """
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+
+                fnc blocked() -> void {
+                    identity!(syntax expr stdio.println("blocked"));
+                    return;
+                }
+                """);
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> LinkedProgramRunner.validate(
+                        source,
+                        Map.of(),
+                        IsolatePolicy.untrustedActor(),
+                        PermissionCheckMode.COMPILE));
+        assertTrue(denied.getMessage().contains("STDOUT"), denied.getMessage());
+    }
 
     @Test
     void linkedCompilerRejectsOversizedEntryBeforeParsing() throws Exception {
