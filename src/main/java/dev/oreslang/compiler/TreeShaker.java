@@ -215,6 +215,19 @@ public final class TreeShaker {
                         || containsLambda(conditional.whenTrue())
                         || containsLambda(conditional.whenFalse());
             }
+            if (expression instanceof Ast.MatchExpr matched) {
+                // The constant-call inliner only substitutes expressions. A
+                // lexical value-arm block has statement-local declarations and
+                // effects, so keep the call uninlined until statement-aware
+                // substitution is proven.
+                if (containsLambda(matched.subject())) return true;
+                for (Ast.MatchValueArm arm : matched.arms()) {
+                    if (!arm.prefixStatements().isEmpty()) return true;
+                    if (arm.guard() != null && containsLambda(arm.guard())) return true;
+                    if (containsLambda(arm.value())) return true;
+                }
+                return false;
+            }
             if (expression instanceof Ast.RuntimeCallExpr runtime) {
                 return runtime.arguments().stream().anyMatch(this::containsLambda);
             }
@@ -875,7 +888,7 @@ public final class TreeShaker {
                     arms.add(new Ast.MatchValueArm(
                             arm.pattern(),
                             rewriteExpression(arm.guard(), module, armLocals),
-                            rewriteExpression(arm.value(), module, armLocals)));
+                            rewriteStatements(arm.body(), module, armLocals)));
                 }
                 return new Ast.MatchExpr(subject, arms, matched.resultType());
             }
@@ -1364,7 +1377,7 @@ public final class TreeShaker {
                     addPatternLocalNames(arm.pattern(), armLocals);
                     scanPatternTypes(arm.pattern());
                     scanExpression(module, arm.guard(), armLocals);
-                    scanExpression(module, arm.value(), armLocals);
+                    scanStatements(module, arm.body(), armLocals);
                 }
                 return;
             }
