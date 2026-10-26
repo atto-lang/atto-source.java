@@ -93,4 +93,68 @@ final class AggregateCallBoundaryHardeningTest {
                 fnc bad(): int { return add(...numbers()); }
                 """);
     }
+
+    @Test
+    void returnedTupleSpreadExecutesUsingDeclarationOrder() throws Exception {
+        assertEquals("42", run("""
+                fnc pair(): (int, int) { return (19, 23); }
+                fnc add(int left, int right): int { return left + right; }
+                pub routine main(): void {
+                  stdio.stdout.write(add(...pair()));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void returnedRecordDestructureExecutesAndForwardsFields() throws Exception {
+        assertEquals("42", run("""
+                fnc pair(): {left: int, right: int} {
+                  return record{left: 19, right: 23};
+                }
+                fnc add(int left, int right): int { return left + right; }
+                pub routine main(): void {
+                  const {left, right} = pair();
+                  stdio.stdout.write(add(left, right));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void multipleReturnedTupleSpreadsEvaluateOnceInLexicalOrder() throws Exception {
+        assertEquals("AB1234", run("""
+                fnc first(): (int, int) {
+                  stdio.stdout.write("A");
+                  return (1, 2);
+                }
+                fnc second(): (int, int) {
+                  stdio.stdout.write("B");
+                  return (3, 4);
+                }
+                fnc digits(int a, int b, int c, int d): int {
+                  return a * 1000 + b * 100 + c * 10 + d;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(digits(...first(), ...second()));
+                  return;
+                }
+                """));
+    }
+
+    private static String run(String source) throws Exception {
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        org.graalvm.polyglot.Source compiled = org.graalvm.polyglot.Source
+                .newBuilder(OresLanguage.ID, source, "aggregate-call-boundary.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (org.graalvm.polyglot.Context context = org.graalvm.polyglot.Context
+                .newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(compiled);
+        }
+        return output.toString(java.nio.charset.StandardCharsets.UTF_8);
+    }
 }
