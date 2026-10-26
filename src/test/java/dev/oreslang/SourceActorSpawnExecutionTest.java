@@ -281,6 +281,36 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void sourceSendAsyncReturnsAwaitableAdmissionFuture() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.send(mail.value);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+
+                  val Future<void> admitted = worker.send_async("async-mail");
+                  await admitted;
+
+                  val output = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(output.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "async-mail",
+                run(program, "source-actor-send-async.ores"));
+    }
+
+    @Test
     void actorLifecycleMethodsReturnAwaitableFuturesAndRejectPropertyAccess() throws Exception {
         String valid = """
                 define actor Worker as
