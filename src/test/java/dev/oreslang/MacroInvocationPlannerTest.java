@@ -5,6 +5,7 @@ import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -397,6 +398,77 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void expandedSyntaxCannotBypassOwnershipChecking() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                            pub let int value = 7;
+                        end
+
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+
+                        fnc bad() -> void {
+                            let Box box = new Box();
+                            val Box moved = identity!(syntax expr rt take box);
+                            stdio.println(box.value);
+                            stdio.println(moved.value);
+                            return;
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().toLowerCase().contains("moved"),
+                failure::toString);
+    }
+
+    @Test
+    void expandedSyntaxCannotBypassCapabilityChecking() {
+        SecurityException failure = assertThrows(
+                SecurityException.class,
+                () -> OresCompiler.validateForIsolate("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+
+                        define untrusted actor Worker as
+                            pub run(): void {
+                                identity!(syntax expr stdio.println("blocked"));
+                                return;
+                            }
+                        end
+                        """, IsolatePolicy.developer()));
+
+        assertTrue(failure.getMessage().contains("STDOUT"), failure::toString);
+    }
+
+    @Test
+    void nestedExpansionDepthIsBoundedAndFailsClosed() {
+        String expression = "42";
+        for (int i = 0; i < 65; i++) {
+            expression = "identity!(syntax expr " + expression + ")";
+        }
+        String source = """
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+                fnc answer() -> int {
+                    return %s;
+                }
+                """.formatted(expression);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+
+        assertTrue(failure.getMessage().contains("macro expansion depth exceeds"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
     void unsupportedMacroBodyCannotFallBackToRuntimeExecution() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
@@ -411,7 +483,9 @@ final class MacroInvocationPlannerTest {
 
         assertTrue(failure.getMessage().contains("first evaluator slice"),
                 failure::toString);
-        assertTrue(failure.getMessage().contains("runtime/JIT/source-string fallback is forbidden"),
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("JIT/source-string fallback is forbidden"),
                 failure::toString);
     }
 
