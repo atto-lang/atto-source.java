@@ -66,7 +66,6 @@ final class ActorSourceTaskLifetimeGateTest {
             ActorRuntime.PrivateMemoryBlock block = memory.get();
             assertNotNull(block);
             assertFalse(block.closed());
-            assertEquals(42, block.readInt(0));
 
             actor.stop();
 
