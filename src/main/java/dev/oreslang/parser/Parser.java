@@ -112,6 +112,10 @@ public final class Parser {
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
+            if (looksLikeMacroInvocationDeclaration()) {
+                rootDeclarations.add(parseMacroInvocationDeclaration());
+                continue;
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -346,6 +350,9 @@ public final class Parser {
 
     private Ast.Decl parseModuleMember() {
         rejectUnsupportedAcceleratorSyntax();
+        if (looksLikeMacroInvocationDeclaration()) {
+            return parseMacroInvocationDeclaration();
+        }
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
@@ -653,6 +660,106 @@ public final class Parser {
             if (containsCompilerOnlyMacroMetaType(argument)) return true;
         }
         return false;
+    }
+
+    private boolean looksLikeMacroInvocationDeclaration() {
+        int i = current;
+        if (i >= tokens.size() || tokens.get(i).type() != IDENT) return false;
+        i++;
+        while (i + 1 < tokens.size()
+                && (tokens.get(i).type() == DOT || tokens.get(i).type() == DOUBLE_COLON)
+                && tokens.get(i + 1).type() == IDENT) {
+            i += 2;
+        }
+        return i + 1 < tokens.size()
+                && tokens.get(i).type() == BANG
+                && tokens.get(i + 1).type() == LPAREN;
+    }
+
+    private Ast.MacroInvocationDecl parseMacroInvocationDeclaration() {
+        Token first = consume(IDENT, "expected macro name");
+        StringBuilder name = new StringBuilder(first.lexeme());
+        while (match(DOT, DOUBLE_COLON)) {
+            name.append('.').append(consume(IDENT, "expected macro name after namespace qualifier").lexeme());
+        }
+        consume(BANG, "macro invocation requires '!'");
+        consume(LPAREN, "macro invocation requires '(' after '!'");
+        List<Ast.MacroArgument> arguments = parseMacroInvocationArguments();
+        consume(RPAREN, "expected ')' after macro arguments");
+        consume(SEMICOLON, "declaration-position macro invocation must end with ';'");
+        return new Ast.MacroInvocationDecl(
+                name.toString(), arguments, new Ast.SourceSite(first.line(), first.column()));
+    }
+
+    private List<Ast.MacroArgument> parseMacroInvocationArguments() {
+        List<Ast.MacroArgument> arguments = new ArrayList<>();
+        if (check(RPAREN)) return List.of();
+        do {
+            if (match(TYPE)) {
+                arguments.add(new Ast.MacroTypeArgument(parseTypeRef()));
+                continue;
+            }
+            if (match(CONST)) {
+                arguments.add(new Ast.MacroConstArgument(parseExpression()));
+                continue;
+            }
+            if (isContextualIdentifier("ident")) {
+                advance();
+                Token identifier = consume(IDENT,
+                        "macro 'ident' argument requires a call-site identifier name");
+                arguments.add(new Ast.MacroIdentifierArgument(
+                        identifier.lexeme(), new Ast.SourceSite(identifier.line(), identifier.column())));
+                continue;
+            }
+            if (isContextualIdentifier("syntax")) {
+                advance();
+                arguments.add(parseMacroSyntaxArgument());
+                continue;
+            }
+            throw error(peek(),
+                    "macro arguments require an explicit compiler category: "
+                            + "'type T', 'const expr', 'ident name', or 'syntax <kind> ...'");
+        } while (match(COMMA));
+        return List.copyOf(arguments);
+    }
+
+    private Ast.MacroArgument parseMacroSyntaxArgument() {
+        if (isContextualIdentifier("expr")) {
+            advance();
+            return new Ast.MacroSyntaxExprArgument(parseExpression());
+        }
+        if (match(TYPE)) {
+            return new Ast.MacroSyntaxTypeArgument(parseTypeRef());
+        }
+        if (isContextualIdentifier("pattern")) {
+            advance();
+            return new Ast.MacroSyntaxPatternArgument(parsePattern());
+        }
+        if (isContextualIdentifier("stmt")) {
+            advance();
+            List<Ast.Stmt> body = parseBlock();
+            if (body.size() != 1) {
+                throw error(previous(),
+                        "syntax stmt requires exactly one statement inside its '{ ... }' wrapper");
+            }
+            return new Ast.MacroSyntaxStmtArgument(body.getFirst());
+        }
+        if (isContextualIdentifier("decl")) {
+            throw error(peek(),
+                    "syntax decl source arguments are reserved until declaration quotation has "
+                            + "hygienic provenance; use type/ident or a generated Syntax<Decl> value");
+        }
+        throw error(peek(),
+                "syntax macro argument requires expr, stmt, type, pattern, or decl");
+    }
+
+    private String macroCalleePath(Ast.Expr expression) {
+        if (expression instanceof Ast.NameExpr name) return name.name();
+        if (expression instanceof Ast.MemberExpr member) {
+            String parent = macroCalleePath(member.receiver());
+            return parent == null ? null : parent + "." + member.member();
+        }
+        return null;
     }
 
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
@@ -4166,7 +4273,21 @@ public final class Parser {
     private Ast.Expr parsePostfix() {
         Ast.Expr expr = parsePrimary();
         while (true) {
-            if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
+            if (check(BANG)
+                    && current + 1 < tokens.size()
+                    && tokens.get(current + 1).type() == LPAREN) {
+                String macroName = macroCalleePath(expr);
+                if (macroName == null) {
+                    throw error(peek(),
+                            "macro invocation callee must be a static macro name or namespace-qualified macro name");
+                }
+                Token bang = advance();
+                consume(LPAREN, "expected '(' after macro invocation '!'");
+                List<Ast.MacroArgument> args = parseMacroInvocationArguments();
+                consume(RPAREN, "expected ')' after macro arguments");
+                expr = new Ast.MacroInvocationExpr(
+                        macroName, args, new Ast.SourceSite(bang.line(), bang.column()));
+            } else if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
