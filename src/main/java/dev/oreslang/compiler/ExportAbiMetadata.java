@@ -119,6 +119,7 @@ public final class ExportAbiMetadata {
         field(out, "module");
         field(out, module.name());
         for (Ast.TypeRef contract : module.contracts()) type(out, contract);
+        annotations(out, module.annotations());
         return out.toString();
     }
 
@@ -132,9 +133,11 @@ public final class ExportAbiMetadata {
             field(out, fn.kind().name());
             field(out, fn.actorKind().name());
             flags(out, fn.async(), fn.suspends(), fn.generator(), fn.structural(), fn.nonLexical(), fn.trapped());
-            strings(out, fn.genericParameters());
+            genericSpecs(out, fn.genericSpecs());
             params(out, fn.parameters());
             type(out, fn.returnType());
+            effects(out, fn.effects());
+            annotations(out, fn.annotations());
         } else if (declaration instanceof Ast.ClassDecl cls) {
             field(out, cls.actorKind().name());
             flags(out, cls.isAbstract());
@@ -152,6 +155,7 @@ public final class ExportAbiMetadata {
                 field(out, field.bindingKind().name());
                 flags(out, field.mutableReferent());
                 type(out, field.type());
+                annotations(out, field.annotations());
             }
             for (Ast.MethodDecl method : cls.methods()) {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
@@ -161,6 +165,8 @@ public final class ExportAbiMetadata {
                 strings(out, method.genericParameters());
                 params(out, method.parameters());
                 type(out, method.returnType());
+                effects(out, method.effects());
+                annotations(out, method.annotations());
             }
         } else if (declaration instanceof Ast.InterfaceDecl iface) {
             field(out, iface.flavor().name());
@@ -186,6 +192,7 @@ public final class ExportAbiMetadata {
             field(out, field.bindingKind().name());
             flags(out, field.mutableReferent());
             type(out, field.type());
+            annotations(out, field.annotations());
         }
 
         return out.toString();
@@ -222,6 +229,32 @@ public final class ExportAbiMetadata {
         throw new IllegalArgumentException("unsupported export declaration " + declaration.getClass().getName());
     }
 
+    private static void genericSpecs(StringBuilder out, List<Ast.GenericParameter> specs) {
+        field(out, Integer.toString(specs.size()));
+        for (Ast.GenericParameter spec : specs) {
+            field(out, spec.name());
+            if (spec.defaultType() == null) field(out, "(no-default)");
+            else type(out, spec.defaultType());
+        }
+    }
+
+    private static void effects(StringBuilder out, Ast.EffectSpec effects) {
+        field(out, "throws");
+        types(out, effects.throwsTypes());
+        field(out, "raises");
+        types(out, effects.raisesTypes());
+        field(out, "panics");
+        types(out, effects.panicsTypes());
+    }
+
+    private static void annotations(StringBuilder out, List<Ast.Annotation> annotations) {
+        field(out, Integer.toString(annotations.size()));
+        for (Ast.Annotation annotation : annotations) {
+            field(out, annotation.name());
+            types(out, annotation.arguments());
+        }
+    }
+
     private static void params(StringBuilder out, List<Ast.Param> params) {
         field(out, Integer.toString(params.size()));
         for (Ast.Param param : params) {
@@ -242,12 +275,15 @@ public final class ExportAbiMetadata {
     }
 
     private static void type(StringBuilder out, Ast.TypeRef type) {
-        if (type == null) {
-            field(out, "(inferred)");
-            return;
+        if (type == null || type.name() == null || type.name().isBlank()
+                || type.name().equals("$infer$") || type.name().equals("Unknown")
+                || type.inferArguments()) {
+            throw new IllegalArgumentException(
+                    "[EXPORT_METADATA_UNRESOLVED_TYPE] exported source signature contains unresolved type metadata");
         }
         field(out, type.name());
-        field(out, Boolean.toString(type.inferArguments()));
+        field(out, "resolved");
+        field(out, Integer.toString(type.arguments().size()));
         for (Ast.TypeRef child : type.arguments()) type(out, child);
     }
 
