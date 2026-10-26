@@ -84,6 +84,16 @@ final class PipeEndpointContractsTest {
     }
 
     @Test
+    void repeatedNestedReferencesCannotBypassTraversalBudget() {
+        // Identity-based visited accounting alone did not constrain the
+        // number of duplicate references queued by one large generic type.
+        var repeated = java.util.Collections.nCopies(1025, Primitive.INT);
+        var denied = assertThrows(IllegalArgumentException.class,
+                () -> PipeEndpointContracts.source(new Named("Wide", repeated)));
+        assertTrue(denied.getMessage().contains("complexity budget"));
+    }
+
+    @Test
     void userFacingEndpointKindCannotMintAuthenticatedActorAuthority() {
         var input = PipeEndpointContracts.transform(Primitive.INT, Primitive.INT);
         var actor = PipeEndpointContracts.authenticatedActor(Primitive.INT);
