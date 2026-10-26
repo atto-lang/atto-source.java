@@ -482,6 +482,36 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void javaInteropRejectsMalformedUtf16BeforeItBecomesGuestString() throws Exception {
+        Path source = temp.resolve("bad-java-string.ores");
+        Files.writeString(source, """
+                pub fnc main(): void {
+                  stdio.println(BadStrings.unpaired());
+                  return;
+                }
+
+                java {
+                  final class BadStrings {
+                    public static String unpaired() {
+                      return String.valueOf((char) 0xd800);
+                    }
+                  }
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                LinkedProgramRunner.run(
+                        source,
+                        trustedMixedPolicy(),
+                        ExecutionProfile.serverJit(),
+                        Set.of(),
+                        new ByteArrayOutputStream(),
+                        new ByteArrayOutputStream()));
+
+        assertTrue(failure.getMessage().contains("unpaired Unicode surrogate"), failure.getMessage());
+    }
+
+    @Test
     void adversarialPolicyCannotAcquireJavaSourceInterop() {
         assertThrows(IllegalArgumentException.class, () ->
                 IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
