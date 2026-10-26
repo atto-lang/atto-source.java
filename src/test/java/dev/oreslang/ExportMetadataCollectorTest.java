@@ -9,6 +9,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class ExportMetadataCollectorTest {
@@ -79,6 +80,17 @@ final class ExportMetadataCollectorTest {
                 """).getFirst().signatureSha256();
 
         assertEquals(first, reversed);
+    }
+
+    @Test
+    void exportedConstMetadataFailsClosedUntilValueEncodingIsCanonical() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.collectExportMetadata("""
+                        export const ready;
+                        const string ready = 'ready';
+                        """));
+        assertTrue(failure.getMessage().contains("EXPORT_CONST_ABI_VALUE_UNENCODED"),
+                failure.getMessage());
     }
 
     @Test
