@@ -82,12 +82,8 @@ public final class LinkedProgramRunner {
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
+        checkCompiledCapabilities(build, policy, permissionCheckMode);
         Map<String, Ast.Program> programs = parsePrograms(sources);
-        if (policy != null) {
-            for (Ast.Program program : programs.values()) {
-                CapabilityChecker.check(program, policy, permissionCheckMode);
-            }
-        }
         try (MixedJavaCompiler.Compilation ignored = MixedJavaCompiler.compile(new ArrayList<>(units.values()), programs)) {
             return build;
         }
@@ -196,6 +192,7 @@ public final class LinkedProgramRunner {
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
+        checkCompiledCapabilities(build, policy, permissionCheckMode);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         int exitStatus = 0;
         String entryId = unitId(entry);
@@ -353,6 +350,16 @@ public final class LinkedProgramRunner {
         MixedSourceUnit unit = units.get(unitId(entry));
         if (unit != null && unit.primaryLanguage() == MixedSourceUnit.PrimaryLanguage.JAVA && unit.foreignIslands().isEmpty()) {
             throw new IllegalArgumentException("a .java Oreslang entry must contain at least one ores { ... } island");
+        }
+    }
+
+    private static void checkCompiledCapabilities(
+            IncrementalCompiler.BuildResult build,
+            IsolatePolicy policy,
+            PermissionCheckMode permissionCheckMode) {
+        if (policy == null) return;
+        for (IncrementalCompiler.CompiledUnit unit : build.units().values()) {
+            CapabilityChecker.check(unit.program(), policy, permissionCheckMode);
         }
     }
 
