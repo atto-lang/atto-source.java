@@ -5044,6 +5044,13 @@ public final class TypeChecker {
         Type output = flattensFuture
                 ? ((Named) invocationResult).arguments().getFirst()
                 : invocationResult;
+        if (flattensFuture && !stage.async()
+                && !syncStageReturnsFreshOwnedFuture(stage, param.name())) {
+            throw new IllegalArgumentException(
+                    "synchronous Future-returning pipeline stage must return a fresh "
+                            + "Future from a checked async helper; borrowed/shared Future "
+                            + "results cannot acquire cancellation ownership");
+        }
         Ast.TypeRef outputRef = pipelineOutputTypeRef(stage, flattensFuture);
 
         Types.CheckedEffects stageEffects = resolvedPipelineEffects(stage.effects());
@@ -5175,6 +5182,20 @@ public final class TypeChecker {
             return isPurePipeHelperCall(expression, inputName, checking, false);
         }
         return false;
+    }
+
+    private boolean syncStageReturnsFreshOwnedFuture(
+            Ast.FunctionDecl stage, String inputName) {
+        if (stage.async() || stage.body().isEmpty()) return false;
+        Ast.Stmt last = stage.body().get(stage.body().size() - 1);
+        if (!(last instanceof Ast.ReturnStmt ret) || ret.value() == null) return false;
+        Set<Ast.FunctionDecl> checking =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        checking.add(stage);
+        // Requiring an async helper proves this invocation creates a distinct
+        // Future result. Returning the input Future (or another borrowed
+        // Future-valued expression) is deliberately not enough.
+        return isPurePipeHelperCall(ret.value(), inputName, checking, true);
     }
 
     private boolean isPurePipeHelperCall(
