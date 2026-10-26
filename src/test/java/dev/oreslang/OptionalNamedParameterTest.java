@@ -539,6 +539,19 @@ final class OptionalNamedParameterTest {
                         """)));
         assertTrue(method.getMessage().contains("fail-closed"), method.getMessage());
 
+        IllegalArgumentException staticFunction = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          static fnc value(int x?): int {
+                            return 1;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                staticFunction.getMessage().contains("fail-closed"),
+                staticFunction.getMessage());
+
         IllegalArgumentException constructor = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
