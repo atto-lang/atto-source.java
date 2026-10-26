@@ -89,7 +89,13 @@ final class InvertedRowMethod {
             throw new IllegalArgumentException("inverted method may assign only self.<scalar>");
         }
         int index = schema.index(field.member());
-        if (schema.fields().get(index).kind() != InvertedColumnStore.Kind.F64) {
+        InvertedArray.Schema.Field schemaField = schema.fields().get(index);
+        if (!schemaField.writable()) {
+            throw new IllegalArgumentException(
+                    "inverted method cannot assign immutable/final field '"
+                            + schema.className() + "." + schemaField.name() + "'");
+        }
+        if (schemaField.kind() != InvertedColumnStore.Kind.F64) {
             throw new IllegalArgumentException("stage-one inverted method requires f64 target columns");
         }
         return index;
