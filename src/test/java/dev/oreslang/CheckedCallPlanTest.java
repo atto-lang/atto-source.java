@@ -179,4 +179,69 @@ final class CheckedCallPlanTest {
                         .map(OptionalCallPlan.BoundSlot::parameterIndex)
                         .toList());
     }
+    @Test
+    void rejectsForgedTupleProjectionGapsThroughBinderAndPublicConstructors() {
+        List<CheckedCallPlan.InputSlot> gap =
+                List.of(
+                        positionalProjection(0, 0),
+                        positionalProjection(0, 2));
+        assertThrows(IllegalArgumentException.class,
+                () -> CheckedCallPlan.required(List.of("a", "b"), gap));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CheckedCallPlan(
+                        List.of("a", "b"),
+                        List.of(false, false),
+                        List.of(
+                                new CheckedCallPlan.BoundSlot(0, 0, null, 0, 0),
+                                new CheckedCallPlan.BoundSlot(1, 1, null, 0, 2)),
+                        List.of(0, 1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> FixedProductCallPlan.bind(
+                        List.of("a", "b"),
+                        List.of(
+                                FixedProductCallPlan.InputSlot.positionalProjection(0, 0),
+                                FixedProductCallPlan.InputSlot.positionalProjection(0, 2))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(
+                                new FixedProductCallPlan.BoundSlot(0, 0, null, 0, 0),
+                                new FixedProductCallPlan.BoundSlot(1, 1, null, 0, 2)),
+                        List.of(0, 1)));
+    }
+
+    @Test
+    void rejectsForgedRecordProjectionGapsAcrossOptionalAdapters() {
+        List<CheckedCallPlan.InputSlot> gap =
+                List.of(
+                        namedProjection("b", 0, 0),
+                        namedProjection("a", 0, 2));
+        assertThrows(IllegalArgumentException.class,
+                () -> CheckedCallPlan.bind(
+                        List.of("a", "b", "c"),
+                        List.of(false, false, true),
+                        gap));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CheckedCallPlan(
+                        List.of("a", "b", "c"),
+                        List.of(false, false, true),
+                        List.of(
+                                new CheckedCallPlan.BoundSlot(0, 1, "b", 0, 0),
+                                new CheckedCallPlan.BoundSlot(1, 0, "a", 0, 2)),
+                        List.of(1, 0, -1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallPlan.bind(
+                        List.of("a", "b", "c"),
+                        List.of(false, false, true),
+                        List.of(
+                                FixedProductCallPlan.InputSlot.namedProjection("b", 0, 0),
+                                FixedProductCallPlan.InputSlot.namedProjection("a", 0, 2))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallPlan(
+                        List.of(
+                                new OptionalCallPlan.BoundSlot(0, 1, "b", 0, 0),
+                                new OptionalCallPlan.BoundSlot(1, 0, "a", 0, 2)),
+                        List.of(1, 0, -1),
+                        List.of(false, false, true)));
+    }
+
 }
