@@ -22,6 +22,23 @@ AUTH_BRANCH = "ci/authorized-" + C
 
 
 class DestinationBoundPublisherTests(unittest.TestCase):
+    def test_v3_control_plane_requires_independent_codeowner_review(self):
+        # A future legacy-publisher merge must not roll back the terminal
+        # ownership coverage already present on source main for V3 controls.
+        required = {
+            "/.github/CODEOWNERS",
+            "/.github/private-ci-approved-repositories.txt",
+            "/.github/private-ci-carrier-contracts.json",
+            "/.github/private-ci-approved-source-snapshots.txt",
+            "/.github/workflows/",
+            "/scripts/",
+            "/pom.xml",
+            "/scripts/publish-private-ci-source.py",
+            "/scripts/publish-private-ci-source-v3.py",
+            "/scripts/test-publish-private-ci-source-v3.py",
+        }
+        self.assertTrue(required.issubset(set(pub.REQUIRED_CODEOWNER_PATHS)))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
