@@ -5,6 +5,7 @@ import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.CheckedCallPlan;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -576,6 +577,88 @@ final class TreeShakerTest {
         assertInstanceOf(Ast.CallExpr.class, named.value());
     }
 
+
+    @Test
+    void treeShakingPreservesCheckedCallPlanForRewrittenDirectCall() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc sink(int a, int b): int {
+                  stdio.stdout.write(a);
+                  return b;
+                }
+
+                pub routine main(): void {
+                  sink(b: 23, a: 19);
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        Ast.FunctionDecl main = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("main"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ExprStmt statement = main.body().stream()
+                .filter(Ast.ExprStmt.class::isInstance)
+                .map(Ast.ExprStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.CallExpr call =
+                assertInstanceOf(
+                        Ast.CallExpr.class,
+                        statement.expression());
+
+        CheckedCallPlan plan = CheckedCallPlan.require(call);
+        assertEquals(List.of(1, 0), plan.abiToSource());
+        assertEquals(
+                List.of(1, 0),
+                plan.sourceOrder().stream()
+                        .map(CheckedCallPlan.BoundSlot::parameterIndex)
+                        .toList());
+    }
+
+    @Test
+    void treeShakingPreservesCheckedCallPlanForRewrittenConstructor() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define class Pair as
+                  constructor(int a, int b) {
+                  }
+                end
+
+                pub routine main(): void {
+                  new Pair(b: 23, a: 19);
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        Ast.FunctionDecl main = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("main"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ExprStmt statement = main.body().stream()
+                .filter(Ast.ExprStmt.class::isInstance)
+                .map(Ast.ExprStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.NewExpr created =
+                assertInstanceOf(
+                        Ast.NewExpr.class,
+                        statement.expression());
+
+        CheckedCallPlan plan = CheckedCallPlan.require(created);
+        assertEquals(List.of(1, 0), plan.abiToSource());
+        assertEquals(
+                List.of(1, 0),
+                plan.sourceOrder().stream()
+                        .map(CheckedCallPlan.BoundSlot::parameterIndex)
+                        .toList());
+    }
 
     @Test
     void treeShakerScansDependenciesOfEveryRetainedOverload() {
