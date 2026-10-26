@@ -88,10 +88,15 @@ scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
 The caller does not choose the executable carrier branch. After proving the
 complete source Git tree, the dispatcher derives exactly
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
-the current head of the named open PR against source `main`. V3 validates
-that relationship both before reading/uploading the source and again immediately
-before creating executable carrier refs, so a PR that advances or closes during
-the transfer fails closed.
+the current head of the named open PR against source `main`, with the latest
+immutable security-owner review approving that exact head. V3 validates that
+authorization before reading source and again before **every source-bearing Git
+object write**. Each per-write check also reattests the original protected-main
+authority and the reviewed control-plane/carrier-contract bytes. Weakening
+source protection, moving source `main`, changing the reviewed control plane or
+carrier contract, closing the PR, moving its head, or dismissing/revoking the
+exact-head approval therefore stops the next persistent destination write. V3
+also rechecks once more immediately before executable carrier refs are created.
 
 The checked-in policy file must explicitly list the destination. The
 publisher checks the live GitHub identity and `visibility=private` /

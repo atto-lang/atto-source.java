@@ -202,6 +202,77 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             repo.assert_called_once_with("trusted/ci", 246810)
             run.assert_not_called()
 
+    def test_gh_api_uses_root_owned_binary_and_isolated_token_environment(self):
+        process = type("Result", (), {
+            "returncode": 0, "stdout": '{"ok":true}', "stderr": "",
+        })()
+        poisoned = {
+            "GH_TOKEN": "synthetic-test-token",
+            "PYTHONPATH": "/attacker",
+            "GH_CONFIG_DIR": "/attacker",
+            "HTTPS_PROXY": "http://attacker.invalid",
+            "PATH": "/attacker",
+            "HOME": "/attacker",
+        }
+        with (
+            patch.dict(pub.os.environ, poisoned, clear=True),
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh") as cli,
+            patch.object(pub.subprocess, "run", return_value=process) as run,
+        ):
+            self.assertEqual(pub.gh_api("repos/trusted/ci"), {"ok": True})
+        cli.assert_called_once_with()
+        argv = run.call_args.args[0]
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(argv[0], "/usr/bin/gh")
+        self.assertEqual(env["GH_TOKEN"], "synthetic-test-token")
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["HOME"], "/")
+        self.assertNotIn("PYTHONPATH", env)
+        self.assertNotIn("GH_CONFIG_DIR", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+        self.assertNotIn("synthetic-test-token", argv)
+
+    def test_gh_api_denies_missing_or_ambiguous_credentials(self):
+        for variables in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
+            with (
+                self.subTest(tokens=sorted(variables)),
+                patch.dict(pub.os.environ, variables, clear=True),
+                patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+                patch.object(pub.subprocess, "run") as run,
+            ):
+                with self.assertRaisesRegex(pub.Denied, "exactly one explicit"):
+                    pub.gh_api("repos/trusted/ci")
+                run.assert_not_called()
+
+    def test_strict_github_json_rejects_duplicates_nonfinite_and_overflow(self):
+        for payload in ('{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '{"x":1e999}'):
+            with self.subTest(payload=payload), self.assertRaises(pub.Denied):
+                pub.strict_json_loads(payload)
+
+        process = type("Result", (), {
+            "returncode": 0, "stdout": '{"ok":true}', "stderr": "0123456789",
+        })()
+        with (
+            patch.dict(pub.os.environ, {"GH_TOKEN": "synthetic"}, clear=True),
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 8),
+            patch.object(pub.subprocess, "run", return_value=process),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "response exceeds size limit"):
+                pub.gh_api("repos/trusted/ci")
+
+    def test_private_ci_policy_rejects_noncanonical_control_bytes(self):
+        for raw in (
+            b"trusted/ci 246810\r\n",
+            b"trusted/ci 246810\x00",
+            b"trusted/ci 246810\t\n",
+            b"trusted/ci 246810\xe2\x80\xa8",
+        ):
+            with self.subTest(raw=raw), self.assertRaises(pub.Denied):
+                pub._parse_policy_approval(
+                    raw, "trusted/ci", "protected source policy"
+                )
+
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
         with (
             patch.object(pub.os, "O_DIRECTORY", 1, create=True),
