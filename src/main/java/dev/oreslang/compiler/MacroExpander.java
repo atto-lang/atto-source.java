@@ -36,9 +36,12 @@ public final class MacroExpander {
     private final Map<String, Ast.MacroDecl> macros = new HashMap<>();
     private final Map<String, List<Ast.Decl>> declarationsByModule = new HashMap<>();
     private final Set<String> active = new HashSet<>();
+    private final String sourceUnitId;
     private int expansions;
 
-    private MacroExpander() { }
+    private MacroExpander(String sourceUnitId) {
+        this.sourceUnitId = sourceUnitId;
+    }
 
     public static Ast.Program expand(Ast.Program program) {
         MacroExpansionPlanner.Plan plan = MacroExpansionPlanner.plan(program);
@@ -47,7 +50,8 @@ public final class MacroExpander {
                 .anyMatch(Ast.MacroDecl.class::isInstance);
         if (!plan.hasInvocations() && !hasMacroDeclarations) return program;
 
-        MacroExpander expander = new MacroExpander();
+        MacroExpander expander =
+                new MacroExpander(MacroSourceUnitIdentity.unitId(program));
         expander.index(program);
         // A compile-time declaration must be validated even when unused.
         // Supported macros are then erased from executable AST; unsupported
@@ -516,6 +520,7 @@ public final class MacroExpander {
             String owner = macroOwnerModule(module, invocation.name());
             MacroSyntaxProvenance.HygieneIdentity hygiene =
                     new MacroSyntaxProvenance.HygieneIdentity(
+                            sourceUnitId,
                             module,
                             owner,
                             macro.name(),
@@ -594,6 +599,7 @@ public final class MacroExpander {
             MacroSyntaxProvenance.Origin origin =
                     new MacroSyntaxProvenance.Origin(
                             new MacroSyntaxProvenance.HygieneIdentity(
+                                    sourceUnitId,
                                     module,
                                     macroOwnerModule(module, invocation.name()),
                                     macro.name(),
