@@ -4557,7 +4557,20 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 // Invoke the exact AST declaration admitted by the type checker:
                 // no late name/arity lookup may substitute a different callable.
-                stages.add(value -> invoke(functionInvocation(target, List.of(value))));
+                // An async stage creates work owned by this pipeline. Mark that
+                // Future owned so pipeline cancellation revokes it instead of
+                // merely detaching as it does from the borrowed input Future.
+                stages.add(value -> {
+                    Object produced = invoke(functionInvocation(target, List.of(value)));
+                    if (target.async()) {
+                        if (!(produced instanceof OresFuture<?> future)) {
+                            throw new IllegalStateException(
+                                    "checked async Future stage did not produce a Future");
+                        }
+                        return TaskPipeline.owned(future);
+                    }
+                    return produced;
+                });
             }
             OresScheduler scheduler = OresScheduler.current();
             if (scheduler == null) scheduler = context.vm().rootScheduler();
