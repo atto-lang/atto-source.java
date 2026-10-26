@@ -617,4 +617,92 @@ final class ActorAsyncSendBackpressureTest {
         }
     }
 
+
+    @Test
+    void schedulerAwaitOnPendingSendAsyncReleasesSharedCarrier() throws Exception {
+        CountDownLatch targetEntered = new CountDownLatch(1);
+        CountDownLatch releaseTarget = new CountDownLatch(1);
+        CountDownLatch producerAwaitRegistered = new CountDownLatch(1);
+        CountDownLatch producerResumed = new CountDownLatch(1);
+        CountDownLatch observerRan = new CountDownLatch(1);
+        AtomicReference<Throwable> producerFailure = new AtomicReference<>();
+
+        // Two shared workers are intentional: one is physically occupied by
+        // the held target turn. The other must become reusable after the
+        // producer SourceTask returns OresScheduler.await(sendAsyncFuture).
+        // If await parks that carrier, the observer has no worker and fails.
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 1, 32);
+        try (ActorRuntime runtime = new ActorRuntime(oneMessagePolicy(), config)) {
+            var target = runtime.<Integer>spawnShared(
+                    oneMessagePolicy(),
+                    () -> (message, context) -> {
+                        if (message == 1) {
+                            targetEntered.countDown();
+                            if (!releaseTarget.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("held target turn timed out");
+                            }
+                        }
+                    });
+
+            target.send(1);
+            assertTrue(targetEntered.await(5, TimeUnit.SECONDS));
+            target.send(2); // fill the only queued USER slot
+
+            var producer = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                context.runtime().startActorTask(new OresScheduler.Task<Void>() {
+                    private boolean waiting;
+
+                    @Override
+                    public OresScheduler.Step<Void> resume(
+                            OresScheduler.Resume resume) {
+                        if (!waiting) {
+                            waiting = true;
+                            OresFuture<Void> admission = target.sendAsync(3);
+                            assertFalse(admission.isDone(),
+                                    "target mailbox must be saturated for this proof");
+                            producerAwaitRegistered.countDown();
+                            return OresScheduler.await(admission);
+                        }
+
+                        if (resume.failure() != null) {
+                            producerFailure.set(resume.failure());
+                            return OresScheduler.done(null);
+                        }
+                        producerResumed.countDown();
+                        return OresScheduler.done(null);
+                    }
+                });
+            });
+
+            var observer = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> observerRan.countDown());
+
+            producer.send(1);
+            assertTrue(
+                    producerAwaitRegistered.await(5, TimeUnit.SECONDS),
+                    "producer SourceTask never registered pending mailbox admission");
+
+            observer.send(1);
+            assertTrue(
+                    observerRan.await(2, TimeUnit.SECONDS),
+                    "pending send_async await parked the only free shared carrier");
+
+            releaseTarget.countDown();
+            assertTrue(
+                    producerResumed.await(5, TimeUnit.SECONDS),
+                    "producer continuation did not resume after mailbox credit release");
+            assertNull(producerFailure.get());
+
+            target.drain().get(5, TimeUnit.SECONDS);
+            producer.stop();
+            observer.stop();
+            target.stop();
+            producer.getDone().get(5, TimeUnit.SECONDS);
+            observer.getDone().get(5, TimeUnit.SECONDS);
+            target.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseTarget.countDown();
+        }
+    }
+
 }
