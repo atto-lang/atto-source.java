@@ -90,9 +90,9 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
     @Override
     void revokeBackingFromLease() {
         int[] old = storage;
+        storage = null; // detach before scrub: retained wrappers lose usable backing
         if (old != null) {
             java.util.Arrays.fill(old, 0);
-            storage = null;
         }
     }
 
@@ -162,8 +162,9 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
     public void close() {
         if (storage != null) {
             reservation.requireOwner();
-            java.util.Arrays.fill(storage, 0);
+            int[] old = storage;
             storage = null;
+            java.util.Arrays.fill(old, 0);
         }
         reservation.close();
     }
