@@ -1673,14 +1673,17 @@ class PrivateCiV3Test(unittest.TestCase):
             env = v3.github_api_environment()
         self.assertEqual(env["GITHUB_TOKEN"], "one")
         self.assertEqual(env["PATH"], "/usr/bin:/bin")
-        self.assertEqual(env["HOME"], "/")
+        self.assertEqual(env["HOME"], "/nonexistent")
         self.assertEqual(env["XDG_CONFIG_HOME"], "/nonexistent")
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], "/dev/null")
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
         self.assertEqual(
             set(env),
             {
                 "GITHUB_TOKEN", "GH_HOST", "GH_PROMPT_DISABLED",
                 "PATH", "HOME", "XDG_CONFIG_HOME", "LC_ALL",
+                "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
             },
         )
 
