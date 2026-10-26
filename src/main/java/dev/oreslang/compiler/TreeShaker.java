@@ -548,7 +548,8 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     declarations.add(rewriteDeclaration(module.name(), declaration));
                 }
-                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
+                modules.add(new Ast.ModuleDecl(
+                        module.name(), module.annotations(), module.contracts(), module.exports(), declarations));
             }
             return new Ast.Program(program.namespace(), program.imports(), modules);
         }
@@ -1066,6 +1067,18 @@ public final class TreeShaker {
                 for (Symbol symbol : symbols.values()) {
                     if (isPublicApi(symbol.declaration())) markRoot(symbol.id());
                 }
+
+                // Explicit source exports are API roots even when their local
+                // declarations are default-private. This affects only closed-world
+                // reachability; it does not grant JVM/native host export linkage.
+                ExportResolver.Resolution exports = ExportResolver.resolve(rewritten);
+                for (Ast.ModuleDecl module : rewritten.modules()) {
+                    for (Ast.ExportBinding binding :
+                            exports.bindingsFor(ExportResolver.namespaceId(rewritten, module))) {
+                        if (binding.localKind() == Ast.ExportKind.MODULE) continue;
+                        markRoot(qualify(module.name(), binding.localName()));
+                    }
+                }
             }
 
             for (String requested : options.entryPoints()) {
@@ -1490,7 +1503,8 @@ public final class TreeShaker {
                     }
                 }
                 if (!declarations.isEmpty()) {
-                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
+                    modules.add(new Ast.ModuleDecl(
+                            module.name(), module.annotations(), module.contracts(), module.exports(), declarations));
                 }
             }
 
