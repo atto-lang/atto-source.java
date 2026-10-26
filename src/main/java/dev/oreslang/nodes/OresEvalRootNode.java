@@ -7784,7 +7784,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdinFacade stdin) {
                 return switch (name) {
-                    case "read_line" -> (Invokable) stdin::readLine;
+                    case "read_line", "read_line_sync" -> (Invokable) args ->
+                            context.nativeIo().submitCapability(
+                                    context,
+                                    IsolatePolicy.Capability.STDIN,
+                                    "stdio.stdin." + name,
+                                    () -> stdin.readLine(args));
                     default -> throw new IllegalArgumentException("unknown stdin member " + name);
                 };
             }
