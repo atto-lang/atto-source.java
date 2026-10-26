@@ -258,6 +258,64 @@ final class ScopedTaskTest {
 
 
     @Test
+    void generatorActivationInsideTaskScopeFailsClosedUntilProducerRetirementIsIntegrated() {
+        String source = """
+                async generator fnc values(): int {
+                    yield 1;
+                    return;
+                }
+
+                pub routine main(): void {
+                    task scope {
+                        val AsyncIterator<int> iterator = values();
+                    }
+                    stdio.stdout.write("MUST_NOT_PRINT");
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        IllegalStateException failure =
+                assertThrows(IllegalStateException.class, () -> run(source));
+        assertTrue(failure.getMessage().contains("generator activation"));
+        assertTrue(failure.getMessage().contains("TaskScope"));
+    }
+
+    @Test
+    void asyncIteratorProtocolCannotEraseScopeBeforeGeneratorGate() {
+        String source = """
+                async generator fnc stream(): int {
+                    yield 1;
+                    return;
+                }
+
+                define class Bag as
+                    pub [Symbol.asyncIterator](): AsyncGenerator<int> {
+                        return stream();
+                    }
+                end
+
+                pub async routine main(): void {
+                    task scope {
+                        val bag = new Bag();
+                        for await const value of bag {
+                            stdio.stdout.write(value);
+                        }
+                    }
+                    stdio.stdout.write("MUST_NOT_PRINT");
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        IllegalStateException failure =
+                assertThrows(IllegalStateException.class, () -> run(source));
+        assertTrue(failure.getMessage().contains("generator activation"));
+        assertTrue(failure.getMessage().contains("TaskScope"));
+    }
+
+
+    @Test
     void actorScopeIsRejectedStaticallyUntilActorIntegrationIsProven() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
