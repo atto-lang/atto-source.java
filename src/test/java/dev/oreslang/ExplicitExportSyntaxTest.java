@@ -49,6 +49,39 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void contextualSymbolRemainsAvailableAsAnOrdinaryLocalExportName() {
+        Ast.Program singleton = Parser.parse("""
+                export symbol as PublicSymbol;
+                fnc symbol(): int { return 1; }
+                """);
+        Ast.ExportDecl singletonExport = singleton.exports().getFirst();
+        assertEquals(Ast.ExportKind.UNTYPED, singletonExport.kind());
+        assertEquals("symbol", singletonExport.items().getFirst().localName());
+        assertEquals("PublicSymbol", singletonExport.items().getFirst().externalName());
+
+        ExportResolver.ExportBinding singletonBinding =
+                ExportResolver.resolve(singleton).bindings(Parser.ROOT_MODULE).getFirst();
+        assertEquals(Ast.ExportKind.FNC, singletonBinding.localKind());
+        assertEquals("PublicSymbol", singletonBinding.externalName());
+
+        Ast.Program grouped = Parser.parse("""
+                export {symbol as PublicSymbol};
+                fnc symbol(): int { return 1; }
+                """);
+        Ast.ExportDecl groupedExport = grouped.exports().getFirst();
+        assertEquals(Ast.ExportKind.UNTYPED, groupedExport.kind());
+        assertEquals("symbol", groupedExport.items().getFirst().localName());
+        assertEquals("PublicSymbol", groupedExport.items().getFirst().externalName());
+    }
+
+    @Test
+    void backendLocalModelIsNotARecognizedV1ExportKind() {
+        assertSyntaxError(
+                "export model Graph;\n" + KEEP,
+                "EXPORT_UNKNOWN_DECLARATION_KIND");
+    }
+
+    @Test
     void exportMetadataDoesNotCloseImportPrelude() {
         Ast.Program before = Parser.parse("""
                 export class Box;
