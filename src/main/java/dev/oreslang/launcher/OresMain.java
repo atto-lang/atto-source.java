@@ -3,6 +3,8 @@ package dev.oreslang.launcher;
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.SourceUnitDiagnosticException;
+import dev.oreslang.compiler.CompilationDiagnosticsException;
+import dev.oreslang.compiler.DiagnosticCollector;
 import dev.oreslang.compiler.ReachabilityReport;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.config.OresProjectConfig;
@@ -89,6 +91,8 @@ public final class OresMain {
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
         boolean checkOnly = false;
+        int maxErrors = DiagnosticCollector.DEFAULT_MAX_ERRORS;
+        boolean maxErrorsSpecified = false;
         boolean buildAnalysis = false;
         String reachabilityReportPath = null;
         List<String> buildDefines = new ArrayList<>();
@@ -107,6 +111,12 @@ public final class OresMain {
             try {
                 if (arg.equals("--strict-isolate")) strict = true;
                 else if (arg.equals("--check")) checkOnly = true;
+                else if (arg.startsWith("--max-errors=")) {
+                    if (maxErrorsSpecified) throw new UsageException("--max-errors may appear only once");
+                    maxErrors = DiagnosticCollector.parseMaxErrors(
+                            arg.substring("--max-errors=".length()));
+                    maxErrorsSpecified = true;
+                }
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
                 else if (arg.startsWith("--core-log-level="))
@@ -179,6 +189,8 @@ public final class OresMain {
         if (checkOnly && buildAnalysis) {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
+        if (maxErrorsSpecified && !checkOnly)
+            throw new UsageException("--max-errors currently requires --check");
         if (reachabilityReportPath != null && !buildAnalysis) {
             throw new UsageException("--reachability-report requires --build-analysis");
         }
@@ -298,11 +310,24 @@ public final class OresMain {
 
         if (checkOnly) {
             try {
-                LinkedProgramRunner.validate(
+                LinkedProgramRunner.validateWithDiagnostics(
                         path,
                         System.getenv(),
                         policy,
-                        permissionCheckMode);
+                        permissionCheckMode,
+                        maxErrors);
+            } catch (CompilationDiagnosticsException errors) {
+                for (DiagnosticCollector.Diagnostic error : errors.diagnostics()) {
+                    DiagnosticCollector.Span span = error.primary();
+                    System.err.println(diagnosticUnit(path, span.unitId())
+                            + ":" + span.line() + ":" + span.column()
+                            + ": error: [" + error.code() + "] "
+                            + safeDiagnosticText(error.message()));
+                }
+                if (errors.mayHaveMore())
+                    System.err.println("oreslang: additional errors may exist"
+                            + " (diagnostic recovery stopped at safety limit)");
+                return 1;
             } catch (Exception error) {
                 System.err.println(formatCheckDiagnostic(path, error));
                 return 1;
@@ -378,7 +403,7 @@ public final class OresMain {
 
     private static void printUsage() {
         System.err.println(
-                "usage: oreslang-compiler [--check|--build-analysis] "
+                "usage: oreslang-compiler [--check|--build-analysis] [--max-errors=0..1000] "
                         + "[--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
                         + "[--allow-write[=PATH,...]] [--deny-write[=PATH,...]] "
