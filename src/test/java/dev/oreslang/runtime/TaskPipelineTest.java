@@ -63,6 +63,45 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void changingStageListSizeIsRejectedWithoutStartingWorkOrLeakingMovedInput() {
+        java.util.function.Supplier<List<TaskPipeline.Stage>> changing = () ->
+                new java.util.AbstractList<>() {
+                    private int sizeReads;
+
+                    @Override public int size() {
+                        return sizeReads++ == 0 ? 1 : 129;
+                    }
+
+                    @Override public TaskPipeline.Stage get(int index) {
+                        return value -> {
+                            throw new AssertionError("rejected stage list must never run");
+                        };
+                    }
+                };
+
+        OresFuture<Integer> borrowed = new OresFuture<>();
+        OresFuture<Integer> moved = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            IllegalArgumentException rejectedBorrowed = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TaskPipeline.startTracked(scheduler, borrowed, changing.get()));
+            assertTrue(rejectedBorrowed.getMessage().contains("changed during admission"));
+            assertFalse(borrowed.isDone(),
+                    "a rejected borrowed pipeline cannot cancel the producer");
+            assertEquals(0, borrowed.pendingRuntimeWaiterCount());
+
+            IllegalArgumentException rejectedMoved = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TaskPipeline.startOwnedInCurrentTaskOrRoot(
+                            scheduler, moved, changing.get()));
+            assertTrue(rejectedMoved.getMessage().contains("changed during admission"));
+            assertTrue(moved.isCancelled(),
+                    "an already-moved input must be retired on stage-list rejection");
+            assertEquals(0, moved.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
     void executesDeferredMixedStagesInOneSchedulerTaskDomain() throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
         OresFuture<Integer> nested = new OresFuture<>();
