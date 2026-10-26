@@ -1691,9 +1691,32 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
+        // Actor-owned memory, code epochs and final done publication must remain
+        // live until the scheduler has completed the full physical-retirement
+        // chain. A terminal/cancelled Future is not a reclamation witness.
+        Runnable releaseActorTaskLease = cell.acquireSourceTaskLifetime();
         if (cell.kind != ActorKind.UNTRUSTED) {
-            return cell.sourceScheduler().startCompilerAdmittedTask(
-                    task, retireAfterPhysicalDone);
+            final OresScheduler scheduler;
+            try {
+                scheduler = cell.sourceScheduler();
+            } catch (RuntimeException | Error schedulerFailure) {
+                // No scheduler child could possibly own this lease.
+                releaseActorTaskLease.run();
+                throw schedulerFailure;
+            }
+            OresFuture<T> future = scheduler.startCompilerAdmittedTask(
+                    task,
+                    () -> {
+                        // If ownership retirement fails, deliberately keep the
+                        // actor lifetime pinned rather than closing its arena.
+                        retireAfterPhysicalDone.run();
+                        releaseActorTaskLease.run();
+                    });
+            // startActorTask is actor-owned by definition. Make the ownership
+            // registration intrinsic so direct runtime callers cannot orphan a
+            // suspended Task and deadlock shutdown behind its lifetime lease.
+            ownFuture(cell, future);
+            return future;
         }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
@@ -1701,6 +1724,7 @@ public final class ActorRuntime implements AutoCloseable {
         // Separate actor messages cannot defeat this rule while a source task
         // is still suspended.
         UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
+        try {
         synchronized (cell.lifecycleLock) {
             // Unlike the physical-cohort count, this remains charged while a
             // terminal Future subscriber is blocked AFTER guest quiescence.
@@ -1743,6 +1767,11 @@ public final class ActorRuntime implements AutoCloseable {
             cell.activeUntrustedSourceTaskCount++;
             cell.activeUntrustedTimedAdmissions++;
         }
+        } catch (RuntimeException | Error admissionFailure) {
+            // Quota admission failed before a scheduler child existed.
+            releaseActorTaskLease.run();
+            throw admissionFailure;
+        }
 
         UntrustedLogicalQuota quota = inheritedQuota;
         AtomicBoolean physicalQuiescenceConfirmed = new AtomicBoolean();
@@ -1774,6 +1803,10 @@ public final class ActorRuntime implements AutoCloseable {
                         () -> {
                             physicalQuiescenceConfirmed.set(true);
                             releaseTimedWhenSafe.run();
+                            // Release the actor only after ownership retirement,
+                            // logical quota retirement, and physical-quiescence
+                            // publication have all completed successfully.
+                            releaseActorTaskLease.run();
                         });
             }
         };
@@ -1821,6 +1854,7 @@ public final class ActorRuntime implements AutoCloseable {
         // A caller may cancel the Future while the source turn is still
         // executing. The scheduler invokes retireOnce ONLY after guest
         // carrier quiescence, not merely when the Future settles.
+        ownFuture(cell, future);
         return future;
     }
 
@@ -1866,7 +1900,11 @@ public final class ActorRuntime implements AutoCloseable {
             return false;
         }
 
-        cell.pendingOperations.add(future);
+        if (!cell.pendingOperations.add(future)) {
+            // Idempotent for compiler call sites that still explicitly invoke
+            // ownCurrentActorFuture() after startActorTask().
+            return true;
+        }
         if (cell.stopped.get() || cell.finalized || closed.get()) {
             cell.pendingOperations.remove(future);
             future.cancel(false);
@@ -6850,6 +6888,11 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeUntrustedSourceTaskCount;
         /** Timed admission persists until both guest quiescence and terminal drain. */
         private int activeUntrustedTimedAdmissions;
+        /**
+         * Source Tasks whose scheduler retirement chain has not fully completed.
+         * This is stronger than Future terminal state and scheduler close.
+         */
+        private int activeSourceTaskLeases;
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -7125,6 +7168,35 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private Runnable acquireSourceTaskLifetime() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || closed.get()) {
+                    throw new RejectedExecutionException(
+                            "actor " + ref.id()
+                                    + " cannot admit a source Task during shutdown");
+                }
+                if (activeSourceTaskLeases == Integer.MAX_VALUE) {
+                    throw new RejectedExecutionException(
+                            "actor source Task lifetime capacity exceeded");
+                }
+                activeSourceTaskLeases++;
+            }
+
+            AtomicBoolean released = new AtomicBoolean();
+            return () -> {
+                if (!released.compareAndSet(false, true)) return;
+                synchronized (lifecycleLock) {
+                    if (activeSourceTaskLeases <= 0) {
+                        throw new IllegalStateException(
+                                "actor source Task lifetime underflow for " + ref.id());
+                    }
+                    activeSourceTaskLeases--;
+                    if (stopped.get()) finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+            };
+        }
+
         private void finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
@@ -7133,6 +7205,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
+                    || activeSourceTaskLeases != 0
                     || !children.isEmpty()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
