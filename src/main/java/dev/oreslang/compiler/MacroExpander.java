@@ -487,6 +487,7 @@ public final class MacroExpander {
                                     macro.name(),
                                     invocation.site(),
                                     expansionOrdinal),
+                            macro.definitionSite(),
                             constQuote
                                     ? MacroSyntaxProvenance.EmissionKind.CONST_QUOTE
                                     : templateQuote
