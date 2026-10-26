@@ -28,16 +28,16 @@ class AsyncNativeIoTest {
         String path = root.resolve("item.txt").toString();
         String output = run("""
             pub async routine main(): void {
-              await fs.mkdir_all_async("%s/sub");
-              await fs.write_text_async("%s", "hello");
-              await fs.append_text_async("%s", " world");
-              stdio.println(await fs.exists_async("%s"));
-              stdio.println(await fs.read_text_async("%s"));
-              await fs.remove_async("%s");
-              stdio.println(await fs.exists_async("%s"));
-              try { await fs.read_text_async("%s"); }
+              await fs.mkdir_all("%s/sub");
+              await fs.write_text("%s", "hello");
+              await fs.append_text("%s", " world");
+              stdio.println(await fs.exists("%s"));
+              stdio.println(await fs.read_text("%s"));
+              await fs.remove("%s");
+              stdio.println(await fs.exists("%s"));
+              try { await fs.read_text("%s"); }
               catch (failure) { stdio.println("missing-caught"); }
-              try { await fs.write_text_async("/tmp/ores-async-denied.txt", "blocked"); }
+              try { await fs.write_text("/tmp/ores-async-denied.txt", "blocked"); }
               catch (failure) { stdio.println("denied-caught"); }
               return;
             }
@@ -48,13 +48,33 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(Path.of("/tmp/ores-async-denied.txt")));
     }
 
+    @Test void explicitSyncSpellingStillRequiresAwaitAndRunsOffGuestCarrier() throws Exception {
+        String path = root.resolve("sync-spelling.txt").toString();
+        String output = run("""
+            pub async routine main(): void {
+              await fs.write_text_sync("%s", "sync-host");
+              val pending = fs.read_text_sync("%s");
+              stdio.println(await pending);
+              stdio.println(await fs.exists_sync("%s"));
+              // Historical suffix remains a compatibility alias, not canonical API.
+              stdio.println(await fs.exists_async("%s"));
+              return;
+            }
+            """.formatted(path, path, path, path),
+            RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString())
+                .withAllowed(RuntimePermissions.Permission.WRITE, root.toString()),
+            new ByteArrayOutputStream());
+        assertEquals("sync-host\ntrue\ntrue\n", output.replace("\r", ""));
+    }
+
     @Test void untrustedActorCannotLaunderParentFilesystemCapabilityThroughWorker() throws Exception {
         Path path = root.resolve("blocked.txt");
         RuntimeException failure = assertThrows(RuntimeException.class, () -> run("""
             define untrusted actor Worker as
               receive(ActorMail<String> mail): void {
                 try {
-                  val operation = fs.write_text_async(mail.value, "escaped");
+                  val operation = fs.write_text(mail.value, "escaped");
                   self.send("unexpected-admission");
                 } catch (failure) { self.send("denied"); }
                 self.end(); return;
@@ -78,7 +98,7 @@ class AsyncNativeIoTest {
         Files.createSymbolicLink(permitted.resolve("escape"), outside);
         String output = run("""
             pub async routine main(): void {
-              try { await fs.write_text_async("%s/escape/secret.txt", "escaped"); }
+              try { await fs.write_text("%s/escape/secret.txt", "escaped"); }
               catch (failure) { stdio.println("denied"); }
               return;
             }
@@ -872,14 +892,14 @@ class AsyncNativeIoTest {
                 end
                 define actor Reader as
                   receive(ActorMail<String> mail): void {
-                    val socket = await network.connect_async("127.0.0.1", %d);
-                    val reading = socket.read_line_async();
+                    val socket = await network.connect("127.0.0.1", %d);
+                    val reading = socket.read_line();
                     self.send("reading");
                     val line = await reading;
                     stdio.println(line);
-                    stdio.println(await socket.read_line_async());
-                    await socket.write_text_async("ack\\n");
-                    await socket.close_async();
+                    stdio.println(await socket.read_line());
+                    await socket.write_text("ack\\n");
+                    await socket.close();
                     self.end(); return;
                   }
                 end
@@ -919,9 +939,9 @@ class AsyncNativeIoTest {
             String url = "http://127.0.0.1:" + server.getAddress().getPort();
             String output = run("""
                 pub async routine main(): void {
-                  stdio.println(await http.get_text_async("%s/"));
-                  stdio.println(await http.post_text_async("%s/", "posted"));
-                  await http.get_text_async("%s/redirect");
+                  stdio.println(await http.get_text("%s/"));
+                  stdio.println(await http.post_text("%s/", "posted"));
+                  await http.get_text("%s/redirect");
                   stdio.println("redirect-not-followed");
                   return;
                 }
