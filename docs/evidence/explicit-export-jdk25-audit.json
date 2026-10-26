@@ -1,0 +1,91 @@
+{
+  "schema": "oreslang.explicit-export-local-junit.v1",
+  "baseline_commit": "1ee3a0362d94cb29c516d55887712dc45ad527b9",
+  "toolchain": {
+    "jdk": "Eclipse Temurin 25.0.5+8",
+    "jdk_archive_sha256": "68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb",
+    "junit_platform": "1.11.4",
+    "junit_jar_sha256": "b016ef6b1c3454d6d7c2c88ce081dabf289699686af6622d6e4e2e1b54b4a2fc"
+  },
+  "test_classes": [
+    "dev.oreslang.ExplicitExportResolverTest",
+    "dev.oreslang.ExplicitExportSyntaxTest"
+  ],
+  "baseline": {
+    "tests": 37,
+    "passed": 37,
+    "failed": 0,
+    "skipped": 0
+  },
+  "hardened": {
+    "tests": 42,
+    "passed": 42,
+    "failed": 0,
+    "skipped": 0
+  },
+  "regression_reproduced": "baseline resolver throws StackOverflowError on the 100000-wrapper generated type; patched resolver rejects with a bounded export error",
+  "limits": {
+    "signature_type_depth": 256,
+    "namespace_type_references": 65536
+  },
+  "tested_files": [
+    {
+      "path": "src/main/java/dev/oreslang/ast/Ast.java",
+      "git_blob_sha1": "b152ea629ea30b760a133f340118d0acaddf851f"
+    },
+    {
+      "path": "src/main/java/dev/oreslang/ast/TaskCaptureNames.java",
+      "git_blob_sha1": "ba75f73878d3b2cda58240e53c4446fa67e45907"
+    },
+    {
+      "path": "src/main/java/dev/oreslang/parser/Lexer.java",
+      "git_blob_sha1": "9c037439caddb8eb9ce68d7c4e4947e8cc558172"
+    },
+    {
+      "path": "src/main/java/dev/oreslang/parser/Token.java",
+      "git_blob_sha1": "c82b527e2f6c6c0b941c8bdca69bb78b53159965"
+    },
+    {
+      "path": "src/main/java/dev/oreslang/parser/TemplateLiterals.java",
+      "git_blob_sha1": "d6edf72b9e2fb15d4f077574443107ed54a0c3e8"
+    },
+    {
+      "path": "src/main/java/dev/oreslang/runtime/OresSymbol.java",
+      "git_blob_sha1": "015bfc2bb55940068b2e57e36beae0ea301f1b7d"
+    },
+    {
+      "path": "src/main/java/dev/oreslang/compiler/ExplicitExportResolver.java",
+      "git_blob_sha1": "9c834d28b3068211d40d395ef104f817c02e885f"
+    },
+    {
+      "path": "src/test/java/dev/oreslang/ExplicitExportResolverTest.java",
+      "git_blob_sha1": "cd4f3e533027673ab681887e078ab32aa8419813"
+    },
+    {
+      "path": "src/test/java/dev/oreslang/ExplicitExportSyntaxTest.java",
+      "git_blob_sha1": "6e2f6775150dc7688a2bc367cc5cbbc29623ae3a"
+    },
+    {
+      "path": "src/main/java/dev/oreslang/parser/Parser.java",
+      "git_blob_sha1": "61acdab7c008989e7ce6e65481ec8eb9fbc38d6b"
+    }
+  ],
+  "evidence_scope": {
+    "actual_jdk25_junit": true,
+    "compatibility_source_edits": false,
+    "compiler_runtime_stubs": false,
+    "full_maven_build": false,
+    "typechecker_ownershipchecker_executed": false,
+    "transform_preservation_suite_executed": false,
+    "graalvm_native_image": false,
+    "cross_backend_parity": false,
+    "cross_org_private_source_transfer": false
+  },
+  "origin_ci_retry": {
+    "run_id": 40268101399,
+    "job_id": 121395445242,
+    "runner_id": 0,
+    "executed_steps": 0,
+    "test_result": "NOT_EXECUTED"
+  }
+}

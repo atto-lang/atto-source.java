@@ -19,6 +19,19 @@ import java.util.Objects;
 public final class ExplicitExportResolver {
     private ExplicitExportResolver() { }
 
+    private static final int MAX_SIGNATURE_TYPE_DEPTH = 256;
+    private static final int MAX_NAMESPACE_TYPE_REFERENCES = 65_536;
+
+    private static final class VisibilityBudget {
+        private int remaining = MAX_NAMESPACE_TYPE_REFERENCES;
+        private void reserve(int count) {
+            if (count > remaining) throw semantic("export signature type work budget exceeded");
+            remaining -= count;
+        }
+    }
+
+    private record TypeWork(Ast.TypeRef type, int depth) { }
+
     public enum Origin { IMPLICIT_PUB, EXPLICIT_EXPORT }
 
     public record ExportBinding(
@@ -207,6 +220,7 @@ public final class ExplicitExportResolver {
                     .add(kind);
         }
 
+        VisibilityBudget budget = new VisibilityBudget();
         for (ExportBinding binding : bindings) {
             if (binding.scope() != Ast.ExportScope.PUBLIC) continue;
             for (int index : binding.declarationIndices()) {
@@ -214,7 +228,7 @@ public final class ExplicitExportResolver {
                 for (SignatureType type : exportedSignatureTypes(declaration)) {
                     validateTypeRefVisibility(
                             module, type.type(), localTypesByName, publicTypeSymbols,
-                            binding.externalName(), type.genericNames());
+                            binding.externalName(), type.genericNames(), budget);
                 }
             }
         }
@@ -323,28 +337,41 @@ public final class ExplicitExportResolver {
             Ast.TypeRef type,
             Map<String, List<Ast.ExportKind>> localTypesByName,
             java.util.Set<String> publicTypeSymbols,
-            String exportedName, java.util.Set<String> genericNames) {
+            String exportedName, java.util.Set<String> genericNames,
+            VisibilityBudget budget) {
         if (type == null) return;
-
-        List<Ast.ExportKind> localKinds = localTypesByName.get(type.name());
-        if (!genericNames.contains(type.name()) && localKinds != null && !localKinds.isEmpty()) {
-            long exposed = localKinds.stream()
-                    .filter(kind -> publicTypeSymbols.contains(kind.name() + "\0" + type.name()))
-                    .count();
-            if (exposed == 0) {
-                throw semantic("public export '" + exportedName
-                        + "' leaks non-public local type '" + type.name()
-                        + "' from namespace '" + module.name() + "'");
+        // Generated/externally supplied ASTs also pass through this resolver.
+        // Bound total queued work before allocating traversal records and use
+        // an explicit stack rather than consuming the host Java call stack.
+        budget.reserve(1);
+        java.util.ArrayDeque<TypeWork> pending = new java.util.ArrayDeque<>();
+        pending.push(new TypeWork(type, 1));
+        while (!pending.isEmpty()) {
+            TypeWork work = pending.pop();
+            Ast.TypeRef current = work.type();
+            List<Ast.ExportKind> localKinds = localTypesByName.get(current.name());
+            if (!genericNames.contains(current.name()) && localKinds != null && !localKinds.isEmpty()) {
+                long exposed = localKinds.stream()
+                        .filter(kind -> publicTypeSymbols.contains(kind.name() + "\0" + current.name()))
+                        .count();
+                if (exposed == 0) {
+                    throw semantic("public export '" + exportedName
+                            + "' leaks non-public local type '" + current.name()
+                            + "' from namespace '" + module.name() + "'");
+                }
+                if (localKinds.size() > 1 && exposed != 1) {
+                    throw semantic("public export '" + exportedName
+                            + "' references ambiguous local type spelling '" + current.name() + "'");
+                }
             }
-            if (localKinds.size() > 1 && exposed != 1) {
-                throw semantic("public export '" + exportedName
-                        + "' references ambiguous local type spelling '" + type.name() + "'");
+            List<Ast.TypeRef> arguments = current.arguments();
+            if (!arguments.isEmpty() && work.depth() >= MAX_SIGNATURE_TYPE_DEPTH) {
+                throw semantic("export signature type depth limit exceeded");
             }
-        }
-
-        for (Ast.TypeRef argument : type.arguments()) {
-            validateTypeRefVisibility(
-                    module, argument, localTypesByName, publicTypeSymbols, exportedName, genericNames);
+            budget.reserve(arguments.size());
+            for (int i = arguments.size() - 1; i >= 0; i--) {
+                pending.push(new TypeWork(arguments.get(i), work.depth() + 1));
+            }
         }
     }
 

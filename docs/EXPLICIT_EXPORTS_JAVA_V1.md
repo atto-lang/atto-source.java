@@ -4,6 +4,50 @@ Status: draft implementation for the source-language contract in
 `oreslang-common-source#150`. This document describes Java compiler behavior
 on this branch; it is not a claim of cross-backend parity.
 
+## Exact-source JDK25 audit and bounded type traversal
+
+A follow-up local audit obtained checksum-verified Eclipse Temurin JDK
+25.0.5+8 and the real JUnit Platform Console Standalone 1.11.4. The ten
+parser/resolver/AST dependency and JUnit source files at head
+`1ee3a0362d94cb29c516d55887712dc45ad527b9` were verified against GitHub Git
+blob IDs and compiled without edits or compiler/runtime stubs. The original
+focused suite passed **37/37 real JUnit tests**, zero skipped.
+
+The adversarial follow-up reproduced a `StackOverflowError` in the original
+resolver on an already-constructed, deeply nested type AST. The resolver now
+walks type arguments iteratively. It enforces a maximum nesting depth of 256
+and a shared namespace budget of 65,536 visited type references across all
+exported signatures. Child work is reserved before traversal records are
+allocated, and both limit failures remain explicit export admission errors.
+These are local type-traversal limits, not a claim that every parser, source
+graph, symbol collection or compiler allocation has been resource-qualified.
+
+Five new real JUnit cases cover a 100,000-wrapper generated type, exact depth
+and width boundaries, over-budget width and sharing the work budget across
+two exported aliases. The patched focused suite passes **42/42**, zero
+failed/skipped. The old resolver fails the deep regression with a host
+`StackOverflowError`; the patched resolver gives a bounded export error.
+
+The tested source/tool identities are recorded in
+`docs/evidence/explicit-export-jdk25-audit.json`. The executable test command is
+JUnit Console `execute --class-path <compiled-classes>` selecting
+`dev.oreslang.ExplicitExportResolverTest` and
+`dev.oreslang.ExplicitExportSyntaxTest`. Compile their actual dependencies:
+`Ast`, `TaskCaptureNames`, `Token`, `Lexer`, `TemplateLiterals`, `Parser`,
+`OresSymbol` and `ExplicitExportResolver`, using JDK25 `javac` with the pinned
+JUnit jar on its classpath. No compatibility substitution is used in this run.
+
+Evidence boundary: this is real exact-source parser/resolver JUnit execution
+in the local trusted workspace. Full Maven/TypeChecker/OwnershipChecker,
+AnnotationExpander/TreeShaker preservation, GraalVM Native Image, runtime/linker
+imports and cross-backend parity still require their own executed tests.
+The source-local workflow retry returned zero job steps. Its failure is not
+a failed Java assertion or a demonstrated exhausted-minutes diagnosis.
+
+The protected-main destination allowlist has no active entries and the sole
+carrier contract allows PR #1482 only. It does not authorize this PR #2032.
+No private source was copied to another GitHub organization during this audit.
+
 Use the reconciled common-source #153 contract, revision
 `explicit-exports-v1.2026-10-25.4`, when resolving differences from the earlier
 #150 examples.

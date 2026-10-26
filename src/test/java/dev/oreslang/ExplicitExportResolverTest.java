@@ -19,6 +19,64 @@ final class ExplicitExportResolverTest {
         return resolve(source).bindings(Parser.ROOT_MODULE);
     }
 
+    private static Ast.TypeAliasDecl publicAlias(String name, Ast.TypeRef type) {
+        return new Ast.TypeAliasDecl(name, Ast.Visibility.PUBLIC, List.of(), type);
+    }
+
+    private static Ast.TypeRef nestedType(int wrappers) {
+        Ast.TypeRef type = Ast.TypeRef.simple("int");
+        for (int i = 0; i < wrappers; i++) type = new Ast.TypeRef("Array", List.of(type), false);
+        return type;
+    }
+
+    @Test
+    void deeplyNestedGeneratedTypeIsRejectedWithoutHostStackOverflow() {
+        Ast.TypeRef type = nestedType(100_000);
+        var program = new Ast.Program(List.of(new Ast.ModuleDecl(Parser.ROOT_MODULE,
+                List.of(publicAlias("Deep", type)))));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ExplicitExportResolver.resolve(program));
+        assertTrue(failure.getMessage().contains("type depth limit exceeded"), failure.getMessage());
+    }
+
+    @Test
+    void exactTypeDepthBoundaryIsAdmitted() {
+        var program = new Ast.Program(List.of(new Ast.ModuleDecl(Parser.ROOT_MODULE,
+                List.of(publicAlias("Deep", nestedType(255))))));
+        assertDoesNotThrow(() -> ExplicitExportResolver.resolve(program));
+    }
+
+    @Test
+    void wideGeneratedTypeCannotAllocateUnboundedTraversalWork() {
+        var type = new Ast.TypeRef("Tuple", java.util.Collections.nCopies(65_536,
+                Ast.TypeRef.simple("int")), false);
+        var program = new Ast.Program(List.of(new Ast.ModuleDecl(Parser.ROOT_MODULE,
+                List.of(publicAlias("Wide", type)))));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ExplicitExportResolver.resolve(program));
+        assertTrue(failure.getMessage().contains("type work budget exceeded"), failure.getMessage());
+    }
+
+    @Test
+    void exactNamespaceTypeWorkBoundaryIsAdmitted() {
+        var type = new Ast.TypeRef("Tuple", java.util.Collections.nCopies(65_535,
+                Ast.TypeRef.simple("int")), false);
+        var program = new Ast.Program(List.of(new Ast.ModuleDecl(Parser.ROOT_MODULE,
+                List.of(publicAlias("Wide", type)))));
+        assertDoesNotThrow(() -> ExplicitExportResolver.resolve(program));
+    }
+
+    @Test
+    void typeWorkBudgetIsSharedAcrossExportedSignatures() {
+        var type = new Ast.TypeRef("Tuple", java.util.Collections.nCopies(32_768,
+                Ast.TypeRef.simple("int")), false);
+        var program = new Ast.Program(List.of(new Ast.ModuleDecl(Parser.ROOT_MODULE,
+                List.of(publicAlias("A", type), publicAlias("B", type)))));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ExplicitExportResolver.resolve(program));
+        assertTrue(failure.getMessage().contains("type work budget exceeded"), failure.getMessage());
+    }
+
     @Test
     void implicitPublicOverloadIncludesUnmodifiedFamilyMembersInEitherOrder() {
         for (String source : List.of(
