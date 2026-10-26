@@ -4080,10 +4080,10 @@ public final class OwnershipChecker {
                                 + " does not support record spread on this callable surface");
                     }
                     int projectionIndex = 0;
-                    for (String name : type.recordMembers().keySet()) {
+                    for (Ast.ObjectField field : object.fields()) {
                         result.add(
                                 FixedProductCallPlan.InputSlot.namedProjection(
-                                        name,
+                                        field.name(),
                                         callItemIndex,
                                         projectionIndex++));
                     }
