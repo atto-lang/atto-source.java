@@ -2782,6 +2782,9 @@ public final class TypeChecker {
                 default -> Unknown.INSTANCE;
             };
         }
+        if (expr instanceof Ast.NamedValueArgumentExpr) {
+            throw new IllegalArgumentException("named value argument outside a direct call");
+        }
         if (expr instanceof Ast.SpreadExpr) {
             throw new IllegalArgumentException(
                     "spread expressions are only valid as arguments to a variadic callable");
@@ -2856,6 +2859,9 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.arguments().stream().anyMatch(Ast.NamedValueArgumentExpr.class::isInstance)) {
+                return typeNamedValueCall(call, env, generics, self);
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -8791,6 +8797,66 @@ public final class TypeChecker {
         for (Ast.TypeRef argument : ref.arguments()) {
             validateGenericDefaultReferences(argument, declared, previous, label);
         }
+    }
+
+    /**
+     * Phase one supports names on directly resolved top-level functions only.
+     * The source AST remains in lexical order for ownership/runtime evaluation;
+     * only the static type comparison uses declaration-order expressions.
+     */
+    private Type typeNamedValueCall(
+            Ast.CallExpr call, Env env, Set<String> generics, Type self) {
+        if (!(call.callee() instanceof Ast.NameExpr functionName)
+                || env.lookup(functionName.name()) != null) {
+            throw new IllegalArgumentException(
+                    "named value arguments require a statically resolved direct function");
+        }
+        if (call.arguments().stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+            throw new IllegalArgumentException("named arguments cannot be combined with spreads");
+        }
+        Ast.FunctionDecl target = findFunction(functionName.name(), call.arguments().size());
+        if (target == null) {
+            throw new IllegalArgumentException(
+                    "no direct function '" + functionName.name()
+                            + "' with arity " + call.arguments().size()
+                            + " for named arguments");
+        }
+        rejectImplicitClassCallable(functionName.name());
+        if (target.actorKind() != Ast.ActorKind.NONE
+                && currentActorKind != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "actor callable cannot be synchronously invoked from another actor turn");
+        }
+        String label = "function " + functionName.name();
+        validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+        List<String> sourceLabels = new ArrayList<>(call.arguments().size());
+        List<Ast.Expr> sourceValues = new ArrayList<>(call.arguments().size());
+        for (Ast.Expr argument : call.arguments()) {
+            if (argument instanceof Ast.NamedValueArgumentExpr named) {
+                sourceLabels.add(named.label());
+                sourceValues.add(named.expression());
+            } else {
+                sourceLabels.add(null);
+                sourceValues.add(argument);
+            }
+        }
+        var plan = NamedCallBindingPlan.bind(
+                target.parameters().stream().map(Ast.Param::name).toList(), sourceLabels);
+        List<Ast.Expr> ordered = plan.inFormalOrder(sourceValues);
+        Type result = checkGenericCallable(
+                target.genericParameters(),
+                target.parameters(),
+                target.returnType(),
+                ordered,
+                env, generics, self,
+                null,
+                explicitGenericBindings(
+                        target.genericParameters(), call.typeArguments(), generics, self, label),
+                label, target.genericSpecs(),
+                GenericCallArguments.bind(
+                        target.genericParameters(), call.typeArguments(), label).inferenceHoles());
+        requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+        return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
     }
 
     private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
