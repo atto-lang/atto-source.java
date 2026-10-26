@@ -44,6 +44,12 @@ public final class TypeChecker {
         BORROWED_UPSTREAM_SHARED_PAYLOAD
     }
 
+    /** Whether the cumulative checked-effect row accounts for the upstream Future origin. */
+    public enum PipelineEffectProvenance {
+        COMPLETE_STATIC,
+        UPSTREAM_FUTURE_UNKNOWN
+    }
+
     /** Cancellation authority for a Future produced by the deferred stage itself. */
     public enum PipelineStageFutureOwnership {
         NONE,
@@ -66,6 +72,7 @@ public final class TypeChecker {
             boolean flattensFuture,
             Types.CheckedEffects stageEffects,
             Types.CheckedEffects cumulativeEffects,
+            PipelineEffectProvenance effectProvenance,
             PipelineInputOwnership inputOwnership,
             PipelineStageFutureOwnership producedFutureOwnership) {
         public PipelinePlan {
@@ -75,6 +82,7 @@ public final class TypeChecker {
             java.util.Objects.requireNonNull(outputTypeRef, "pipeline output type ref");
             java.util.Objects.requireNonNull(stageEffects, "pipeline stage effects");
             java.util.Objects.requireNonNull(cumulativeEffects, "pipeline cumulative effects");
+            java.util.Objects.requireNonNull(effectProvenance, "pipeline effect provenance");
             java.util.Objects.requireNonNull(inputOwnership, "pipeline input ownership");
             java.util.Objects.requireNonNull(
                     producedFutureOwnership, "pipeline produced Future ownership");
@@ -246,6 +254,19 @@ public final class TypeChecker {
      */
     private final IdentityHashMap<Ast.CallExpr, PipelinePlan> pendingFutureStages =
             new IdentityHashMap<>();
+
+    private record PipelineEffectSummary(
+            Types.CheckedEffects effects,
+            PipelineEffectProvenance provenance) {
+        private PipelineEffectSummary {
+            java.util.Objects.requireNonNull(effects, "pipeline effects");
+            java.util.Objects.requireNonNull(provenance, "pipeline effect provenance");
+        }
+
+        private PipelineEffectSummary plus(Types.CheckedEffects stage) {
+            return new PipelineEffectSummary(effects.union(stage), provenance);
+        }
+    }
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -4953,7 +4974,9 @@ public final class TypeChecker {
         }
 
         final Type prior;
-        Types.CheckedEffects priorEffects = Types.CheckedEffects.none();
+        PipelineEffectSummary priorEffects = new PipelineEffectSummary(
+                Types.CheckedEffects.none(),
+                PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN);
         if (source instanceof Ast.CallExpr candidate
                 && candidate.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT) {
             // Prefer an already-lifted inner stage, but allow an eager scalar
@@ -4969,7 +4992,9 @@ public final class TypeChecker {
                     throw new IllegalStateException(
                             "checked nested Future pipeline is missing its staged plan");
                 }
-                priorEffects = nestedPlan.cumulativeEffects();
+                priorEffects = new PipelineEffectSummary(
+                        nestedPlan.cumulativeEffects(),
+                        nestedPlan.effectProvenance());
             } else {
                 prior = typeOf(candidate, env, generics, self);
                 priorEffects = sourceFutureEffects(candidate);
@@ -4985,7 +5010,8 @@ public final class TypeChecker {
                 if (producer == null
                         || (!producer.async()
                                 && !producer.returnType().name().equals("Future"))) return null;
-                priorEffects = resolvedPipelineEffects(producer.effects());
+                priorEffects = pipelineEffectsForProducer(
+                        producerName.name(), producer);
             }
             prior = typeOf(source, env, generics, self);
         }
@@ -5076,7 +5102,7 @@ public final class TypeChecker {
         Ast.TypeRef outputRef = pipelineOutputTypeRef(stage, flattensFuture);
 
         Types.CheckedEffects stageEffects = resolvedPipelineEffects(stage.effects());
-        Types.CheckedEffects cumulativeEffects = priorEffects.union(stageEffects);
+        PipelineEffectSummary cumulative = priorEffects.plus(stageEffects);
         PipelinePlan plan = new PipelinePlan(
                 stage,
                 input,
@@ -5085,7 +5111,8 @@ public final class TypeChecker {
                 stage.async(),
                 flattensFuture,
                 stageEffects,
-                cumulativeEffects,
+                cumulative.effects(),
+                cumulative.provenance(),
                 PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD,
                 flattensFuture
                         ? PipelineStageFutureOwnership.OWNED_STAGE_RESULT
@@ -5126,18 +5153,38 @@ public final class TypeChecker {
                         .map(type -> resolve(type, Set.of(), null)).toList());
     }
 
-    /** Best-effort producer row for a directly visible source call. */
-    private Types.CheckedEffects sourceFutureEffects(Ast.CallExpr source) {
+    /**
+     * Effects of a direct producer are complete only when the exact callable is
+     * statically owned by this lexical module. A Future value arriving through
+     * a binding/import retains unknown upstream effect provenance; do not
+     * silently reinterpret that as an empty row.
+     */
+    private PipelineEffectSummary sourceFutureEffects(Ast.CallExpr source) {
         if (!(source.callee() instanceof Ast.NameExpr name)) {
-            return Types.CheckedEffects.none();
+            return new PipelineEffectSummary(
+                    Types.CheckedEffects.none(),
+                    PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN);
         }
         Ast.FunctionDecl producer = findFunction(name.name(), source.arguments().size());
-        if (producer == null
-                || !java.util.Objects.equals(
-                        unqualifiedFunctionOwners.get(name.name()), currentLexicalModule)) {
-            return Types.CheckedEffects.none();
+        if (producer == null) {
+            return new PipelineEffectSummary(
+                    Types.CheckedEffects.none(),
+                    PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN);
         }
-        return resolvedPipelineEffects(producer.effects());
+        return pipelineEffectsForProducer(name.name(), producer);
+    }
+
+    private PipelineEffectSummary pipelineEffectsForProducer(
+            String unqualifiedName, Ast.FunctionDecl producer) {
+        if (!java.util.Objects.equals(
+                unqualifiedFunctionOwners.get(unqualifiedName), currentLexicalModule)) {
+            return new PipelineEffectSummary(
+                    Types.CheckedEffects.none(),
+                    PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN);
+        }
+        return new PipelineEffectSummary(
+                resolvedPipelineEffects(producer.effects()),
+                PipelineEffectProvenance.COMPLETE_STATIC);
     }
 
     /**
