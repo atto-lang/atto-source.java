@@ -117,9 +117,6 @@ public final class ChannelRuntime {
             return channel.isClosed();
         }
 
-        public Channel<T> backingChannel() {
-            return channel;
-        }
     }
 
     /**
@@ -145,9 +142,6 @@ public final class ChannelRuntime {
             return channel.isClosed();
         }
 
-        public Channel<T> backingChannel() {
-            return channel;
-        }
     }
 
     /**
@@ -410,7 +404,7 @@ public final class ChannelRuntime {
 
     public static <T> ReadCase<T> read(ReadChannel<T> channel) {
         Objects.requireNonNull(channel, "channel");
-        return new ReadCase<>(channel.backingChannel());
+        return new ReadCase<>(channel.channel);
     }
 
     public static <T> WriteCase<T> write(Channel<T> channel, T value) {
@@ -419,7 +413,7 @@ public final class ChannelRuntime {
 
     public static <T> WriteCase<T> write(WriteChannel<T> channel, T value) {
         Objects.requireNonNull(channel, "channel");
-        return new WriteCase<>(channel.backingChannel(), value);
+        return new WriteCase<>(channel.channel, value);
     }
 
     public static DefaultCase defaultCase() {
