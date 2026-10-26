@@ -17,8 +17,9 @@ inverted class, the Java reference lowering target is:
 receiver.index(checked_i)
 ```
 
-`InvertedArray.index(int)` resolves the current dense index through
-`InvertedColumnStore.handleAt(int)` and returns a transient row projection that
+`InvertedArray.index(long)` is the generated-code entrypoint for a guest integral value; it
+range-checks before narrowing. The `int` overload then resolves the current dense index
+through `InvertedColumnStore.handleAt(int)` and returns a transient row projection that
 contains an opaque owner/slot/generation handle. Generated code must never retain
 or reconstruct a raw physical row offset as row identity.
 
@@ -45,10 +46,11 @@ The v1 dense index is a signed 32-bit integer.
 - negative values fail;
 - `size` and larger values fail;
 - empty arrays reject every index;
-- wider dynamic integral values must be range-checked before narrowing;
+- wider dynamic integral values are range-checked before narrowing; truncation is forbidden;
 - floating-point, NaN, infinities, strings, Symbols and other non-integral values
   are not coerced into an inverted row index;
-- there is no Python-style negative indexing and no wraparound.
+- there is no Python-style negative indexing and no wraparound;
+- bounds/narrowing failure follows the language sequence-index error path rather than exposing a backend-specific unchecked memory access.
 
 ## Logical identity and structural mutation
 
