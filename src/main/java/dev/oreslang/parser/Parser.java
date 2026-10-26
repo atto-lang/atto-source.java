@@ -132,7 +132,7 @@ public final class Parser {
                 continue;
             }
             if (check(IMPORT)) {
-                throw error(peek(), "[IMPORT_AFTER_DECLARATION] imports must precede real local declarations; export metadata does not close the import prelude");
+                throw error(peek(), "[EXPORT_IMPORT_PRELUDE] imports must precede real local declarations; export metadata does not close the import prelude");
             }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
