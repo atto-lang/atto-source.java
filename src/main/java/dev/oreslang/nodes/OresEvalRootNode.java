@@ -4589,23 +4589,44 @@ public final class OresEvalRootNode extends RootNode {
                 continuation.accept(task, List.copyOf(values), null);
                 return;
             }
+            Ast.Expr argument = expressions.get(index);
+            Ast.SpreadExpr spread =
+                    argument instanceof Ast.SpreadExpr s ? s : null;
             evalSuspendableExpr(
                     task,
-                    expressions.get(index),
+                    spread == null ? argument : spread.expression(),
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
                             continuation.accept(t, List.of(), failure);
-                        } else {
-                            values.add(value);
-                            evalSuspendableArgumentAt(
-                                    t,
-                                    expressions,
-                                    env,
-                                    values,
-                                    index + 1,
-                                    continuation);
+                            return;
                         }
+
+                        if (spread == null) {
+                            values.add(value);
+                        } else {
+                            final List<?> expanded;
+                            try {
+                                expanded = expandArgumentSequence(
+                                        value, "argument spread");
+                            } catch (RuntimeException | Error expansionFailure) {
+                                continuation.accept(
+                                        t, List.of(), expansionFailure);
+                                return;
+                            }
+                            values.addAll(expanded);
+                        }
+
+                        // Downstream continuation failures belong to the
+                        // downstream expression. Do not catch/re-deliver them
+                        // as a second failure for this already-evaluated arg.
+                        evalSuspendableArgumentAt(
+                                t,
+                                expressions,
+                                env,
+                                values,
+                                index + 1,
+                                continuation);
                     });
         }
 
@@ -5056,34 +5077,40 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.NameExpr name
-                    && env.lookup(name.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
-                if (direct != null) {
-                    requireExplicitClassCallableImport(env, name.name());
-                    evalSuspendableArguments(
-                            task,
-                            call.arguments(),
-                            env,
-                            (t, values, failure) -> {
-                                if (failure != null) {
-                                    continuation.accept(t, null, failure);
-                                    return;
+                    && env.lookup(name.name()) == Env.MISSING
+                    && hasFunctionFamily(name.name())) {
+                requireExplicitClassCallableImport(env, name.name());
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Ast.FunctionDecl direct =
+                                        findFunction(name.name(), values.size());
+                                if (direct == null) {
+                                    throw new IllegalArgumentException(
+                                            "no function " + name.name()
+                                                    + " with expanded arity "
+                                                    + values.size());
                                 }
-                                try {
-                                    Invocation invocation =
-                                            functionInvocation(direct, values);
-                                    completeSourceInvocation(
-                                            t,
-                                            invocation,
-                                            invocationDeclaresAsync(invocation),
-                                            env,
-                                            continuation);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
-                                }
-                            });
-                    return;
-                }
+                                Invocation invocation =
+                                        functionInvocation(direct, values);
+                                completeSourceInvocation(
+                                        t,
+                                        invocation,
+                                        invocationDeclaresAsync(invocation),
+                                        env,
+                                        continuation);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
+                return;
             }
 
             if (call.callee() instanceof Ast.MemberExpr member) {
@@ -6934,13 +6961,21 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
-                    && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
-                if (direct != null) {
-                    requireExplicitClassCallableImport(env, directName.name());
-                    List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    && env.lookup(directName.name()) == Env.MISSING
+                    && hasFunctionFamily(directName.name())) {
+                requireExplicitClassCallableImport(env, directName.name());
+                // Fixed tuple spread changes effective arity. Evaluate each
+                // lexical argument once, expand it, then select the already
+                // type-checked overload by the effective runtime arity.
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                Ast.FunctionDecl direct =
+                        findFunction(directName.name(), args.size());
+                if (direct == null) {
+                    throw new IllegalArgumentException(
+                            "no function " + directName.name()
+                                    + " with expanded arity " + args.size());
                 }
+                return functionInvocation(direct, args);
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
