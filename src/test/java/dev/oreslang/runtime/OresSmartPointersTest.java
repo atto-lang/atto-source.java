@@ -85,7 +85,7 @@ final class OresSmartPointersTest {
                 var retained = retainedFuture.get(10, TimeUnit.SECONDS);
                 closeFuture.get(10, TimeUnit.SECONDS);
                 if (retained != null) {
-                    assertEquals(42, retained.value());
+                    assertEquals(42, retained.value().intValue());
                     assertEquals(1, observer.strongCount());
                     retained.close();
                 }
