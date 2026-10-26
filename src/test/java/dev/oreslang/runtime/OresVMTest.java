@@ -398,4 +398,73 @@ final class OresVMTest {
             vm.close();
         }
     }
+
+    @Test
+    void nioCompletionDrainPrecedesPhysicalStopExecutorRetirement()
+            throws Exception {
+        var nioEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseNio = new java.util.concurrent.CountDownLatch(1);
+        var physicalEntered = new java.util.concurrent.CountDownLatch(1);
+        var physicalInterrupted = new java.util.concurrent.CountDownLatch(1);
+        var releasePhysical = new java.util.concurrent.CountDownLatch(1);
+        var closeFailure =
+                new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var pipe = java.nio.channels.Pipe.open();
+        OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+        try {
+            pipe.source().configureBlocking(false);
+            var ready = vm.nioReadiness().watch(
+                    pipe.source(), java.nio.channels.SelectionKey.OP_READ);
+            ready.whenCompleteRuntime((events, failure) -> {
+                nioEntered.countDown();
+                try {
+                    releaseNio.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            vm.executePhysicalStop(() -> {
+                physicalEntered.countDown();
+                try {
+                    releasePhysical.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    physicalInterrupted.countDown();
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(physicalEntered.await(3, TimeUnit.SECONDS));
+
+            pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {1}));
+            assertTrue(nioEntered.await(3, TimeUnit.SECONDS));
+
+            Thread closer = Thread.ofVirtual().start(() -> {
+                try {
+                    vm.close();
+                } catch (Throwable failure) {
+                    closeFailure.compareAndSet(null, failure);
+                }
+            });
+
+            Thread.sleep(50);
+            assertEquals(1L, physicalInterrupted.getCount(),
+                    "physical STOP workers must remain alive while VM-NIO "
+                            + "terminal callbacks are still draining");
+
+            releaseNio.countDown();
+            closer.join(TimeUnit.SECONDS.toMillis(5));
+            assertTrue(!closer.isAlive(), "VM close hung after NIO drain");
+            assertTrue(physicalInterrupted.await(3, TimeUnit.SECONDS),
+                    "physical STOP shutdown should proceed after NIO quiescence");
+            org.junit.jupiter.api.Assertions.assertNull(
+                    closeFailure.get(), () -> String.valueOf(closeFailure.get()));
+        } finally {
+            releaseNio.countDown();
+            releasePhysical.countDown();
+            pipe.source().close();
+            pipe.sink().close();
+            vm.close();
+        }
+    }
+
 }
