@@ -595,17 +595,33 @@ public final class Ast {
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            ExportKind declarationKind) implements Decl {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
+            java.util.Objects.requireNonNull(declarationKind, "interface declaration kind");
+            if (declarationKind != ExportKind.INTERFACE
+                    && declarationKind != ExportKind.TRAIT
+                    && declarationKind != ExportKind.CONTRACT) {
+                throw new IllegalArgumentException("interface AST kind must be interface, trait, or contract");
+            }
+            if (moduleContract && declarationKind != ExportKind.CONTRACT) {
+                throw new IllegalArgumentException("module contract must retain contract declaration kind");
+            }
+        }
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters,
+                             List<TypeRef> parents, List<InterfaceMember> members, boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members, moduleContract,
+                    moduleContract ? ExportKind.CONTRACT : ExportKind.INTERFACE);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
-            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
+            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false, ExportKind.INTERFACE);
         }
-        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters, List<TypeRef> parents, List<InterfaceMember> members) {
-            this(name, visibility, genericParameters, parents, members, false);
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters,
+                             List<TypeRef> parents, List<InterfaceMember> members) {
+            this(name, visibility, genericParameters, parents, members, false, ExportKind.INTERFACE);
         }
     }
 
