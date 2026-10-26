@@ -157,7 +157,8 @@ public final class Ast {
             Visibility visibility,
             List<MacroParam> parameters,
             MacroResultKind resultKind,
-            List<Stmt> body) implements Decl {
+            List<Stmt> body,
+            SourceSite definitionSite) implements Decl {
         public MacroDecl {
             if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
                 throw new IllegalArgumentException("invalid macro name");
@@ -165,6 +166,7 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             body = List.copyOf(body);
             java.util.Objects.requireNonNull(resultKind, "macro result kind");
+            java.util.Objects.requireNonNull(definitionSite, "macro definition source site");
             java.util.HashSet<String> names = new java.util.HashSet<>();
             for (MacroParam parameter : parameters) {
                 if (!names.add(parameter.name())) {
