@@ -8,16 +8,20 @@ external stream `pipe`, four actor ports, or multi-flow admission.
 
 ```oreslang
 define interface HasInputChannel<T> as
-    input_channel(): WriteChannel<T>;
+    input: WriteChannel<T>;
 end
 
 define interface HasOutputChannel<T> as
-    output_channel(): ReadChannel<T>;
+    output: ReadChannel<T>;
 end
 ```
 
 The names above describe two *directional protocols*, not concrete Java
-`ChannelRuntime.Channel` allocations. `WriteChannel<T>` and `ReadChannel<T>`
+`ChannelRuntime.Channel` allocations. The endpoints are required properties,
+not implicit getter calls: resolving a `pipe` graph must not execute arbitrary
+user code, allocate a fresh endpoint, or observe a different endpoint on a
+second lookup. Implementations used for automatic piping must expose stable,
+fixed channel capabilities for these properties. `WriteChannel<T>` and `ReadChannel<T>`
 are the intended source-level directional views already called out by the
 stdio/channel roadmap; they are not yet public aliases on this branch. They
 must be views over the existing bounded channel substrate, not independent
@@ -27,8 +31,9 @@ output; a sink implements only input; a transform implements both with
 independently resolved types.
 
 Once the directional views exist, `Channel<T>` itself can satisfy both
-protocols by exposing its write view as the default input endpoint and its
-read view as the default output endpoint. `ReadableStream<T>` is output-only;
+protocols intrinsically by exposing its write view as the default input
+endpoint and its read view as the default output endpoint; it does not need
+to fabricate wrapper objects on every lookup. `ReadableStream<T>` is output-only;
 `WritableStream<T>` is input-only. `ActorRef<A>` receives compiler-synthesized
 protocol conformance for its logical default ports; user-declared conformance
 never grants actor route authority.
