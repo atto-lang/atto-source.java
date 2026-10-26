@@ -645,7 +645,8 @@ public final class TypeChecker {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
+                        fn.genericParameters(), fn.parameters(), fn.returnType(),
+                        fn.async(), fn.suspends(), fn.generator(), Set.of(), null);
                 if (fn.trapped() && signature instanceof Function trappedSignature) {
                     signature = new Function(
                             trappedSignature.parameters(),
@@ -783,9 +784,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "async actor callables require mailbox continuation lowering; use an ordinary async fnc or a mailbox actor");
         }
-        if (fn.async() && !fn.genericParameters().isEmpty()) {
+        if ((fn.async() || fn.generator() && fn.suspends())
+                && !fn.genericParameters().isEmpty()) {
             throw new IllegalArgumentException(
-                    "generic async callables require an explicit task-safe/sendable generic bound, which is not available yet");
+                    "generic async/suspend-generator callables require an explicit task-safe/sendable generic bound, which is not available yet");
         }
 
         Set<String> generics = uniqueGenerics(
@@ -814,11 +816,12 @@ public final class TypeChecker {
                         false,
                         "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
             }
-            if (fn.async()) {
+            if (fn.async() || fn.generator() && fn.suspends()) {
                 validateAsyncBoundaryType(
                         parameterType,
                         false,
-                        "parameter '" + param.name() + "' of async callable '" + module + "." + fn.name() + "'");
+                        "parameter '" + param.name() + "' of async/suspend generator-capable callable '"
+                                + module + "." + fn.name() + "'");
             }
             env.define(
                     param.name(),
@@ -832,8 +835,9 @@ public final class TypeChecker {
         // : AsyncIterator<int>). The body always checks yields against the
         // element type and calls expose exactly one iterator wrapper.
         Type declaredReturn = resolve(fn.returnType(), generics, null);
+        boolean asyncGenerator = fn.generator() && (fn.async() || fn.suspends());
         Type returns = fn.generator()
-                ? generatorYieldType(fn.async(), declaredReturn)
+                ? generatorYieldType(asyncGenerator, declaredReturn)
                 : declaredReturn;
         if (returns == Primitive.VOID && fn.generator()) {
             throw new IllegalArgumentException(
@@ -846,11 +850,11 @@ public final class TypeChecker {
                     true,
                     "return type of actor callable '" + module + "." + fn.name() + "'");
         }
-        if (fn.async()) {
+        if (fn.async() || fn.generator() && fn.suspends()) {
             validateAsyncBoundaryType(
                     returns,
                     true,
-                    (fn.generator() ? "yield type of async generator '" : "return type of async callable '")
+                    (fn.generator() ? "yield type of async/suspend generator '" : "return type of async callable '")
                             + module + "." + fn.name() + "'");
         }
 
@@ -859,7 +863,7 @@ public final class TypeChecker {
         boolean previousAsync = currentAsyncCallable;
         currentActorKind = fn.actorKind();
         currentGenerator = fn.generator();
-        currentAsyncCallable = fn.async();
+        currentAsyncCallable = fn.async() || fn.generator() && fn.suspends();
         boolean previousMaySuspend = currentMaySuspend;
         currentMaySuspend = fn.async() || fn.suspends();
         try {
@@ -1563,6 +1567,16 @@ public final class TypeChecker {
             if (method.name().endsWith("_blocking") && !method.suspends())
                 throw new IllegalArgumentException(
                         "*_blocking method '" + method.name() + "' must declare suspends");
+            if (method.generator() && klass.actorKind() != Ast.ActorKind.NONE && !method.isStatic()) {
+                throw new IllegalArgumentException(
+                        "actor instance methods cannot be generators because the iterator activation would escape a mailbox turn");
+            }
+            if (method.generator() && !method.isStatic() && (method.async() || method.suspends())) {
+                throw new IllegalArgumentException(
+                        "async/suspend instance generator '" + klass.name() + "." + method.name()
+                                + "' requires a pinned owned receiver across pulls; use a synchronous generator method "
+                                + "or an async/suspend static gen* until receiver-lifetime lowering is available");
+            }
             if (method.async() && !method.isStatic()) {
                 throw new IllegalArgumentException(
                         "async instance method '" + klass.name() + "." + method.name()
@@ -1627,16 +1641,17 @@ public final class TypeChecker {
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
                                     + "actor APIs require owned/sendable nominal message values");
                 }
-                if (param.structural() && method.async()) {
+                if (param.structural() && (method.async() || method.suspends() || method.generator())) {
                     throw new IllegalArgumentException(
-                            "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
+                            "structural parameter '" + param.name() + "' cannot outlive a callable across generator/await suspension; "
                                     + "pass an owned nominal value or copy the required fields");
                 }
-                if (method.async()) {
+                if (method.async() || method.generator() && method.suspends()) {
                     validateAsyncBoundaryType(
                             parameterType,
                             false,
-                            "parameter '" + param.name() + "' of async static function '" + klass.name() + "." + method.name() + "'");
+                            "parameter '" + param.name() + "' of async/suspend generator-capable static function '"
+                                    + klass.name() + "." + method.name() + "'");
                 }
                 if (actorReceiveHook) {
                     if (!(parameterType instanceof Named mail)
@@ -1655,7 +1670,17 @@ public final class TypeChecker {
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             defineImplicitArguments(env, methodArgumentTypes);
-            Type returns = resolve(method.returnType(), generics, callableSelf);
+            Type declaredMethodReturn = resolve(method.returnType(), generics, callableSelf);
+            boolean asyncMethodGenerator =
+                    method.generator() && (method.async() || method.suspends());
+            Type returns = method.generator()
+                    ? generatorYieldType(asyncMethodGenerator, declaredMethodReturn)
+                    : declaredMethodReturn;
+            if (returns == Primitive.VOID && method.generator()) {
+                throw new IllegalArgumentException(
+                        "generator method '" + klass.name() + "." + method.name()
+                                + "' must declare a non-void yielded element type");
+            }
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
                         "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
@@ -1664,18 +1689,23 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "actor mailbox handler '" + klass.name() + ".receive' must return void");
             }
-            if (method.async()) {
+            if (method.async() || method.generator() && method.suspends()) {
                 validateAsyncBoundaryType(
                         returns,
                         true,
-                        "return type of async static function '" + klass.name() + "." + method.name() + "'");
+                        (method.generator() ? "yield type of async/suspend generator method '" : "return type of async static function '")
+                                + klass.name() + "." + method.name() + "'");
             }
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+            boolean previousGenerator = currentGenerator;
+            boolean previousAsync = currentAsyncCallable;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
+            currentGenerator = method.generator();
+            currentAsyncCallable = method.async() || method.generator() && method.suspends();
             boolean previousMaySuspend = currentMaySuspend;
             currentMaySuspend = method.async() || method.suspends();
             try {
@@ -1684,9 +1714,12 @@ public final class TypeChecker {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
+                currentGenerator = previousGenerator;
+                currentAsyncCallable = previousAsync;
                 currentMaySuspend = previousMaySuspend;
             }
-            if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
+            if (!method.isAbstract() && !method.generator()
+                    && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
             }
@@ -2947,7 +2980,7 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
-                    return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                    return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
@@ -2987,7 +3020,7 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
-                    return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                    return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
@@ -3580,7 +3613,7 @@ public final class TypeChecker {
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
-                    return callableResult(fn.async(), false, result);
+                    return callableResult(fn.async(), fn.suspends(), fn.generator(), result);
                 }
                 if (receiver instanceof Named named) {
                     if (named.name().equals("SharedMutex")
@@ -3683,7 +3716,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type methodResult = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -3692,6 +3725,8 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        return callableResult(
+                                method.async(), method.suspends(), method.generator(), methodResult);
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
@@ -4031,9 +4066,7 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    // Generator declarations are deliberately restricted to top-level/module
-                    // callables, so class static functions cannot produce generator activations.
-                    return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
+                    return functionType(fn.parameters(), fn.returnType(), fn.async(), fn.suspends(), fn.generator(), Set.of(), null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -4973,7 +5006,7 @@ public final class TypeChecker {
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
-            return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
+            return functionType(fn.parameters(), fn.returnType(), fn.async(), fn.suspends(), fn.generator(), Set.of(), null);
         }
 
         // An instance method always requires its receiver. Even an expected
@@ -7769,7 +7802,7 @@ public final class TypeChecker {
             if (method.isStatic()) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
+                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), method.suspends(), method.generator(), generics, self),
                     "class " + klass.name());
         }
         stack.remove(klass);
@@ -7800,7 +7833,7 @@ public final class TypeChecker {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
+                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), method.suspends(), method.generator(), generics, self),
                         "class " + klass.name());
             }
         }
@@ -7836,7 +7869,7 @@ public final class TypeChecker {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
-                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, interfaceSelf),
+                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, false, generics, interfaceSelf),
                         "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
@@ -8351,6 +8384,7 @@ public final class TypeChecker {
                 fn.parameters(),
                 fn.returnType(),
                 fn.async(),
+                fn.suspends(),
                 fn.generator(),
                 generics,
                 self);
@@ -8385,11 +8419,18 @@ public final class TypeChecker {
         return declared;
     }
 
-    private Type callableResult(boolean async, boolean generator, Type result) {
+    private Type callableResult(
+            boolean async, boolean suspends, boolean generator, Type result) {
         if (generator) {
-            Type element = generatorYieldType(async, result);
-            return new Named(async ? "AsyncIterator" : "Iterator", List.of(element));
+            boolean asynchronousIterator = async || suspends;
+            Type element = generatorYieldType(asynchronousIterator, result);
+            return new Named(
+                    asynchronousIterator ? "AsyncIterator" : "Iterator",
+                    List.of(element));
         }
+        // A non-generator suspends callable is cooperatively resumable but
+        // retains its existing source-visible result contract. Only explicit
+        // async changes a normal callable result to Future<T>.
         return async ? new Named("Future", List.of(result)) : result;
     }
 
@@ -8400,11 +8441,22 @@ public final class TypeChecker {
             boolean generator,
             Set<String> generics,
             Type self) {
+        return functionType(params, returns, async, false, generator, generics, self);
+    }
+
+    private Function functionType(
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            boolean suspends,
+            boolean generator,
+            Set<String> generics,
+            Type self) {
         return new Function(
                 params.stream().map(p -> resolveParam(p, generics, self)).toList(),
                 params.stream().map(Ast.Param::mutable).toList(),
                 async,
-                callableResult(async, generator, resolve(returns, generics, self)));
+                callableResult(async, suspends, generator, resolve(returns, generics, self)));
     }
 
     private Function callableContractType(
@@ -8412,12 +8464,13 @@ public final class TypeChecker {
             List<Ast.Param> params,
             Ast.TypeRef returns,
             boolean async,
+            boolean suspends,
             boolean generator,
             Set<String> ownerGenerics,
             Type self) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
-        Function raw = functionType(params, returns, async, generator, all, self);
+        Function raw = functionType(params, returns, async, suspends, generator, all, self);
         // Contract comparison must preserve the fact that a slot is
         // receiver-polymorphic without baking in the declaring class. Parent,
         // child, and interface declarations of (...): self therefore compare
