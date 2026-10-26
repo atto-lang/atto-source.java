@@ -136,7 +136,7 @@ final class InvertedOneLevelLayoutTest {
     }
 
     @Test
-    void structuralRecordLayoutUsesCanonicalNameOrderAndIsBounded() {
+    void structuralRecordLayoutCanonicalizesDirectAstOrderAndIsBounded() {
         Ast.TypeRef record = Ast.TypeRef.recordType(new LinkedHashMap<>(Map.of(
                 "z", Ast.TypeRef.simple("i32"),
                 "a", Ast.TypeRef.simple("i32"))));
@@ -146,6 +146,17 @@ final class InvertedOneLevelLayoutTest {
         assertArrayEquals(new byte[] {4, 3, 2, 1, 8, 7, 6, 5},
                 layout.encode(Map.of("z", 0x05060708, "a", 0x01020304)));
 
+        // Reorder the already-canonical internal field descriptors to model a
+        // direct/re-written AST. The codec must restore canonical name order.
+        Ast.TypeRef directUnsorted = new Ast.TypeRef(
+                record.name(), java.util.List.of(
+                        record.arguments().get(1), record.arguments().get(0)), false);
+        InvertedRecordLayout directLayout = InvertedRecordLayout.fromType(directUnsorted);
+        assertEquals(java.util.List.of("a", "z"),
+                directLayout.members().stream().map(InvertedRecordLayout.Member::name).toList());
+        assertArrayEquals(new byte[] {4, 3, 2, 1, 8, 7, 6, 5},
+                directLayout.encode(Map.of("z", 0x05060708, "a", 0x01020304)));
+
         LinkedHashMap<String, Ast.TypeRef> tooMany = new LinkedHashMap<>();
         for (int i = 0; i <= InvertedRecordLayout.MAX_RECORD_MEMBERS; i++) {
             tooMany.put("f" + i, Ast.TypeRef.simple("i32"));
@@ -153,12 +164,39 @@ final class InvertedOneLevelLayoutTest {
         assertThrows(IllegalArgumentException.class,
                 () -> InvertedRecordLayout.fromType(Ast.TypeRef.recordType(tooMany)));
 
-        LinkedHashMap<String, Ast.TypeRef> tooWide = new LinkedHashMap<>();
-        for (int i = 0; i < (InvertedRecordLayout.MAX_RECORD_BYTES / 8) + 1; i++) {
-            tooWide.put("f" + i, Ast.TypeRef.simple("i64"));
+        // The 1,024-member cap is currently stricter than the 64-KiB byte cap:
+        // 1,024 admitted i64 members occupy 8 KiB. Exercise that real boundary
+        // without pretending the future-proof byte cap is independently reachable.
+        LinkedHashMap<String, Ast.TypeRef> maxCurrentWidth = new LinkedHashMap<>();
+        for (int i = 0; i < InvertedRecordLayout.MAX_RECORD_MEMBERS; i++) {
+            maxCurrentWidth.put("f" + i, Ast.TypeRef.simple("i64"));
         }
-        assertThrows(IllegalArgumentException.class,
-                () -> InvertedRecordLayout.fromType(Ast.TypeRef.recordType(tooWide)));
+        assertEquals(InvertedRecordLayout.MAX_RECORD_MEMBERS * Long.BYTES,
+                InvertedRecordLayout.fromType(Ast.TypeRef.recordType(maxCurrentWidth)).bytes());
+    }
+
+    @Test
+    void sharedJavaLlvmFixtureLocksExactPackedBytesAndSignedZero() {
+        Ast.TypeRef positionType = Ast.TypeRef.recordType(Map.of(
+                "alive", Ast.TypeRef.simple("bool"),
+                "x", Ast.TypeRef.simple("f64"),
+                "y", Ast.TypeRef.simple("f64")));
+        InvertedRecordLayout layout = InvertedRecordLayout.fromType(positionType);
+        byte[] expected = {
+                1,
+                0, 0, 0, 0, 0, 0, (byte) 0xf0, 0x3f,
+                0, 0, 0, 0, 0, 0, 0, 0x40
+        };
+        assertEquals(java.util.List.of("alive", "x", "y"),
+                layout.members().stream().map(InvertedRecordLayout.Member::name).toList());
+        assertEquals(17, layout.bytes());
+        assertArrayEquals(expected, layout.encode(Map.of("alive", true, "x", 1.0, "y", 2.0)));
+        assertEquals(Map.of("alive", true, "x", 1.0, "y", 2.0), layout.decode(expected));
+
+        byte[] signedZero = layout.encode(Map.of("alive", false, "x", -0.0, "y", 9.0));
+        long xBits = java.nio.ByteBuffer.wrap(signedZero, 1, Long.BYTES)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN).getLong();
+        assertEquals(Double.doubleToRawLongBits(-0.0), xBits);
     }
 
     @Test
