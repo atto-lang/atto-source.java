@@ -136,6 +136,19 @@ public final class TaskHandle<T> {
                 && context.token().isCancelled();
     }
 
+    /**
+     * Trusted-runtime child admission authority for the currently executing
+     * tracked task. The logical domain comparison prevents an inline nested
+     * scheduler dispatch from inheriting an unrelated parent's token.
+     * This is never exposed to guest code as a cancellation capability.
+     */
+    static TaskCancellation currentParentForChild() {
+        CancellationContext context = CURRENT_CANCELLATION.get();
+        return context != null
+                && context.taskDomain() == OresScheduler.currentTaskDomain()
+                ? context.token() : null;
+    }
+
     /** Compiler/host safepoint only: never call while holding guest locks. */
     static void checkCurrentCancellationCheckpoint() {
         if (!currentCancellationRequested()) return;
@@ -223,10 +236,15 @@ public final class TaskHandle<T> {
             throw new IllegalArgumentException(
                     "reason must contain 1..256 nonblank characters");
         }
-        // Cancellation is a request against live work. A terminal result is
-        // immutable even when its physical quiescence notification is pending.
+        // The Task result and its physical descendant lifetime are separate:
+        // a parent may return successfully while a child is still running.
+        // Allow revoking those live children without mutating the settled
+        // parent result. Once the complete getDone barrier is terminal,
+        // cancellation is no longer meaningful.
         OresFuture<T> current = result.get();
-        if (done.isDone() || (current != null && current.isDone())) return false;
+        if (done.isDone()) return false;
+        if (current != null && current.isDone()
+                && !cancellation.hasOutstandingLifetimeChildren()) return false;
         return cancellation.cancel(reason);
     }
 
@@ -405,8 +423,14 @@ public final class TaskHandle<T> {
         if (!handle.result.compareAndSet(null, source)) {
             throw new IllegalStateException("TaskHandle result bound more than once");
         }
-        source.whenCompleteRuntime((value, failure) ->
-                handle.onSettled(source, value, failure));
+        source.whenCompleteRuntime((value, failure) -> {
+            // A consumer can cancel the exposed result Future without calling
+            // TaskHandle.cancel(). That must also revoke this task's children.
+            if (source.isCancelled()) {
+                handle.cancellation.cancel("task result cancelled");
+            }
+            handle.onSettled(source, value, failure);
+        });
         // Cancellation can win before bind, after bind, or during subscriber
         // registration. The second check makes the early request observable.
         if (handle.cancellation.isCancelled()) handle.cancelResultIfBound();
