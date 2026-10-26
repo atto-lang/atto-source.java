@@ -10,7 +10,6 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.CheckedCallPlan;
-import dev.oreslang.types.FixedProductCallPlan;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -506,7 +505,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Ast.FunctionDecl selectDirectFunction(
                 String name,
-                List<FixedProductCallPlan.InputSlot> inputs,
+                List<CheckedCallPlan.InputSlot> inputs,
                 Env env) {
             String familyKey = resolveUnqualifiedFunctionKey(name, env);
             LinkedHashMap<Integer, Ast.FunctionDecl> family =
@@ -1239,7 +1238,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private record DirectArguments(
                 List<Object> values,
-                List<FixedProductCallPlan.InputSlot> inputs) {
+                List<CheckedCallPlan.InputSlot> inputs) {
             private DirectArguments {
                 values = java.util.Collections.unmodifiableList(
                         new ArrayList<>(values));
@@ -1312,7 +1311,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private List<Object> requirePlainPositional(String label) {
-                for (FixedProductCallPlan.InputSlot slot : inputs) {
+                for (CheckedCallPlan.InputSlot slot : inputs) {
                     if (slot.label() != null || slot.projectionIndex() >= 0) {
                         throw new IllegalArgumentException(
                                 label + " accepts positional scalar arguments only");
@@ -4802,7 +4801,7 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Expr> expressions,
                 Env env,
                 ArrayList<Object> values,
-                ArrayList<FixedProductCallPlan.InputSlot> inputs,
+                ArrayList<CheckedCallPlan.InputSlot> inputs,
                 int index,
                 SourceDirectArgsCont continuation) {
             if (index >= expressions.size()) {
@@ -4842,7 +4841,7 @@ public final class OresEvalRootNode extends RootNode {
                             if (sourceLabel != null) {
                                 values.add(value);
                                 inputs.add(
-                                        FixedProductCallPlan.InputSlot.named(
+                                        CheckedCallPlan.InputSlot.named(
                                                 sourceLabel, index));
                             } else if (sourceSpread) {
                                 if (value instanceof ReadonlyRecordValue record) {
@@ -4855,7 +4854,7 @@ public final class OresEvalRootNode extends RootNode {
                                             : record.entrySet()) {
                                         values.add(field.getValue());
                                         inputs.add(
-                                                FixedProductCallPlan.InputSlot.namedProjection(
+                                                CheckedCallPlan.InputSlot.namedProjection(
                                                         field.getKey(),
                                                         index,
                                                         projectionIndex++));
@@ -4874,7 +4873,7 @@ public final class OresEvalRootNode extends RootNode {
                                             projectionIndex++) {
                                         values.add(expanded.get(projectionIndex));
                                         inputs.add(
-                                                FixedProductCallPlan.InputSlot.positionalProjection(
+                                                CheckedCallPlan.InputSlot.positionalProjection(
                                                         index,
                                                         projectionIndex));
                                     }
@@ -4882,7 +4881,7 @@ public final class OresEvalRootNode extends RootNode {
                             } else {
                                 values.add(value);
                                 inputs.add(
-                                        FixedProductCallPlan.InputSlot.positional(
+                                        CheckedCallPlan.InputSlot.positional(
                                                 index));
                             }
                         } catch (RuntimeException | Error expansionFailure) {
@@ -7629,7 +7628,7 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Expr> arguments,
                 Env env) {
             ArrayList<Object> values = new ArrayList<>();
-            ArrayList<FixedProductCallPlan.InputSlot> inputs =
+            ArrayList<CheckedCallPlan.InputSlot> inputs =
                     new ArrayList<>();
             for (int callItemIndex = 0;
                     callItemIndex < arguments.size();
@@ -7638,7 +7637,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (argument instanceof Ast.NamedArgExpr named) {
                     values.add(eval(named.value(), env));
                     inputs.add(
-                            FixedProductCallPlan.InputSlot.named(
+                            CheckedCallPlan.InputSlot.named(
                                     named.name(), callItemIndex));
                     continue;
                 }
@@ -7655,7 +7654,7 @@ public final class OresEvalRootNode extends RootNode {
                                 : record.entrySet()) {
                             values.add(field.getValue());
                             inputs.add(
-                                    FixedProductCallPlan.InputSlot.namedProjection(
+                                    CheckedCallPlan.InputSlot.namedProjection(
                                             field.getKey(),
                                             callItemIndex,
                                             projectionIndex++));
@@ -7677,7 +7676,7 @@ public final class OresEvalRootNode extends RootNode {
                             projectionIndex++) {
                         values.add(expanded.get(projectionIndex));
                         inputs.add(
-                                FixedProductCallPlan.InputSlot.positionalProjection(
+                                CheckedCallPlan.InputSlot.positionalProjection(
                                         callItemIndex,
                                         projectionIndex));
                     }
@@ -7686,7 +7685,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 values.add(eval(argument, env));
                 inputs.add(
-                        FixedProductCallPlan.InputSlot.positional(
+                        CheckedCallPlan.InputSlot.positional(
                                 callItemIndex));
             }
             return new DirectArguments(values, inputs);
