@@ -20,6 +20,7 @@ public final class MacroExpansionPlanner {
     public enum Context { DECLARATION, EXPRESSION }
 
     public record HygieneMark(
+            String sourceUnitId,
             String callerModule,
             String macroOwnerModule,
             String macroName,
@@ -27,7 +28,8 @@ public final class MacroExpansionPlanner {
             int column,
             int sourceOrdinal) {
         public HygieneMark {
-            if (callerModule == null || callerModule.isBlank()
+            if (sourceUnitId == null || sourceUnitId.isBlank()
+                    || callerModule == null || callerModule.isBlank()
                     || macroOwnerModule == null || macroOwnerModule.isBlank()
                     || macroName == null || macroName.isBlank()
                     || macroName.indexOf('.') >= 0
@@ -59,12 +61,16 @@ public final class MacroExpansionPlanner {
 
     private final Map<String, Ast.MacroDecl> macros = new LinkedHashMap<>();
     private final List<WorkItem> workItems = new ArrayList<>();
+    private final String sourceUnitId;
     private int ordinal;
 
-    private MacroExpansionPlanner() { }
+    private MacroExpansionPlanner(String sourceUnitId) {
+        this.sourceUnitId = sourceUnitId;
+    }
 
     public static Plan plan(Ast.Program program) {
-        MacroExpansionPlanner planner = new MacroExpansionPlanner();
+        MacroExpansionPlanner planner =
+                new MacroExpansionPlanner(MacroSourceUnitIdentity.unitId(program));
         planner.collect(program);
         planner.scan(program);
         return new Plan(planner.workItems);
@@ -139,6 +145,7 @@ public final class MacroExpansionPlanner {
         workItems.add(new WorkItem(
                 module, macro, context, site,
                 hygieneMark(
+                        sourceUnitId,
                         module,
                         macroOwnerModule(module, name),
                         macro.name(),
@@ -456,12 +463,14 @@ public final class MacroExpansionPlanner {
     }
 
     private HygieneMark hygieneMark(
+            String sourceUnitId,
             String callerModule,
             String macroOwnerModule,
             String macroName,
             Ast.SourceSite site,
             int sourceOrdinal) {
         return new HygieneMark(
+                sourceUnitId,
                 callerModule,
                 macroOwnerModule,
                 macroName,
