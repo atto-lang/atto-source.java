@@ -13,20 +13,30 @@ below is independently satisfied.
 | Source repository | `ores-truffle-oreslang/oreslang-source.java` |
 | Source numeric repository ID | `1400792274` |
 | Source PR | `#2033` |
-| Source PR head | `64b74591f1b63b60339d12f626c218351c2e0c1e` |
-| Source root Git tree | `87e340e6ae494df56740f4c2671a41631e338ccc` |
+| Source PR head | `ecbb1c59ad8a862d2d47f2d0da1efd34384f30ef` |
+| Source root Git tree | `fbbbdd44f079fd995751650c1557f765e8802817` |
 | Source base/main observed | `f40b9c3a3b5b4691eb4f4a5d5d0558a112f237aa` |
 | Candidate carrier | `opto-sync-test/go-java-validation` |
 | Carrier numeric repository ID | `1323598177` |
 | Carrier visibility observed | `private` |
 | Carrier PR | `opto-sync-test/go-java-validation#25` |
-| Carrier PR head | `f77fdec47180d6d8df3de7e4caa54f7fec82ee0e` |
+| Carrier PR head | `8406d2df572099718a46c43c7defa22545a197e5` |
 | Carrier workflow blob | `4cfef14d5976b193a16c02a574c406defaeac874` |
-| PR #2033 test-plan blob | `e4fb8314b6671c505b7776a19b82e45fa7cf5494` |
+| PR #2033 test-plan blob | `a7564e8e00c22bcdff8cddd56058ff555a9e7303` |
 
 The carrier test plan pins the current PR #2033 production/test blobs and runs a
 focused ActorGroup cleanup/pipe/supervisor suite followed by the full Maven
-test suite. Source-free carrier regression code has executed successfully in a
+test suite.
+
+Current source-free validation receipts:
+- cleanup semantic harness head `9975bc82765cc9cad9070ca9a9f246627e0c69ad`,
+  Sonus run `40268407131` / job `121395719730`: executed checkout,
+  Java compile, and adversarial cleanup cases including cross-phase VM-fatal
+  precedence with retained earlier evidence; PASS;
+- exact carrier-plan mirror head `f82a11547ba2db27d3b9faef91c7bdb697045253`,
+  Sonus run `40268462544` / job `121395889781`: executed checkout,
+  carrier verifier regression, and trusted-plan runner regression; PASS.
+Both are source-free and therefore do not certify the private Oreslang source. Source-free carrier regression code has executed successfully in a
 separate funded private repository, but that evidence is **carrier-code only**:
 it does not authorize private source placement and does not prove PR #2033.
 
@@ -77,7 +87,7 @@ this proposal**.
    provenance, carrier ID/private state and exact carrier control-plane pins.
 6. Transfer only the exact source Git tree into a generation-specific private
    carrier commit/ref. Prove the nested destination subtree tree SHA equals
-   `87e340e6ae494df56740f4c2671a41631e338ccc` and pin the destination commit.
+   `fbbbdd44f079fd995751650c1557f765e8802817` and pin the destination commit.
 7. Execute the immutable #2033 plan and require actual nonzero job steps:
    - focused `ActorGroupCleanupFailureTest` / pipe / supervisor coverage;
    - full Maven/JDK suite;
