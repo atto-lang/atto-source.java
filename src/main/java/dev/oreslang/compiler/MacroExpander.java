@@ -414,7 +414,7 @@ public final class MacroExpander {
             String callerModule,
             String macroOwnerModule,
             Ast.MacroIdentifierArgument identifier) {
-        List<Ast.FunctionDecl> matches = declarationsByModule
+        List<Ast.FunctionDecl> ordinary = declarationsByModule
                 .getOrDefault(callerModule, List.of())
                 .stream()
                 .filter(Ast.FunctionDecl.class::isInstance)
@@ -422,22 +422,46 @@ public final class MacroExpander {
                 .filter(function -> function.name().equals(identifier.name()))
                 .filter(function -> function.actorKind() == Ast.ActorKind.NONE)
                 .toList();
-        if (matches.isEmpty()) {
+        if (ordinary.isEmpty()) {
             throw new IllegalArgumentException(
                     "checked capture_fnc could not resolve ordinary module-level function '"
                             + identifier.name() + "' at call site "
                             + identifier.site().line() + ":" + identifier.site().column()
                             + " in module '" + callerModule + "'");
         }
-        if (!macroOwnerModule.equals(callerModule)
-                && matches.stream().anyMatch(
-                        function -> function.visibility() != Ast.Visibility.PUBLIC)) {
+        if (ordinary.stream().anyMatch(
+                function -> function.visibility() != Ast.Visibility.PUBLIC)) {
             throw new IllegalArgumentException(
-                    "checked capture_fnc cannot capture private function family '"
-                            + identifier.name() + "' across module boundary from '"
-                            + callerModule + "' into macro owner '" + macroOwnerModule + "'");
+                    "checked capture_fnc requires public function '"
+                            + identifier.name()
+                            + "' because capture is lowered to an explicit module reference; "
+                            + "private function capture remains closed on this compiler head");
         }
-        return matches;
+        if (ordinary.size() != 1) {
+            throw new IllegalArgumentException(
+                    "checked capture_fnc cannot reify overloaded function family '"
+                            + identifier.name()
+                            + "' as one function value on this compiler head");
+        }
+        Ast.FunctionDecl function = ordinary.getFirst();
+        if (function.kind() != Ast.CallableKind.FNC) {
+            throw new IllegalArgumentException(
+                    "checked capture_fnc cannot reify routine '"
+                            + identifier.name() + "' as a function value");
+        }
+        if (!function.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "checked capture_fnc cannot reify generic function '"
+                            + identifier.name()
+                            + "' without an explicit specialization");
+        }
+        if (function.suspends()) {
+            throw new IllegalArgumentException(
+                    "checked capture_fnc cannot reify suspends function '"
+                            + identifier.name()
+                            + "' until function values encode suspension");
+        }
+        return List.of(function);
     }
 
     private boolean isDeclareFunctionMacro(Ast.MacroDecl macro) {
