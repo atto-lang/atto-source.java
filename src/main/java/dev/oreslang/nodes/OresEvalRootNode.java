@@ -600,6 +600,15 @@ public final class OresEvalRootNode extends RootNode {
                     key == null ? name : key);
         }
 
+        private Ast.FunctionDecl findSingleFunction(String name) {
+            if (ambiguousFunctions.contains(name)) {
+                throw new IllegalArgumentException(
+                        "ambiguous exported function " + name
+                                + "; qualify it with its module");
+            }
+            return singleFunction(functions.get(name), name);
+        }
+
         private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
             LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(qualifiedName);
             return family == null ? null : family.get(arity);
@@ -5394,7 +5403,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING
-                    && hasFunctionFamily(name.name())) {
+                    && hasFunctionFamily(name.name(), env)) {
                 requireExplicitClassCallableImport(env, name.name());
                 evalSuspendableDirectArguments(
                         task,
@@ -5409,7 +5418,8 @@ public final class OresEvalRootNode extends RootNode {
                                 Ast.FunctionDecl direct =
                                         selectDirectFunction(
                                                 name.name(),
-                                                values.inputs());
+                                                values.inputs(),
+                                                env);
                                 if (direct == null) {
                                     throw new IllegalArgumentException(
                                             "no function " + name.name()
@@ -7281,7 +7291,7 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING
-                    && hasFunctionFamily(directName.name())) {
+                    && hasFunctionFamily(directName.name(), env)) {
                 requireExplicitClassCallableImport(env, directName.name());
                 // Evaluate every source argument exactly once in lexical
                 // order. Labels affect only the final source->ABI permutation.
@@ -7290,7 +7300,8 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.FunctionDecl direct =
                         selectDirectFunction(
                                 directName.name(),
-                                args.inputs());
+                                args.inputs(),
+                                env);
                 if (direct == null) {
                     throw new IllegalArgumentException(
                             "no function " + directName.name()
