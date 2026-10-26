@@ -179,11 +179,14 @@ public final class FuturePipelineTypingCheck {
         }
 
         rejected("""
-                async fnc inner(): int { return 1; }
-                async fnc source(): Future<int> { return inner(); }
-                fnc identity(Future<int> pending): Future<int> { return pending; }
+                async fnc source(): int { return 1; }
+                async fnc fresh(int value): int { return value; }
+                fnc pass(Future<int> pending): Future<int> { return pending; }
+                fnc bridge(int value): Future<int> {
+                  return pass(fresh(value));
+                }
                 fnc main(): void {
-                  val Future<int> nested = source() |> identity();
+                  val Future<int> nested = source() |> bridge();
                   return;
                 }
                 """, "borrowed/shared Future results cannot acquire cancellation ownership");
