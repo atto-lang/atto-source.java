@@ -993,6 +993,109 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void checkedFunctionCaptureRejectsOverloadedFamily() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpander.expand(Parser.parse("""
+                        pub fnc helper() -> int {
+                            return 1;
+                        }
+                        pub fnc helper(int value) -> int {
+                            return value;
+                        }
+
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+
+                        fnc demo() -> int {
+                            return 0;
+                        }
+                        fnc captured() -> void {
+                            reference!(ident helper);
+                            return;
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains(
+                "cannot reify overloaded function family 'helper'"),
+                failure::toString);
+    }
+
+    @Test
+    void checkedFunctionCaptureRejectsRoutine() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpander.expand(Parser.parse("""
+                        pub routine helper() -> int {
+                            return 1;
+                        }
+
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+
+                        fnc demo() -> int {
+                            return reference!(ident helper);
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains(
+                "cannot reify routine 'helper'"),
+                failure::toString);
+    }
+
+    @Test
+    void checkedFunctionCaptureRejectsUnspecializedGeneric() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpander.expand(Parser.parse("""
+                        pub fnc helper<T>(T value) -> T {
+                            return value;
+                        }
+
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+
+                        fnc demo() -> int {
+                            return 0;
+                        }
+                        fnc captured() -> void {
+                            reference!(ident helper);
+                            return;
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains(
+                "cannot reify generic function 'helper'"),
+                failure::toString);
+    }
+
+    @Test
+    void checkedFunctionCaptureRejectsSuspendsFunction() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpander.expand(Parser.parse("""
+                        pub suspends fnc helper() -> int {
+                            return 1;
+                        }
+
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+
+                        fnc demo() -> int {
+                            return reference!(ident helper);
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains(
+                "cannot reify suspends function 'helper'"),
+                failure::toString);
+    }
+
+    @Test
     void checkedFunctionCaptureDoesNotGrantActorAuthority() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
