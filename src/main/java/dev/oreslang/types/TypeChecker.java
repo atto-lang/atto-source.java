@@ -2456,6 +2456,18 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
+            String resolvedModule =
+                    Ast.internalModuleReferenceTarget(name.name());
+            if (resolvedModule != null) {
+                Ast.ModuleDecl moduleNamespace = modules.get(resolvedModule);
+                if (moduleNamespace == null) {
+                    throw new IllegalArgumentException(
+                            "resolved internal module reference targets unknown module '"
+                                    + resolvedModule + "'");
+                }
+                rejectUnimportedModuleNamespace(resolvedModule);
+                return moduleShape(moduleNamespace);
+            }
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
