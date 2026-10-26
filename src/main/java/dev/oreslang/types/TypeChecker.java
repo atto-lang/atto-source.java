@@ -10273,7 +10273,15 @@ public final class TypeChecker {
             Ast.TypeRef literal,
             Type expected,
             String where) {
-        if (literal.isIntLiteral()) return Primitive.INT;
+        if (literal.isIntLiteral()) {
+            try {
+                literal.intLiteralValue();
+            } catch (NumberFormatException overflow) {
+                throw new IllegalArgumentException(
+                        where + " integer literal overflows signed 64-bit", overflow);
+            }
+            return Primitive.INT;
+        }
         if (literal.isBoolLiteral()) {
             return new BoolLiteral(literal.boolLiteralValue());
         }
