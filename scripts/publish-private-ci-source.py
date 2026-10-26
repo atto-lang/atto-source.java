@@ -45,8 +45,16 @@ SECURITY_CODEOWNER_PATHS = (
     "/.github/private-ci-carrier-contracts.json",
     "/scripts/check-private-ci-destination.sh",
     "/scripts/run-in-private-ci-destination.sh",
+    "/scripts/test-private-ci-destination.sh",
+    "/.github/workflows/private-ci-mirror-preflight.yml",
+    "/docs/security/CI_PRIVATE_SOURCE_MIRRORING.md",
     "/scripts/publish-private-ci-source.py",
     "/scripts/publish-private-ci-source-v3.py",
+    "/scripts/test-publish-private-ci-source-v3.py",
+    "/scripts/test-publish-private-ci-source.py",
+    "/.github/workflows/",
+    "/scripts/",
+    "/pom.xml",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
 
