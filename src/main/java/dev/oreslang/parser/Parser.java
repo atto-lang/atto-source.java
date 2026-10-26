@@ -4423,7 +4423,11 @@ public final class Parser {
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            // Ordinary guest constructors share the same fixed call-item
+            // grammar as direct functions/methods. Actor spawn intentionally
+            // stays on the positional-only parser above until mailbox
+            // construction has its own checked presence/ownership contract.
+            List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
