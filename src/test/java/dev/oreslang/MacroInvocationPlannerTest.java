@@ -763,6 +763,49 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void externalMacroMayCapturePublicCallerFunctionExplicitly() {
+        Ast.Program expanded = assertDoesNotThrow(
+                () -> MacroExpander.expand(Parser.parse("""
+                        define module Producer as
+                            define pub macro reference(Identifier target) -> Syntax<Expr> {
+                                return capture_fnc(target);
+                            }
+                        end
+
+                        define module Consumer as
+                            pub fnc exposed() -> int {
+                                return 7;
+                            }
+
+                            fnc demo() -> int {
+                                return Producer.reference!(ident exposed);
+                            }
+                        end
+                        """)));
+
+        Ast.ModuleDecl consumer = expanded.modules().stream()
+                .filter(module -> module.name().equals("Consumer"))
+                .findFirst()
+                .orElseThrow();
+        Ast.FunctionDecl demo = consumer.declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("demo"))
+                .findFirst()
+                .orElseThrow();
+        Ast.NameExpr captured = assertInstanceOf(
+                Ast.NameExpr.class,
+                assertInstanceOf(Ast.ReturnStmt.class, demo.body().getFirst()).value());
+        MacroIdentifierHygiene.CapturedFunction identity = assertInstanceOf(
+                MacroIdentifierHygiene.CapturedFunction.class,
+                MacroIdentifierHygiene.lookup(captured));
+        assertEquals("Consumer", identity.callerModule());
+        assertEquals("Producer", identity.macroOwnerModule());
+        assertTrue(identity.declarations().stream()
+                .allMatch(fn -> fn.visibility() == Ast.Visibility.PUBLIC));
+    }
+
+    @Test
     void externalMacroCannotCapturePrivateCallerFunction() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
