@@ -103,7 +103,7 @@ public final class TreeShaker {
                 Symbol symbol = symbols.get(work.removeFirst());
                 if (symbol != null) {
                     scanRetainedModuleMetadata(symbol.module());
-                    scanDeclaration(symbol.module(), symbol.declaration());
+                    scanSymbolFamily(symbol);
                 }
             }
 
@@ -1074,8 +1074,14 @@ public final class TreeShaker {
 
         private void seedRoots() {
             if (options.preservePublicApi()) {
-                for (Symbol symbol : symbols.values()) {
-                    if (isPublicApi(symbol.declaration())) markRoot(symbol.id());
+                for (Ast.ModuleDecl module : rewritten.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (!isPublicApi(declaration)) continue;
+                        String name = declarationName(declaration);
+                        if (name != null) {
+                            markRoot(qualify(module.name(), name));
+                        }
+                    }
                 }
             }
 
@@ -1159,6 +1165,28 @@ public final class TreeShaker {
                 if (!module.name().equals(moduleName)) continue;
                 for (Ast.TypeRef contract : module.contracts()) scanType(contract);
                 for (Ast.Annotation annotation : module.annotations()) scanAnnotation(annotation);
+                return;
+            }
+        }
+
+        private void scanSymbolFamily(Symbol symbol) {
+            if (!(symbol.declaration() instanceof Ast.FunctionDecl function)) {
+                scanDeclaration(symbol.module(), symbol.declaration());
+                return;
+            }
+
+            // Symbols are retained by module+name so pruning intentionally keeps
+            // every overload in the family. Scan every retained overload too;
+            // otherwise an overwritten map representative can hide dependencies
+            // used only by another surviving arity.
+            for (Ast.ModuleDecl module : rewritten.modules()) {
+                if (!module.name().equals(symbol.module())) continue;
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl candidate
+                            && candidate.name().equals(function.name())) {
+                        scanDeclaration(module.name(), candidate);
+                    }
+                }
                 return;
             }
         }
