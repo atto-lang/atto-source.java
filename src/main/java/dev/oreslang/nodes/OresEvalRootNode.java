@@ -2045,9 +2045,10 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.MatchValueArm arm : matched.arms()) {
                     if (arm.guard() != null
                             && expressionContainsPotentialSuspension(arm.guard(), seen)) return true;
-                    for (Ast.Stmt statement : arm.body()) {
+                    for (Ast.Stmt statement : arm.prefixStatements()) {
                         if (statementContainsPotentialSuspension(statement, seen)) return true;
                     }
+                    if (expressionContainsPotentialSuspension(arm.value(), seen)) return true;
                 }
                 return false;
             }
@@ -4578,7 +4579,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceValueCont continuation) {
             runBlock(
                     task,
-                    arm.body(),
+                    arm.loweringBody(),
                     armEnv,
                     (t, flow) -> {
                         switch (flow.kind()) {
@@ -7298,7 +7299,7 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         // The tail barrier prevents the terminal ARM_RESULT
                         // from being rewritten as a callable tail call.
-                        executeBlock(arm.body(), armEnv, true);
+                        executeBlock(arm.loweringBody(), armEnv, true);
                     } catch (ReturnSignal returned) {
                         return returned.value;
                     } catch (TailCallSignal escapedTailCall) {
