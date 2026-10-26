@@ -1758,9 +1758,31 @@ public final class OwnershipChecker {
 
             Ast.ClassDecl staticClass = classNamespaceOf(member.receiver(), scope);
             if (staticClass != null) {
+                List<FixedProductCallPlan.InputSlot> staticInputs =
+                        callInputSlots(
+                                call.arguments(),
+                                scope,
+                                true,
+                                "static function "
+                                        + staticClass.name()
+                                        + "."
+                                        + member.member());
                 Ast.MethodDecl staticFunction = findStaticMethod(
-                        staticClass, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                        staticClass,
+                        member.member(),
+                        staticInputs.size(),
+                        new LinkedHashSet<>());
                 if (staticFunction != null) {
+                    if (!staticFunction.genericParameters().isEmpty()
+                            && staticInputs.stream()
+                                    .anyMatch(slot -> slot.label() != null)) {
+                        throw error(
+                                "static function " + staticClass.name() + "."
+                                        + staticFunction.name()
+                                        + " named/record-spread binding with generic parameters "
+                                        + "is not enabled until ownership specialization consumes "
+                                        + "the checked source-to-ABI plan");
+                    }
                     CallSignature signature = specializeCall(
                             staticFunction.genericParameters(),
                             staticFunction.genericParameters(),
@@ -1769,14 +1791,26 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
-                    if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
+                    if (staticFunction.suspends()) {
+                        checkSuspensionBorrows(
+                                scope,
+                                "suspends call " + staticFunction.name());
+                    }
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
                             scope,
-                            "static function " + staticClass.name() + "." + staticFunction.name());
-                    Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
-                    return new ValueInfo(callResult, kindOfType(callResult), null);
+                            "static function " + staticClass.name() + "." + staticFunction.name(),
+                            true);
+                    Ast.TypeRef callResult =
+                            callableResultType(
+                                    signature.result(),
+                                    staticFunction.async(),
+                                    false);
+                    return new ValueInfo(
+                            callResult,
+                            kindOfType(callResult),
+                            null);
                 }
             }
 
@@ -1889,9 +1923,28 @@ public final class OwnershipChecker {
                 concreteReceiver = receiverValue.type.isBorrow()
                         ? receiverValue.type.borrowedTarget() : receiverValue.type;
             }
-            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            Ast.ClassDecl klass =
+                    concreteReceiver == null
+                            ? null
+                            : findClass(concreteReceiver.name());
+            List<FixedProductCallPlan.InputSlot> methodInputs =
+                    klass == null
+                            ? List.of()
+                            : callInputSlots(
+                                    call.arguments(),
+                                    scope,
+                                    true,
+                                    "method "
+                                            + concreteReceiver.name()
+                                            + "."
+                                            + member.member());
             ResolvedMethod target = klass == null ? null
-                    : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                    : findMethodTarget(
+                            klass,
+                            concreteReceiver,
+                            member.member(),
+                            methodInputs.size(),
+                            new LinkedHashSet<>());
             if (target != null) {
                 Ast.MethodDecl method = target.method();
                 if (AnnotationExpander.isGeneratedFromJsonSetter(method)) {
@@ -1917,9 +1970,24 @@ public final class OwnershipChecker {
                         target.owner().genericParameters(), target.ownerType().arguments());
                 List<String> allGenerics = new ArrayList<>(target.owner().genericParameters());
                 allGenerics.addAll(method.genericParameters());
+                if (!method.genericParameters().isEmpty()
+                        && methodInputs.stream()
+                                .anyMatch(slot -> slot.label() != null)) {
+                    throw error(
+                            "method " + target.owner().name() + "."
+                                    + method.name()
+                                    + " named/record-spread binding with generic parameters "
+                                    + "is not enabled until ownership specialization consumes "
+                                    + "the checked source-to-ABI plan");
+                }
                 CallSignature signature = specializeCall(
-                        allGenerics, method.genericParameters(),
-                        method.parameters(), method.returnType(), call, scope, ownerBindings);
+                        allGenerics,
+                        method.genericParameters(),
+                        method.parameters(),
+                        method.returnType(),
+                        call,
+                        scope,
+                        ownerBindings);
                 if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 if (method.explicitReceiverType() != null
                         && method.explicitReceiverType().isBorrow()
@@ -1935,7 +2003,12 @@ public final class OwnershipChecker {
                     VarState root = ownershipRoot(receiver);
                     receiverReadReservations.merge(root, 1, Integer::sum);
                     try {
-                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                        checkArguments(
+                                call.arguments(),
+                                signature.parameters(),
+                                scope,
+                                "method " + method.name(),
+                                true);
                     } finally {
                         int left = receiverReadReservations.get(root) - 1;
                         if (left == 0) receiverReadReservations.remove(root);
@@ -1957,11 +2030,21 @@ public final class OwnershipChecker {
                         // root. Nested read-only receiver calls are permitted
                         // while building an argument, but no write or new
                         // exclusive loan may occur before outer activation.
-                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                        checkArguments(
+                                call.arguments(),
+                                signature.parameters(),
+                                scope,
+                                "method " + method.name(),
+                                true);
                     } else {
                         beginPersistentBorrow(receiver, false);
                         try {
-                            checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                            checkArguments(
+                                call.arguments(),
+                                signature.parameters(),
+                                scope,
+                                "method " + method.name(),
+                                true);
                         } finally {
                             if (root.immutableBorrows <= 0)
                                 throw new IllegalStateException("missing shared method receiver loan");
@@ -1969,7 +2052,12 @@ public final class OwnershipChecker {
                         }
                     }
                 } else {
-                    checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                    checkArguments(
+                                call.arguments(),
+                                signature.parameters(),
+                                scope,
+                                "method " + method.name(),
+                                true);
                 }
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
