@@ -1195,6 +1195,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
+            slice.requireCurrentOwner();
+            closeFromRuntime();
+        }
+
+        private void closeFromRuntime() {
             if (released.compareAndSet(false, true)) slice.release(bytes);
         }
     }
@@ -4773,7 +4778,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void validatePrivateBehaviorState(ActorId owner, Behavior<?> behavior) {
+    private void validatePrivateBehaviorState(ActorRef<?> ownerRef, Behavior<?> behavior) {
         for (Class<?> type = behavior.getClass();
              type != null && type != Object.class;
              type = type.getSuperclass()) {
@@ -4826,7 +4831,7 @@ public final class ActorRuntime implements AutoCloseable {
                             "cannot inspect private actor behavior capture: " + field.getName(),
                             impossible);
                 }
-                validatePrivateBehaviorCapture(owner, field.getName(), value);
+                validatePrivateBehaviorCapture(ownerRef, field.getName(), value);
             }
         }
     }
@@ -4837,32 +4842,32 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Class<?>;
     }
 
-    private void validatePrivateBehaviorCapture(ActorId owner, String fieldName, Object value) {
+    private void validatePrivateBehaviorCapture(ActorRef<?> ownerRef, String fieldName, Object value) {
         if (value == null || isScalar(value) || value instanceof Class<?>) return;
 
         if (value instanceof ActorShardBacking shard) {
-            if (!shard.ownedBy(this, owner) || !shard.isPrivateBacked()) {
+            if (!shard.ownedBy(this, ownerRef) || !shard.isPrivateBacked()) {
                 throw new SecurityException(
                         "private actor behavior cannot capture a foreign or shared shard in " + fieldName);
             }
             return;
         }
         if (value instanceof PrivateMemoryBlock block) {
-            if (!block.owner().equals(owner)) {
+            if (block.slice.ownerRef != ownerRef) {
                 throw new SecurityException(
                         "private actor behavior captured another actor's memory block in " + fieldName);
             }
             return;
         }
         if (value instanceof ActorMemorySlice slice) {
-            if (!slice.owner().equals(owner)) {
+            if (slice.ownerRef != ownerRef) {
                 throw new SecurityException(
                         "private actor behavior captured another actor's memory slice in " + fieldName);
             }
             return;
         }
         if (value instanceof MemoryReservation reservation) {
-            if (!reservation.owner().equals(owner)) {
+            if (reservation.slice.ownerRef != ownerRef) {
                 throw new SecurityException(
                         "private actor behavior captured another actor's memory reservation in " + fieldName);
             }
@@ -4876,7 +4881,7 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof ActorContext<?> actorContext) {
-            if (!actorContext.self().id().equals(owner) || actorContext.runtime() != this) {
+            if (actorContext.self() != ownerRef || actorContext.runtime() != this) {
                 throw new SecurityException(
                         "private actor behavior captured a foreign actor context in " + fieldName);
             }
@@ -5933,7 +5938,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
                         exceeded);
             }
-            release = reservation::close;
+            release = reservation::closeFromRuntime;
         } else {
             long bytes = estimateSharedMailboxBytes(prepared, new IdentityHashMap<>(), 0);
             cell.reserveSharedMailbox(bytes);
@@ -8587,7 +8592,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 behaviorFactory.create(context),
                                 "actor behaviorFactory returned null");
                         if (isPrivateKind(kind) && !trustedFactory) {
-                            validatePrivateBehaviorState(ref.id(), created);
+                            validatePrivateBehaviorState(ref, created);
                         }
                         behavior = created;
                     }
