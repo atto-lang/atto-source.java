@@ -429,6 +429,41 @@ final class ExplicitExportSyntaxTest {
         assertEquals("Models", bindings.getFirst().ownerNamespaceId());
     }
 
+
+    @Test
+    void exportImportPreludePermutationResolvesTheSameLocalDeclaration() {
+        String exportFirst = """
+                export class Worker as PublicWorker;
+                import class Dependency from './dependency';
+                define class Worker as
+                end
+                """;
+        String importFirst = """
+                import class Dependency from './dependency';
+                export class Worker as PublicWorker;
+                define class Worker as
+                end
+                """;
+
+        Ast.Program a = Parser.parse(exportFirst);
+        Ast.Program b = Parser.parse(importFirst);
+        assertEquals(a.imports(), b.imports());
+
+        List<ExportResolver.ExportBinding> first =
+                ExportResolver.resolve(a).bindings(Parser.ROOT_MODULE);
+        List<ExportResolver.ExportBinding> second =
+                ExportResolver.resolve(b).bindings(Parser.ROOT_MODULE);
+        assertEquals(1, first.size());
+        assertEquals(1, second.size());
+        assertEquals(first.getFirst().localSymbolId(), second.getFirst().localSymbolId(),
+                "import/export ordering cannot change the resolved declaration identity");
+        assertEquals(first.getFirst().localKind(), second.getFirst().localKind());
+        assertEquals(first.getFirst().externalName(), second.getFirst().externalName());
+        assertEquals(first.getFirst().scope(), second.getFirst().scope());
+        assertEquals(first.getFirst().origin(), second.getFirst().origin());
+        assertEquals("PublicWorker", first.getFirst().externalName());
+    }
+
     private static void assertSyntaxError(String source, String category) {
         IllegalArgumentException failure =
                 assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
