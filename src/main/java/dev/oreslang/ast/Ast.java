@@ -430,16 +430,31 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            boolean inverted) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
+            if (inverted && (isAbstract || actorKind != ActorKind.NONE || !parents.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "inverted classes cannot be abstract, actors, or inherit other classes");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Compatibility constructor preserving actor concurrency while defaulting layout. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, actorConcurrency, false);
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */
@@ -450,7 +465,7 @@ public final class Ast {
                          List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, genericParameters,
                     parents, interfaces, fields, constructor, methods,
-                    ActorConcurrency.serial(ActorTransport.GENERIC));
+                    ActorConcurrency.serial(ActorTransport.GENERIC), false);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
