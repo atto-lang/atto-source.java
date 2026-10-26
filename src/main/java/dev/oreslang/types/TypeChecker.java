@@ -2979,7 +2979,7 @@ public final class TypeChecker {
                             label, target.genericSpecs(),
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
-                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
@@ -3019,7 +3019,7 @@ public final class TypeChecker {
                             label, target.genericSpecs(),
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
-                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
@@ -3612,7 +3612,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
+                    requireSuspendableCall(fn.suspends() && !fn.generator(), "static function '" + fn.name() + "'");
                     return callableResult(fn.async(), fn.suspends(), fn.generator(), result);
                 }
                 if (receiver instanceof Named named) {
@@ -3703,7 +3703,7 @@ public final class TypeChecker {
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
-                        requireSuspendableCall(method.suspends(), "method '" + method.name() + "'");
+                        requireSuspendableCall(method.suspends() && !method.generator(), "method '" + method.name() + "'");
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
                         requireClassMemberVisible(method.visibility(), owner, "method", method.name());
