@@ -325,6 +325,68 @@ final class OresSmartPointersTest {
     }
 
     @Test
+    void foreignCarrierCannotReleaseSharedOrMutableGuards() throws Exception {
+        var cell = OresSmartPointers.refCell(5);
+        var first = cell.borrow();
+        var second = cell.borrow();
+        AtomicReference<Throwable> foreignSharedClose = new AtomicReference<>();
+        Thread readerClose = new Thread(() -> {
+            try {
+                first.close();
+            } catch (Throwable failure) {
+                foreignSharedClose.set(failure);
+            }
+        });
+        readerClose.start();
+        readerClose.join();
+        assertInstanceOf(IllegalStateException.class, foreignSharedClose.get());
+        assertEquals(5, first.value().intValue());
+        first.close();
+        // The other shared loan must still block an exclusive borrow.
+        assertThrows(IllegalStateException.class, cell::borrowMut);
+        second.close();
+
+        var write = cell.borrowMut();
+        AtomicReference<Throwable> foreignMutableClose = new AtomicReference<>();
+        Thread writerClose = new Thread(() -> {
+            try {
+                write.close();
+            } catch (Throwable failure) {
+                foreignMutableClose.set(failure);
+            }
+        });
+        writerClose.start();
+        writerClose.join();
+        assertInstanceOf(IllegalStateException.class, foreignMutableClose.get());
+        assertThrows(IllegalStateException.class, cell::borrow);
+        assertThrows(IllegalStateException.class, cell::borrowMut);
+        write.set(9);
+        write.close();
+        try (var again = cell.borrow()) {
+            assertEquals(9, again.value().intValue());
+        }
+    }
+
+    @Test
+    void sharedBorrowRemainsLiveUntilItsLastGuardCloses() {
+        var cell = OresSmartPointers.refCell(3);
+        var first = cell.borrow();
+        var second = cell.borrow();
+        var third = cell.borrow();
+        first.close();
+        second.close();
+        assertEquals(3, third.value().intValue());
+        assertThrows(IllegalStateException.class, cell::borrowMut);
+        third.close();
+        try (var writer = cell.borrowMut()) {
+            writer.set(4);
+        }
+        try (var reader = cell.borrow()) {
+            assertEquals(4, reader.value().intValue());
+        }
+    }
+
+    @Test
     void refCellGuardCannotCrossCarrierThread() throws Exception {
         var cell = OresSmartPointers.refCell(1);
         var read = cell.borrow();
