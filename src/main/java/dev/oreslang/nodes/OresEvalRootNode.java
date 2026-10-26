@@ -3900,7 +3900,8 @@ public final class OresEvalRootNode extends RootNode {
                                     channelValue,
                                     operation.operation() == Ast.ChannelOperation.READ
                                             ? "readch"
-                                            : "writech");
+                                            : "writech",
+                                    operation.operation());
                         } catch (RuntimeException | Error failure) {
                             continuation.accept(t, null, failure);
                             return;
@@ -4844,24 +4845,27 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> detached = new ArrayList<>(args.size());
             for (int i = 0; i < args.size(); i++) {
                 Object arg = args.get(i);
-                if (arg instanceof ChannelRuntime.Channel<?> channel) {
-                    // Channel<T> is an Ores-owned synchronized, copyable handle
-                    // within an execution domain. Preserve its coordinator
-                    // identity across local async source task arguments, but
-                    // require the *formal* to explicitly declare Channel<T>.
-                    // This runtime gate also protects host-entered callables
-                    // that might bypass source expression type checking.
+                if (arg instanceof ChannelRuntime.Channel<?>
+                        || arg instanceof ChannelRuntime.ReadChannel<?>
+                        || arg instanceof ChannelRuntime.WriteChannel<?>) {
+                    // Channel views are Ores-owned, zero-copy capabilities over
+                    // one coordinator identity. Preserve the exact direction
+                    // across local async tasks; never widen a read/write view
+                    // back to a bidirectional Channel<T>.
                     Ast.TypeRef formal = parameters.get(i).type();
+                    String required = arg instanceof ChannelRuntime.ReadChannel<?>
+                            ? "ReadChannel"
+                            : arg instanceof ChannelRuntime.WriteChannel<?>
+                                    ? "WriteChannel"
+                                    : "Channel";
                     if (formal == null || formal.isBorrow()
-                            || !"Channel".equals(formal.name())
+                            || !required.equals(formal.name())
                             || formal.arguments().size() != 1) {
                         throw new IllegalArgumentException(
                                 "async task channel argument " + (i + 1)
-                                        + " requires an explicit Channel<T> parameter");
+                                        + " requires an explicit " + required + "<T> parameter");
                     }
-                    // Actor/mailbox boundary capabilities remain forbidden.
-                    // Nested channel capabilities still fail detachAsyncValue.
-                    detached.add(channel);
+                    detached.add(arg);
                 } else {
                     detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
                 }
@@ -5586,9 +5590,15 @@ public final class OresEvalRootNode extends RootNode {
                 switch (arm.operation()) {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
                     case READ -> cases.add(ChannelRuntime.read(
-                            requireChannel(eval(arm.channel(), env), "readch select case")));
+                            requireChannel(
+                                    eval(arm.channel(), env),
+                                    "readch select case",
+                                    Ast.ChannelOperation.READ)));
                     case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(eval(arm.channel(), env), "writech select case"),
+                            requireChannel(
+                                    eval(arm.channel(), env),
+                                    "writech select case",
+                                    Ast.ChannelOperation.WRITE),
                             eval(arm.value(), env)));
                     case AWAIT -> {
                         Object future = eval(arm.channel(), env);
@@ -5673,7 +5683,8 @@ public final class OresEvalRootNode extends RootNode {
                     eval(operation.channel(), env),
                     operation.operation() == Ast.ChannelOperation.READ
                             ? "readch"
-                            : "writech");
+                            : "writech",
+                    operation.operation());
 
             if (operation.operation() == Ast.ChannelOperation.READ) {
                 return switch (operation.mode()) {
@@ -5761,12 +5772,24 @@ public final class OresEvalRootNode extends RootNode {
         @SuppressWarnings("unchecked")
         private ChannelRuntime.Channel<Object> requireChannel(
                 Object value,
-                String where) {
-            if (!(value instanceof ChannelRuntime.Channel<?> channel)) {
-                throw new IllegalArgumentException(
-                        where + " requires Channel<T>; got " + value);
+                String where,
+                Ast.ChannelOperation operation) {
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return (ChannelRuntime.Channel<Object>) channel;
             }
-            return (ChannelRuntime.Channel<Object>) channel;
+            if (operation == Ast.ChannelOperation.READ
+                    && value instanceof ChannelRuntime.ReadChannel<?> read) {
+                return (ChannelRuntime.Channel<Object>) read.backingChannel();
+            }
+            if (operation == Ast.ChannelOperation.WRITE
+                    && value instanceof ChannelRuntime.WriteChannel<?> write) {
+                return (ChannelRuntime.Channel<Object>) write.backingChannel();
+            }
+            String required = operation == Ast.ChannelOperation.READ
+                    ? "Channel<T> or ReadChannel<T>"
+                    : "Channel<T> or WriteChannel<T>";
+            throw new IllegalArgumentException(
+                    where + " requires " + required + "; got " + value);
         }
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
@@ -7126,6 +7149,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
                 return switch (name) {
+                    case "input" -> channel.input();
+                    case "output" -> channel.output();
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "Channel.close");
                         channel.close();
@@ -9763,21 +9788,33 @@ public final class OresEvalRootNode extends RootNode {
         @SuppressWarnings({"rawtypes", "unchecked"})
         private Object read(List<Object> args) {
             requireOne(args, "SelectCase.read");
-            if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
-                throw new IllegalArgumentException("SelectCase.read expects Channel<T>");
+            Object source = args.getFirst();
+            if (source instanceof ChannelRuntime.Channel<?> channel) {
+                return ChannelRuntime.read((ChannelRuntime.Channel) channel);
             }
-            return ChannelRuntime.read((ChannelRuntime.Channel) channel);
+            if (source instanceof ChannelRuntime.ReadChannel<?> channel) {
+                return ChannelRuntime.read((ChannelRuntime.ReadChannel) channel);
+            }
+            throw new IllegalArgumentException(
+                    "SelectCase.read expects Channel<T> or ReadChannel<T>");
         }
 
         @SuppressWarnings({"rawtypes", "unchecked"})
         private Object write(List<Object> args) {
             requireTwo(args, "SelectCase.write");
-            if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
-                throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
+            Object sink = args.getFirst();
+            if (sink instanceof ChannelRuntime.Channel<?> channel) {
+                return ChannelRuntime.write(
+                        (ChannelRuntime.Channel) channel,
+                        args.get(1));
             }
-            return ChannelRuntime.write(
-                    (ChannelRuntime.Channel) channel,
-                    args.get(1));
+            if (sink instanceof ChannelRuntime.WriteChannel<?> channel) {
+                return ChannelRuntime.write(
+                        (ChannelRuntime.WriteChannel) channel,
+                        args.get(1));
+            }
+            throw new IllegalArgumentException(
+                    "SelectCase.write expects Channel<T> or WriteChannel<T> as first argument");
         }
 
         private Object future(List<Object> args) {
