@@ -350,6 +350,17 @@ public final class IncrementalCompiler {
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        if (decl instanceof Ast.MacroDecl macro) {
+            if (macro.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append("pub macro ").append(macro.name()).append('(');
+            for (Ast.MacroParam parameter : macro.parameters()) {
+                abi.append(macroParamAbi(parameter.type())).append(',');
+            }
+            abi.append(")=>").append(macroResultAbi(macro.resultKind()))
+                    .append(" body=").append(digest(macro.body().toString()))
+                    .append('\n');
+            return;
+        }
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
@@ -457,6 +468,20 @@ public final class IncrementalCompiler {
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
         }
+    }
+
+    private static String macroParamAbi(Ast.MacroParamType type) {
+        return switch (type.kind()) {
+            case TYPE -> "Type";
+            case IDENTIFIER -> "Identifier";
+            case CONST -> "Const<" + typeRef(type.constType()) + ">";
+            case SYNTAX -> "Syntax<" + type.syntaxKind().name() + ">";
+        };
+    }
+
+    private static String macroResultAbi(Ast.MacroResultKind result) {
+        if (result.list()) return "SyntaxList<DECL>";
+        return "Syntax<" + result.syntaxKind().name() + ">";
     }
 
     private static String classMethodAbi(Ast.MethodDecl method) {
