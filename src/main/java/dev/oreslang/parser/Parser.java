@@ -545,58 +545,108 @@ public final class Parser {
 
     private Ast.MacroDecl parseMacroDecl(Ast.Visibility visibility) {
         String name = consume(IDENT, "expected macro name").lexeme();
+        if (check(LT)) {
+            throw error(peek(),
+                    "define macro does not declare ordinary generic parameters; pass compiler-known Type values explicitly");
+        }
         consume(LPAREN, "expected '(' after macro name");
-        List<Ast.Param> parameters = parseParametersUntil(RPAREN, java.util.Set.of());
+
+        List<Ast.MacroParam> parameters = new ArrayList<>();
+        java.util.HashSet<String> parameterNames = new java.util.HashSet<>();
+        if (!check(RPAREN)) {
+            do {
+                Ast.MacroParamType type = parseMacroParamType();
+                if (check(MUT) || isContextualIdentifier("structural")) {
+                    throw error(peek(), "macro parameters are immutable compiler values; mut/structural is not permitted");
+                }
+                Token parameterName = consume(IDENT, "expected macro parameter name after compiler-only meta type");
+                if (!parameterNames.add(parameterName.lexeme())) {
+                    throw error(parameterName, "duplicate macro parameter '" + parameterName.lexeme() + "'");
+                }
+                parameters.add(new Ast.MacroParam(type, parameterName.lexeme()));
+            } while (match(COMMA));
+        }
         consume(RPAREN, "expected ')' after macro parameters");
-        requireDistinctParameterNames(parameters);
-        for (Ast.Param parameter : parameters) {
-            if (parameter.structural() || parameter.mutable()) {
-                throw error(previous(), "macro parameters are immutable compile-time values");
-            }
-            if (!isMacroParameterType(parameter.type())) {
-                throw error(previous(), "macro parameter '" + parameter.name()
-                        + "' must use Type, Const<T>, Identifier, or Syntax<K>");
-            }
-        }
+
         consume(ARROW, "define macro requires an explicit '-> <macro-result-kind>'");
-        Ast.TypeRef resultKind = parseTypeRef();
-        if (!isMacroResultKind(resultKind)) {
-            throw error(previous(), "macro result kind must be Syntax<Expr|Stmt|Decl|Type|Pattern> or SyntaxList<Decl>");
-        }
+        Ast.MacroResultKind resultKind = parseMacroResultKind();
         return new Ast.MacroDecl(name, visibility, parameters, resultKind, parseBlock());
     }
 
-    private boolean isMacroParameterType(Ast.TypeRef type) {
-        if (type.name().equals("Type") || type.name().equals("Identifier")) {
-            return type.arguments().isEmpty() && !type.inferArguments();
-        }
-        if (type.name().equals("Const")) {
-            return type.arguments().size() == 1 && !type.inferArguments();
-        }
-        return isMacroSyntaxKind(type);
+    private Ast.MacroParamType parseMacroParamType() {
+        Token head = consume(IDENT,
+                "macro parameter must use Type, Const<T>, Identifier, or Syntax<K>");
+        return switch (head.lexeme()) {
+            case "Type" -> Ast.MacroParamType.type();
+            case "Identifier" -> Ast.MacroParamType.identifier();
+            case "Const" -> {
+                consume(LT, "Const macro parameter requires exactly one type argument: Const<T>");
+                if (check(GT)) {
+                    throw error(peek(), "Const<T> macro parameter requires a non-empty value type");
+                }
+                Ast.TypeRef valueType = parseTypeRef();
+                consume(GT, "expected '>' after Const<T> macro parameter type");
+                if (isCompilerOnlyMacroMetaType(valueType)) {
+                    throw error(previous(),
+                            "Const<T> value type must be an ordinary compile-time-serializable type, not another macro meta type");
+                }
+                yield Ast.MacroParamType.constant(valueType);
+            }
+            case "Syntax" -> {
+                consume(LT, "Syntax macro parameter requires exactly one syntax kind: Syntax<K>");
+                Ast.MacroSyntaxKind syntaxKind = parseMacroSyntaxKind();
+                consume(GT, "expected '>' after Syntax<K> macro parameter kind");
+                yield Ast.MacroParamType.syntax(syntaxKind);
+            }
+            case "SyntaxList" -> throw error(head,
+                    "SyntaxList is a macro result container in v1, not a macro parameter type");
+            default -> throw error(head,
+                    "macro parameter must use Type, Const<T>, Identifier, or Syntax<K>");
+        };
     }
 
-    private boolean isMacroResultKind(Ast.TypeRef type) {
-        if (isMacroSyntaxKind(type)) return true;
-        return type.name().equals("SyntaxList")
-                && !type.inferArguments()
-                && type.arguments().size() == 1
-                && type.arguments().getFirst().name().equals("Decl")
-                && type.arguments().getFirst().arguments().isEmpty()
-                && !type.arguments().getFirst().inferArguments();
+    private Ast.MacroResultKind parseMacroResultKind() {
+        Token head = consume(IDENT,
+                "macro result kind must be Syntax<Expr|Stmt|Decl|Type|Pattern> or SyntaxList<Decl>");
+        if (head.lexeme().equals("Syntax")) {
+            consume(LT, "Syntax macro result requires exactly one syntax kind: Syntax<K>");
+            Ast.MacroSyntaxKind syntaxKind = parseMacroSyntaxKind();
+            consume(GT, "expected '>' after Syntax<K> macro result kind");
+            return Ast.MacroResultKind.syntax(syntaxKind);
+        }
+        if (head.lexeme().equals("SyntaxList")) {
+            consume(LT, "SyntaxList macro result requires SyntaxList<Decl>");
+            Token kind = consume(IDENT, "SyntaxList macro result requires declaration kind 'Decl'");
+            if (!kind.lexeme().equals("Decl")) {
+                throw error(kind, "v1 macro list results are restricted to SyntaxList<Decl>");
+            }
+            consume(GT, "expected '>' after SyntaxList<Decl>");
+            return Ast.MacroResultKind.declarations();
+        }
+        throw error(head,
+                "macro result kind must be Syntax<Expr|Stmt|Decl|Type|Pattern> or SyntaxList<Decl>");
     }
 
-    private boolean isMacroSyntaxKind(Ast.TypeRef type) {
-        if (!type.name().equals("Syntax") || type.inferArguments() || type.arguments().size() != 1) {
-            return false;
-        }
-        Ast.TypeRef kind = type.arguments().getFirst();
-        if (!kind.arguments().isEmpty() || kind.inferArguments()) return false;
-        return kind.name().equals("Expr")
-                || kind.name().equals("Stmt")
-                || kind.name().equals("Decl")
-                || kind.name().equals("Type")
-                || kind.name().equals("Pattern");
+    private Ast.MacroSyntaxKind parseMacroSyntaxKind() {
+        Token kind = consume(IDENT,
+                "expected macro syntax kind Expr, Stmt, Decl, Type, or Pattern");
+        return switch (kind.lexeme()) {
+            case "Expr" -> Ast.MacroSyntaxKind.EXPR;
+            case "Stmt" -> Ast.MacroSyntaxKind.STMT;
+            case "Decl" -> Ast.MacroSyntaxKind.DECL;
+            case "Type" -> Ast.MacroSyntaxKind.TYPE;
+            case "Pattern" -> Ast.MacroSyntaxKind.PATTERN;
+            default -> throw error(kind,
+                    "macro syntax kind must be Expr, Stmt, Decl, Type, or Pattern");
+        };
+    }
+
+    private boolean isCompilerOnlyMacroMetaType(Ast.TypeRef type) {
+        return type.name().equals("Type")
+                || type.name().equals("Const")
+                || type.name().equals("Identifier")
+                || type.name().equals("Syntax")
+                || type.name().equals("SyntaxList");
     }
 
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
@@ -2318,6 +2368,10 @@ public final class Parser {
             }
             if (next == TRAIT) {
                 throw error(define, "trait declarations are compile-time declarations and cannot execute inside a block");
+            }
+            if (next == MACRO) {
+                throw error(define,
+                        "define macro is a compile-time declaration and cannot execute inside a runtime block");
             }
         }
         if (check(TRAIT)) {
