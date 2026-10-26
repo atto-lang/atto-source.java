@@ -215,6 +215,69 @@ final class OresCarrierPermitPoolTest {
         assertEquals(0, permits.totalHeld());
     }
 
+    @Test void impossibleBulkRequestsDoNotAllocateOrLeakPermits() {
+        var permits = new OresCarrierPermitPool(5);
+        assertNull(permits.tryAcquireMany(
+                        OresCarrierPermitPool.Domain.CONTROL, Integer.MAX_VALUE),
+                "unbounded bulk requests must fail before creating an array");
+        var denied = permits.snapshot();
+        assertEquals(0, denied.totalHeld());
+        assertEquals(5, denied.free());
+        assertEquals(1L, denied.deniedCapacity());
+        assertEquals(0L, denied.deniedReserveProtection());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> permits.tryAcquireMany(OresCarrierPermitPool.Domain.CONTROL, 0));
+        assertEquals(1L, permits.snapshot().deniedCapacity());
+
+        var single = permits.tryAcquireMany(OresCarrierPermitPool.Domain.CONTROL, 1);
+        assertNotNull(single);
+        assertEquals(1, single.length);
+        single[0].close();
+        single[0].close();
+        assertEquals(0, permits.totalHeld());
+    }
+
+
+    @Test void bulkAdmissionIsAtomicAtEverySupportedCarrierCeiling() {
+        for (int maximum = 5; maximum <= 256; maximum++) {
+            var permits = new OresCarrierPermitPool(maximum);
+            var control = permits.tryAcquireMany(
+                    OresCarrierPermitPool.Domain.CONTROL, maximum - 4);
+            assertNotNull(control, "bulk CONTROL borrowing at maximum " + maximum);
+            assertEquals(maximum - 4, permits.totalHeld());
+
+            assertNull(permits.tryAcquireMany(OresCarrierPermitPool.Domain.CONTROL, 2),
+                    "bulk borrow must not consume any protected reserve");
+            var rejected = permits.snapshot();
+            assertEquals(maximum - 4, rejected.totalHeld());
+            assertEquals(1L, rejected.deniedReserveProtection());
+            assertEquals(0L, rejected.deniedCapacity());
+
+            var reserved = new ArrayList<OresCarrierPermitPool.Permit>();
+            try {
+                for (var domain : List.of(
+                        OresCarrierPermitPool.Domain.PRIVATE,
+                        OresCarrierPermitPool.Domain.SHARED,
+                        OresCarrierPermitPool.Domain.UNTRUSTED,
+                        OresCarrierPermitPool.Domain.LIFECYCLE)) {
+                    var granted = permits.tryAcquireMany(domain, 1);
+                    assertNotNull(granted, "lost reserve for " + domain);
+                    reserved.add(granted[0]);
+                }
+                assertEquals(maximum, permits.totalHeld());
+                assertNull(permits.tryAcquireMany(OresCarrierPermitPool.Domain.CONTROL, 1),
+                        "at capacity even a one-permit transaction must fail");
+                assertEquals(1L, permits.snapshot().deniedCapacity());
+            } finally {
+                reserved.forEach(OresCarrierPermitPool.Permit::close);
+                for (var permit : control) permit.close();
+            }
+            assertEquals(0, permits.totalHeld(), "bulk permit leaked at " + maximum);
+        }
+    }
+
+
     @Test void denialReasonsAndTransactionalRollbackRemainReconciled() {
         var permits = new OresCarrierPermitPool(8);
         var first = permits.tryAcquire(OresCarrierPermitPool.Domain.CONTROL);
