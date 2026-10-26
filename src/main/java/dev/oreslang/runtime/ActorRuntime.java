@@ -1817,41 +1817,7 @@ public final class ActorRuntime implements AutoCloseable {
         OresFuture<T> future;
         try {
             future = cell.sourceScheduler().startWithWallDeadline(
-                    new OresScheduler.Task<T>() {
-                        @Override
-                        public OresScheduler.Step<T> resume(
-                                OresScheduler.Resume resume) throws Exception {
-                            UntrustedLogicalQuota previous =
-                                    CURRENT_UNTRUSTED_QUOTA.get();
-                            CURRENT_UNTRUSTED_QUOTA.set(quota);
-                            boolean entered = false;
-                            try {
-                                quota.enter();
-                                entered = true;
-                                quota.check();
-                                OresScheduler.Step<T> result = task.resume(resume);
-                                quota.check();
-                                return result;
-                            } finally {
-                                try {
-                                    if (entered) quota.leave();
-                                } finally {
-                                    if (previous == null) {
-                                        CURRENT_UNTRUSTED_QUOTA.remove();
-                                    } else {
-                                        CURRENT_UNTRUSTED_QUOTA.set(previous);
-                                    }
-                                }
-                            }
-                        }
-
-                        @Override
-                        public void afterCarrierQuiescent(Runnable retire) {
-                            // Preserve SourceTask/TaskScope descendant barriers
-                            // through the untrusted quota wrapper.
-                            task.afterCarrierQuiescent(retire);
-                        }
-                    },
+                    wrapUntrustedTaskForQuota(task, quota),
                     retireOnce, quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
@@ -1873,6 +1839,47 @@ public final class ActorRuntime implements AutoCloseable {
         // carrier quiescence, not merely when the Future settles.
         ownFuture(cell, future);
         return future;
+    }
+
+    static <T> OresScheduler.Task<T> wrapUntrustedTaskForQuota(
+            OresScheduler.Task<T> task,
+            UntrustedLogicalQuota quota) {
+        Objects.requireNonNull(task, "untrusted source Task");
+        Objects.requireNonNull(quota, "untrusted logical quota");
+        return new OresScheduler.Task<>() {
+            @Override
+            public OresScheduler.Step<T> resume(
+                    OresScheduler.Resume resume) throws Exception {
+                UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
+                CURRENT_UNTRUSTED_QUOTA.set(quota);
+                boolean entered = false;
+                try {
+                    quota.enter();
+                    entered = true;
+                    quota.check();
+                    OresScheduler.Step<T> result = task.resume(resume);
+                    quota.check();
+                    return result;
+                } finally {
+                    try {
+                        if (entered) quota.leave();
+                    } finally {
+                        if (previous == null) {
+                            CURRENT_UNTRUSTED_QUOTA.remove();
+                        } else {
+                            CURRENT_UNTRUSTED_QUOTA.set(previous);
+                        }
+                    }
+                }
+            }
+
+            @Override
+            public void afterCarrierQuiescent(Runnable retire) {
+                // Quota decoration must never erase a stronger SourceTask/
+                // TaskScope physical-retirement barrier.
+                task.afterCarrierQuiescent(retire);
+            }
+        };
     }
 
     static void retireUntrustedCompilerTransfer(
