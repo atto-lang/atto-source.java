@@ -187,6 +187,23 @@ final class MacroDeclarationParserTest {
     }
 
     @Test
+    void quoteIntrinsicCannotBeShadowedByMacroLocalBinding() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define macro bad(Const<int> value) -> Syntax<Expr> {
+                            const quote = value;
+                            return quote(value);
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("'quote' is reserved"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("cannot be rebound in a macro body"),
+                failure::toString);
+    }
+
+    @Test
     void rejectsMacroDeclarationsInsideRuntimeBlocks() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
