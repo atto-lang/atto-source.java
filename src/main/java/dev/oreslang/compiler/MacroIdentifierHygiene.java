@@ -74,12 +74,19 @@ public final class MacroIdentifierHygiene {
                 throw new IllegalArgumentException(
                         "checked function capture needs a declaration");
             }
-            for (Ast.FunctionDecl function : declarations) {
-                if (!function.name().equals(name)
-                        || function.actorKind() != Ast.ActorKind.NONE) {
-                    throw new IllegalArgumentException(
-                            "captured function family identity/authority mismatch");
-                }
+            if (declarations.size() != 1) {
+                throw new IllegalArgumentException(
+                        "checked function capture requires one reifiable function");
+            }
+            Ast.FunctionDecl function = declarations.getFirst();
+            if (!function.name().equals(name)
+                    || function.visibility() != Ast.Visibility.PUBLIC
+                    || function.actorKind() != Ast.ActorKind.NONE
+                    || function.kind() != Ast.CallableKind.FNC
+                    || !function.genericParameters().isEmpty()
+                    || function.suspends()) {
+                throw new IllegalArgumentException(
+                        "captured function identity/authority mismatch");
             }
         }
 
@@ -89,18 +96,18 @@ public final class MacroIdentifierHygiene {
         }
     }
 
-    private static final ReferenceQueue<Ast.NameExpr> CLEARED =
+    private static final ReferenceQueue<Ast.Expr> CLEARED =
             new ReferenceQueue<>();
     private static final Map<IdentityKey, Identity> IDENTITIES = new HashMap<>();
 
     private MacroIdentifierHygiene() { }
 
-    private static final class IdentityKey extends WeakReference<Ast.NameExpr> {
+    private static final class IdentityKey extends WeakReference<Ast.Expr> {
         private final int hash;
 
         private IdentityKey(
-                Ast.NameExpr expression,
-                ReferenceQueue<Ast.NameExpr> queue) {
+                Ast.Expr expression,
+                ReferenceQueue<Ast.Expr> queue) {
             super(expression, queue);
             hash = System.identityHashCode(expression);
         }
@@ -114,27 +121,27 @@ public final class MacroIdentifierHygiene {
         public boolean equals(Object other) {
             if (this == other) return true;
             if (!(other instanceof IdentityKey key)) return false;
-            Ast.NameExpr value = get();
+            Ast.Expr value = get();
             return value != null && value == key.get();
         }
     }
 
     private static void expunge() {
-        Reference<? extends Ast.NameExpr> collected;
+        Reference<? extends Ast.Expr> collected;
         while ((collected = CLEARED.poll()) != null) {
             IDENTITIES.remove(collected);
         }
     }
 
-    private static synchronized Ast.NameExpr record(
-            Ast.NameExpr expression,
+    private static synchronized <T extends Ast.Expr> T record(
+            T expression,
             Identity identity) {
         expunge();
         IDENTITIES.put(new IdentityKey(expression, CLEARED), identity);
         return expression;
     }
 
-    public static synchronized Identity lookup(Ast.NameExpr expression) {
+    public static synchronized Identity lookup(Ast.Expr expression) {
         java.util.Objects.requireNonNull(expression, "identifier expression");
         expunge();
         return IDENTITIES.get(new IdentityKey(expression, null));
@@ -168,13 +175,16 @@ public final class MacroIdentifierHygiene {
                 new Generated(hygiene, hint, localOrdinal, internalName));
     }
 
-    public static Ast.NameExpr capturedFunction(
+    public static Ast.MemberExpr capturedFunction(
             MacroSyntaxProvenance.HygieneIdentity hygiene,
             Ast.MacroIdentifierArgument identifier,
             List<Ast.FunctionDecl> declarations) {
         java.util.Objects.requireNonNull(hygiene, "checked capture hygiene identity");
         java.util.Objects.requireNonNull(identifier, "capture identifier");
-        Ast.NameExpr expression = new Ast.NameExpr(identifier.name());
+        Ast.MemberExpr expression = new Ast.MemberExpr(
+                new Ast.NameExpr(
+                        Ast.internalModuleReference(hygiene.callerModule())),
+                identifier.name());
         return record(
                 expression,
                 new CapturedFunction(
