@@ -151,7 +151,6 @@ public final class ExportMetadataCollector {
             field(out, "function");
             field(out, fn.name());
             field(out, fn.kind().name());
-            field(out, fn.visibility().name());
             flags(out, fn.async(), fn.suspends(), fn.generator(), fn.structural(),
                     fn.nonLexical(), fn.trapped());
             field(out, fn.actorKind().name());
@@ -166,7 +165,6 @@ public final class ExportMetadataCollector {
         if (declaration instanceof Ast.ClassDecl klass) {
             field(out, "class");
             field(out, klass.name());
-            field(out, klass.visibility().name());
             flags(out, klass.isAbstract());
             field(out, klass.actorKind().name());
             field(out, klass.actorConcurrency().transport().name());
@@ -211,7 +209,6 @@ public final class ExportMetadataCollector {
         if (declaration instanceof Ast.InterfaceDecl iface) {
             field(out, "interface");
             field(out, iface.name());
-            field(out, iface.visibility().name());
             flags(out, iface.moduleContract());
             appendStrings(out, iface.genericParameters());
             appendTypes(out, iface.parents());
@@ -244,7 +241,6 @@ public final class ExportMetadataCollector {
         if (declaration instanceof Ast.FieldDecl field) {
             field(out, "binding");
             field(out, field.name());
-            field(out, field.visibility().name());
             field(out, field.bindingKind().name());
             flags(out, field.mutableReferent());
             appendType(out, field.type());
@@ -255,7 +251,6 @@ public final class ExportMetadataCollector {
         if (declaration instanceof Ast.TypeAliasDecl alias) {
             field(out, "type");
             field(out, alias.name());
-            field(out, alias.visibility().name());
             appendStrings(out, alias.genericParameters());
             appendType(out, alias.target());
             return out.toString();
