@@ -595,6 +595,17 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher,
+            OresCarrierBudget carrierBudget,
+            OresCarrierPermitPool carrierPermitPool) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                null, carrierBudget, carrierPermitPool);
+    }
+
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
             PhysicalStopDispatcher physicalStopDispatcher,
             OresCarrierBudget carrierBudget,
             OresCarrierPermitPool carrierPermitPool) {
