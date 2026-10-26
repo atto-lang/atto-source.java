@@ -171,6 +171,7 @@ public final class NativeHttp implements AutoCloseable {
                 actor.send(exchange.moveTo(actor));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
+                else exchange.state.noteHotHandlerQuiescent();
                 exchange.state.abort(500);
             } finally {
                 CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
