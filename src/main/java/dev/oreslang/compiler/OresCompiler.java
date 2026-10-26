@@ -56,6 +56,14 @@ public final class OresCompiler {
     }
 
     /**
+     * Emit deterministic, versioned Oreslang source-export metadata after the
+     * complete front-end admission pipeline. This is not a native/JVM export table.
+     */
+    public static ExportAbiMetadata.Document emitExportMetadata(String source) {
+        return ExportAbiMetadata.collect(parseAndTypeCheck(source));
+    }
+
+    /**
      * Opt-in RT primitive subset: perform the full existing type/ownership check
      * before admitting any source-level resource bounds or lowering to Java 8.
      * This is not a verified no-heap runtime or WCET proof. Consumers must run
