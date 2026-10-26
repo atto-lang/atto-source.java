@@ -3002,15 +3002,9 @@ public final class TypeChecker {
                             target.genericParameters(),
                             label);
                     Type result;
-                    if (target.parameters().stream()
-                            .anyMatch(Ast.Param::omittable)) {
-                        if (!target.genericParameters().isEmpty()) {
-                            throw new IllegalArgumentException(
-                                    label
-                                            + " optional/default binding with generic parameters "
-                                            + "is not enabled until inference consumes the same "
-                                            + "omission-aware source-to-ABI plan");
-                        }
+                    boolean optional = target.parameters().stream()
+                            .anyMatch(Ast.Param::omittable);
+                    if (optional && target.genericParameters().isEmpty()) {
                         result = checkOptionalCallable(
                                 target,
                                 expanded,
@@ -3040,7 +3034,8 @@ public final class TypeChecker {
                                         target.genericParameters(),
                                         call.typeArguments(),
                                         label).inferenceHoles(),
-                                true);
+                                true,
+                                optional ? defaultArgumentValues(target) : Map.of());
                     }
                     requireSuspendableCall(
                             target.suspends(),
@@ -9198,135 +9193,161 @@ public final class TypeChecker {
             List<Ast.GenericParameter> genericSpecs,
             Set<String> inferenceHoles,
             boolean permitLabeledProducts) {
+        return checkGenericCallable(
+                genericNames, params, returnRef, arguments, env,
+                callerGenerics, callerSelf, callableSelf, initialBindings,
+                label, genericSpecs, inferenceHoles, permitLabeledProducts,
+                Map.of());
+    }
+
+    /**
+     * A supplied value is typechecked in lexical order, but its generic
+     * constraint comes from the formal ABI slot assigned by the checked
+     * product/omission plan. Missing formals never contribute inference.
+     */
+    private Type checkGenericCallable(
+            List<String> genericNames,
+            List<Ast.Param> params,
+            Ast.TypeRef returnRef,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type callableSelf,
+            Map<String, Type> initialBindings,
+            String label,
+            List<Ast.GenericParameter> genericSpecs,
+            Set<String> inferenceHoles,
+            boolean permitLabeledProducts,
+            Map<String, Ast.TypeRef> optionalDefaults) {
         List<ExpandedCallArgument> expanded =
                 expandFixedCallArguments(
-                        arguments,
-                        env,
-                        callerGenerics,
-                        callerSelf,
-                        label,
-                        permitLabeledProducts);
-        if (params.size() != expanded.size()) {
-            throw new IllegalArgumentException(
-                    label + " arity mismatch: expected " + params.size()
-                            + " argument(s), got " + expanded.size());
-        }
+                        arguments, env, callerGenerics, callerSelf,
+                        label, permitLabeledProducts);
+        List<FixedProductCallPlan.InputSlot> inputs =
+                expanded.stream().map(ExpandedCallArgument::inputSlot).toList();
 
-        FixedProductCallPlan plan = FixedProductCallPlan.bind(
-                params.stream().map(Ast.Param::name).toList(),
-                expanded.stream()
-                        .map(ExpandedCallArgument::inputSlot)
-                        .toList());
-        if (expanded.stream().anyMatch(slot -> slot.label() != null)) {
-            if (!genericNames.isEmpty()) {
+        boolean optional = params.stream().anyMatch(Ast.Param::omittable);
+        List<Integer> sourceToFormal;
+        List<Integer> abiToSource;
+        if (optional) {
+            OptionalCallPlan plan = OptionalCallPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(),
+                    params.stream().map(Ast.Param::omittable).toList(),
+                    inputs);
+            sourceToFormal = plan.sourceOrder().stream()
+                    .map(OptionalCallPlan.BoundSlot::parameterIndex).toList();
+            abiToSource = plan.abiToSource();
+        } else {
+            if (params.size() != expanded.size()) {
                 throw new IllegalArgumentException(
-                        label + " named/record-spread binding with generic parameters "
-                                + "is not enabled until generic inference consumes the "
-                                + "same checked source-to-ABI plan");
+                        label + " arity mismatch: expected " + params.size()
+                                + " argument(s), got " + expanded.size());
             }
-            List<ExpandedCallArgument> byAbi =
-                    new ArrayList<>(expanded.size());
-            for (int source : plan.abiToSource()) {
-                byAbi.add(expanded.get(source));
-            }
-            expanded = List.copyOf(byAbi);
+            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(),
+                    inputs);
+            sourceToFormal = plan.sourceOrder().stream()
+                    .map(FixedProductCallPlan.BoundSlot::parameterIndex).toList();
+            abiToSource = plan.abiToSource();
         }
 
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
-        Set<String> fixedBindings =
-                new HashSet<>(initialBindings.keySet());
+        Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
         List<Type> patterns = params.stream()
                 .map(param -> resolveParam(param, unique, callableSelf))
                 .toList();
 
-        // Keep the result of the inference pass. Re-checking an unchanged,
-        // non-lambda argument below duplicates its entire call subtree.
-        List<Type> inferredArgumentTypes =
-                new ArrayList<>(expanded.size());
-        for (int i = 0; i < expanded.size(); i++) {
+        // Generic inference is driven by supplied values, not a synthetic
+        // default or by declaration-order reordering of source expressions.
+        List<Type> inferredArgumentTypes = new ArrayList<>(expanded.size());
+        for (int sourceIndex = 0; sourceIndex < expanded.size(); sourceIndex++) {
+            int formalIndex = sourceToFormal.get(sourceIndex);
             Type actual = expandedCallArgumentType(
-                    expanded.get(i),
-                    patterns.get(i),
-                    env,
-                    callerGenerics,
-                    callerSelf);
+                    expanded.get(sourceIndex), patterns.get(formalIndex),
+                    env, callerGenerics, callerSelf);
             inferredArgumentTypes.add(actual);
             inferGenericBindings(
-                    patterns.get(i),
-                    actual,
-                    bindings,
-                    fixedBindings,
-                    label);
+                    patterns.get(formalIndex), actual,
+                    bindings, fixedBindings, label);
         }
 
         GenericCallArguments.applyDefaults(
-                genericNames,
-                genericSpecs,
-                bindings,
-                inferenceHoles,
+                genericNames, genericSpecs, bindings, inferenceHoles,
                 ref -> resolve(ref, unique, callableSelf),
                 this::substituteGenerics,
                 type -> containsGenericNamed(type, unique),
                 label);
-        GenericCallArguments.requireBound(
-                genericNames, bindings, label);
+        GenericCallArguments.requireBound(genericNames, bindings, label);
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
 
-        for (int i = 0; i < expanded.size(); i++) {
-            Type expected =
-                    substituteGenerics(patterns.get(i), bindings);
+        for (int sourceIndex = 0; sourceIndex < expanded.size(); sourceIndex++) {
+            int formalIndex = sourceToFormal.get(sourceIndex);
+            Ast.Param param = params.get(formalIndex);
+            Type expected = substituteGenerics(patterns.get(formalIndex), bindings);
             if (containsGenericNamed(expected, unbound)) {
                 throw new IllegalArgumentException(
-                        "cannot infer all generic parameters for "
-                                + label + " from argument " + (i + 1));
+                        "cannot infer all generic parameters for " + label
+                                + " from argument " + (sourceIndex + 1));
             }
 
-            ExpandedCallArgument argument = expanded.get(i);
+            ExpandedCallArgument argument = expanded.get(sourceIndex);
             if (argument.expression() != null) {
                 validateLambdaArgument(
-                        argument.expression(),
-                        expected,
-                        env,
-                        callerGenerics,
-                        callerSelf);
+                        argument.expression(), expected, env,
+                        callerGenerics, callerSelf);
             }
-
             Type actual = argument.expression() != null
                             && !(argument.expression() instanceof Ast.LambdaExpr)
-                            && expected.equals(patterns.get(i))
-                    ? inferredArgumentTypes.get(i)
+                            && expected.equals(patterns.get(formalIndex))
+                    ? inferredArgumentTypes.get(sourceIndex)
                     : expandedCallArgumentType(
-                            argument,
-                            expected,
-                            env,
-                            callerGenerics,
-                            callerSelf);
-            if (!params.get(i).structural()) {
+                            argument, expected, env,
+                            callerGenerics, callerSelf);
+            if (!param.structural()) {
                 requireReadonlyCapabilityPreserved(
-                        actual,
-                        expected,
-                        "argument " + (i + 1) + " to " + label);
+                        actual, expected,
+                        "argument " + (sourceIndex + 1) + " to " + label);
             }
             requireMutableReferentCompatible(
-                    actual,
-                    params.get(i).mutable(),
-                    "argument " + (i + 1) + " to mutable parameter");
-            requireAssignable(
-                    actual,
-                    expected,
-                    "argument " + (i + 1));
+                    actual, param.mutable(),
+                    "argument " + (sourceIndex + 1) + " to mutable parameter");
+            requireAssignable(actual, expected,
+                    "argument " + (sourceIndex + 1));
         }
 
-        Type result =
-                substituteGenerics(
-                        resolve(returnRef, unique, callableSelf),
-                        bindings);
+        // Defaults are checked against specialized parameter types but are
+        // never input evidence for inference or source effects/borrows.
+        if (optional) {
+            for (int formalIndex = 0; formalIndex < params.size(); formalIndex++) {
+                if (abiToSource.get(formalIndex) >= 0) continue;
+                Ast.Param param = params.get(formalIndex);
+                Type expected = substituteGenerics(
+                        patterns.get(formalIndex), bindings);
+                Ast.TypeRef literal = optionalDefaults.get(param.name());
+                if (literal == null) {
+                    if (!isOptionType(expected)) {
+                        throw new IllegalArgumentException(
+                                label + " omitted parameter '" + param.name()
+                                        + "' without a checked default");
+                    }
+                } else {
+                    Type actual = defaultLiteralType(
+                            literal, expected,
+                            "default for parameter '" + param.name() + "'");
+                    requireAssignable(actual, expected,
+                            "default for parameter '" + param.name() + "'");
+                }
+            }
+        }
+
+        Type result = substituteGenerics(
+                resolve(returnRef, unique, callableSelf), bindings);
         if (containsGenericNamed(result, unbound)) {
             throw new IllegalArgumentException(
-                    "cannot infer generic return type for "
-                            + label
+                    "cannot infer generic return type for " + label
                             + "; add an inferable value parameter");
         }
         return result;
@@ -10415,14 +10436,6 @@ public final class TypeChecker {
                                     + param.name() + "?' parameter");
                 }
                 continue;
-            }
-
-            if (!fn.genericParameters().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "omittable parameters on generic function '"
-                                + fn.name()
-                                + "' are not enabled until generic inference "
-                                + "consumes the omission-aware plan");
             }
 
             if (explicit == null) {
