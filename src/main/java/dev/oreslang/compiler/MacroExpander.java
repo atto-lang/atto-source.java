@@ -28,10 +28,10 @@ import java.util.Set;
  * the returned Program.</p>
  */
 public final class MacroExpander {
-    private static final int MAX_EXPANSIONS = 1_024;
-    private static final int MAX_EXPANSION_DEPTH = 64;
-    private static final int MAX_TEMPLATE_DEPTH = 64;
-    private static final int MAX_TEMPLATE_NODES = 2_048;
+    static final int MAX_EXPANSIONS = 1_024;
+    static final int MAX_EXPANSION_DEPTH = 64;
+    static final int MAX_TEMPLATE_DEPTH = 64;
+    static final int MAX_TEMPLATE_NODES = 2_048;
 
     private final Map<String, Ast.MacroDecl> macros = new HashMap<>();
     private final Map<String, List<Ast.Decl>> declarationsByModule = new HashMap<>();
