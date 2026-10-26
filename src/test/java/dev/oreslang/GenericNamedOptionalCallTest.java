@@ -47,7 +47,7 @@ final class GenericNamedOptionalCallTest {
                     return left;
                 }
                 pub routine main(): void {
-                    stdio.stdout.write(first(right: two(), left: one()));
+                    stdio.stdout.write(first<int>(right: two(), left: one()));
                     return;
                 }
                 """;
