@@ -17,6 +17,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class ActorPipeTransport implements AutoCloseable {
     private static final int MAX_PAYLOAD_BYTES = 1024 * 1024;
+    private static final int MAX_SUPPRESSED_CLEANUP_FAILURES = 64;
+
+    private static Throwable accumulateCleanupFailure(
+            Throwable primary,
+            Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (primary == null) return failure;
+        if (primary != failure
+                && primary.getSuppressed().length < MAX_SUPPRESSED_CLEANUP_FAILURES) {
+            primary.addSuppressed(failure);
+        }
+        return primary;
+    }
+
+    private static <E extends Error> E preservePriorCleanupFailure(
+            Throwable prior,
+            E fatal) {
+        Objects.requireNonNull(fatal, "fatal");
+        if (prior != null && prior != fatal
+                && fatal.getSuppressed().length < MAX_SUPPRESSED_CLEANUP_FAILURES) {
+            fatal.addSuppressed(prior);
+        }
+        return fatal;
+    }
     private final ActorRuntime.ActorGroup group;
     private final List<ActorPipelineContract.Connection> schema;
     private final List<Class<?>> payloadClasses;
@@ -64,9 +88,27 @@ public final class ActorPipeTransport implements AutoCloseable {
         try {
             group.registerInfrastructureClose(this::closeChannelsFromGroup);
         } catch (RuntimeException | Error failure) {
-            closeChannelsFromGroup();
-            try { group.close(); } catch (RuntimeException closeFailure) {
-                failure.addSuppressed(closeFailure);
+            try {
+                closeChannelsFromGroup();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                // The transport has already fenced itself closed. Retire the
+                // freshly-created group publication before propagating the
+                // fatal cleanup error; no user worker can exist at this point.
+                try {
+                    group.close();
+                } catch (RuntimeException | Error groupFailure) {
+                    preservePriorCleanupFailure(groupFailure, fatal);
+                }
+                throw preservePriorCleanupFailure(failure, fatal);
+            } catch (RuntimeException | Error closeFailure) {
+                accumulateCleanupFailure(failure, closeFailure);
+            }
+            try {
+                group.close();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                throw preservePriorCleanupFailure(failure, fatal);
+            } catch (RuntimeException | Error closeFailure) {
+                accumulateCleanupFailure(failure, closeFailure);
             }
             throw failure;
         }
@@ -236,13 +278,61 @@ public final class ActorPipeTransport implements AutoCloseable {
     /** Group shutdown also invokes this callback, including runtime shutdown. */
     private void closeChannelsFromGroup() {
         if (!closed.compareAndSet(false, true)) return;
-        for (ChannelRuntime.Channel<Object> channel : links)
-            channel.close();
+        Throwable closeFailure = null;
+        Error fatalFailure = null;
+        for (ChannelRuntime.Channel<Object> channel : links) {
+            try {
+                // Closing every sibling link is structural capability
+                // retirement, not optional best-effort cleanup. A completion
+                // callback on one link may raise a VM-fatal error after that
+                // link has fenced itself; later links must still be closed so
+                // their already-admitted readers/writers cannot remain live.
+                channel.close();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                if (fatalFailure == null) {
+                    fatalFailure = preservePriorCleanupFailure(closeFailure, fatal);
+                } else {
+                    preservePriorCleanupFailure(fatal, fatalFailure);
+                }
+            } catch (RuntimeException | Error failure) {
+                if (fatalFailure == null) {
+                    closeFailure = accumulateCleanupFailure(closeFailure, failure);
+                } else {
+                    preservePriorCleanupFailure(failure, fatalFailure);
+                }
+            }
+        }
+        if (fatalFailure != null) throw fatalFailure;
+        if (closeFailure instanceof RuntimeException failure) throw failure;
+        if (closeFailure instanceof Error failure) throw failure;
     }
 
     @Override
     public void close() {
-        closeChannelsFromGroup();
-        group.close();
+        Throwable closeFailure = null;
+        try {
+            closeChannelsFromGroup();
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            // Structural group retirement must still happen after the pipe has
+            // become closed, even though no further best-effort cleanup follows
+            // a fatal JVM error.
+            try {
+                group.close();
+            } catch (RuntimeException | Error groupFailure) {
+                preservePriorCleanupFailure(groupFailure, fatal);
+            }
+            throw fatal;
+        } catch (RuntimeException | Error failure) {
+            closeFailure = failure;
+        }
+        try {
+            group.close();
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            throw preservePriorCleanupFailure(closeFailure, fatal);
+        } catch (RuntimeException | Error failure) {
+            closeFailure = accumulateCleanupFailure(closeFailure, failure);
+        }
+        if (closeFailure instanceof RuntimeException failure) throw failure;
+        if (closeFailure instanceof Error failure) throw failure;
     }
 }
