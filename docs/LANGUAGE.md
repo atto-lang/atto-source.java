@@ -4,7 +4,7 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 ## Files, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`. Unqualified function lookup is lexical: code inside a named module first sees that module's own callable family, then file-root callables. A uniquely named callable in some *other* module never becomes ambient merely because its spelling is globally unique; it still requires module qualification.
 
 ```ores
 define module math
