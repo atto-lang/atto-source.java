@@ -40,6 +40,34 @@ final class ExplicitExportTransformPreservationTest {
     }
 
     @Test
+    void treeShakerPreservesCheckedEffectsOnExportedFunction() {
+        Ast.Program parsed = Parser.parse("""
+                export fnc run;
+
+                fnc run(): void throws ExternalError {
+                  return;
+                }
+                """);
+
+        TreeShaker.Result result = TreeShaker.shake(
+                AnnotationExpander.expand(parsed),
+                BuildOptions.library(Map.of()));
+
+        Ast.FunctionDecl run = result.program().modules().stream()
+                .filter(module -> module.name().equals(Parser.ROOT_MODULE))
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("run"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(
+                java.util.List.of(Ast.TypeRef.simple("ExternalError")),
+                run.effects().throwsTypes());
+    }
+
+    @Test
     void explicitDefaultPrivateExportIsLibraryTreeShakerRoot() {
         Ast.Program parsed = Parser.parse("""
                 export class Kept;
