@@ -34,11 +34,13 @@ BLOCKING_INCIDENT_IDS = {
     77: 5904679716,
     127: 5935338521,
     171: 6042555082,  # recovery/runtime source-bearing private carrier; pending classification
+    172: 6042602777,  # LLVM exact-tree carrier; independent placement review outstanding
 }
-BLOCKING_INCIDENTS = (22, 77, 127, 171)
+BLOCKING_INCIDENTS = (22, 77, 127, 171, 172)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
     "agent-pontifex-test/agent-pontifex-e2e-tests",
+    "led-dynamo/leddy-e2e",
 )
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
