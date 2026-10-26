@@ -551,7 +551,8 @@ public final class Parser {
     }
 
     private Ast.MacroDecl parseMacroDecl(Ast.Visibility visibility) {
-        String name = consume(IDENT, "expected macro name").lexeme();
+        Token macroName = consume(IDENT, "expected macro name");
+        String name = macroName.lexeme();
         if (check(LT)) {
             throw error(peek(),
                     "define macro does not declare ordinary generic parameters; pass compiler-known Type values explicitly");
@@ -585,7 +586,13 @@ public final class Parser {
         Ast.MacroResultKind resultKind = parseMacroResultKind();
         List<Ast.Stmt> body = parseBlock();
         rejectMacroQuoteShadowing(body);
-        return new Ast.MacroDecl(name, visibility, parameters, resultKind, body);
+        return new Ast.MacroDecl(
+                name,
+                visibility,
+                parameters,
+                resultKind,
+                body,
+                new Ast.SourceSite(macroName.line(), macroName.column()));
     }
 
     /**
