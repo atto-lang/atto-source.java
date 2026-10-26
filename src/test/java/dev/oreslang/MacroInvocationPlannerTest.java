@@ -434,7 +434,9 @@ final class MacroInvocationPlannerTest {
 
         assertTrue(failure.getMessage().contains("first evaluator slice"),
                 failure::toString);
-        assertTrue(failure.getMessage().contains("runtime/JIT/source-string fallback is forbidden"),
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("JIT/source-string fallback is forbidden"),
                 failure::toString);
     }
 
