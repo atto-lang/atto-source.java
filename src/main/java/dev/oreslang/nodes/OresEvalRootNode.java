@@ -876,7 +876,16 @@ public final class OresEvalRootNode extends RootNode {
                         invocation.arguments(),
                         taskScope,
                         taskScopeParent);
-                case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
+                case INVOKABLE -> {
+                    Invokable callable = (Invokable) invocation.target();
+                    if (callable instanceof TailCallable tail) {
+                        yield tail.callScoped(
+                                invocation.arguments(),
+                                taskScope,
+                                taskScopeParent);
+                    }
+                    yield callable.call(invocation.arguments());
+                }
             };
         }
 
@@ -919,6 +928,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private TailInvokable tailCallable(Invokable callable) {
+            return new TailCallable(
+                    this,
+                    (arguments, ignoredScope, ignoredParent) ->
+                            callable.call(arguments));
+        }
+
+        private TailInvokable scopedTailCallable(ScopedCall callable) {
             return new TailCallable(this, callable);
         }
 
@@ -7034,9 +7050,17 @@ public final class OresEvalRootNode extends RootNode {
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
                 Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
-                return tailCallable(args -> {
+                return scopedTailCallable((args, dynamicTaskScope, dynamicTaskScopeParent) -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
+                    // A scheduler-owned continuation such as Future.map is a
+                    // new structured child. When invocation supplies a live
+                    // dynamic scope permit, it supersedes the stale parent
+                    // captured when the lambda value was created.
+                    if (dynamicTaskScope != null) {
+                        local.taskScope = dynamicTaskScope;
+                        local.taskScopeParent = dynamicTaskScopeParent;
+                    }
                     bindCallableArguments(local, lambda.parameters(), args, "lambda");
                     try {
                         if (lambda.expressionBody() != null) {
@@ -9559,9 +9583,24 @@ public final class OresEvalRootNode extends RootNode {
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
     private interface TailInvokable extends Invokable { }
 
-    private record TailCallable(Evaluator owner, Invokable delegate) implements TailInvokable {
+    @FunctionalInterface
+    private interface ScopedCall {
+        Object call(
+                List<Object> arguments,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent);
+    }
+
+    private record TailCallable(Evaluator owner, ScopedCall delegate) implements TailInvokable {
         @Override public Object call(List<Object> arguments) {
-            return delegate.call(arguments);
+            return delegate.call(arguments, null, null);
+        }
+
+        private Object callScoped(
+                List<Object> arguments,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
+            return delegate.call(arguments, taskScope, taskScopeParent);
         }
     }
 
