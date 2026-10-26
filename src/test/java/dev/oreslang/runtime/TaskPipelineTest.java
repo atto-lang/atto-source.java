@@ -15,6 +15,26 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class TaskPipelineTest {
     @Test
+    void rejectsOversizedStageListBeforeReadingElements() {
+        List<TaskPipeline.Stage> hostile = new java.util.AbstractList<>() {
+            @Override public TaskPipeline.Stage get(int index) {
+                throw new AssertionError("oversized list must be rejected before copying");
+            }
+
+            @Override public int size() {
+                return 129;
+            }
+        };
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TaskPipeline.startTracked(
+                            scheduler, OresFuture.completed(1), hostile));
+            assertTrue(failure.getMessage().contains("128"));
+        }
+    }
+
+    @Test
     void executesDeferredMixedStagesInOneSchedulerTaskDomain() throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
         OresFuture<Integer> nested = new OresFuture<>();
