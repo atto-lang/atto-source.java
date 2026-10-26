@@ -69,10 +69,13 @@ actor_method_decl
                 = { annotation } visibility { callable_modifier } [ "fnc" | "method" ] method_name [ generic_params ]
                   method_head return_spec block ;
 
-class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_params ]
+class_decl      = visibility "define" [ "abstract" ] [ "inverted" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   "as" { class_member } "end" ;
+(* 'inverted' is contextual and is only layout intent. Inverted classes
+   currently reject abstract/inheritance/interfaces/constructors and guest
+   execution remains fail-closed until checked column lowering is enabled. *)
 
 class_member    = field_decl
                 | type_first_class_field_decl
