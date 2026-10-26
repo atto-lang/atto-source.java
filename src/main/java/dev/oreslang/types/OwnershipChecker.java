@@ -2449,44 +2449,12 @@ public final class OwnershipChecker {
             Scope scope,
             String callable,
             boolean permitLabeledProducts) {
-        List<FixedProductCallPlan.InputSlot> inputs = new ArrayList<>();
-        for (Ast.Expr argument : arguments) {
-            if (argument instanceof Ast.NamedArgExpr named) {
-                if (!permitLabeledProducts) {
-                    throw error(callable
-                            + " does not support named arguments on this callable surface");
-                }
-                inputs.add(FixedProductCallPlan.InputSlot.named(named.name()));
-                continue;
-            }
-
-            if (argument instanceof Ast.SpreadExpr spread) {
-                Ast.TypeRef type = syntacticType(spread.expression(), scope);
-                if (type.isBorrow()) type = type.borrowedTarget();
-                if (type.isReadonlyRecordType()
-                        && spread.expression() instanceof Ast.ObjectExpr object
-                        && object.structuralRecord()) {
-                    if (!permitLabeledProducts) {
-                        throw error(callable
-                                + " does not support record spread on this callable surface");
-                    }
-                    for (String name : type.recordMembers().keySet()) {
-                        inputs.add(FixedProductCallPlan.InputSlot.named(name));
-                    }
-                } else if (type.isTupleType()) {
-                    for (int i = 0; i < type.arguments().size(); i++) {
-                        inputs.add(FixedProductCallPlan.InputSlot.positional());
-                    }
-                } else {
-                    throw error(callable
-                            + " spread requires a statically known tuple or a supported "
-                            + "direct closed record pack");
-                }
-                continue;
-            }
-
-            inputs.add(FixedProductCallPlan.InputSlot.positional());
-        }
+        List<FixedProductCallPlan.InputSlot> inputs =
+                callInputSlots(
+                        arguments,
+                        scope,
+                        permitLabeledProducts,
+                        callable);
 
         boolean optional =
                 params.stream().anyMatch(Ast.Param::omittable);
@@ -3944,12 +3912,28 @@ public final class OwnershipChecker {
     private List<FixedProductCallPlan.InputSlot> callInputSlots(
             List<Ast.Expr> arguments,
             Scope scope) {
+        return callInputSlots(arguments, scope, true, "fixed call");
+    }
+
+    private List<FixedProductCallPlan.InputSlot> callInputSlots(
+            List<Ast.Expr> arguments,
+            Scope scope,
+            boolean permitLabeledProducts,
+            String callable) {
         ArrayList<FixedProductCallPlan.InputSlot> result =
                 new ArrayList<>();
-        for (Ast.Expr argument : arguments) {
+        for (int callItemIndex = 0;
+                callItemIndex < arguments.size();
+                callItemIndex++) {
+            Ast.Expr argument = arguments.get(callItemIndex);
             if (argument instanceof Ast.NamedArgExpr named) {
+                if (!permitLabeledProducts) {
+                    throw error(callable
+                            + " does not support named arguments on this callable surface");
+                }
                 result.add(
-                        FixedProductCallPlan.InputSlot.named(named.name()));
+                        FixedProductCallPlan.InputSlot.named(
+                                named.name(), callItemIndex));
                 continue;
             }
             if (argument instanceof Ast.SpreadExpr spread) {
@@ -3958,24 +3942,38 @@ public final class OwnershipChecker {
                 if (type.isReadonlyRecordType()
                         && spread.expression() instanceof Ast.ObjectExpr object
                         && object.structuralRecord()) {
+                    if (!permitLabeledProducts) {
+                        throw error(callable
+                                + " does not support record spread on this callable surface");
+                    }
+                    int projectionIndex = 0;
                     for (String name : type.recordMembers().keySet()) {
                         result.add(
-                                FixedProductCallPlan.InputSlot.named(name));
+                                FixedProductCallPlan.InputSlot.namedProjection(
+                                        name,
+                                        callItemIndex,
+                                        projectionIndex++));
                     }
                     continue;
                 }
                 if (type.isTupleType()) {
-                    for (int i = 0; i < type.arguments().size(); i++) {
+                    for (int projectionIndex = 0;
+                            projectionIndex < type.arguments().size();
+                            projectionIndex++) {
                         result.add(
-                                FixedProductCallPlan.InputSlot.positional());
+                                FixedProductCallPlan.InputSlot.positionalProjection(
+                                        callItemIndex,
+                                        projectionIndex));
                     }
                     continue;
                 }
                 throw error(
-                        "fixed call spread requires a statically known tuple "
+                        callable
+                                + " spread requires a statically known tuple "
                                 + "or supported direct closed record pack");
             }
-            result.add(FixedProductCallPlan.InputSlot.positional());
+            result.add(
+                    FixedProductCallPlan.InputSlot.positional(callItemIndex));
         }
         return List.copyOf(result);
     }
