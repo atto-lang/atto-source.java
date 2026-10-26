@@ -11,7 +11,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -309,6 +311,21 @@ final class ExplicitExportSyntaxTest {
                         }
                         """)).getFirst().signatureAbiSha256();
         assertNotEquals(entry.signatureAbiSha256(), signatureChanged);
+    }
+
+    @Test
+    void inlinePubAndUnaliasedExplicitExportHaveEquivalentSourceSignatureDigest() {
+        String explicit = OresCompiler.collectExportMetadata(Parser.parse("""
+                export fnc api;
+                fnc api(int value): int { return value; }
+                """)).getFirst().signatureAbiSha256();
+
+        String inline = OresCompiler.collectExportMetadata(Parser.parse("""
+                pub fnc api(int value): int { return value; }
+                """)).getFirst().signatureAbiSha256();
+
+        assertEquals(inline, explicit,
+                "externally equivalent pub and explicit-export forms need one source ABI digest");
     }
 
     @Test
