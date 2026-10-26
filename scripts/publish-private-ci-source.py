@@ -293,6 +293,20 @@ def _require_strict_source_protection(protection):
                        or bypasses.get(category)
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
+    named_contract = tuple(sorted(
+        (item["context"], item.get("app_id")) for item in named_checks
+    ))
+    return (
+        reviews["require_code_owner_reviews"],
+        reviews["dismiss_stale_reviews"],
+        reviews["required_approving_review_count"],
+        checks["strict"],
+        tuple(sorted(contexts)),
+        named_contract,
+        administrators["enabled"],
+        force_pushes["enabled"],
+        deletions["enabled"],
+    )
 
 
 def verify_protected_origin(repository, expected_policy_digest, expected_repository_id=None):
@@ -321,7 +335,7 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
     # On plans/credentials where GitHub denies this API, fail closed.
     protection = gh_api(
         f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
-    _require_strict_source_protection(protection)
+    protection_contract = _require_strict_source_protection(protection)
     commit_sha = valid_sha(branch.get("commit", {}).get("sha"))
     policy = gh_api(f"repos/{SOURCE_REPO}/contents/{POLICY_PATH}?ref={commit_sha}")
     if (policy.get("path") != POLICY_PATH or policy.get("type") != "file"
@@ -376,8 +390,7 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
         raise Denied("source main changed during protected-origin attestation")
     final_protection = gh_api(
         f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
-    _require_strict_source_protection(final_protection)
-    if final_protection != protection:
+    if _require_strict_source_protection(final_protection) != protection_contract:
         raise Denied("source main protection changed during protected-origin attestation")
     return commit_sha
 
