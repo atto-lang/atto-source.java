@@ -764,6 +764,9 @@ public final class Parser {
         Ast.ConstructorDecl constructor = null;
 
         while (!check(classTerminator) && !check(EOF)) {
+            if (isContextualIdentifier("export")) {
+                throw error(peek(), "[EXPORT_LOCAL_SCOPE] export declarations are not allowed inside classes");
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
 
@@ -1072,6 +1075,9 @@ public final class Parser {
         boolean declaredMessageConcurrency = false;
 
         while (!check(terminator) && !check(EOF)) {
+            if (isContextualIdentifier("export")) {
+                throw error(peek(), "[EXPORT_LOCAL_SCOPE] export declarations are not allowed inside actors");
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isContextualIdentifier("int") && current + 1 < tokens.size()
@@ -1257,6 +1263,9 @@ public final class Parser {
 
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
+            if (isContextualIdentifier("export")) {
+                throw error(peek(), "[EXPORT_LOCAL_SCOPE] export declarations are not allowed inside interfaces, traits, or contracts");
+            }
             List<Ast.Annotation> memberAnnotations = parseAnnotations();
             Modifiers memberModifiers = parseModifiers();
 
@@ -2337,6 +2346,9 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        if (isContextualIdentifier("export")) {
+            throw error(peek(), "[EXPORT_LOCAL_SCOPE] export declarations are allowed only at file/root or named-module scope");
+        }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
