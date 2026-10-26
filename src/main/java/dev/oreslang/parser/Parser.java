@@ -514,6 +514,14 @@ public final class Parser {
             validateOnlyVisibilityModifiers(modifiers, "module bindings");
             return parseModuleBinding(annotations, modifiers.visibility);
         }
+        // Canonical generator declarations are callable declarations in their
+        // own right: `gen* name(...)`, `async gen* name(...)`, and
+        // `suspend gen* name(...)` do not require a redundant fnc/routine
+        // marker. Legacy generator fnc/routine and fnc/routine gen* remain
+        // accepted by the branches above.
+        if (modifiers.generator && isCallableDeclarationNameToken(peek().type())) {
+            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
+        }
         return null;
     }
 
@@ -540,8 +548,6 @@ public final class Parser {
             Ast.CallableKind kind,
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
-        if (modifiers.suspends && modifiers.generator)
-            throw error(previous(), "suspends generators need suspension-aware generator frames");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         if (modifiers.trapped && (modifiers.async || modifiers.suspends)) {
             throw error(previous(), "suspending trap fnc/routine is not enabled until trap spans every await suspension");
@@ -660,7 +666,6 @@ public final class Parser {
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
-            if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
@@ -668,8 +673,8 @@ public final class Parser {
                 if (explicitMethod) {
                     throw error(previous(), "static class functions use 'static fnc', not 'static method'");
                 }
-                if (!explicitFnc) {
-                    consume(FNC, "static class functions must be declared with 'static fnc'");
+                if (!explicitFnc && !mods.generator) {
+                    consume(FNC, "static class functions must be declared with 'static fnc' or 'static gen*'");
                 }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
             }
@@ -1361,7 +1366,8 @@ public final class Parser {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
-        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
+        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract,
+                mods.async, mods.suspends, mods.generator, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
     }
 
@@ -4105,6 +4111,13 @@ public final class Parser {
             }
         }
         return false;
+    }
+
+    private static boolean isCallableDeclarationNameToken(Token.Type type) {
+        return type == IDENT
+                || isReservedCallableName(type)
+                || isContextualStatementCallableName(type)
+                || type == TRUE || type == FALSE;
     }
 
     private String consumeCallableName(String message) {
