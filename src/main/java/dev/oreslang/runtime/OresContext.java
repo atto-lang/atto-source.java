@@ -178,12 +178,31 @@ public final class OresContext implements AutoCloseable {
         AsyncRuntime async = null;
         RuntimeGarbageCollector gc = null;
         try {
+            ActorRuntime.DispatcherConfig actorSettings =
+                    ActorRuntime.DispatcherConfig.defaults();
+            OresCarrierBudget budget = vm.carrierBudget();
+            if (budget != null) {
+                actorSettings = new ActorRuntime.DispatcherConfig(
+                        budget.privateMaximum(),
+                        budget.sharedMaximum(),
+                        actorSettings.throughput(),
+                        actorSettings.maxActors());
+            }
             actors = new ActorRuntime(
                     isolatePolicy,
-                    ActorRuntime.DispatcherConfig.defaults(),
+                    actorSettings,
                     this::executeActorTurn,
                     vm::executeControl,
-                    vm::executePhysicalStop);
+                    vm::executePhysicalStop,
+                    budget,
+                    vm.carrierPermitPool());
+            // Accepted readiness completions reuse actor carrier capacity.
+            // A one-shot helper may bootstrap a cold actor carrier off-selector;
+            // guest code and Future continuations still run only on the owning scheduler.
+            actors.bindNioCompletionCapacityHook(
+                    vm.nioReadiness()::retryStagedNotifications);
+            vm.nioReadiness().bindVmCompletionExecutor(
+                    actors::executeHostIoCompletion, true);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             // Install BEFORE publishing this actor runtime to any guest.
@@ -549,9 +568,64 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        if (OresScheduler.current() != null
+                || OresVM.onNioWorker()
+                || ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()) {
+            throw new IllegalStateException(
+                    "OresContext shutdown requires an external trusted host thread");
+        }
+
         // Hold the entire actor, scheduler, Truffle code image and GC graph
-        // strongly reachable until BOTH physical joins succeed.
+        // strongly reachable until NIO, actor and native physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        java.util.Set<VmNioTcpListener> closingVmNio;
+        synchronized (nioLifecycle) {
+            nioContextClosed = true;
+            while (nioOpening > 0) {
+                long left = deadline - System.nanoTime();
+                if (left <= 0) {
+                    output.flush();
+                    throw new IllegalStateException(
+                            "Oreslang TCP listener bootstrap failed to quiesce");
+                }
+                try {
+                    TimeUnit.NANOSECONDS.timedWait(nioLifecycle, left);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    output.flush();
+                    throw new IllegalStateException(
+                            "interrupted while fencing Oreslang TCP listener bootstrap",
+                            interrupted);
+                }
+            }
+            closingVmNio = java.util.Set.copyOf(vmNioListeners);
+        }
+        for (VmNioTcpListener listener : closingVmNio) listener.close();
+
+        // NIO completion delivery is bound to actor carriers. Drain it before
+        // actor/native retirement so an accepted completion is never stranded.
+        vm.nioReadiness().close();
+        try {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0 || !vm.nioReadiness().awaitStopped(
+                    remaining, TimeUnit.NANOSECONDS)) {
+                output.flush();
+                throw new IllegalStateException(
+                        "Oreslang VM NIO completions did not quiesce before actor shutdown");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            output.flush();
+            throw new IllegalStateException(
+                    "interrupted while draining VM NIO completions", interrupted);
+        }
+        synchronized (nioLifecycle) {
+            vmNioListeners.removeIf(VmNioTcpListener::isTerminated);
+        }
+
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
