@@ -172,14 +172,32 @@ class PrivateCiV3Test(unittest.TestCase):
         for arg in (
             "-s/tmp/settings.xml",
             "--settings=/tmp/settings.xml",
+            "-fother.xml",
+            "-t/tmp/toolchains.xml",
+            "-gt/tmp/global-toolchains.xml",
+            "--toolchains=/tmp/toolchains.xml",
+            "--global-toolchains=/tmp/global-toolchains.xml",
             "-Dmaven.repo.local=/tmp/m2",
             "-DskipTests",
             "-Dmaven.test.skip=true",
             "-DskipITs=true",
+            "--define=maven.repo.local=/tmp/m2",
         ):
             with self.subTest(arg=arg):
                 doc = json.loads(json.dumps(base))
                 doc["commands"][0]["argv"].insert(2, arg)
+                with self.assertRaisesRegex(v3.Denied, "trusted build controls"):
+                    v3.validate_test_plan(
+                        (json.dumps(doc) + "\n").encode(), 1482
+                    )
+
+        for args in (
+            ["-D", "maven.repo.local=/tmp/m2"],
+            ["--define", "maven.repo.local=/tmp/m2"],
+        ):
+            with self.subTest(args=args):
+                doc = json.loads(json.dumps(base))
+                doc["commands"][0]["argv"][2:2] = args
                 with self.assertRaisesRegex(v3.Denied, "trusted build controls"):
                     v3.validate_test_plan(
                         (json.dumps(doc) + "\n").encode(), 1482
@@ -710,6 +728,119 @@ class PrivateCiV3Test(unittest.TestCase):
                     "base": {"ref": "main"},
                 }
             raise AssertionError(route)
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
+                v3.verify_source_pr(1482, "8" * 40)
+
+    def test_verify_source_pr_accepts_exact_head_and_base_repository_identity(self):
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + v3.legacy.SOURCE_REPO:
+                return {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                }
+            if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482":
+                return {
+                    "number": 1482,
+                    "state": "open",
+                    "head": {
+                        "sha": "8" * 40,
+                        "repo": {
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                            "full_name": v3.legacy.SOURCE_REPO,
+                        },
+                    },
+                    "base": {
+                        "ref": "main",
+                        "repo": {
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                            "full_name": v3.legacy.SOURCE_REPO,
+                        },
+                    },
+                }
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            self.assertEqual(
+                v3.verify_source_pr(1482, "8" * 40),
+                v3.SOURCE_REPOSITORY_ID,
+            )
+
+    def test_verify_source_pr_rejects_head_repository_id_substitution(self):
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + v3.legacy.SOURCE_REPO:
+                return {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                }
+            if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482":
+                return {
+                    "number": 1482,
+                    "state": "open",
+                    "head": {
+                        "sha": "8" * 40,
+                        "repo": {
+                            "id": v3.SOURCE_REPOSITORY_ID + 1,
+                            "full_name": v3.legacy.SOURCE_REPO,
+                        },
+                    },
+                    "base": {
+                        "ref": "main",
+                        "repo": {
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                            "full_name": v3.legacy.SOURCE_REPO,
+                        },
+                    },
+                }
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
+                v3.verify_source_pr(1482, "8" * 40)
+
+    def test_verify_source_pr_rejects_base_repository_id_substitution(self):
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + v3.legacy.SOURCE_REPO:
+                return {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                }
+            if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482":
+                return {
+                    "number": 1482,
+                    "state": "open",
+                    "head": {
+                        "sha": "8" * 40,
+                        "repo": {
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                            "full_name": v3.legacy.SOURCE_REPO,
+                        },
+                    },
+                    "base": {
+                        "ref": "main",
+                        "repo": {
+                            "id": v3.SOURCE_REPOSITORY_ID + 1,
+                            "full_name": v3.legacy.SOURCE_REPO,
+                        },
+                    },
+                }
+            raise AssertionError(route)
+
         with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
                 v3.verify_source_pr(1482, "8" * 40)

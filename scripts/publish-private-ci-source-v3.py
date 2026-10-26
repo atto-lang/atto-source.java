@@ -582,8 +582,12 @@ def verify_source_pr(source_pr, source_commit):
             or head.get("sha") != source_commit
             or not isinstance(head.get("repo"), dict)
             or head["repo"].get("full_name") != legacy.SOURCE_REPO
+            or head["repo"].get("id") != SOURCE_REPOSITORY_ID
             or not isinstance(base, dict)
-            or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
+            or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH
+            or not isinstance(base.get("repo"), dict)
+            or base["repo"].get("full_name") != legacy.SOURCE_REPO
+            or base["repo"].get("id") != SOURCE_REPOSITORY_ID):
         raise Denied("source commit is not the exact open PR head against main")
     return repo_id
 
@@ -610,8 +614,11 @@ def _validate_maven_argv(argv):
         raise Denied("Maven carrier commands must run offline")
     if "-C" not in argv and "--strict-checksums" not in argv:
         raise Denied("Maven carrier commands must require strict checksums")
-    short_with_values = ("-s", "-gs", "-f")
-    long_with_values = ("--settings", "--global-settings", "--file")
+    short_with_values = ("-s", "-gs", "-f", "-t", "-gt")
+    long_with_values = (
+        "--settings", "--global-settings", "--file",
+        "--toolchains", "--global-toolchains",
+    )
     dangerous_props = (
         "-Dmaven.repo.local", "-DskipTests", "-Dmaven.test.skip", "-DskipITs",
     )
@@ -621,7 +628,9 @@ def _validate_maven_argv(argv):
                 or any(arg == flag or arg.startswith(flag + "=")
                        for flag in long_with_values)
                 or any(arg == prop or arg.startswith(prop + "=")
-                       for prop in dangerous_props)):
+                       for prop in dangerous_props)
+                or arg in ("-D", "--define")
+                or arg.startswith("--define=")):
             raise Denied("Maven carrier command overrides trusted build controls")
 
 
