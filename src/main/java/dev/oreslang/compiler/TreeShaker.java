@@ -84,6 +84,7 @@ public final class TreeShaker {
         private final ArrayDeque<String> work = new ArrayDeque<>();
 
         private Ast.Program rewritten;
+        private ExplicitExportResolver.Result explicitExports;
 
         Engine(Ast.Program input, BuildOptions options) {
             this.input = input;
@@ -96,6 +97,7 @@ public final class TreeShaker {
             applyBuildDefines();
             materializeConstantValues();
             rewritten = rewriteProgram(input);
+            explicitExports = ExplicitExportResolver.resolve(rewritten);
             indexSymbols(rewritten);
             seedRoots();
 
@@ -548,7 +550,13 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     declarations.add(rewriteDeclaration(module.name(), declaration));
                 }
-                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
+                modules.add(new Ast.ModuleDecl(
+                        module.name(),
+                        module.annotations(),
+                        module.contracts(),
+                        module.exports(),
+                        module.explicitlyPrivateSymbols(),
+                        declarations));
             }
             return new Ast.Program(program.namespace(), program.imports(), modules);
         }
@@ -1066,6 +1074,14 @@ public final class TreeShaker {
                 for (Symbol symbol : symbols.values()) {
                     if (isPublicApi(symbol.declaration())) markRoot(symbol.id());
                 }
+                for (Ast.ModuleDecl module : rewritten.modules()) {
+                    for (ExplicitExportResolver.ExportBinding binding
+                            : explicitExports.bindings(module.name())) {
+                        if (binding.scope() == Ast.ExportScope.PUBLIC) {
+                            markRoot(qualify(module.name(), binding.localName()));
+                        }
+                    }
+                }
             }
 
             for (String requested : options.entryPoints()) {
@@ -1116,6 +1132,12 @@ public final class TreeShaker {
                     if (!exposed) continue;
                     String name = declarationName(declaration);
                     if (name != null) mark(qualify(module.name(), name));
+                }
+                for (ExplicitExportResolver.ExportBinding binding
+                        : explicitExports.bindings(module.name())) {
+                    if (binding.scope() == Ast.ExportScope.PUBLIC) {
+                        mark(qualify(module.name(), binding.localName()));
+                    }
                 }
                 return;
             }
@@ -1490,7 +1512,13 @@ public final class TreeShaker {
                     }
                 }
                 if (!declarations.isEmpty()) {
-                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
+                        modules.add(new Ast.ModuleDecl(
+                            module.name(),
+                            module.annotations(),
+                            module.contracts(),
+                            options.preservePublicApi() ? module.exports() : List.of(),
+                            module.explicitlyPrivateSymbols(),
+                            declarations));
                 }
             }
 
