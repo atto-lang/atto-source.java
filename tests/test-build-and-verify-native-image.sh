@@ -60,6 +60,18 @@ int main(int argc, char **argv) {
             }
             else if (getenv("MOCK_JIT_REASON_EMBEDDED_IN_PARSE_ERROR"))
                 fputs("oreslang: parse error: This executable was built AOT-only; --mode=jit cannot enable runtime compilation.\n", stderr);
+            else if (getenv("MOCK_JIT_REFUSAL_NUL")) {
+                fputs("oreslang: This executable was built AOT-only; --mode=jit cannot enable runtime compilation. Rebuild with native-hybrid.", stderr);
+                fputc(0, stderr);
+                fputc('\n', stderr);
+            }
+            else if (getenv("MOCK_JIT_REFUSAL_CR")) {
+                fputs("oreslang: This executable was built AOT-only; --mode=jit cannot enable runtime compilation. Rebuild with native-hybrid.", stderr);
+                fputc('\r', stderr);
+                fputc('\n', stderr);
+            }
+            else if (getenv("MOCK_JIT_REFUSAL_WITH_EXTRA_TEXT"))
+                fputs("oreslang: This executable was built AOT-only; --mode=jit cannot enable runtime compilation. Rebuild with native-hybrid. FATAL unrelated parse failure\n", stderr);
             else if (getenv("MOCK_JIT_WRONG_MODE_REASON"))
                 fputs("oreslang: unrelated runtime compilation setting\n", stderr);
             else if (strcmp(env_or("MOCK_EMBEDDED_MODE", "aot"), "aot") == 0)
@@ -92,6 +104,16 @@ int main(int argc, char **argv) {
             else if (getenv("MOCK_ACTOR_DENIAL_BEFORE_PARSE_ERROR")) {
                 fputs("Oreslang isolate denies capability SHARED_MEMORY required by SharedMutex<T>\n", stderr);
                 fputs("Oreslang parse error at 1:1: unexpected token\n", stderr);
+            }
+            else if (getenv("MOCK_ACTOR_DENIAL_NUL")) {
+                fputs("Oreslang isolate denies capability SHARED_MEMORY required by SharedMutex<T>", stderr);
+                fputc(0, stderr);
+                fputc('\n', stderr);
+            }
+            else if (getenv("MOCK_ACTOR_DENIAL_CR")) {
+                fputs("Oreslang isolate denies capability SHARED_MEMORY required by SharedMutex<T>", stderr);
+                fputc('\r', stderr);
+                fputc('\n', stderr);
             }
             else if (getenv("MOCK_WRONG_ACTOR_REJECTION"))
                 fputs("Oreslang parse error at 1:1: unexpected token\n", stderr);
@@ -354,7 +376,8 @@ assert_case() {
       'valid shared/private actor rejected') : ;;
       'actor rejected for unrelated parse error'|'actor rejected for unrelated network capability'|\
       'actor denial spoofed on stdout'|'actor denial embedded in parse error'|\
-      'actor denial after unrelated parse error'|'actor denial before unrelated parse error')
+      'actor denial after unrelated parse error'|'actor denial before unrelated parse error'|\
+      'actor denial with NUL'|'actor denial with CR')
         expected_diagnostic='private actor negative fixture failed without a capability-denial diagnostic' ;;
       'actor check-only emitted guest output'|'actor check-only reports stderr diagnostic with zero exit'|\
       'actor check-only emits NUL stdout'|'actor check-only emits NUL stderr')
@@ -381,7 +404,8 @@ assert_case() {
       'wrong AOT JIT refusal reason'|'wrong hybrid JIT refusal reason'|\
       'JIT reason spoofed on stdout'|\
       'JIT reason after unrelated CLI error'|'JIT reason before unrelated CLI error'|\
-      'JIT reason embedded inside unrelated parse error')
+      'JIT reason embedded inside unrelated parse error'|\
+      'JIT refusal with NUL'|'JIT refusal with CR'|'JIT refusal with appended fatal text')
         expected_diagnostic='native executable refused JIT without the required build-mode diagnostic' ;;
       'native image accepting JVM JIT')
         expected_diagnostic='expected --mode=jit to be rejected with CLI status 2, got 0' ;;
@@ -466,6 +490,8 @@ assert_case 'actor denial spoofed on stdout' failure aot compressed32 MOCK_ACTOR
 assert_case 'actor denial embedded in parse error' failure aot compressed32 MOCK_ACTOR_DENIAL_EMBEDDED=1
 assert_case 'actor denial after unrelated parse error' failure aot compressed32 MOCK_ACTOR_DENIAL_AFTER_PARSE_ERROR=1
 assert_case 'actor denial before unrelated parse error' failure aot compressed32 MOCK_ACTOR_DENIAL_BEFORE_PARSE_ERROR=1
+assert_case 'actor denial with NUL' failure aot compressed32 MOCK_ACTOR_DENIAL_NUL=1
+assert_case 'actor denial with CR' failure aot compressed32 MOCK_ACTOR_DENIAL_CR=1
 grep -Fx 'private actor negative fixture failed without a capability-denial diagnostic' "$tmp/stderr" >/dev/null || {
   echo 'FAILED: unrelated network capability was not rejected at the actor capability gate' >&2
   exit 1
@@ -529,6 +555,9 @@ assert_case 'JIT reason spoofed on stdout' failure aot compressed32 MOCK_JIT_STD
 assert_case 'JIT reason after unrelated CLI error' failure aot compressed32 MOCK_JIT_REASON_AFTER_CLI_ERROR=1
 assert_case 'JIT reason before unrelated CLI error' failure aot compressed32 MOCK_JIT_REASON_BEFORE_CLI_ERROR=1
 assert_case 'JIT reason embedded inside unrelated parse error' failure aot compressed32 MOCK_JIT_REASON_EMBEDDED_IN_PARSE_ERROR=1
+assert_case 'JIT refusal with NUL' failure aot compressed32 MOCK_JIT_REFUSAL_NUL=1
+assert_case 'JIT refusal with CR' failure aot compressed32 MOCK_JIT_REFUSAL_CR=1
+assert_case 'JIT refusal with appended fatal text' failure aot compressed32 MOCK_JIT_REFUSAL_WITH_EXTRA_TEXT=1
 grep -Fx 'native executable refused JIT without the required build-mode diagnostic' "$tmp/stderr" >/dev/null || {
   echo 'FAILED: JIT-related negative case did not reach the mode-specific refusal check' >&2
   exit 1
