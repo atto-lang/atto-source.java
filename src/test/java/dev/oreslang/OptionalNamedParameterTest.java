@@ -202,6 +202,67 @@ final class OptionalNamedParameterTest {
     }
 
     @Test
+    void overflowingDefaultRejectsBeforeRuntime() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        @DefaultArgVals(value: 9223372036854775808)
+                        fnc bad(int value?): int {
+                            return value;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("overflows"),
+                failure.getMessage());
+    }
+
+    @Test
+    void noneCannotDefaultANonOptionFormal() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        @DefaultArgVals(value: None)
+                        fnc bad(int value?): int {
+                            return value;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("None")
+                        || failure.getMessage().contains("Option"),
+                failure.getMessage());
+    }
+
+    @Test
+    void duplicateDefaultAnnotationsReject() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        @DefaultArgVals(value: 1)
+                        @DefaultArgVals(value: 2)
+                        fnc bad(int value?): int {
+                            return value;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("more than once")
+                        || failure.getMessage().contains("duplicate"),
+                failure.getMessage());
+    }
+
+    @Test
+    void defaultMetadataOnUnsupportedDeclarationRejects() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        @DefaultArgVals(value: 1)
+                        val int value = 1;
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("DefaultArgVals"),
+                failure.getMessage());
+    }
+
+    @Test
     void requiredOptionSugarDoesNotBecomeOmittable() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
