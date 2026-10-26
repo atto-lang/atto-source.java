@@ -595,10 +595,11 @@ public final class Parser {
     }
 
     /**
-     * `quote`/`unquote` are contextual: ordinary runtime code may use the names, but a
-     * macro body cannot bind it and thereby make compiler quotation ambiguous.
-     * Quoted Syntax<K> payloads are compiler data, not macro-body lexical scope,
-     * so MacroInvocationExpr payloads are deliberately not traversed here.
+     * Macro intrinsics are contextual: ordinary runtime code may use these names,
+     * but a macro body cannot rebind quote/unquote/hygienic/capture_fnc/declare_fnc
+     * and thereby make compiler-only authority ambiguous. Quoted Syntax<K>
+     * payloads are compiler data, not macro-body lexical scope, so
+     * MacroInvocationExpr payloads are deliberately not traversed here.
      */
     private void rejectMacroQuoteShadowing(List<Ast.Stmt> statements) {
         for (Ast.Stmt statement : statements) {
