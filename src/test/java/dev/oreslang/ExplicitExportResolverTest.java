@@ -135,17 +135,46 @@ final class ExplicitExportResolverTest {
     }
 
     @Test
-    void namedModuleDefaultPrivateExportWaitsForVisibilityOriginMetadata() {
+    void namedModuleDefaultPrivateDeclarationMayBeExported() {
+        ExplicitExportResolver.Result result = resolve("""
+                define module M as
+                  export class X;
+
+                  define class X as
+                  end
+                end
+                """);
+
+        assertEquals(1, result.bindings("M").size());
+        assertEquals("X", result.bindings("M").getFirst().externalName());
+    }
+
+    @Test
+    void namedModuleExplicitPrivateDeclarationCannotBeExported() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> resolve("""
                         define module M as
                           export class X;
 
-                          define class X as
+                          define private class X as
                           end
                         end
                         """));
-        assertTrue(failure.getMessage().contains("visibility-origin metadata"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("explicitly private"), failure.getMessage());
+    }
+
+    @Test
+    void postKindExplicitPrivateSpellingCannotEvadeExportGate() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export fnc secret;
+
+                        fnc private secret(): void {
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("explicitly private"), failure.getMessage());
     }
 }
