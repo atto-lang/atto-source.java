@@ -37,6 +37,25 @@ final class ActorCompressed32ReferenceTest {
     }
 
     @Test
+    void deterministicWireParityMatchesNativeCompressed32() {
+        // Shared contract with LLVM managed_ref_test.cpp. No 32-GiB
+        // allocation: only unsigned reference words are encoded.
+        long random = 0x6a09e667f3bcc909L;
+        long checksum = 0xcbf29ce484222325L;
+        for (int i = 0; i < 100_000; ++i) {
+            random ^= random << 13;
+            random ^= random >>> 7;
+            random ^= random << 17;
+            long offset = Long.remainderUnsigned(random, 0xffff_ffffL) * 8L;
+            int word = ActorCompressed32Reference.encode(offset);
+            assertEquals(offset, ActorCompressed32Reference.decode(word));
+            checksum = (checksum ^ Integer.toUnsignedLong(word))
+                    * 1099511628211L;
+        }
+        assertEquals(0x46402ba55da7cde5L, checksum);
+    }
+
+    @Test
     void checkedDecodeRejectsUncommittedAndCrossBoundaryAccess() {
         assertEquals(8, ActorCompressed32Reference.decodeChecked(2, 16, 8));
         assertThrows(SecurityException.class,
