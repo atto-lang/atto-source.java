@@ -23,7 +23,9 @@ public final class Utf8StringAbi {
             if (byteLength < 0 || byteLength != bytes.length) {
                 throw new IllegalArgumentException("UTF-8 byte length must match storage extent");
             }
+            // Freeze untrusted caller-owned input before validating it.
             bytes = bytes.clone();
+            decodeUtf8(bytes, byteLength);
         }
 
         @Override
@@ -35,9 +37,11 @@ public final class Utf8StringAbi {
     public record CString(byte[] storage, int byteLength) {
         public CString {
             Objects.requireNonNull(storage, "storage");
-            if (byteLength < 0 || storage.length != byteLength + 1) {
+            if (byteLength < 0 || byteLength != storage.length - 1) {
                 throw new IllegalArgumentException("CString storage must be byte_length + 1");
             }
+            // Clone first: validation must not race a caller mutating the input.
+            storage = storage.clone();
             if (storage[byteLength] != 0) {
                 throw new IllegalArgumentException("CString requires a trailing NUL");
             }
@@ -47,7 +51,6 @@ public final class Utf8StringAbi {
                 }
             }
             decodeUtf8(storage, byteLength);
-            storage = storage.clone();
         }
 
         @Override
