@@ -35,6 +35,51 @@ final class SourcePureFuturePipelineExecutionTest {
     }
 
     @Test
+    void mixedSyncAndAsyncStagesFlattenAndOuterAwaitSeesFinalValue() throws Exception {
+        assertEquals("44", run("""
+                async fnc source(): int {
+                  rt cooperate;
+                  return 21;
+                }
+                async fnc increment_async(int value): int {
+                  rt cooperate;
+                  return value + 1;
+                }
+                fnc twice(int value): int { return value * 2; }
+                pub async routine main(): void {
+                  val Future<int> pending = source() |> increment_async() |> twice();
+                  val int result = await pending;
+                  stdio.println(result);
+                  return;
+                }
+                """, "pure-future-pipe-async-stage.ores").trim());
+    }
+
+    @Test
+    void asyncPipelineStageMayAwaitPureAsyncHelperWithoutNestingFuture() throws Exception {
+        assertEquals("44", run("""
+                async fnc source(): int { return 21; }
+                async fnc delayed_identity(int value): int {
+                  rt cooperate;
+                  return value;
+                }
+                async fnc increment_async(int value): int {
+                  return (await delayed_identity(value)) + 1;
+                }
+                fnc twice(int value): int { return value * 2; }
+                pub async routine main(): void {
+                  val int result = await (
+                      source()
+                      |> increment_async()
+                      |> twice()
+                  );
+                  stdio.println(result);
+                  return;
+                }
+                """, "pure-future-pipe-stage-await.ores").trim());
+    }
+
+    @Test
     void directFutureArgumentIsNotImplicitlyLifted() throws Exception {
         assertEquals("7", run("""
                 async fnc source(): int { return 21; }
