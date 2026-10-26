@@ -7269,6 +7269,15 @@ public final class OresEvalRootNode extends RootNode {
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
+                if (ActorRuntime.inActorExecution() && name.name().equals("io")) {
+                    return new ActorIoFacade(context);
+                }
+                if (ActorRuntime.inActorExecution()
+                        && (name.name().equals("stdio") || name.name().equals("print"))) {
+                    throw new SecurityException(
+                            name.name()
+                                    + " is process-level I/O and is unavailable inside actors; use io.*");
+                }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
@@ -7764,6 +7773,27 @@ public final class OresEvalRootNode extends RootNode {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host object member " + name);
                 return hostMember(host.value(), "host object", name);
+            }
+            if (receiver instanceof ActorIoFacade io) {
+                return switch (name) {
+                    case "out" -> new ActorIoOutFacade(io.context());
+                    case "in", "err", "events", "meta" ->
+                            new ReservedActorIoChannel(name);
+                    default -> throw new IllegalArgumentException(
+                            "unknown actor io member " + name);
+                };
+            }
+            if (receiver instanceof ActorIoOutFacade out) {
+                return switch (name) {
+                    case "write" -> (Invokable) out::write;
+                    default -> throw new IllegalArgumentException(
+                            "unknown io.out member " + name);
+                };
+            }
+            if (receiver instanceof ReservedActorIoChannel reserved) {
+                throw new IllegalStateException(
+                        "actor-local io." + reserved.name()
+                                + " is reserved but not implemented on this backend yet");
             }
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
@@ -11265,6 +11295,34 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object has(List<Object> args) {
             return NativeIo.envHas(context, requireStringArg(args, "env.has"));
+        }
+    }
+
+    /**
+     * Implicit actor-local I/O capability. This is runtime context, not a field
+     * on self, and therefore cannot be moved or sent as ordinary actor state.
+     *
+     * <p>io.out.write is intentionally routed through ActorRuntime's existing
+     * bounded, generation-owned output transport. It does not touch host
+     * stdout/stderr and does not require the process STDOUT capability.</p>
+     */
+    private record ActorIoFacade(OresContext context) { }
+
+    private record ActorIoOutFacade(OresContext context) {
+        private Object write(List<Object> args) {
+            requireOne(args, "io.out.write");
+            context.actors().emitCurrentActorOutput(args.getFirst());
+            // Source sees an awaitable operation even though this first slice
+            // completes at bounded transport admission. A later router can
+            // suspend this Future for physical backpressure without changing
+            // the source-level API.
+            return OresFuture.completed(null);
+        }
+    }
+
+    private record ReservedActorIoChannel(String name) {
+        private ReservedActorIoChannel {
+            Objects.requireNonNull(name, "actor io channel");
         }
     }
 
