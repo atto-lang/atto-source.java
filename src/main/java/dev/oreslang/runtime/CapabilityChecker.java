@@ -547,7 +547,11 @@ public final class CapabilityChecker {
     }
 
     private static String memberPath(Ast.Expr expr) {
-        if (expr instanceof Ast.NameExpr n) return n.name();
+        if (expr instanceof Ast.NameExpr n) {
+            String resolvedModule =
+                    Ast.internalModuleReferenceTarget(n.name());
+            return resolvedModule == null ? n.name() : resolvedModule;
+        }
         if (expr instanceof Ast.MemberExpr m) {
             String parent = memberPath(m.receiver());
             return parent == null ? null : parent + "." + m.member();
