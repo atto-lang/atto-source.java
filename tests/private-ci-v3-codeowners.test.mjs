@@ -19,6 +19,7 @@ const REQUIRED = [
   '/scripts/test-publish-private-ci-source-v3.py',
   '/tools/verify-exact-source-tree.sh',
   '/tools/test-verify-exact-source-tree.sh', '/pom.xml',
+  '/tests/private-ci-v3-codeowners.test.mjs',
 ];
 function parseRules(contents) {
   const rules = [];
