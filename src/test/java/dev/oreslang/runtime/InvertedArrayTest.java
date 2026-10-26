@@ -318,6 +318,8 @@ final class InvertedArrayTest {
 
             assertEquals(10.0, array.index(0).get("x"));
             assertEquals(20.0, array.index(1).get("x"));
+            assertEquals(20.0, array.index(1L).get("x"),
+                    "wide integral lowering must preserve valid dense indices");
             assertEquals(30.0, array.index(2).get("x"));
             assertThrows(IllegalArgumentException.class, () -> array.index(3));
 
