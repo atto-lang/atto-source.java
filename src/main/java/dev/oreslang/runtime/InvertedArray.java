@@ -252,7 +252,7 @@ public final class InvertedArray implements AutoCloseable {
     }
 
     private void requireWritable(int column) {
-        Field field = schema.fields().get(column);
+        Schema.Field field = schema.fields().get(column);
         if (!field.writable()) {
             throw new IllegalStateException(
                     "inverted field '" + schema.className() + "." + field.name()
