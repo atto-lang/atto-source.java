@@ -102,6 +102,38 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void admittedStageSnapshotIsIsolatedFromLaterCallerMutation() throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        AtomicInteger maliciousInvocations = new AtomicInteger();
+        ArrayList<TaskPipeline.Stage> callerStages = new ArrayList<>();
+        callerStages.add(value -> ((Integer) value) + 1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskPipeline.PipelineHandle<Integer> pipeline =
+                    TaskPipeline.startTracked(scheduler, source, callerStages);
+
+            // Admission must freeze the validated list, not keep a live view
+            // of mutable host objects or allow a late 129th stage to execute.
+            callerStages.set(0, value -> {
+                maliciousInvocations.incrementAndGet();
+                throw new AssertionError("post-admission replacement stage executed");
+            });
+            for (int i = 0; i < 129; i++) {
+                callerStages.add(value -> {
+                    maliciousInvocations.incrementAndGet();
+                    throw new AssertionError("post-admission appended stage executed");
+                });
+            }
+
+            assertTrue(source.completeFromRuntime(41));
+            assertEquals(42, pipeline.result().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Success.class,
+                    pipeline.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0, maliciousInvocations.get());
+        }
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void executesDeferredMixedStagesInOneSchedulerTaskDomain() throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
         OresFuture<Integer> nested = new OresFuture<>();
