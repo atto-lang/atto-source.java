@@ -15,7 +15,6 @@ final class ActorFinalizationOutsideLifecycleLockTest {
         CountDownLatch releaseExit = new CountDownLatch(1);
         AtomicReference<Throwable> stopFailure = new AtomicReference<>();
         AtomicReference<Throwable> probeFailure = new AtomicReference<>();
-        AtomicReference<Boolean> probeResult = new AtomicReference<>();
 
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
@@ -40,7 +39,11 @@ final class ActorFinalizationOutsideLifecycleLockTest {
 
             Thread probe = Thread.ofPlatform().start(() -> {
                 try {
-                    probeResult.set(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+                    // This runtime wake-up acquires the actor's lifecycleLock.
+                    // Finalization is already scheduled, so it is otherwise a
+                    // no-op; completion proves the blocking hook is outside the
+                    // monitor rather than merely bypassed by DONE observation.
+                    runtime.onNativeIoLoanRetired(actor.id());
                 } catch (Throwable failure) {
                     probeFailure.set(failure);
                 }
@@ -50,7 +53,7 @@ final class ActorFinalizationOutsideLifecycleLockTest {
             assertFalse(probe.isAlive(),
                     "exit hook must not retain actor lifecycleLock");
             assertNull(probeFailure.get());
-            assertEquals(Boolean.FALSE, probeResult.get(),
+            assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS),
                     "DONE must remain pending until physical retirement completes");
 
             releaseExit.countDown();
