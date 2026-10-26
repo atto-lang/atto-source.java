@@ -5678,7 +5678,7 @@ public final class OresEvalRootNode extends RootNode {
                     return object.owner.invokableInvocation(
                             ignored -> {
                                 object.owner.context.actors()
-                                        .emitCurrentActorOutput(args.getFirst());
+                                        .emitCurrentActorOutput(sendArgs.getFirst());
                                 return null;
                             },
                             List.of());
@@ -7424,20 +7424,21 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
-                    args = directArgs.requireUnlabeled("Option.unwrap_all");
                     int depth = checkedOptionDepth(call);
                     return invokableInvocation(
                             values -> {
                                 requireZero(values, "Option.unwrap_all");
                                 return unwrapOptionAtDepth(option, depth);
-                            }, args);
+                            },
+                            directArgs.requireUnlabeled("Option.unwrap_all"));
                 }
 
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
-                        args = directArgs.requireUnlabeled("self.end");
-                        if (!args.isEmpty()) {
+                        List<Object> endArgs =
+                                directArgs.requireUnlabeled("self.end");
+                        if (!endArgs.isEmpty()) {
                             throw new IllegalArgumentException(
                                     "self.end expects no arguments; use self.endWithCleanup(...) for final cleanup");
                         }
@@ -7451,9 +7452,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("endWithCleanup")) {
-                        args = directArgs.requireUnlabeled("self.endWithCleanup");
+                        List<Object> cleanupArgs =
+                                directArgs.requireUnlabeled("self.endWithCleanup");
                         Runnable cleanup =
-                                object.owner.actorEndCleanup(args);
+                                object.owner.actorEndCleanup(cleanupArgs);
                         return object.owner.invokableInvocation(
                                 ignored -> {
                                     object.owner.context.actors()
@@ -7464,15 +7466,16 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("send")) {
-                        args = directArgs.requireUnlabeled("self.send");
-                        if (args.size() != 1) {
+                        List<Object> sendArgs =
+                                directArgs.requireUnlabeled("self.send");
+                        if (sendArgs.size() != 1) {
                             throw new IllegalArgumentException(
                                     "self.send expects exactly one outbound value");
                         }
                         return object.owner.invokableInvocation(
                                 ignored -> {
                                     object.owner.context.actors()
-                                            .emitCurrentActorOutput(args.getFirst());
+                                            .emitCurrentActorOutput(sendArgs.getFirst());
                                     return null;
                                 },
                                 List.of());
