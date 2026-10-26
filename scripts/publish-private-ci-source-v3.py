@@ -914,22 +914,8 @@ def trusted_github_cli():
 
 
 def github_api_environment():
-    """Use one explicit token and no ambient credential/config environment."""
-    provided = [
-        name for name in ("GH_TOKEN", "GITHUB_TOKEN")
-        if os.environ.get(name)
-    ]
-    if len(provided) != 1:
-        raise Denied("exactly one explicit GitHub API token is required")
-    return {
-        provided[0]: os.environ[provided[0]],
-        "GH_HOST": "github.com",
-        "GH_PROMPT_DISABLED": "1",
-        "PATH": "/usr/bin:/bin",
-        "HOME": "/",
-        "XDG_CONFIG_HOME": "/nonexistent",
-        "LC_ALL": "C.UTF-8",
-    }
+    """Reuse the single audited GitHub API environment for every API path."""
+    return legacy.github_api_environment()
 
 
 def run_bounded_gh(argv, *, env, timeout=30):
