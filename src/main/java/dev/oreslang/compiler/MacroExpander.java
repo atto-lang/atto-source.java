@@ -83,11 +83,14 @@ public final class MacroExpander {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.MacroDecl macro)) continue;
-                if (!isSyntaxExprPassthrough(macro) && !isConstLiteralQuote(macro)) {
+                if (!isSyntaxExprPassthrough(macro)
+                        && !isConstLiteralQuote(macro)
+                        && !isSyntaxExprTemplateQuote(macro)) {
                     throw unsupported(
                             macro.name(),
-                            "the first evaluator slice only admits Syntax<Expr> identity "
-                                    + "or bounded Const<T> quotation ('return quote(value);')");
+                            "the first evaluator slice only admits Syntax<Expr> identity, "
+                                    + "bounded Const<T> quotation, or identifier-free "
+                                    + "Syntax<Expr> quote/unquote templates");
                 }
             }
         }
@@ -134,6 +137,141 @@ public final class MacroExpander {
             return false;
         }
         return input.name().equals(parameter.name());
+    }
+
+    /**
+     * Typed expression quasiquote subset. Templates may construct only
+     * identifier-free expression structure and splice Syntax<Expr> parameters
+     * through direct unquote(parameter) calls. Any introduced name/callee stays
+     * closed until generated-identifier hygiene is implemented.
+     */
+    private boolean isSyntaxExprTemplateQuote(Ast.MacroDecl macro) {
+        if (macro.resultKind().list()
+                || macro.resultKind().syntaxKind() != Ast.MacroSyntaxKind.EXPR
+                || macro.body().size() != 1) {
+            return false;
+        }
+        java.util.HashSet<String> syntaxParameters = new java.util.HashSet<>();
+        for (Ast.MacroParam parameter : macro.parameters()) {
+            if (parameter.type().kind() != Ast.MacroParamKind.SYNTAX
+                    || parameter.type().syntaxKind() != Ast.MacroSyntaxKind.EXPR) {
+                return false;
+            }
+            syntaxParameters.add(parameter.name());
+        }
+        Ast.Expr template = quoteTemplate(macro.body().getFirst());
+        return template != null && safeTemplateExpression(template, syntaxParameters);
+    }
+
+    private Ast.Expr quoteTemplate(Ast.Stmt statement) {
+        if (!(statement instanceof Ast.ReturnStmt returned)
+                || !(returned.value() instanceof Ast.CallExpr call)
+                || !(call.callee() instanceof Ast.NameExpr callee)
+                || !callee.name().equals("quote")
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent()
+                || call.arguments().size() != 1) {
+            return null;
+        }
+        return call.arguments().getFirst();
+    }
+
+    private boolean safeTemplateExpression(Ast.Expr expression, Set<String> syntaxParameters) {
+        if (expression instanceof Ast.LiteralExpr) return true;
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return safeTemplateExpression(unary.operand(), syntaxParameters);
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return safeTemplateExpression(binary.left(), syntaxParameters)
+                    && safeTemplateExpression(binary.right(), syntaxParameters);
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return safeTemplateExpression(conditional.condition(), syntaxParameters)
+                    && safeTemplateExpression(conditional.whenTrue(), syntaxParameters)
+                    && safeTemplateExpression(conditional.whenFalse(), syntaxParameters);
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            return list.elements().stream()
+                    .allMatch(item -> safeTemplateExpression(item, syntaxParameters));
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream()
+                    .allMatch(item -> safeTemplateExpression(item, syntaxParameters));
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            return object.kind() != Ast.ObjectKind.EXPLICIT_STRUCT
+                    && object.fields().stream()
+                    .allMatch(field -> safeTemplateExpression(field.value(), syntaxParameters));
+        }
+        if (expression instanceof Ast.CallExpr call && isDirectUnquote(call)) {
+            return call.arguments().getFirst() instanceof Ast.NameExpr name
+                    && syntaxParameters.contains(name.name());
+        }
+        return false;
+    }
+
+    private boolean isDirectUnquote(Ast.CallExpr call) {
+        return call.callee() instanceof Ast.NameExpr callee
+                && callee.name().equals("unquote")
+                && call.origin() == Ast.CallOrigin.DIRECT
+                && !call.typeArgumentsPresent()
+                && call.arguments().size() == 1;
+    }
+
+    private Ast.Expr instantiateTemplate(
+            Ast.Expr expression,
+            Map<String, Ast.Expr> syntaxBindings) {
+        if (expression instanceof Ast.CallExpr call && isDirectUnquote(call)) {
+            if (!(call.arguments().getFirst() instanceof Ast.NameExpr name)) {
+                throw new IllegalStateException("validated unquote lost identifier parameter");
+            }
+            Ast.Expr bound = syntaxBindings.get(name.name());
+            if (bound == null) {
+                throw new IllegalStateException(
+                        "validated unquote references unknown syntax parameter '" + name.name() + "'");
+            }
+            return bound;
+        }
+        if (expression instanceof Ast.LiteralExpr) return expression;
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return new Ast.UnaryExpr(
+                    unary.operator(),
+                    instantiateTemplate(unary.operand(), syntaxBindings));
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return new Ast.BinaryExpr(
+                    binary.operator(),
+                    instantiateTemplate(binary.left(), syntaxBindings),
+                    instantiateTemplate(binary.right(), syntaxBindings));
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return new Ast.ConditionalExpr(
+                    instantiateTemplate(conditional.condition(), syntaxBindings),
+                    instantiateTemplate(conditional.whenTrue(), syntaxBindings),
+                    instantiateTemplate(conditional.whenFalse(), syntaxBindings));
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            return new Ast.ListExpr(list.elements().stream()
+                    .map(item -> instantiateTemplate(item, syntaxBindings))
+                    .toList());
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            return new Ast.TupleExpr(tuple.elements().stream()
+                    .map(item -> instantiateTemplate(item, syntaxBindings))
+                    .toList());
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            List<Ast.ObjectField> fields = new ArrayList<>(object.fields().size());
+            for (Ast.ObjectField field : object.fields()) {
+                fields.add(Ast.ObjectField.named(
+                        field.name(),
+                        instantiateTemplate(field.value(), syntaxBindings)));
+            }
+            return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
+        }
+        throw new IllegalStateException(
+                "validated macro template reached unsupported node "
+                        + expression.getClass().getSimpleName());
     }
 
     private IllegalArgumentException unsupported(String name, String detail) {
@@ -185,29 +323,29 @@ public final class MacroExpander {
         Ast.MacroDecl macro = resolve(module, invocation.name());
         boolean syntaxIdentity = isSyntaxExprPassthrough(macro);
         boolean constQuote = isConstLiteralQuote(macro);
-        if (!syntaxIdentity && !constQuote) {
+        boolean templateQuote = isSyntaxExprTemplateQuote(macro);
+        if (!syntaxIdentity && !constQuote && !templateQuote) {
             throw unsupported(
                     invocation.name(),
                     "this invocation requires an evaluator feature not enabled "
                             + "by the first Syntax<Expr> evaluator slice");
         }
-        if (invocation.arguments().size() != 1) {
-            throw new IllegalArgumentException(
-                    "macro '" + invocation.name() + "' requires exactly one argument");
-        }
+
         Ast.Expr emitted;
         if (syntaxIdentity) {
-            if (!(invocation.arguments().getFirst()
+            if (invocation.arguments().size() != 1
+                    || !(invocation.arguments().getFirst()
                     instanceof Ast.MacroSyntaxExprArgument quoted)) {
                 throw new IllegalArgumentException(
-                        "macro '" + invocation.name() + "' requires Syntax<Expr>");
+                        "macro '" + invocation.name() + "' requires one Syntax<Expr>");
             }
             emitted = quoted.expression();
-        } else {
-            if (!(invocation.arguments().getFirst()
+        } else if (constQuote) {
+            if (invocation.arguments().size() != 1
+                    || !(invocation.arguments().getFirst()
                     instanceof Ast.MacroConstArgument constant)) {
                 throw new IllegalArgumentException(
-                        "macro '" + invocation.name() + "' requires Const<T>");
+                        "macro '" + invocation.name() + "' requires one Const<T>");
             }
             try {
                 emitted = CompileTimeConstEvaluator.evaluate(
@@ -218,6 +356,28 @@ public final class MacroExpander {
                         "Const<T> quotation failed deterministic evaluation: "
                                 + failure.getMessage());
             }
+        } else {
+            if (invocation.arguments().size() != macro.parameters().size()) {
+                throw new IllegalArgumentException(
+                        "macro '" + invocation.name() + "' argument count changed after planning");
+            }
+            Map<String, Ast.Expr> syntaxBindings = new HashMap<>();
+            for (int i = 0; i < macro.parameters().size(); i++) {
+                Ast.MacroParam parameter = macro.parameters().get(i);
+                Ast.MacroArgument argument = invocation.arguments().get(i);
+                if (!(argument instanceof Ast.MacroSyntaxExprArgument syntax)) {
+                    throw new IllegalArgumentException(
+                            "macro '" + invocation.name()
+                                    + "' template parameter '" + parameter.name()
+                                    + "' requires Syntax<Expr>");
+                }
+                syntaxBindings.put(parameter.name(), syntax.expression());
+            }
+            Ast.Expr template = quoteTemplate(macro.body().getFirst());
+            if (template == null) {
+                throw new IllegalStateException("validated macro template lost quote body");
+            }
+            emitted = instantiateTemplate(template, syntaxBindings);
         }
 
         String activeKey = module + "\0" + invocation.name()
@@ -242,7 +402,9 @@ public final class MacroExpander {
                                     expansionOrdinal),
                             constQuote
                                     ? MacroSyntaxProvenance.EmissionKind.CONST_QUOTE
-                                    : MacroSyntaxProvenance.EmissionKind.CALL_SITE_SPLICE);
+                                    : templateQuote
+                                            ? MacroSyntaxProvenance.EmissionKind.TEMPLATE_QUOTE
+                                            : MacroSyntaxProvenance.EmissionKind.CALL_SITE_SPLICE);
             // Publish provenance only after the complete subtree expansion has
             // succeeded. Failed/partial expansions leave no visible metadata.
             MacroSyntaxProvenance.recordTree(expanded, origin);
