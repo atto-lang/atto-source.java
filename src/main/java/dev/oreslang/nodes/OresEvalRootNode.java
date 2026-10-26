@@ -3894,14 +3894,18 @@ public final class OresEvalRootNode extends RootNode {
                             return;
                         }
 
-                        ChannelRuntime.Channel<Object> channel;
+                        // Preserve the input value's directional authority:
+                        // the evaluator never unwraps a view to Channel<T>.
+                        final ChannelRuntime.ReadChannel<Object> reader;
+                        final ChannelRuntime.WriteChannel<Object> writer;
                         try {
-                            channel = requireChannel(
-                                    channelValue,
-                                    operation.operation() == Ast.ChannelOperation.READ
-                                            ? "readch"
-                                            : "writech",
-                                    operation.operation());
+                            if (operation.operation() == Ast.ChannelOperation.READ) {
+                                reader = requireReadChannel(channelValue, "readch");
+                                writer = null;
+                            } else {
+                                reader = null;
+                                writer = requireWriteChannel(channelValue, "writech");
+                            }
                         } catch (RuntimeException | Error failure) {
                             continuation.accept(t, null, failure);
                             return;
@@ -3913,7 +3917,7 @@ public final class OresEvalRootNode extends RootNode {
                                     == Ast.WaitMode.IMMEDIATE) {
                                 try {
                                     java.util.Optional<Object> result =
-                                            channel.tryRead();
+                                            reader.tryRead();
                                     continuation.accept(
                                             t,
                                             result.isPresent()
@@ -3939,7 +3943,7 @@ public final class OresEvalRootNode extends RootNode {
                                 return;
                             }
                             OresFuture<Object> future =
-                                    channel.readAsync();
+                                    reader.readAsync();
                             if (operation.mode()
                                     == Ast.WaitMode.NONBLOCKING) {
                                 if (ActorRuntime.inActorExecution()) {
@@ -3994,7 +3998,7 @@ public final class OresEvalRootNode extends RootNode {
                                                         "nb cb writech requires actor execution");
                                             }
                                             OresFuture<Void> completion =
-                                                    channel.writeAsync(value);
+                                                    writer.writeAsync(value);
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
@@ -4033,7 +4037,7 @@ public final class OresEvalRootNode extends RootNode {
                                         try {
                                             continuation.accept(
                                                     t2,
-                                                    channel.tryWrite(value),
+                                                    writer.tryWrite(value),
                                                     null);
                                         } catch (RuntimeException | Error failure) {
                                             continuation.accept(
@@ -4053,7 +4057,7 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
                                     OresFuture<Void> future =
-                                            channel.writeAsync(value);
+                                            writer.writeAsync(value);
                                     if (operation.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
                                         if (ActorRuntime.inActorExecution()) {
@@ -5590,15 +5594,13 @@ public final class OresEvalRootNode extends RootNode {
                 switch (arm.operation()) {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
                     case READ -> cases.add(ChannelRuntime.read(
-                            requireChannel(
+                            requireReadChannel(
                                     eval(arm.channel(), env),
-                                    "readch select case",
-                                    Ast.ChannelOperation.READ)));
+                                    "readch select case")));
                     case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(
+                            requireWriteChannel(
                                     eval(arm.channel(), env),
-                                    "writech select case",
-                                    Ast.ChannelOperation.WRITE),
+                                    "writech select case"),
                             eval(arm.value(), env)));
                     case AWAIT -> {
                         Object future = eval(arm.channel(), env);
@@ -5679,36 +5681,34 @@ public final class OresEvalRootNode extends RootNode {
         private Object evalChannelOperation(
                 Ast.ChannelOpExpr operation,
                 Env env) {
-            ChannelRuntime.Channel<Object> channel = requireChannel(
-                    eval(operation.channel(), env),
-                    operation.operation() == Ast.ChannelOperation.READ
-                            ? "readch"
-                            : "writech",
-                    operation.operation());
-
+            Object channelValue = eval(operation.channel(), env);
             if (operation.operation() == Ast.ChannelOperation.READ) {
+                ChannelRuntime.ReadChannel<Object> reader =
+                        requireReadChannel(channelValue, "readch");
                 return switch (operation.mode()) {
                     case IMMEDIATE -> {
-                        java.util.Optional<Object> value = channel.tryRead();
+                        java.util.Optional<Object> value = reader.tryRead();
                         yield value.isPresent()
                                 ? new OptionValue(true, value.get())
                                 : new OptionValue(false, null);
                     }
                     case NONBLOCKING -> context.actors()
-                            .ownCurrentActorFuture(channel.readAsync());
+                            .ownCurrentActorFuture(reader.readAsync());
                     case BLOCKING -> awaitBlockingChannelFuture(
-                            channel.readAsync(),
+                            reader.readAsync(),
                             "readch");
                 };
             }
 
+            ChannelRuntime.WriteChannel<Object> writer =
+                    requireWriteChannel(channelValue, "writech");
             Object value = eval(operation.value(), env);
             if (operation.callback()) {
                 if (!ActorRuntime.inActorExecution()) {
                     throw new IllegalStateException(
                             "nb cb writech can only execute inside an actor turn");
                 }
-                OresFuture<Void> completion = channel.writeAsync(value);
+                OresFuture<Void> completion = writer.writeAsync(value);
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
                 Env callbackEnv = env.snapshot();
@@ -5736,12 +5736,12 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             return switch (operation.mode()) {
-                case IMMEDIATE -> channel.tryWrite(value);
+                case IMMEDIATE -> writer.tryWrite(value);
                 case NONBLOCKING -> context.actors()
-                        .ownCurrentActorFuture(channel.writeAsync(value));
+                        .ownCurrentActorFuture(writer.writeAsync(value));
                 case BLOCKING -> {
                     awaitBlockingChannelFuture(
-                            channel.writeAsync(value),
+                            writer.writeAsync(value),
                             "writech");
                     yield null;
                 }
@@ -5770,26 +5770,29 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @SuppressWarnings("unchecked")
-        private ChannelRuntime.Channel<Object> requireChannel(
-                Object value,
-                String where,
-                Ast.ChannelOperation operation) {
+        private ChannelRuntime.ReadChannel<Object> requireReadChannel(
+                Object value, String where) {
             if (value instanceof ChannelRuntime.Channel<?> channel) {
-                return (ChannelRuntime.Channel<Object>) channel;
+                return (ChannelRuntime.ReadChannel<Object>) channel.output();
             }
-            if (operation == Ast.ChannelOperation.READ
-                    && value instanceof ChannelRuntime.ReadChannel<?> read) {
-                return (ChannelRuntime.Channel<Object>) read.backingChannel();
+            if (value instanceof ChannelRuntime.ReadChannel<?> read) {
+                return (ChannelRuntime.ReadChannel<Object>) read;
             }
-            if (operation == Ast.ChannelOperation.WRITE
-                    && value instanceof ChannelRuntime.WriteChannel<?> write) {
-                return (ChannelRuntime.Channel<Object>) write.backingChannel();
-            }
-            String required = operation == Ast.ChannelOperation.READ
-                    ? "Channel<T> or ReadChannel<T>"
-                    : "Channel<T> or WriteChannel<T>";
             throw new IllegalArgumentException(
-                    where + " requires " + required + "; got " + value);
+                    where + " requires Channel<T> or ReadChannel<T>; got " + value);
+        }
+
+        @SuppressWarnings("unchecked")
+        private ChannelRuntime.WriteChannel<Object> requireWriteChannel(
+                Object value, String where) {
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return (ChannelRuntime.WriteChannel<Object>) channel.input();
+            }
+            if (value instanceof ChannelRuntime.WriteChannel<?> write) {
+                return (ChannelRuntime.WriteChannel<Object>) write;
+            }
+            throw new IllegalArgumentException(
+                    where + " requires Channel<T> or WriteChannel<T>; got " + value);
         }
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
