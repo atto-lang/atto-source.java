@@ -124,6 +124,54 @@ final class OptionalCallPlanTest {
     }
 
     @Test
+    void optionalBindingPreservesSpreadProjectionProvenance() {
+        OptionalCallPlan plan = OptionalCallPlan.bind(
+                List.of("a", "b", "c"),
+                List.of(false, true, false),
+                List.of(
+                        positional(0),
+                        FixedProductCallPlan.InputSlot.namedProjection(
+                                "c", 1, 0)));
+
+        assertEquals(List.of(0, -1, 1), plan.abiToSource());
+        assertEquals(
+                List.of(0, 1),
+                plan.sourceOrder().stream()
+                        .map(OptionalCallPlan.BoundSlot::callItemIndex)
+                        .toList());
+        assertEquals(
+                List.of(-1, 0),
+                plan.sourceOrder().stream()
+                        .map(OptionalCallPlan.BoundSlot::projectionIndex)
+                        .toList());
+    }
+
+    @Test
+    void publicConstructorRejectsOptionalSourceProvenanceForgery() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OptionalCallPlan(
+                        List.of(
+                                new OptionalCallPlan.BoundSlot(
+                                        0, 0, null, 0, -1),
+                                new OptionalCallPlan.BoundSlot(
+                                        1, 2, "c")),
+                        List.of(0, -1, 1),
+                        List.of(false, true, false)));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OptionalCallPlan(
+                        List.of(
+                                new OptionalCallPlan.BoundSlot(
+                                        0, 0, null, 1, 0),
+                                new OptionalCallPlan.BoundSlot(
+                                        1, 2, "c", 0, 0)),
+                        List.of(0, -1, 1),
+                        List.of(false, true, false)));
+    }
+
+    @Test
     void zeroSourceArgumentsAreValidOnlyWhenEveryFormalIsOmittable() {
         OptionalCallPlan allOptional = OptionalCallPlan.bind(
                 List.of("a", "b"),
