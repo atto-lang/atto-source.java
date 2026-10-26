@@ -107,6 +107,73 @@ final class ExplicitExportResolverTest {
     }
 
     @Test
+    void typedExportIgnoresDifferentKindPrivateDeclarationWithSameSpelling() {
+        List<ExplicitExportResolver.ExportBinding> bindings = rootBindings("""
+                export class Same;
+
+                private fnc Same(): void {
+                  return;
+                }
+
+                define class Same as
+                end
+                """);
+
+        assertEquals(1, bindings.size());
+        assertEquals(Ast.ExportKind.CLASS, bindings.getFirst().localKind());
+    }
+
+    @Test
+    void untypedSameSpellingAcrossKindsIsAmbiguous() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export Same;
+
+                        fnc Same(): void {
+                          return;
+                        }
+
+                        define class Same as
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("ambiguous"), failure.getMessage());
+    }
+
+    @Test
+    void overloadedFunctionFamilyProducesOneLogicalBinding() {
+        ExplicitExportResolver.ExportBinding binding = rootBindings("""
+                export fnc work;
+
+                fnc work(): int {
+                  return 1;
+                }
+
+                fnc work(int value): int {
+                  return value;
+                }
+                """).getFirst();
+
+        assertEquals(Ast.ExportKind.FUNCTION, binding.localKind());
+        assertEquals(2, binding.declarationIndices().size());
+    }
+
+    @Test
+    void inlinePubPlusAliasExposesOriginalAndAlias() {
+        List<ExplicitExportResolver.ExportBinding> bindings = rootBindings("""
+                export class Internal as Public;
+
+                pub define class Internal as
+                end
+                """);
+
+        assertEquals(2, bindings.size());
+        assertEquals(
+                List.of("Internal", "Public"),
+                bindings.stream().map(ExplicitExportResolver.ExportBinding::externalName).sorted().toList());
+    }
+
+    @Test
     void packageAndFileScopesRemainFailClosedUntilJavaVisibilityParityLands() {
         for (String scope : List.of("[pkg]", "[file]")) {
             IllegalArgumentException failure = assertThrows(
