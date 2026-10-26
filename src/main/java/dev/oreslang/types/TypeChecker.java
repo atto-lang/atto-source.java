@@ -3040,6 +3040,10 @@ public final class TypeChecker {
                     requireSuspendableCall(
                             target.suspends(),
                             "function '" + target.name() + "'");
+                    recordCheckedCallPlan(
+                            call,
+                            target.parameters(),
+                            expanded);
                     return trapResult(
                             target.trapped(),
                             callableResult(
@@ -3660,11 +3664,22 @@ public final class TypeChecker {
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
-                    int staticArity = fixedCallArity(
-                            call.arguments(), env, generics, self,
-                            "static function " + klass.name() + "." + member.member(),
-                            true);
-                    Ast.MethodDecl fn = findStaticFunction(klass, member.member(), staticArity, new LinkedHashSet<>());
+                    String staticCallLabel =
+                            "static function " + klass.name() + "." + member.member();
+                    List<ExpandedCallArgument> staticArguments =
+                            expandFixedCallArguments(
+                                    call.arguments(),
+                                    env,
+                                    generics,
+                                    self,
+                                    staticCallLabel,
+                                    true);
+                    int staticArity = staticArguments.size();
+                    Ast.MethodDecl fn = findStaticFunction(
+                            klass,
+                            member.member(),
+                            staticArity,
+                            new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + staticArity + " on " + klass.name());
                     Ast.ClassDecl fnOwner = findDeclaringClass(klass, fn, new LinkedHashSet<>());
                     requireClassMemberVisible(fn.visibility(), fnOwner, "static function", fn.name());
@@ -3684,6 +3699,10 @@ public final class TypeChecker {
                             Set.of(),
                             true);
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
+                    recordCheckedCallPlan(
+                            call,
+                            fn.parameters(),
+                            staticArguments);
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -3712,10 +3731,17 @@ public final class TypeChecker {
                     }
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
-                        int methodArity = fixedCallArity(
-                                call.arguments(), env, generics, self,
-                                "method " + named.name() + "." + member.member(),
-                                true);
+                        String methodCallLabel =
+                                "method " + named.name() + "." + member.member();
+                        List<ExpandedCallArgument> methodArguments =
+                                expandFixedCallArguments(
+                                        call.arguments(),
+                                        env,
+                                        generics,
+                                        self,
+                                        methodCallLabel,
+                                        true);
+                        int methodArity = methodArguments.size();
                         ResolvedMethod target = findMethodTarget(
                                 klass, named, member.member(), methodArity, new LinkedHashSet<>());
                         if (target == null) {
@@ -3788,7 +3814,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type methodResult = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -3800,6 +3826,11 @@ public final class TypeChecker {
                                 List.of(),
                                 Set.of(),
                                 true);
+                        recordCheckedCallPlan(
+                                call,
+                                method.parameters(),
+                                methodArguments);
+                        return methodResult;
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
@@ -4420,6 +4451,7 @@ public final class TypeChecker {
                             expected,
                             "constructor parameter " + param.name());
                 }
+                CheckedCallPlan.record(created, plan);
                 return nominal;
             }
 
@@ -9118,6 +9150,26 @@ public final class TypeChecker {
                         env,
                         generics,
                         self);
+    }
+
+    private CheckedCallPlan checkedCallPlan(
+            List<Ast.Param> params,
+            List<ExpandedCallArgument> expanded) {
+        return CheckedCallPlan.bind(
+                params.stream().map(Ast.Param::name).toList(),
+                params.stream().map(Ast.Param::omittable).toList(),
+                expanded.stream()
+                        .map(ExpandedCallArgument::inputSlot)
+                        .toList());
+    }
+
+    private void recordCheckedCallPlan(
+            Ast.Expr callSite,
+            List<Ast.Param> params,
+            List<ExpandedCallArgument> expanded) {
+        CheckedCallPlan.record(
+                callSite,
+                checkedCallPlan(params, expanded));
     }
 
     private Type checkGenericCallable(
