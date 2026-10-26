@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -156,4 +158,99 @@ final class ActorSourceTaskLifetimeGateTest {
             assertEquals(0, runtime.actorCount());
         }
     }
+
+    @Test
+    void untrustedQuotaWrapperPreservesDeferredPhysicalRetirementHook()
+            throws Exception {
+        String key = UUID.randomUUID().toString();
+        UntrustedProbe probe = new UntrustedProbe();
+        UNTRUSTED_PROBES.put(key, probe);
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 64))) {
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnUntrusted(new UntrustedFactory());
+            try {
+                actor.send(key);
+                assertTrue(
+                        probe.retirementHookEntered.await(5, TimeUnit.SECONDS),
+                        "untrusted wrapper dropped Task.afterCarrierQuiescent");
+
+                actor.stop();
+
+                assertFalse(
+                        actor.done().isDone(),
+                        "untrusted actor finalized before delegated Task retirement");
+                assertFalse(
+                        actor.awaitTermination(25, TimeUnit.MILLISECONDS),
+                        "untrusted actor must remain pinned behind deferred retirement");
+
+                Runnable retire = probe.releaseRetirement.getAndSet(null);
+                assertNotNull(retire);
+                retire.run();
+
+                assertTrue(
+                        actor.awaitTermination(5, TimeUnit.SECONDS),
+                        "untrusted actor should finalize after delegated retirement");
+                assertEquals(0, runtime.actorCount());
+            } finally {
+                Runnable retire = probe.releaseRetirement.getAndSet(null);
+                if (retire != null) retire.run();
+                actor.stop();
+            }
+        } finally {
+            UNTRUSTED_PROBES.remove(key);
+        }
+    }
+
+    private static final ConcurrentHashMap<String, UntrustedProbe>
+            UNTRUSTED_PROBES = new ConcurrentHashMap<>();
+
+    private static final class UntrustedProbe {
+        private final CountDownLatch retirementHookEntered = new CountDownLatch(1);
+        private final AtomicReference<Runnable> releaseRetirement =
+                new AtomicReference<>();
+        private final AtomicReference<OresFuture<Void>> sourceTask =
+                new AtomicReference<>();
+    }
+
+    /**
+     * Intentionally has no instance fields: untrusted actor factories must be
+     * stateless. Test coordination is looked up only after the data-only String
+     * message crosses the actor boundary.
+     */
+    private static final class UntrustedFactory
+            implements ActorRuntime.BehaviorFactory<String> {
+        @Override
+        public ActorRuntime.Behavior<String> create(
+                ActorRuntime.ActorContext<String> ignored) {
+            return (message, context) -> {
+                UntrustedProbe probe = UNTRUSTED_PROBES.get(message);
+                if (probe == null) {
+                    throw new IllegalStateException("missing untrusted test probe");
+                }
+
+                OresScheduler.Task<Void> child = new OresScheduler.Task<>() {
+                    @Override
+                    public OresScheduler.Step<Void> resume(
+                            OresScheduler.Resume resume) {
+                        return OresScheduler.done(null);
+                    }
+
+                    @Override
+                    public void afterCarrierQuiescent(Runnable retire) {
+                        if (!probe.releaseRetirement.compareAndSet(null, retire)) {
+                            throw new IllegalStateException(
+                                    "untrusted retirement hook invoked twice");
+                        }
+                        probe.retirementHookEntered.countDown();
+                    }
+                };
+
+                probe.sourceTask.set(context.runtime().startActorTask(child));
+            };
+        }
+    }
+
 }
