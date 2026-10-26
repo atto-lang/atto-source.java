@@ -1,11 +1,14 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.ExportResolver;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -80,22 +83,42 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
-    void syntaxDiagnosticsAreStableAndSpecific() {
-        assertSyntaxError("export class {}; fnc main(): void { return; }", "EMPTY_EXPORT_GROUP");
-        assertSyntaxError("export actor {A,,B}; fnc main(): void { return; }", "MALFORMED_EXPORT_LIST");
-        assertSyntaxError("export *; fnc main(): void { return; }", "WILDCARD_EXPORT_UNSUPPORTED");
-        assertSyntaxError("export from './dep' {X}; fnc main(): void { return; }", "REEXPORT_UNSUPPORTED");
-        assertSyntaxError("export dep.X; fnc main(): void { return; }", "QUALIFIED_EXPORT_UNSUPPORTED");
-        assertSyntaxError("export Foo<int>; fnc main(): void { return; }", "GENERIC_EXPORT_TARGET_UNSUPPORTED");
-        assertSyntaxError("export foo(int); fnc main(): void { return; }", "CALLABLE_SIGNATURE_EXPORT_UNSUPPORTED");
-        assertSyntaxError("export {class X}; fnc main(): void { return; }", "KIND_PREFIX_IN_GROUP");
-        assertSyntaxError("export symbol #ready as #other; fnc main(): void { return; }", "SYMBOL_IDENTITY_MISMATCH");
-        assertSyntaxError("export symbol #ready as Ready; fnc main(): void { return; }", "SYMBOL_BINDING_ALIAS_UNSUPPORTED");
-        assertSyntaxError("export symbol ready as #ready; fnc main(): void { return; }", "SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE");
-        assertSyntaxError("export string ready as 'ready'; fnc main(): void { return; }", "UNKNOWN_EXPORT_DECLARATION_KIND");
-        assertSyntaxError("export const ready as 'ready'; fnc main(): void { return; }", "LITERAL_EXPORT_ALIAS_UNSUPPORTED");
-        assertSyntaxError("export class Foo as \"foo\"; fnc main(): void { return; }", "LITERAL_EXPORT_ALIAS_UNSUPPORTED");
-        assertSyntaxError("export class X fnc main(): void { return; }", "EXPORT_SEMICOLON_REQUIRED");
+    void allCanonicalPositiveSyntaxVectorsParse() {
+        assertExportParses("export X;");
+        assertExportParses("export[pkg] actor Counter;");
+        assertExportParses("export(package) class {X, Y as Z,};");
+        assertExportParses("export {X, Y as Z, #ready,};");
+        assertExportParses("export symbol {#ready, #failed,};");
+        assertExportParses("export class {X};");
+        assertExportParses("export symbol #ready as #ready;");
+    }
+
+    @Test
+    void allCanonicalNegativeSyntaxVectorsUseStableCategories() {
+        assertSyntaxError("export X", "EXPORT_SEMICOLON_REQUIRED");
+        assertSyntaxError("export {};", "EXPORT_EMPTY_GROUP");
+        assertSyntaxError("export class {};", "EXPORT_EMPTY_GROUP");
+        assertSyntaxError("export actor {,X};", "EXPORT_MALFORMED_LIST");
+        assertSyntaxError("export actor {X,,Y};", "EXPORT_MALFORMED_LIST");
+        assertSyntaxError("export actor {X Y};", "EXPORT_MALFORMED_LIST");
+        assertSyntaxError("export actor {{X}};", "EXPORT_NESTED_GROUP");
+        assertSyntaxError("export *;", "EXPORT_WILDCARD_UNSUPPORTED");
+        assertSyntaxError("export * from \"./dep\";", "EXPORT_REEXPORT_UNSUPPORTED");
+        assertSyntaxError("export from \"./dep\" {X};", "EXPORT_REEXPORT_UNSUPPORTED");
+        assertSyntaxError("export dep.X;", "EXPORT_QUALIFIED_TARGET_UNSUPPORTED");
+        assertSyntaxError("export dep::X;", "EXPORT_QUALIFIED_TARGET_UNSUPPORTED");
+        assertSyntaxError("export Foo<int>;", "EXPORT_GENERIC_TARGET_UNSUPPORTED");
+        assertSyntaxError("export foo(int);", "EXPORT_CALLABLE_SIGNATURE_UNSUPPORTED");
+        assertSyntaxError("export {class X, actor Y};", "EXPORT_KIND_PREFIX_IN_GROUP");
+        assertSyntaxError("export actor {actor X};", "EXPORT_KIND_PREFIX_IN_GROUP");
+        assertSyntaxError("export symbol #ready as Ready;", "EXPORT_SYMBOL_BINDING_ALIAS_UNSUPPORTED");
+        assertSyntaxError("export symbol #ready as #ok;", "EXPORT_SYMBOL_IDENTITY_MISMATCH");
+        assertSyntaxError("export[pkg][file] X;", "EXPORT_MULTIPLE_SCOPES");
+        assertSyntaxError("export[project] X;", "EXPORT_UNKNOWN_SCOPE");
+        assertSyntaxError("export symbol ready as #ready;", "EXPORT_SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE");
+        assertSyntaxError("export string ready as 'ready';", "EXPORT_UNKNOWN_DECLARATION_KIND");
+        assertSyntaxError("export const ready as 'ready';", "EXPORT_LITERAL_ALIAS_UNSUPPORTED");
+        assertSyntaxError("export class Foo as \"foo\";", "EXPORT_LITERAL_ALIAS_UNSUPPORTED");
     }
 
     @Test
@@ -250,6 +273,22 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void publicExplicitExportIsATreeShakerLibraryRoot() {
+        var result = OresCompiler.compileForBuild("""
+                export class Box;
+
+                define class Box as
+                end
+
+                fnc unused(): int { return 1; }
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(result.retainedSymbols().contains(Parser.ROOT_MODULE + ".Box"));
+        assertFalse(result.retainedSymbols().contains(Parser.ROOT_MODULE + ".unused"));
+        assertEquals(1, root(result.program()).exports().size());
+    }
+
+    @Test
     void symbolSyntaxFailsClosedUntilJavaHasSymbolDeclarationAst() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
@@ -260,10 +299,14 @@ final class ExplicitExportSyntaxTest {
         assertTrue(failure.getMessage().contains("EXPORT_SYMBOL_DECLARATION_UNAVAILABLE"), failure.getMessage());
     }
 
-    private static void assertSyntaxError(String source, String category) {
+    private static void assertExportParses(String exportSource) {
+        assertDoesNotThrow(() -> Parser.parse(exportSource + "\nfnc main(): void { return; }"));
+    }
+
+    private static void assertSyntaxError(String exportSource, String category) {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> Parser.parse(source));
+                () -> Parser.parse(exportSource + "\nfnc main(): void { return; }"));
         assertTrue(failure.getMessage().contains(category), failure.getMessage());
     }
 }
