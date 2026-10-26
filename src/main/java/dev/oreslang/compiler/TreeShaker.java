@@ -202,6 +202,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
             if (expression instanceof Ast.SpreadExpr spread) return containsLambda(spread.expression());
+            if (expression instanceof Ast.NamedValueArgumentExpr named) return containsLambda(named.expression());
             if (expression instanceof Ast.BinaryExpr binary) {
                 return containsLambda(binary.left()) || containsLambda(binary.right());
             }
@@ -309,6 +310,10 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.SpreadExpr spread) {
                 return new Ast.SpreadExpr(substitute(spread.expression(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.NamedValueArgumentExpr named) {
+                return new Ast.NamedValueArgumentExpr(
+                        named.label(), substitute(named.expression(), substitutions, shadowed));
             }
             if (expression instanceof Ast.BinaryExpr binary) {
                 return new Ast.BinaryExpr(
@@ -899,6 +904,10 @@ public final class TreeShaker {
             if (expression instanceof Ast.SpreadExpr spread) {
                 return new Ast.SpreadExpr(rewriteExpression(spread.expression(), module, locals));
             }
+            if (expression instanceof Ast.NamedValueArgumentExpr named) {
+                return new Ast.NamedValueArgumentExpr(
+                        named.label(), rewriteExpression(named.expression(), module, locals));
+            }
             if (expression instanceof Ast.BinaryExpr binary) {
                 Ast.Expr left = rewriteExpression(binary.left(), module, locals);
                 Ast.Expr right = rewriteExpression(binary.right(), module, locals);
@@ -1379,6 +1388,8 @@ public final class TreeShaker {
                 scanType(cast.targetType());
             } else if (expression instanceof Ast.SpreadExpr spread) {
                 scanExpression(module, spread.expression(), locals);
+            } else if (expression instanceof Ast.NamedValueArgumentExpr named) {
+                scanExpression(module, named.expression(), locals);
             } else if (expression instanceof Ast.BinaryExpr binary) {
                 scanExpression(module, binary.left(), locals);
                 scanExpression(module, binary.right(), locals);
