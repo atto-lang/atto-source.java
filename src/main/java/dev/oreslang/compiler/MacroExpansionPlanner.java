@@ -207,13 +207,6 @@ public final class MacroExpansionPlanner {
                                 + ", got " + render(argument));
             }
             if (argument instanceof Ast.MacroConstArgument constant) {
-                if (!isClosedConstExpression(constant.expression())) {
-                    throw new IllegalArgumentException(
-                            "macro '" + invocationName + "' Const<T> argument for '"
-                                    + parameter.name()
-                                    + "' is not a closed compile-time expression on this compiler head; "
-                                    + "runtime evaluation fallback is forbidden");
-                }
                 validateClosedConstType(
                         invocationName, parameter, constant.expression());
             }
@@ -225,95 +218,35 @@ public final class MacroExpansionPlanner {
             Ast.MacroParam parameter,
             Ast.Expr expression) {
         Ast.TypeRef expected = parameter.type().constType();
-        String actual = closedConstPrimitiveType(expression);
-        if (actual == null) {
+        CompileTimeConstEvaluator.Evaluation evaluated;
+        try {
+            evaluated = CompileTimeConstEvaluator.evaluate(expression);
+        } catch (CompileTimeConstEvaluator.Failure failure) {
+            String detail = switch (failure.kind()) {
+                case RESOURCE -> "exceeds deterministic compile-time evaluation budgets: "
+                        + failure.getMessage();
+                case INVALID -> "is not a valid compile-time constant: "
+                        + failure.getMessage();
+                case RUNTIME_DEPENDENT, UNSUPPORTED ->
+                        "is not a closed compile-time expression on this compiler head: "
+                                + failure.getMessage();
+            };
             throw new IllegalArgumentException(
-                    "macro '" + invocationName + "' Const<" + expected.name()
-                            + "> argument for '" + parameter.name()
-                            + "' is closed, but this compiler head cannot yet prove its compile-time type; "
-                            + "runtime/type-check fallback is forbidden");
+                    "macro '" + invocationName + "' Const<"
+                            + CompileTimeConstEvaluator.displayType(expected)
+                            + "> argument for '" + parameter.name() + "' "
+                            + detail + "; runtime evaluation fallback is forbidden",
+                    failure);
         }
-        if (!isSameClosedConstType(expected, actual)) {
+        if (!CompileTimeConstEvaluator.typeMatches(expected, evaluated.type())) {
             throw new IllegalArgumentException(
-                    "macro '" + invocationName + "' Const<" + expected.name()
+                    "macro '" + invocationName + "' Const<"
+                            + CompileTimeConstEvaluator.displayType(expected)
                             + "> argument for '" + parameter.name()
-                            + "' has compile-time type " + actual
+                            + "' has compile-time type "
+                            + CompileTimeConstEvaluator.displayType(evaluated.type())
                             + "; macro Const<T> arguments must match their declared type exactly");
         }
-    }
-
-    private boolean isSameClosedConstType(Ast.TypeRef expected, String actual) {
-        if (expected.inferArguments() || !expected.arguments().isEmpty()) return false;
-        String expectedName = expected.name().equals("boolean") ? "bool" : expected.name();
-        String actualName = actual.equals("boolean") ? "bool" : actual;
-        if (expectedName.equals("string")) expectedName = "String";
-        if (actualName.equals("string")) actualName = "String";
-        return expectedName.equals(actualName);
-    }
-
-    /**
-     * Conservative primitive type proof for the initial Const<T> subset.
-     * Composite constants remain closed data, but are rejected until the
-     * dedicated compile-time evaluator can prove their full structural type.
-     */
-    private String closedConstPrimitiveType(Ast.Expr expression) {
-        if (expression instanceof Ast.LiteralExpr literal) {
-            Object value = literal.value();
-            if (value instanceof Long) return "int";
-            if (value instanceof Double) return "float";
-            if (value instanceof Boolean) return "bool";
-            if (value instanceof String) return "String";
-            if (value instanceof dev.oreslang.runtime.OresSymbol) return "Symbol";
-            return null;
-        }
-        if (expression instanceof Ast.UnaryExpr unary) {
-            String operand = closedConstPrimitiveType(unary.operand());
-            if ((unary.operator().equals("+") || unary.operator().equals("-"))
-                    && (operand != null && (operand.equals("int") || operand.equals("float")))) {
-                return operand;
-            }
-            if (unary.operator().equals("!") && "bool".equals(operand)) return "bool";
-            return null;
-        }
-        if (expression instanceof Ast.BinaryExpr binary) {
-            String left = closedConstPrimitiveType(binary.left());
-            String right = closedConstPrimitiveType(binary.right());
-            if (left == null || right == null) return null;
-            String operator = binary.operator();
-            if (operator.equals("+") || operator.equals("-") || operator.equals("*")
-                    || operator.equals("/") || operator.equals("%")) {
-                if (!isClosedNumeric(left) || !isClosedNumeric(right)) return null;
-                return left.equals("float") || right.equals("float") ? "float" : "int";
-            }
-            if (operator.equals("<") || operator.equals("<=")
-                    || operator.equals(">") || operator.equals(">=")) {
-                return isClosedNumeric(left) && isClosedNumeric(right) ? "bool" : null;
-            }
-            if (operator.equals("==") || operator.equals("!=")
-                    || operator.equals("eq") || operator.equals("neq")) {
-                return left.equals(right) || isClosedNumeric(left) && isClosedNumeric(right)
-                        ? "bool" : null;
-            }
-            if ((operator.equals("&&") || operator.equals("||"))
-                    && left.equals("bool") && right.equals("bool")) {
-                return "bool";
-            }
-            return null;
-        }
-        if (expression instanceof Ast.ConditionalExpr conditional) {
-            String condition = closedConstPrimitiveType(conditional.condition());
-            String whenTrue = closedConstPrimitiveType(conditional.whenTrue());
-            String whenFalse = closedConstPrimitiveType(conditional.whenFalse());
-            if (!"bool".equals(condition) || whenTrue == null || whenFalse == null) return null;
-            if (whenTrue.equals(whenFalse)) return whenTrue;
-            if (isClosedNumeric(whenTrue) && isClosedNumeric(whenFalse)) return "float";
-            return null;
-        }
-        return null;
-    }
-
-    private boolean isClosedNumeric(String type) {
-        return type.equals("int") || type.equals("float");
     }
 
     private boolean syntaxArgumentMatches(
