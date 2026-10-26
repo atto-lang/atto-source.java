@@ -300,7 +300,7 @@ public final class Parser {
                 if (check(LBRACE)) {
                     throw error(peek(), "[EXPORT_NESTED_GROUP] nested export groups are not supported");
                 }
-                if (isExportKindToken(peek())) {
+                if (isExportKindToken(peek()) || isContextualSymbolExportKindAhead()) {
                     throw error(peek(), "[EXPORT_KIND_PREFIX_IN_GROUP] typed export kind belongs before the group");
                 }
                 items.add(parseExportItem(kind));
@@ -339,32 +339,34 @@ public final class Parser {
         if (match(CONST)) return Ast.ExportKind.CONST;
         if (match(VAL)) return Ast.ExportKind.VAL;
         if (match(LET)) return Ast.ExportKind.LET;
-        if (isContextualIdentifier("symbol")) {
+        if (isContextualSymbolExportKindAhead()) {
             advance();
             return Ast.ExportKind.SYMBOL;
-        }
-        if (isContextualIdentifier("model")) {
-            advance();
-            return Ast.ExportKind.MODEL;
         }
 
         if (check(VOID)
                 || (check(IDENT) && java.util.Set.of(
-                        "string", "String", "int", "float", "bool", "boolean").contains(peek().lexeme())
+                        "model", "string", "String", "int", "float", "bool", "boolean").contains(peek().lexeme())
                     && current + 1 < tokens.size()
                     && (isIdentifierLikeToken(tokens.get(current + 1).type())
-                        || tokens.get(current + 1).type() == SYMBOL_LITERAL))) {
+                        || tokens.get(current + 1).type() == SYMBOL_LITERAL
+                        || tokens.get(current + 1).type() == LBRACE))) {
             throw error(peek(),
                     "[EXPORT_UNKNOWN_DECLARATION_KIND] typed export prefixes are declaration families, not runtime value types");
         }
         return Ast.ExportKind.UNTYPED;
     }
 
+    private boolean isContextualSymbolExportKindAhead() {
+        if (!isContextualIdentifier("symbol") || current + 1 >= tokens.size()) return false;
+        Token.Type next = tokens.get(current + 1).type();
+        return next == SYMBOL_LITERAL || next == IDENT || next == LBRACE;
+    }
+
     private boolean isExportKindToken(Token token) {
         return switch (token.type()) {
             case MODULE, ACTOR, CLASS, FNC, ROUTINE, INTERFACE, CONTRACT, TRAIT,
                     STRUCT, TYPE, CONST, VAL, LET -> true;
-            case IDENT -> token.lexeme().equals("symbol") || token.lexeme().equals("model");
             default -> false;
         };
     }
