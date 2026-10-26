@@ -222,8 +222,12 @@ public final class ExplicitExportResolver {
     private static List<Ast.TypeRef> exportedSignatureTypes(Ast.Decl declaration) {
         ArrayList<Ast.TypeRef> result = new ArrayList<>();
         if (declaration instanceof Ast.FunctionDecl d) {
+            for (Ast.GenericParameter generic : d.genericSpecs()) {
+                if (generic.defaultType() != null) result.add(generic.defaultType());
+            }
             for (Ast.Param parameter : d.parameters()) result.add(parameter.type());
             result.add(d.returnType());
+            addEffectTypes(result, d.effects());
             return List.copyOf(result);
         }
         if (declaration instanceof Ast.FieldDecl d) {
@@ -249,6 +253,7 @@ public final class ExplicitExportResolver {
                 if (method.explicitReceiverType() != null) result.add(method.explicitReceiverType());
                 for (Ast.Param parameter : method.parameters()) result.add(parameter.type());
                 result.add(method.returnType());
+                addEffectTypes(result, method.effects());
             }
             return List.copyOf(result);
         }
@@ -258,6 +263,7 @@ public final class ExplicitExportResolver {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     for (Ast.Param parameter : fn.parameters()) result.add(parameter.type());
                     result.add(fn.returnType());
+                    addEffectTypes(result, fn.effects());
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
                     result.add(field.type());
                 }
@@ -265,6 +271,14 @@ public final class ExplicitExportResolver {
             return List.copyOf(result);
         }
         return List.of();
+    }
+
+    private static void addEffectTypes(
+            List<Ast.TypeRef> target,
+            Ast.EffectSpec effects) {
+        target.addAll(effects.throwsTypes());
+        target.addAll(effects.raisesTypes());
+        target.addAll(effects.panicsTypes());
     }
 
     private static void validateTypeRefVisibility(
