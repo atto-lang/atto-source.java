@@ -137,6 +137,10 @@ final class AsyncFilesystemAtomicLanguageTest {
                             new ByteArrayOutputStream()));
         }
 
-        assertFalse(Files.exists(root.resolve(".oreslang-stack-leaked.tmp")));
+        try (var entries = Files.list(root)) {
+            assertFalse(entries.anyMatch(path ->
+                    path.getFileName().toString().startsWith(".oreslang-stack-")
+                            && path.getFileName().toString().endsWith(".tmp")));
+        }
     }
 }
