@@ -25,6 +25,25 @@ import java.util.Objects;
 public final class InvertedArray implements AutoCloseable {
     /** Immutable, ordered, validated physical schema. */
     public static final class Schema {
+        /**
+         * Unforgeable compiler-side generated-symbol binding. Its identity is
+         * the nominal Schema instance plus a verified physical column ordinal,
+         * NEVER a generated guest identifier such as "__foo_x". Namespace
+         * lookup happens exactly once when compiler IR is constructed.
+         */
+        public static final class FieldBinding {
+            private final Schema namespace;
+            private final int column;
+            private FieldBinding(Schema namespace, int column) {
+                this.namespace = namespace;
+                this.column = column;
+            }
+            public String name() { return namespace.fields.get(column).name(); }
+            public InvertedColumnStore.Kind kind() {
+                return namespace.fields.get(column).kind();
+            }
+        }
+
         public record Field(String name, InvertedColumnStore.Kind kind,
                             InvertedRecordLayout recordLayout) {
             public Field(String name, InvertedColumnStore.Kind kind) {
@@ -44,6 +63,7 @@ public final class InvertedArray implements AutoCloseable {
         private final String className;
         private final List<Field> fields;
         private final Map<String, Integer> indices;
+        private final List<FieldBinding> generatedBindings;
         private final boolean requiresMethodPlan;
 
         private Schema(String className, List<Field> fields, boolean requiresMethodPlan) {
@@ -59,6 +79,11 @@ public final class InvertedArray implements AutoCloseable {
             }
             this.fields = List.copyOf(fields);
             indices = Map.copyOf(mapped);
+            List<FieldBinding> generated = new ArrayList<>(fields.size());
+            for (int i = 0; i < fields.size(); i++) {
+                generated.add(new FieldBinding(this, i));
+            }
+            generatedBindings = List.copyOf(generated);
         }
 
         public static Schema fromClass(Ast.ClassDecl klass) {
@@ -126,6 +151,23 @@ public final class InvertedArray implements AutoCloseable {
             }
             return index;
         }
+        /**
+         * Resolve a user field name at compile time, returning an opaque
+         * binding scoped to THIS declaration identity. Generated code carries
+         * this token/ordinal, not a textual generated symbol.
+         */
+        public FieldBinding bindField(String name) {
+            return generatedBindings.get(index(name));
+        }
+
+        private int checkedColumn(FieldBinding binding) {
+            if (binding == null || binding.namespace != this) {
+                throw new IllegalArgumentException(
+                        "foreign or invalid inverted generated field binding");
+            }
+            return binding.column;
+        }
+
         private InvertedColumnStore.ColumnSpec[] columnSpecs() {
             InvertedColumnStore.ColumnSpec[] specs =
                     new InvertedColumnStore.ColumnSpec[fields.size()];
@@ -302,7 +344,12 @@ public final class InvertedArray implements AutoCloseable {
      * still validates the opaque row handle and active borrow permissions.
      */
     public ColumnAccess bindField(String field) {
-        return new ColumnAccess(schema.index(field));
+        return bindField(schema.bindField(field));
+    }
+
+    /** Resolve a compiler-issued binding without re-entering guest name lookup. */
+    public ColumnAccess bindField(Schema.FieldBinding binding) {
+        return new ColumnAccess(schema.checkedColumn(binding));
     }
 
     public final class ColumnAccess {
@@ -310,6 +357,19 @@ public final class InvertedArray implements AutoCloseable {
         private ColumnAccess(int column) { this.column = column; }
         public String name() { return schema.fields().get(column).name(); }
         public InvertedColumnStore.Kind kind() { return schema.fields().get(column).kind(); }
+
+        /**
+         * No materialized row/view and no dynamic string lookup. Physical
+         * dense position and declared field column are checked under a single
+         * store lock, preventing a swap-delete TOCTOU between index and read.
+         */
+        public Object getAt(long denseIndex) {
+            return decoded(column, store.getAt(denseIndex, column));
+        }
+        public void setAt(long denseIndex, Object value) {
+            store.setAt(denseIndex, column, encoded(column, value));
+        }
+
         public Object get(InvertedColumnStore.Handle handle) {
             return decoded(column, store.get(handle, column));
         }
