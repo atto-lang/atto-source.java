@@ -1,0 +1,44 @@
+name: WebSocket frame codec contract
+on:
+  push:
+    branches:
+      - feat/websocket-frame-codec-20261026
+  pull_request:
+    branches:
+      - main
+    paths:
+      - src/main/java/dev/oreslang/runtime/WebSocketFrameCodec.java
+      - src/test/java/dev/oreslang/runtime/WebSocketFrameCodecTest.java
+      - docs/WEBSOCKET_TRANSPORT_V1.md
+      - .github/workflows/websocket-frame-codec.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frame-codec:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, oreslang-jdk25]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Record exact source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "source_head=$(git rev-parse HEAD)"
+          echo "source_tree=$(git rev-parse HEAD^{tree})"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Execute bounded WebSocket frame contracts
+        run: mvn -B -ntp -Dtest=dev.oreslang.runtime.WebSocketFrameCodecTest test
