@@ -101,6 +101,49 @@ final class OptionalNamedParameterTest {
     }
 
     @Test
+    void closedRecordPackCanSkipDefaultedNamedSlot() throws Exception {
+        String code = """
+                @DefaultArgVals(b: 2)
+                fnc calculate(int a, int b?, int c): int {
+                    return a + b + c;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(
+                            calculate(...record{c: 30, a: 10}));
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
+    void exactArityLabelFailureDoesNotFallbackToLargerOptionalOverload() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc choose(int a, int b): int {
+                            return 2;
+                        }
+
+                        @DefaultArgVals(c: 3)
+                        fnc choose(int x, int y, int c?): int {
+                            return 3;
+                        }
+
+                        pub routine main(): void {
+                            stdio.stdout.write(choose(x: 1, y: 2));
+                            return;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("unknown")
+                        || failure.getMessage().contains("argument"),
+                failure.getMessage());
+    }
+
+    @Test
     void exactDeclaredArityPrecedesOptionalFallback() throws Exception {
         String code = """
                 fnc choose(int a): int {
