@@ -86,6 +86,60 @@ guest parity. Promotion requires executable source positive and compile-negative
 fixtures on pinned backend heads (including malicious/overflow indices,
 swap-delete, reuse, loans, concurrent mutation and owner teardown).
 
+## Hidden generated binding namespace and physical transpose
+
+A source declaration introduces exactly one **nominal compiler symbol identity**
+for its inverted layout. Its generated implementation details reside in a
+separate, non-importable **compiler-internal binding namespace**, not in the
+user's namespace and not as exported synthetic identifiers. Fields named
+`row`, `at`, `columns`, `bindField`, or `__ores_internal_row` are ordinary
+user fields, not reserved implementation slots. Methods, fields, type names,
+and imports each follow their declared namespaces: never emit string-based
+`__Foo_field` symbols that can collide with any of them.
+
+The **transpose is logical, not a full-data transpose at every access**.
+At allocation/schema construction, direct fields get stable physical column
+ordinals. The frontend resolves a guest field symbol once and the lowered
+access carries an opaque `(nominal layout identity, field ordinal, kind)`
+binding. Field slots are compiled references, not a runtime string switch.
+For cross-module imports or generic specializations, this nominal identity
+must be the resolved unique type/symbol ID, **not only the short class name**.
+Runtime-generated reference bindings are per immutable `Schema` instance;
+different owners may intentionally share one schema, but independently
+resolved schemas cannot exchange generated binding tokens merely because
+their field names or physical layouts happen to match.
+
+Proposed generated lowering for an indexed column access:
+
+```text
+source:        rows[i].x
+resolve:       rows: InvertedArray<Particle>; x: FieldBinding<Particle, f64>
+lower:         tmpStore = evaluate(rows) once
+               tmpIndex = evaluate(i) once
+               tmpStore.getAt(tmpIndex, resolved_x_column)
+physical:      x_column[tmpIndex]   // checked against LIVE count, not capacity
+```
+
+A positional `rows[i].x = rhs` must evaluate receiver, index, RHS exactly
+once according to Oreslang sequencing, then perform one checked positional
+write transaction. Java's reference `getAt(index, column)` and
+`setAt(index, column, value)` each perform row-index validation, loan
+validation, and one physical column operation under **one store lock**.
+This avoids a structural swap-delete between a separately selected numeric
+row and a subsequent field load/store. At the host facade,
+`Schema.FieldBinding` represents the private generated namespace, while
+`ColumnAccess.getAt/setAt` avoids per-access `RowView` or row-handle
+allocation. This is a lowering *target*, not actual enabled guest emission.
+
+Stable `rows[h].x` still uses checked owner/slot/generation handles.
+Compound operations (`+=`, `++`, etc.) must use a verified atomic
+read-modify-write transform; **do not lower them to separate getAt/setAt**.
+Method calls must lower `self` into a checked store/row context, not a
+heap row. A nested ordinary fixed record remains packed as one opaque
+column element. Generating an AoS mirror, implicit whole-table transpose,
+reflective property access, runtime macros, or an untyped fallback is
+not permitted.
+
 ## Borrow and concurrency rules
 
 A column view is zero-copy and tied to its owning store; compiler-enforced, nonescaping lifetime is mandatory. Read loans on a field may coexist; a write loan excludes all other same-field access. Disjoint columns may have independent write loans. Structural changes (push, erase, reorder, reserve/reallocate, close, ownership transfer) require quiescence across *all* columns; no suspension or `await` may extend an unsafe exclusive loan without an explicit proof. A raw host-language `span` must not escape its loan; the compiler is responsible for enforcing this when lowered to Oreslang.
