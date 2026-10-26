@@ -36,6 +36,41 @@ final class InvertedColumnStoreTest {
     }
 
     @Test
+    void denseIndexResolutionIsBoundsCheckedAndTracksSwapDelete() {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
+            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(Integer.MIN_VALUE));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(0));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(Integer.MAX_VALUE));
+
+            var first = store.push(10);
+            var middle = store.push(20);
+            var last = store.push(30);
+
+            var firstAt = store.handleAt(0);
+            var middleAt = store.handleAt(1);
+            assertEquals(first.owner(), firstAt.owner());
+            assertEquals(first.slot(), firstAt.slot());
+            assertEquals(first.generation(), firstAt.generation());
+            assertEquals(middle.slot(), middleAt.slot());
+
+            store.eraseSwap(first);
+            var moved = store.handleAt(0);
+            assertEquals(last.slot(), moved.slot());
+            assertEquals(last.generation(), moved.generation());
+            assertEquals(30, store.get(moved, 0));
+            assertEquals(20, store.get(middleAt, 0));
+
+            store.eraseSwap(middle);
+            assertThrows(IllegalArgumentException.class, () -> store.get(middleAt, 0));
+            var recycled = store.push(40);
+            assertEquals(middle.slot(), recycled.slot());
+            assertNotEquals(middle.generation(), recycled.generation());
+            assertEquals(recycled.slot(), store.handleAt(1).slot());
+            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(2));
+        }
+    }
+
+    @Test
     void rejectsForeignStaleMalformedAndWrongTypedValuesWithoutPartialMutation() {
         try (var a = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
                                               InvertedColumnStore.Kind.BOOL);
