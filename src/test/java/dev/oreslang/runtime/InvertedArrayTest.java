@@ -16,6 +16,52 @@ import static org.junit.jupiter.api.Assertions.*;
  * Source execution remains fail-closed until Java/LLVM guest IR is wired.
  */
 final class InvertedArrayTest {
+    @Test
+    void proposedBracketTargetsResolvePositionsAndOpaqueHandlesWithoutAliasing() {
+        try (var array = InvertedArray.fromClass(particle(), 0)) {
+            assertThrows(IndexOutOfBoundsException.class, () -> array.at(0));
+            var a = array.pushValues(1.0, 2.0, 3.0, 4.0, false);
+            var b = array.pushValues(5.0, 6.0, 7.0, 8.0, true);
+            var c = array.pushValues(9.0, 10.0, 11.0, 12.0, false);
+            var selected = array.at(2L);
+            assertEquals(9.0, selected.get("x"));
+            assertEquals(9.0, array.at(c).get("x"));
+            array.at(0).set("x", 13.0);
+            assertEquals(13.0, array.at(a).get("x"));
+            assertThrows(IndexOutOfBoundsException.class, () -> array.at(-1L));
+            assertThrows(IndexOutOfBoundsException.class, () -> array.at(3L));
+            assertThrows(IndexOutOfBoundsException.class, () -> array.at(Long.MAX_VALUE));
+            assertThrows(IndexOutOfBoundsException.class, () -> array.at(Long.MIN_VALUE));
+
+            array.eraseSwap(b);
+            assertEquals(9.0, array.at(1).get("x"));
+            assertEquals(9.0, selected.get("x"));
+            assertThrows(IllegalArgumentException.class, () -> array.at(b));
+            assertThrows(IndexOutOfBoundsException.class, () -> array.at(2));
+            array.pushValues(17.0, 18.0, 19.0, 20.0, true);
+            assertEquals(17.0, array.at(2).get("x"));
+            assertEquals(9.0, selected.get("x"));
+        }
+    }
+
+    @Test
+    void proposedBracketTargetsRespectColumnLoansAndStoreRevocation() {
+        var array = InvertedArray.fromClass(particle(), 0);
+        var h = array.pushValues(1.0, 2.0, 3.0, 4.0, false);
+        var projection = array.at(0);
+        try (var write = array.borrowWrite("x")) {
+            assertThrows(IllegalStateException.class, () -> array.at(0));
+            assertThrows(IllegalStateException.class, () -> array.at(h));
+            assertThrows(IllegalStateException.class, () -> projection.get("x"));
+            assertThrows(IllegalStateException.class, () -> projection.set("x", 7.0));
+        }
+        assertEquals(1.0, array.at(h).get("x"));
+        array.close();
+        assertThrows(IllegalStateException.class, () -> array.at(0));
+        assertThrows(IllegalStateException.class, () -> array.at(h));
+        assertThrows(IllegalStateException.class, () -> projection.get("x"));
+    }
+
     private static Ast.ClassDecl declaration(String source) {
         Ast.Program program = Parser.parse(source);
         return (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
