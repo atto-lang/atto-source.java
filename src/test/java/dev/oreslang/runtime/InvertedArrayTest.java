@@ -319,6 +319,17 @@ final class InvertedArrayTest {
     }
 
     @Test
+    void rowMethodMayReadFinalColumnIntoMutableColumn() {
+        var mixed = declaration("define inverted class Mixed as source: f64; let f64 total; add(f64 d): void { self.total = self.source + d; } end");
+        try (var array = InvertedArray.fromClass(mixed, 1)) {
+            var row = array.pushValues(5.0, 0.0);
+            array.invoke(row, "add", 3.0);
+            assertEquals(5.0, array.read(row, "source"));
+            assertEquals(8.0, array.read(row, "total"));
+        }
+    }
+
+    @Test
     void rowMethodRejectsFinalAssignment() {
         var frozen = declaration("define inverted class FrozenCounter as value: f64; inc(f64 d): void { self.value = self.value + d; } end");
         assertThrows(IllegalArgumentException.class, () -> InvertedArray.fromClass(frozen, 1));
