@@ -4,6 +4,7 @@ import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
 import dev.oreslang.types.Types.Borrow;
+import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Unknown;
 import org.junit.jupiter.api.Test;
 
@@ -78,6 +79,8 @@ final class PipeEndpointContractsTest {
                 () -> PipeEndpointContracts.source(new Borrow(Primitive.INT, false)));
         assertThrows(IllegalArgumentException.class,
                 () -> PipeEndpointContracts.sink(Primitive.VOID));
+        assertThrows(IllegalArgumentException.class,
+                () -> PipeEndpointContracts.source(new ClassNamespace("Utility")));
     }
 
     @Test
