@@ -1653,7 +1653,8 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler())
+                        .startTrackedInCurrentTaskOrRoot(task).result();
             }
             return future;
         }
@@ -1757,7 +1758,8 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler())
+                        .startTrackedInCurrentTaskOrRoot(task).result();
             }
             return future;
         }
@@ -1769,10 +1771,15 @@ public final class OresEvalRootNode extends RootNode {
                 context.actors().ownCurrentActorFuture(future);
                 return future;
             }
+            // Composition wrappers are scheduled work too. If created from
+            // within a SourceTask, they must share its revocation and physical
+            // child-join tree rather than escaping through an untracked root
+            // task. The source Future is still a borrowed observation.
             OresScheduler current = OresScheduler.current();
             return (current != null
                     ? current
-                    : context.vm().rootScheduler()).start(task);
+                    : context.vm().rootScheduler())
+                    .startTrackedInCurrentTaskOrRoot(task).result();
         }
 
         private OresFuture<Object> chainFuture(
