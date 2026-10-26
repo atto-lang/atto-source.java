@@ -14,8 +14,8 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Current executable trap/await precedence, plus a fail-closed guard until
- * Future-aware |> stage lifting is implemented (see docs/FUTURE_PIPE_TRAP_AWAIT.md).
+ * Executable trap/await precedence, including checked pure asynchronous
+ * Future-pipeline stages and one-level Future flattening.
  */
 final class FuturePipeTrapAwaitContractTest {
     @Test
@@ -87,21 +87,24 @@ final class FuturePipeTrapAwaitContractTest {
     }
 
     @Test
-    void futurePipelineCannotSilentlyPassFutureAsSynchronousStageInput() {
+    void trapAwaitCoversCheckedAsyncPipelineStageAndFlattensItsFuture() throws Exception {
         String source = """
-                async fnc answer(): int { return 21; }
-                async fnc save(int value): int { return value + 1; }
+                async fnc answer(): int {
+                  rt cooperate;
+                  return 21;
+                }
+                async fnc save(int value): int {
+                  rt cooperate;
+                  return value + 1;
+                }
                 pub fnc main(): void {
                   val Option<int> result = trap await (answer() |> save());
+                  stdio.stdout.write(result.unwrap());
                   return;
                 }
                 """;
-        // The existing eager |> desugaring passes Future<int> into save(int).
-        // Until future-aware lifting is implemented, compiling this as though
-        // it handled the resolved int would be unsound. This assertion MUST
-        // be replaced with a positive end-to-end test when lifting lands.
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(source)));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("22", run(source));
     }
 
     private static String run(String code) throws Exception {
