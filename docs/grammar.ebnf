@@ -36,7 +36,7 @@ export_scope    = "[" ( "file" | "pkg" | "package" ) "]"
                 | "(" ( "file" | "pkg" | "package" ) ")" ;
 export_kind     = "module" | "actor" | "class" | "fnc" | "routine"
                 | "interface" | "contract" | "trait" | "struct" | "type"
-                | "const" | "val" | "let" | "symbol" | "model" ;
+                | "const" | "val" | "let" | "symbol" ;
 export_item     = IDENT [ "as" IDENT ]
                 | SYMBOL_LITERAL [ "as" SYMBOL_LITERAL ] ;
 (* v1 restrictions:
