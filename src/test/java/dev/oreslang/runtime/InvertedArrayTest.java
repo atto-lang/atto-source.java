@@ -319,6 +319,12 @@ final class InvertedArrayTest {
     }
 
     @Test
+    void rowMethodRejectsFinalAssignment() {
+        var frozen = declaration("define inverted class FrozenCounter as value: f64; inc(f64 d): void { self.value = self.value + d; } end");
+        assertThrows(IllegalArgumentException.class, () -> InvertedArray.fromClass(frozen, 1));
+    }
+
+    @Test
     void rejectsUnprovedLayoutsAndGuestExecutionRemainsClosed() {
         String[] invalid = {
                 "define class NotInverted as x: i32; end",
