@@ -263,8 +263,7 @@ public final class TypeChecker {
             }
             boolean imported = program.imports().stream().anyMatch(use ->
                     use.kind() == Ast.ImportKind.CONTRACT && !use.wildcard()
-                            && use.names().contains(declaration.name())
-                            && ImportRules.localName(use, declaration.name()).equals(localName));
+                            && ImportRules.exposedBindings(use).contains(localName));
             if (!imported || checker.interfaces.containsKey(localName)
                     || checker.ambiguousInterfaces.contains(localName)) {
                 throw new IllegalArgumentException(
@@ -293,9 +292,7 @@ public final class TypeChecker {
                     : Ast.ImportKind.ACTOR;
             boolean imported = program.imports().stream().anyMatch(use ->
                     use.kind() == expectedKind && !use.wildcard()
-                            && use.names().contains(name)
-                            && (use.namespace() == null
-                                    || use.namespace().equals(name)));
+                            && ImportRules.exposedBindings(use).contains(name));
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
