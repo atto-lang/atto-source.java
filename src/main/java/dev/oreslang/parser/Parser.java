@@ -105,13 +105,35 @@ public final class Parser {
         }
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
-        while (match(IMPORT)) imports.add(parseImport());
+        List<Ast.ExportDecl> rootExports = new ArrayList<>();
+
+        // Export declarations are transparent to the import prelude. They may
+        // appear before, between, or after imports until the first real local
+        // declaration begins.
+        while (true) {
+            if (isContextualIdentifier("export")) {
+                rootExports.add(parseExportDecl());
+                continue;
+            }
+            if (match(IMPORT)) {
+                imports.add(parseImport());
+                continue;
+            }
+            break;
+        }
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
+            if (isContextualIdentifier("export")) {
+                rootExports.add(parseExportDecl());
+                continue;
+            }
+            if (check(IMPORT)) {
+                throw error(peek(), "[IMPORT_AFTER_DECLARATION] imports must precede real local declarations; export metadata does not close the import prelude");
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -224,11 +246,150 @@ public final class Parser {
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
-        if (!rootDeclarations.isEmpty()) {
-            modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
+        if (!rootDeclarations.isEmpty() || !rootExports.isEmpty()) {
+            modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations, rootExports));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(namespace, imports, modules);
+    }
+
+    private Ast.ExportDecl parseExportDecl() {
+        Token exportToken = advance(); // contextual 'export'
+        Ast.ExportScope scope = Ast.ExportScope.PUBLIC;
+
+        if (match(LBRACKET) || match(LPAREN)) {
+            Token.Type close = previous().type() == LBRACKET ? RBRACKET : RPAREN;
+            Token scopeToken = consume(IDENT, "[UNKNOWN_EXPORT_SCOPE] expected file, pkg, or package export scope");
+            scope = switch (scopeToken.lexeme()) {
+                case "file" -> Ast.ExportScope.FILE;
+                case "pkg", "package" -> Ast.ExportScope.PACKAGE;
+                default -> throw error(scopeToken, "[UNKNOWN_EXPORT_SCOPE] expected file, pkg, or package export scope");
+            };
+            consume(close, "[MALFORMED_EXPORT_SCOPE] unterminated export scope");
+            if (check(LBRACKET) || check(LPAREN)) {
+                throw error(peek(), "[MULTIPLE_EXPORT_SCOPES] an export declaration has exactly one scope");
+            }
+        }
+
+        if (check(STAR)) {
+            throw error(peek(), checkNext(FROM)
+                    ? "[REEXPORT_UNSUPPORTED] wildcard re-export is reserved for a future explicit re-export contract"
+                    : "[WILDCARD_EXPORT_UNSUPPORTED] wildcard local export is not part of export v1");
+        }
+        if (check(FROM)) {
+            throw error(peek(), "[REEXPORT_UNSUPPORTED] export from is reserved for a future explicit re-export contract");
+        }
+
+        Ast.ExportKind kind = parseOptionalExportKind();
+        if (kind == null && check(IDENT) && isRuntimeTypeWord(peek().lexeme()) && checkNext(IDENT)) {
+            throw error(peek(), "[UNKNOWN_EXPORT_DECLARATION_KIND] typed exports use declaration families, not runtime value types");
+        }
+
+        List<Ast.ExportItem> items = new ArrayList<>();
+        if (match(LBRACE)) {
+            if (check(RBRACE)) throw error(peek(), "[EMPTY_EXPORT_GROUP] export group cannot be empty");
+            while (true) {
+                if (isExportKindStart()) {
+                    throw error(peek(), "[KIND_PREFIX_IN_GROUP] typed export kind belongs before the group, not on each item");
+                }
+                items.add(parseExportItem(kind));
+                if (!match(COMMA)) break;
+                if (check(RBRACE)) break; // one trailing comma is canonical-compatible
+                if (check(COMMA)) throw error(peek(), "[MALFORMED_EXPORT_LIST] repeated comma in export group");
+            }
+            consume(RBRACE, "[MALFORMED_EXPORT_LIST] expected '}' after export group");
+        } else {
+            items.add(parseExportItem(kind));
+        }
+
+        consume(SEMICOLON, "[EXPORT_SEMICOLON_REQUIRED] export declaration must end with ';'");
+        return new Ast.ExportDecl(
+                scope, kind, items, new Ast.SourceSpan(exportToken.line(), exportToken.column()));
+    }
+
+    private Ast.ExportKind parseOptionalExportKind() {
+        if (match(MODULE)) return Ast.ExportKind.MODULE;
+        if (match(ACTOR, ISOACTOR)) return Ast.ExportKind.ACTOR;
+        if (match(CLASS)) return Ast.ExportKind.CLASS;
+        if (match(FNC, ROUTINE)) return Ast.ExportKind.FUNCTION;
+        if (match(INTERFACE)) return Ast.ExportKind.INTERFACE;
+        if (match(CONTRACT)) return Ast.ExportKind.CONTRACT;
+        if (match(TRAIT)) return Ast.ExportKind.TRAIT;
+        if (match(STRUCT)) return Ast.ExportKind.STRUCT;
+        if (match(TYPE, TYPES)) return Ast.ExportKind.TYPE;
+        if (match(CONST)) return Ast.ExportKind.CONST;
+        if (match(VAL)) return Ast.ExportKind.VAL;
+        if (match(LET)) return Ast.ExportKind.LET;
+        if (isContextualIdentifier("symbol")) {
+            advance();
+            return Ast.ExportKind.SYMBOL;
+        }
+        return null;
+    }
+
+    private boolean isExportKindStart() {
+        return check(MODULE) || check(ACTOR) || check(ISOACTOR) || check(CLASS)
+                || check(FNC) || check(ROUTINE) || check(INTERFACE) || check(CONTRACT)
+                || check(TRAIT) || check(STRUCT) || check(TYPE) || check(TYPES)
+                || check(CONST) || check(VAL) || check(LET)
+                || isContextualIdentifier("symbol");
+    }
+
+    private static boolean isRuntimeTypeWord(String text) {
+        return text.equals("string") || text.equals("int") || text.equals("float")
+                || text.equals("bool") || text.equals("boolean") || text.equals("void");
+    }
+
+    private Ast.ExportItem parseExportItem(Ast.ExportKind kind) {
+        if (check(SYMBOL_LITERAL)) {
+            Token source = advance();
+            String local = "#" + source.lexeme();
+            if (kind != null && kind != Ast.ExportKind.SYMBOL) {
+                throw error(source, "[EXPORT_KIND_MISMATCH] Symbol literal requires 'export symbol' or an untyped export");
+            }
+            if (match(AS)) {
+                if (check(SYMBOL_LITERAL)) {
+                    Token target = advance();
+                    String external = "#" + target.lexeme();
+                    if (!local.equals(external)) {
+                        throw error(target, "[SYMBOL_IDENTITY_MISMATCH] Symbol export cannot substitute a different nominal identity");
+                    }
+                    return new Ast.ExportItem(local, external, true, true);
+                }
+                if (check(IDENT)) {
+                    throw error(peek(), "[SYMBOL_BINDING_ALIAS_UNSUPPORTED] Symbol exports cannot be renamed to identifier bindings in v1");
+                }
+                throw error(peek(), "[MALFORMED_EXPORT_ALIAS] expected the same Symbol identity after 'as'");
+            }
+            return new Ast.ExportItem(local, local, true, false);
+        }
+
+        if (check(STAR)) throw error(peek(), "[WILDCARD_EXPORT_UNSUPPORTED] wildcard local export is not part of export v1");
+        if (check(FROM)) throw error(peek(), "[REEXPORT_UNSUPPORTED] export from is reserved for a future explicit re-export contract");
+        Token localToken = consume(IDENT, "[MALFORMED_EXPORT_TARGET] expected local declaration name or Symbol literal");
+        String local = localToken.lexeme();
+
+        if (check(DOT) || check(DOUBLE_COLON) || check(SLASH)) {
+            throw error(peek(), "[QUALIFIED_EXPORT_UNSUPPORTED] local export targets must be simple names");
+        }
+        if (check(LT)) {
+            throw error(peek(), "[GENERIC_EXPORT_TARGET_UNSUPPORTED] export the generic declaration family, not an instantiation");
+        }
+        if (check(LPAREN)) {
+            throw error(peek(), "[CALLABLE_SIGNATURE_EXPORT_UNSUPPORTED] export a callable overload family by name");
+        }
+
+        String external = local;
+        if (match(AS)) {
+            if (check(SYMBOL_LITERAL)) {
+                throw error(peek(), "[SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE] only a Symbol source can use Symbol self-identity syntax");
+            }
+            if (check(STRING)) {
+                throw error(peek(), "[LITERAL_EXPORT_ALIAS_UNSUPPORTED] export aliases are source binding identifiers, not runtime literals");
+            }
+            external = consume(IDENT, "[MALFORMED_EXPORT_ALIAS] export alias must be an identifier").lexeme();
+        }
+        return new Ast.ExportItem(local, external, false, false);
     }
 
     private Ast.ImportDecl parseImport() {
@@ -314,11 +475,16 @@ public final class Parser {
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
+        List<Ast.ExportDecl> exports = new ArrayList<>();
         List<ForwardType> enclosing = moduleForwards;
         List<ForwardType> forwards = new ArrayList<>();
         moduleForwards = forwards;
         try {
             while (!check(END) && !check(EOF)) {
+                if (isContextualIdentifier("export")) {
+                    exports.add(parseExportDecl());
+                    continue;
+                }
                 Ast.Decl declaration = parseModuleMember();
                 if (declaration != null) declarations.add(declaration);
             }
@@ -327,7 +493,7 @@ public final class Parser {
         } finally {
             moduleForwards = enclosing;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
+        return new Ast.ModuleDecl(name, annotations, contracts, declarations, exports);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
@@ -1066,11 +1232,17 @@ public final class Parser {
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
         Ast.InterfaceDecl iface = parseInterface(visibility, true);
-        return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
+        return new Ast.InterfaceDecl(
+                iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(),
+                true, Ast.InterfaceFlavor.CONTRACT);
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
         Ast.InterfaceDecl declaration = parseInterface(visibility);
+        Ast.InterfaceFlavor flavor = kind == TRAIT ? Ast.InterfaceFlavor.TRAIT : Ast.InterfaceFlavor.INTERFACE;
+        declaration = new Ast.InterfaceDecl(
+                declaration.name(), declaration.visibility(), declaration.genericParameters(),
+                declaration.parents(), declaration.members(), false, flavor);
         interfaceKinds.put(declaration, kind);
         return declaration;
     }
