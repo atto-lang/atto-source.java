@@ -1,6 +1,6 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
-source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
+source          = [ namespace_decl ] { export_decl | import_decl } { top_level_item | export_decl } EOF ;
 namespace_decl  = "namespace" IDENT ";" ;
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
@@ -26,10 +26,32 @@ top_level_item  = annotated_module_decl
                 | forward_type_decl
                 | binding_decl ;
 
+export_decl     = "export" [ export_scope ]
+                  ( export_item
+                  | "{" export_item { "," export_item } [ "," ] "}"
+                  | export_kind export_item
+                  | export_kind "{" export_item { "," export_item } [ "," ] "}" )
+                  ";" ;
+export_scope    = "[" ( "file" | "pkg" | "package" ) "]"
+                | "(" ( "file" | "pkg" | "package" ) ")" ;
+export_kind     = "module" | "actor" | "class" | "fnc" | "routine"
+                | "interface" | "contract" | "trait" | "struct" | "type"
+                | "const" | "val" | "let" | "symbol" | "model" ;
+export_item     = IDENT [ "as" IDENT ]
+                | SYMBOL_LITERAL [ "as" SYMBOL_LITERAL ] ;
+(* v1 restrictions:
+   - export groups are non-empty; one trailing comma is accepted.
+   - a Symbol alias is legal only when both Symbol literals have identical identity.
+   - wildcard, qualified, generic-instantiation, callable-signature, literal aliases,
+     per-item kinds, and export-from/re-export syntax are rejected.
+   - export is contextual at declaration-namespace positions and does not close the
+     file import prelude. A real declaration closes that prelude. *)
+
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
                         [ "as" ] { module_member } "end" ;
 
-module_member   = contract_decl
+module_member   = export_decl
+                | contract_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
