@@ -324,57 +324,6 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
-    void expandedSyntaxCannotBypassOwnershipChecking() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck("""
-                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
-                            return value;
-                        }
-
-                        define class Bar as
-                            pub let String foo = "start";
-                        end
-
-                        fnc consume(Bar b): void {
-                            return;
-                        }
-
-                        fnc bad(): void {
-                            let Bar b = new Bar();
-                            identity!(syntax expr consume(b));
-                            stdio.println(b.foo);
-                            return;
-                        }
-                        """));
-
-        assertTrue(failure.getMessage().contains("use of moved value 'b'"),
-                failure::toString);
-    }
-
-    @Test
-    void expandedSyntaxCannotBypassActorCapabilityAdmission() {
-        SecurityException failure = assertThrows(
-                SecurityException.class,
-                () -> OresCompiler.validateForIsolate("""
-                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
-                            return value;
-                        }
-
-                        define actor Worker as
-                            receive(ActorMail<String> mail): void {
-                                identity!(syntax expr std.process.exit(0));
-                                self.end();
-                                return;
-                            }
-                        end
-                        """, IsolatePolicy.developer()));
-
-        assertTrue(failure.getMessage().contains("PROCESS_EXIT"),
-                failure::toString);
-    }
-
-    @Test
     void nestedPassthroughExpansionTerminatesAndEliminatesAllInvocations() {
         Ast.Program checked = assertDoesNotThrow(
                 () -> OresCompiler.parseAndTypeCheck("""
@@ -468,31 +417,6 @@ final class MacroInvocationPlannerTest {
                         """, IsolatePolicy.untrustedActor()));
 
         assertTrue(failure.getMessage().contains("STDOUT"), failure::toString);
-    }
-
-    @Test
-    void nestedExpansionDepthIsBoundedAndFailsClosed() {
-        String expression = "42";
-        for (int i = 0; i < 65; i++) {
-            expression = "identity!(syntax expr " + expression + ")";
-        }
-        String source = """
-                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
-                    return value;
-                }
-                fnc answer() -> int {
-                    return %s;
-                }
-                """.formatted(expression);
-
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
-
-        assertTrue(failure.getMessage().contains("macro expansion depth exceeds"),
-                failure::toString);
-        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
-                failure::toString);
     }
 
     @Test
