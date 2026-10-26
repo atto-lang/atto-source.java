@@ -1,5 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import org.junit.jupiter.api.Test;
@@ -11,6 +15,67 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class WebSocketFrameCodecTest {
+
+    @Test
+    void incrementalReaderHandlesShortReadsAndRejectsHugeLengthBeforePayloadRead()
+            throws Exception {
+        byte[] wire = maskedFrame(
+                true,
+                WebSocketFrameCodec.OPCODE_TEXT,
+                "hello".getBytes(StandardCharsets.UTF_8));
+        InputStream oneByteAtATime = new InputStream() {
+            private final ByteArrayInputStream source = new ByteArrayInputStream(wire);
+            @Override public int read() {
+                return source.read();
+            }
+            @Override public int read(byte[] target, int offset, int length) {
+                return source.read(target, offset, Math.min(length, 1));
+            }
+        };
+
+        var frame = WebSocketFrameCodec.readClientFrame(oneByteAtATime, 16);
+        assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), frame.payload());
+
+        // Advertise 65536 bytes with no mask/payload. The configured frame
+        // limit must reject from the length header itself, not by reading EOF.
+        byte[] oversizedHeader = new byte[] {
+                (byte) 0x82, (byte) (0x80 | 127),
+                0, 0, 0, 0, 0, 1, 0, 0
+        };
+        IllegalArgumentException rejected =
+                assertThrows(IllegalArgumentException.class, () ->
+                        WebSocketFrameCodec.readClientFrame(
+                                new ByteArrayInputStream(oversizedHeader), 1024));
+        assertTrue(rejected.getMessage().contains("configured limit"));
+
+        assertThrows(IOException.class, () ->
+                WebSocketFrameCodec.readClientFrame(
+                        new ByteArrayInputStream(new byte[] {
+                                (byte) 0x81, (byte) 0x80, 1, 2
+                        }),
+                        16));
+    }
+
+    @Test
+    void incrementalServerWriterMatchesCanonicalArrayEncoder() throws Exception {
+        for (byte[] payload : java.util.List.of(
+                new byte[0], new byte[3], new byte[126], new byte[65536])) {
+            ByteArrayOutputStream stream = new ByteArrayOutputStream();
+            WebSocketFrameCodec.writeServerFrame(
+                    stream,
+                    true,
+                    WebSocketFrameCodec.OPCODE_BINARY,
+                    payload,
+                    100_000);
+            assertArrayEquals(
+                    WebSocketFrameCodec.encodeServerFrame(
+                            true,
+                            WebSocketFrameCodec.OPCODE_BINARY,
+                            payload,
+                            100_000),
+                    stream.toByteArray());
+        }
+    }
 
     @Test
     void decodesMaskedTextWithoutLeakingMutablePayload() {
