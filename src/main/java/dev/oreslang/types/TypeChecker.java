@@ -9391,6 +9391,12 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        if (Set.of("Type", "Const", "Identifier", "Syntax", "SyntaxList").contains(ref.name())) {
+            throw new IllegalArgumentException(
+                    "compiler-only macro meta type '" + ref.name()
+                            + "' cannot appear in executable type position; "
+                            + "compile-time introspection must be eliminated before AOT code generation");
+        }
         if (ref.name().equals("_")) {
             // '_' has meaning only as an entire generic *call* argument.
             // In ordinary type positions it is neither a type variable nor
