@@ -316,6 +316,35 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void expandedSyntaxCannotBypassOwnershipChecking() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+
+                        define class Bar as
+                            pub let String foo = "start";
+                        end
+
+                        fnc consume(Bar b): void {
+                            return;
+                        }
+
+                        fnc bad(): void {
+                            let Bar b = new Bar();
+                            identity!(syntax expr consume(b));
+                            stdio.println(b.foo);
+                            return;
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("use of moved value 'b'"),
+                failure::toString);
+    }
+
+    @Test
     void nestedPassthroughExpansionTerminatesAndEliminatesAllInvocations() {
         Ast.Program checked = assertDoesNotThrow(
                 () -> OresCompiler.parseAndTypeCheck("""
