@@ -161,6 +161,13 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(MACRO)) {
+                    validateOnlyVisibilityModifiers(modifiers, "macros");
+                    rejectCallableStructuralAnnotation(annotations, "macro declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "macro declarations");
+                    rootDeclarations.add(parseMacroDecl(modifiers.visibility));
+                    continue;
+                }
                 rejectUnloweredRuntimeEntityDeclaration();
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
@@ -215,7 +222,7 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                throw error(previous(), "expected macro, module, class, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -383,6 +390,12 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (match(MACRO)) {
+                validateOnlyVisibilityModifiers(modifiers, "macros");
+                rejectCallableStructuralAnnotation(annotations, "macro declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "macro declarations");
+                return parseMacroDecl(modifiers.visibility);
+            }
             rejectUnloweredRuntimeEntityDeclaration();
             ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
@@ -421,7 +434,7 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            throw error(previous(), "expected macro, class, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -528,6 +541,62 @@ public final class Parser {
         }
         if (modifiers.untrusted) return Ast.ActorKind.UNTRUSTED;
         return isolated ? Ast.ActorKind.PRIVATE : Ast.ActorKind.SHARED;
+    }
+
+    private Ast.MacroDecl parseMacroDecl(Ast.Visibility visibility) {
+        String name = consume(IDENT, "expected macro name").lexeme();
+        consume(LPAREN, "expected '(' after macro name");
+        List<Ast.Param> parameters = parseParametersUntil(RPAREN, java.util.Set.of());
+        consume(RPAREN, "expected ')' after macro parameters");
+        requireDistinctParameterNames(parameters);
+        for (Ast.Param parameter : parameters) {
+            if (parameter.structural() || parameter.mutable()) {
+                throw error(previous(), "macro parameters are immutable compile-time values");
+            }
+            if (!isMacroParameterType(parameter.type())) {
+                throw error(previous(), "macro parameter '" + parameter.name()
+                        + "' must use Type, Const<T>, Identifier, or Syntax<K>");
+            }
+        }
+        consume(ARROW, "define macro requires an explicit '-> <macro-result-kind>'");
+        Ast.TypeRef resultKind = parseTypeRef();
+        if (!isMacroResultKind(resultKind)) {
+            throw error(previous(), "macro result kind must be Syntax<Expr|Stmt|Decl|Type|Pattern> or SyntaxList<Decl>");
+        }
+        return new Ast.MacroDecl(name, visibility, parameters, resultKind, parseBlock());
+    }
+
+    private boolean isMacroParameterType(Ast.TypeRef type) {
+        if (type.name().equals("Type") || type.name().equals("Identifier")) {
+            return type.arguments().isEmpty() && !type.inferArguments();
+        }
+        if (type.name().equals("Const")) {
+            return type.arguments().size() == 1 && !type.inferArguments();
+        }
+        return isMacroSyntaxKind(type);
+    }
+
+    private boolean isMacroResultKind(Ast.TypeRef type) {
+        if (isMacroSyntaxKind(type)) return true;
+        return type.name().equals("SyntaxList")
+                && !type.inferArguments()
+                && type.arguments().size() == 1
+                && type.arguments().getFirst().name().equals("Decl")
+                && type.arguments().getFirst().arguments().isEmpty()
+                && !type.arguments().getFirst().inferArguments();
+    }
+
+    private boolean isMacroSyntaxKind(Ast.TypeRef type) {
+        if (!type.name().equals("Syntax") || type.inferArguments() || type.arguments().size() != 1) {
+            return false;
+        }
+        Ast.TypeRef kind = type.arguments().getFirst();
+        if (!kind.arguments().isEmpty() || kind.inferArguments()) return false;
+        return kind.name().equals("Expr")
+                || kind.name().equals("Stmt")
+                || kind.name().equals("Decl")
+                || kind.name().equals("Type")
+                || kind.name().equals("Pattern");
     }
 
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
