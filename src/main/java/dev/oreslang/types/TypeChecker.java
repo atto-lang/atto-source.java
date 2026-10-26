@@ -5603,7 +5603,8 @@ public final class TypeChecker {
                 switch (name) {
                     case "read_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
                     case "exists_async" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
-                    case "write_text_async", "append_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "file_size_async" -> { result = Primitive.INT; parameters = List.of(Primitive.STRING); }
+                    case "write_text_async", "write_text_atomic_async", "append_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
                     case "remove_async", "mkdir_all_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
                     default -> { return null; }
                 }
