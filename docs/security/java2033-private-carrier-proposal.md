@@ -13,8 +13,8 @@ below is independently satisfied.
 | Source repository | `ores-truffle-oreslang/oreslang-source.java` |
 | Source numeric repository ID | `1400792274` |
 | Source PR | `#2033` |
-| Source PR head | `31bb2de7e84184ad9051844b2cfef1cfe1db32f2` |
-| Source root Git tree | `4a2814cf647c0cb1e6da5e3820b86aa9e7af67e8` |
+| Source PR head | `9d86b93d53ae1836c60bd230e1935190fe6426cf` |
+| Source root Git tree | `d75650c21ca58584b689aae7977f4750074aef8b` |
 | Source base/main observed | `f40b9c3a3b5b4691eb4f4a5d5d0558a112f237aa` |
 | Candidate carrier | `opto-sync-test/go-java-validation` |
 | Carrier numeric repository ID | `1323598177` |
