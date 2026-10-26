@@ -19,6 +19,7 @@ public final class OresCompiler {
     public static Ast.Program analyze(Ast.Program program) {
         ExplicitExportResolver.resolve(program);
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
+        ExplicitExportResolver.resolve(checked.program());
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return checked.program();
     }
@@ -30,6 +31,7 @@ public final class OresCompiler {
         TypeChecker.TypeCheckResult checked =
                 TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                         program, java.util.Map.of(), java.util.Map.of(), importedContracts);
+        ExplicitExportResolver.resolve(checked.program());
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return checked.program();
     }
@@ -51,6 +53,7 @@ public final class OresCompiler {
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         ExplicitExportResolver.resolve(program);
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
+        ExplicitExportResolver.resolve(checked.program());
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return new AnalysisResult(checked.program(), checked.warnings());
     }
