@@ -267,22 +267,37 @@ switch_default  = "default" "->" block ;
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
 select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
-                  "select" [ select_policy ]
-                  "{" select_arm { select_arm } [ select_default ] "}" ;
+                  "select" [ select_policy ] select_static_body ;
+select_static_body
+                = "{" select_arm_sequence "}"
+                | "over" select_arm_sequence "end" ;
+select_arm_sequence
+                = select_default
+                | select_arm { select_arm } [ select_default ] ;
 select_wait_mode= "nb" | "try" ;
 select_policy   = "first" | "fair" | "random" ;
-select_arm      = select_arm_keyword "readch" expression ":"
-                  [ binding_kind IDENT ] { statement }
-                | select_arm_keyword "writech" expression "," expression ":"
-                  { statement } ;
+select_arm      = select_arm_keyword select_read_arm
+                | select_arm_keyword select_write_arm
+                | select_arm_keyword select_legacy_read_arm ;
+select_read_arm = ( "readch" | "await" ) expression ":" select_read_tail ;
+select_read_tail
+                = block
+                | "->" block
+                | binding_kind IDENT [ "->" ] block
+                | [ binding_kind ] type_ref IDENT "->" block ;
+select_write_arm= "writech" expression "," expression ":" [ "->" ] block ;
+select_legacy_read_arm
+                = [ "mut" | binding_kind ] IDENT "="
+                  "readch" "(" expression ")" "->" block ;
 (* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode. *)
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 (* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
-select_default  = "default" ":" { statement } ;
+select_default  = "default" ":" [ "->" ] block ;
 
-(* In select_arm/select_default bodies, the next when/case/default or the closing
-   brace is a structural arm boundary and is not consumed as a nested
-   statement. At most one default arm is permitted. *)
+(* Static select supports equivalent braced and over/end outer delimiters.
+   Every arm body remains a block in both forms; the optional slim arrow only
+   introduces that block and never changes wait mode or result semantics.
+   At most one default arm is permitted, and default must be last. *)
 
 for_stmt        = "for" "(" for_of_head ")" loop_body
                 | "for" "(" c_for_head ")" loop_body

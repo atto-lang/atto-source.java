@@ -8,6 +8,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
@@ -361,4 +364,178 @@ final class ChannelRuntimeTest {
         assertThrows(RuntimeException.class, read::join);
         assertThrows(RuntimeException.class, selected::join);
     }
+    @Test
+    void priorityWriteSelectPublishesOnlyTheWinningPayload() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectSet set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.write(first, 11),
+                ChannelRuntime.write(second, 22));
+
+        ChannelRuntime.SelectResult result =
+                set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join();
+
+        assertEquals(0, result.index());
+        assertEquals(ChannelRuntime.SelectOperation.WRITE, result.operation());
+        assertEquals(11, first.tryRead().orElseThrow());
+        assertTrue(second.tryRead().isEmpty(),
+                "a losing write arm must never publish its payload");
+        assertEquals(0, first.pendingRegistrations());
+        assertEquals(0, second.pendingRegistrations());
+    }
+
+    @Test
+    void cancellingMultiWriteSelectPublishesNoLosingPayloads() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(0);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> selected =
+                ChannelRuntime.SelectSet.of(
+                        ChannelRuntime.write(first, 11),
+                        ChannelRuntime.write(second, 22))
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+
+        assertEquals(1, first.pendingRegistrations());
+        assertEquals(1, second.pendingRegistrations());
+        assertTrue(selected.cancel(false));
+        assertThrows(CancellationException.class, selected::join);
+        assertEquals(0, first.pendingRegistrations());
+        assertEquals(0, second.pendingRegistrations());
+        assertTrue(first.tryRead().isEmpty());
+        assertTrue(second.tryRead().isEmpty());
+    }
+
+    @Test
+    void competingReadersAllowExactlyOneWinnerForOneWrite() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> first =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        OresFuture<ChannelRuntime.SelectResult> second =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+        assertTrue(channel.tryWrite(31));
+        int completed = (first.isDone() ? 1 : 0) + (second.isDone() ? 1 : 0);
+        assertEquals(1, completed, "one rendezvous write may commit only one selection");
+
+        OresFuture<ChannelRuntime.SelectResult> winner = first.isDone() ? first : second;
+        OresFuture<ChannelRuntime.SelectResult> loser = first.isDone() ? second : first;
+        assertEquals(31, winner.join().value());
+        assertFalse(loser.isDone());
+        assertTrue(loser.cancel(false));
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void cancellationVersusReadWinnerPreservesExactlyOneOutcome() throws Exception {
+        for (int round = 0; round < 64; round++) {
+            ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+            OresFuture<ChannelRuntime.SelectResult> selected =
+                    ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                            .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            CountDownLatch race = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            Thread canceller = Thread.startVirtualThread(() -> {
+                try {
+                    if (!race.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("cancel race gate timed out");
+                    }
+                    selected.cancel(false);
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+            Thread writer = Thread.startVirtualThread(() -> {
+                try {
+                    if (!race.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("write race gate timed out");
+                    }
+                    assertTrue(channel.tryWrite(41));
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+
+            race.countDown();
+            canceller.join(5_000);
+            writer.join(5_000);
+            assertFalse(canceller.isAlive(), "canceller stalled: " + round);
+            assertFalse(writer.isAlive(), "writer stalled: " + round);
+            if (failure.get() != null) {
+                throw new AssertionError("cancel/read race failed: " + round, failure.get());
+            }
+
+            if (selected.isCancelled()) {
+                assertThrows(CancellationException.class, selected::join);
+                assertEquals(41, channel.tryRead().orElseThrow(),
+                        "cancel winner must preserve the later message");
+            } else {
+                assertEquals(41, selected.join().value(),
+                        "read winner must receive the raced message");
+                assertTrue(channel.tryRead().isEmpty(),
+                        "a committed read may consume the message only once");
+            }
+            assertEquals(0, channel.pendingRegistrations(),
+                    "race retained a channel registration: " + round);
+        }
+    }
+
+    @Test
+    void cancellationVersusWriteWinnerNeverPublishesAfterCancellation() throws Exception {
+        for (int round = 0; round < 64; round++) {
+            ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+            OresFuture<ChannelRuntime.SelectResult> selected =
+                    ChannelRuntime.SelectSet.of(ChannelRuntime.write(channel, 73))
+                            .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            CountDownLatch race = new CountDownLatch(1);
+            AtomicReference<java.util.Optional<Integer>> received = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            Thread canceller = Thread.startVirtualThread(() -> {
+                try {
+                    if (!race.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("cancel race gate timed out");
+                    }
+                    selected.cancel(false);
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+            Thread reader = Thread.startVirtualThread(() -> {
+                try {
+                    if (!race.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("read race gate timed out");
+                    }
+                    received.set(channel.tryRead());
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+
+            race.countDown();
+            canceller.join(5_000);
+            reader.join(5_000);
+            assertFalse(canceller.isAlive(), "canceller stalled: " + round);
+            assertFalse(reader.isAlive(), "reader stalled: " + round);
+            if (failure.get() != null) {
+                throw new AssertionError("cancel/write race failed: " + round, failure.get());
+            }
+
+            if (selected.isCancelled()) {
+                assertThrows(CancellationException.class, selected::join);
+                assertTrue(received.get().isEmpty(),
+                        "cancel winner must not publish the write payload");
+            } else {
+                assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                        selected.join().operation());
+                assertEquals(73, received.get().orElseThrow(),
+                        "write winner must publish exactly one payload");
+            }
+            assertEquals(0, channel.pendingRegistrations(),
+                    "race retained a channel registration: " + round);
+        }
+    }
+
+
 }
