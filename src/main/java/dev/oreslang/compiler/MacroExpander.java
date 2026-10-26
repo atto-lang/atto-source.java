@@ -21,11 +21,13 @@ import java.util.Set;
  * }
  * </pre>
  *
- * Returned syntax is caller-owned AST or compiler-evaluated closed constant AST;
- * neither form introduces an identifier or permits textual capture. All other macro
- * bodies/result positions fail closed. Expansion happens before ordinary
- * type/effect/ownership checks and leaves no macro declarations/invocations in
- * the returned Program.</p>
+ * Returned syntax may be caller-owned AST, compiler-evaluated closed constant
+ * AST, exact-marked generated identifiers, checked function captures, or the
+ * narrow private declare_fnc declaration form. Identifier/capture authority is
+ * explicit and compiler-only; source-string generation remains forbidden. All
+ * unsupported bodies/result positions fail closed. Expansion happens before
+ * ordinary type/effect/ownership checks and leaves no macro declarations or
+ * invocations in the returned Program.</p>
  */
 public final class MacroExpander {
     static final int MAX_EXPANSIONS = 1_024;
