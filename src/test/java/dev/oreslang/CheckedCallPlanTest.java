@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.types.CheckedCallPlan;
 import dev.oreslang.types.FixedProductCallPlan;
 import dev.oreslang.types.OptionalCallPlan;
@@ -13,6 +14,8 @@ import static dev.oreslang.types.CheckedCallPlan.InputSlot.positional;
 import static dev.oreslang.types.CheckedCallPlan.InputSlot.positionalProjection;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -125,6 +128,40 @@ final class CheckedCallPlanTest {
                                 new CheckedCallPlan.BoundSlot(
                                         1, 1, null, 0, 2)),
                         List.of(0, 1)));
+    }
+
+    @Test
+    void checkedPlanMetadataIsIdentityBoundAndConflictChecked() {
+        Ast.CallExpr source = new Ast.CallExpr(
+                new Ast.NameExpr("f"),
+                List.of(new Ast.LiteralExpr(1L)));
+        Ast.CallExpr structurallyEqual = new Ast.CallExpr(
+                new Ast.NameExpr("f"),
+                List.of(new Ast.LiteralExpr(1L)));
+        CheckedCallPlan plan = CheckedCallPlan.required(
+                List.of("value"),
+                List.of(positional(0)));
+
+        CheckedCallPlan.record(source, plan);
+        assertSame(plan, CheckedCallPlan.require(source));
+        assertNull(
+                CheckedCallPlan.lookup(structurallyEqual),
+                "structurally equal ASTs must not share checked authority");
+
+        CheckedCallPlan conflicting = CheckedCallPlan.required(
+                List.of("other"),
+                List.of(positional(0)));
+        assertThrows(
+                IllegalStateException.class,
+                () -> CheckedCallPlan.record(source, conflicting));
+
+        Ast.CallExpr rewritten = source.rewrite(
+                source.callee(),
+                source.typeArguments(),
+                source.typeArgumentsPresent(),
+                source.arguments());
+        Ast.copyCheckedMetadata(source, rewritten);
+        assertEquals(plan, CheckedCallPlan.require(rewritten));
     }
 
     @Test
