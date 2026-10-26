@@ -1363,8 +1363,9 @@ public final class ActorRuntime implements AutoCloseable {
             ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
             if (current != null
                     && (current.runtime() != ActorRuntime.this
-                            || !current.actorId().equals(cell.ref.id()))) {
-                throw new SecurityException("foreign actor cannot access shard snapshot");
+                            || ActorRuntime.currentActorRef() != cell.ref)) {
+                throw new SecurityException(
+                        "foreign actor incarnation cannot access shard snapshot");
             }
         }
 
