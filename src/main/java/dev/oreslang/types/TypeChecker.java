@@ -316,30 +316,52 @@ public final class TypeChecker {
     public record TypeCheckResult(
             Ast.Program program,
             List<String> warnings,
-            Map<Ast.BindingStmt, String> shortInferredAliases) {
+            Map<Ast.BindingStmt, String> shortInferredAliases,
+            Map<Ast.CallExpr, PipelinePlan> pendingFutureStages) {
         public TypeCheckResult {
             warnings = List.copyOf(warnings);
-            // BindingStmt is a value record. Two separately declared bindings
-            // can compare equal, but they are not the same lexical declaration.
-            // Retain AST identity instead of collapsing them in Map.copyOf().
+            // Value-record equality is not declaration identity. Preserve AST
+            // identity for both inferred aliases and unpublished pipe plans.
             shortInferredAliases = java.util.Collections.unmodifiableMap(
                     new IdentityHashMap<>(shortInferredAliases));
+            pendingFutureStages = java.util.Collections.unmodifiableMap(
+                    new IdentityHashMap<>(pendingFutureStages));
+        }
+
+        public TypeCheckResult(
+                Ast.Program program,
+                List<String> warnings,
+                Map<Ast.BindingStmt, String> shortInferredAliases) {
+            this(program, warnings, shortInferredAliases, Map.of());
         }
 
         public TypeCheckResult(Ast.Program program, List<String> warnings) {
-            this(program, warnings, Map.of());
+            this(program, warnings, Map.of(), Map.of());
         }
     }
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
 
     public static Ast.Program check(Ast.Program program) {
-        TypeCheckResult checked = checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
-        return checked.program();
+        return checkWithDiagnostics(program).program();
     }
 
-    /** Type analysis only; executable admission must use OresCompiler.analyze. */
+    /**
+     * Complete executable front-end admission. Pipeline plans are deliberately
+     * unpublished until ownership succeeds; a type-only or ownership-failed
+     * compilation therefore cannot mint runtime lowering authority.
+     */
+    public static TypeCheckResult checkWithDiagnostics(Ast.Program program) {
+        return publishAfterOwnership(checkTypesWithDiagnostics(program));
+    }
+
+    private static TypeCheckResult publishAfterOwnership(TypeCheckResult checked) {
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        CheckedFuturePipe.publish(checked.pendingFutureStages());
+        return checked;
+    }
+
+    /** Type analysis only; it never publishes executable pipeline authority. */
     public static Ast.Program checkTypes(Ast.Program program) {
         return checkTypesWithDiagnostics(program).program();
     }
@@ -401,8 +423,11 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        CheckedFuturePipe.publish(checker.pendingFutureStages);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return new TypeCheckResult(
+                program,
+                checker.warnings,
+                checker.shortInferredTypeNames,
+                checker.pendingFutureStages);
     }
 
     /**
@@ -424,6 +449,19 @@ public final class TypeChecker {
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
         return checkTypesWithLinkedMetadataWithDiagnostics(
                 program, linkedClasses, linkedAliases, Map.of());
+    }
+
+    /**
+     * Complete linked-metadata executable admission. Ownership succeeds before
+     * any staged Future-pipeline plan is published.
+     */
+    public static TypeCheckResult checkWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts) {
+        return publishAfterOwnership(
+                checkTypesWithLinkedMetadataWithDiagnostics(
+                        program, linkedClasses, linkedAliases, linkedContracts));
     }
 
     /** Linked classes and module contracts share the same admission pipeline. */
@@ -517,8 +555,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        CheckedFuturePipe.publish(checker.pendingFutureStages);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return new TypeCheckResult(
+                program,
+                checker.warnings,
+                checker.shortInferredTypeNames,
+                checker.pendingFutureStages);
     }
 
     private void validateImports(Ast.Program program) {
