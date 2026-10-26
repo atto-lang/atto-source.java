@@ -157,4 +157,41 @@ final class AggregateCallBoundaryHardeningTest {
         }
         return output.toString(java.nio.charset.StandardCharsets.UTF_8);
     }
+
+    @Test
+    void structuralRecordIsAcceptedByStructuralRecordParameter() {
+        accepts("""
+                fnc read({left: int, right: int} item): int {
+                  return item.left + item.right;
+                }
+                fnc use(): int {
+                  return read(record{left: 19, right: 23});
+                }
+                """);
+    }
+
+    @Test
+    void inferredStructDoesNotSilentlyBecomeReadonlyStructuralRecord() {
+        rejects("""
+                fnc read({left: int, right: int} item): int {
+                  return item.left + item.right;
+                }
+                fnc bad(): int {
+                  const item = infer struct{left: 19, right: 23};
+                  return read(item);
+                }
+                """);
+    }
+
+    @Test
+    void returnedRecordCannotMasqueradeAsFixedPositionalTupleSpread() {
+        rejects("""
+                fnc pair(): {left: int, right: int} {
+                  return record{left: 19, right: 23};
+                }
+                fnc add(int left, int right): int { return left + right; }
+                fnc bad(): int { return add(...pair()); }
+                """);
+    }
+
 }
