@@ -69,7 +69,9 @@ final class HttpActorGenerationCoordinatorV1Test {
             oldRequest.lifetime().transportQuiescent();
             assertTrue(f.coordinator.status().generations()
                     .get(1L).http().readyToRetire());
-            f.coordinator.collectRetired(1, true);
+            var v1Cleanup = f.coordinator.physicalCleanupCompleted(
+                    1, "loader:v1-image");
+            f.coordinator.collectRetired(1, v1Cleanup);
             assertFalse(f.coordinator.status().generations().containsKey(1L));
 
             newRequest.lifetime().handlerQuiescent();
@@ -95,7 +97,9 @@ final class HttpActorGenerationCoordinatorV1Test {
 
             v1.lifetime().handlerQuiescent();
             v1.lifetime().transportQuiescent();
-            f.coordinator.collectRetired(1, true);
+            var v1Cleanup = f.coordinator.physicalCleanupCompleted(
+                    1, "loader:v1-image");
+            f.coordinator.collectRetired(1, v1Cleanup);
 
             try (var toV3 = f.coordinator.stage(
                     image('c'), state(3), "handler-v3", 100)) {
@@ -138,8 +142,12 @@ final class HttpActorGenerationCoordinatorV1Test {
             assertEquals(2, f.coordinator.status().retention().retained().size(),
                     "aborted image remains charged until loader cleanup");
             assertThrows(IllegalStateException.class,
-                    () -> aborted.acknowledgeAbortedPhysicalCleanup(false));
-            aborted.acknowledgeAbortedPhysicalCleanup(true);
+                    () -> aborted.acknowledgeAbortedPhysicalCleanup(null));
+            assertEquals(2, aborted.candidateImageGeneration());
+            assertEquals(image('b').codeSha256(), aborted.candidateImageSha256());
+            var abortedCleanup = aborted.abortedPhysicalCleanupCompleted(
+                    "loader:aborted-image-2");
+            aborted.acknowledgeAbortedPhysicalCleanup(abortedCleanup);
 
             try (var retry = f.coordinator.stage(
                     image('c'), state(3), "handler-good", 100)) {
@@ -151,6 +159,25 @@ final class HttpActorGenerationCoordinatorV1Test {
                 assertTrue(retry.publish());
             }
             assertEquals(2, f.coordinator.status().activeRouteEpoch());
+        }
+    }
+
+    @Test void typedCleanupReceiptCannotCollectWrongRouteGeneration() {
+        try (var f = fixture(3)) {
+            var old = f.coordinator.admit();
+            try (var stage = f.coordinator.stage(
+                    image('b'), state(2), "handler-v2", 100)) {
+                assertTrue(stage.publish());
+            }
+            old.lifetime().handlerQuiescent();
+            old.lifetime().transportQuiescent();
+
+            var receipt = f.coordinator.physicalCleanupCompleted(
+                    1, "loader:old-v1");
+            assertThrows(IllegalStateException.class,
+                    () -> f.coordinator.collectRetired(2, receipt));
+            f.coordinator.collectRetired(1, receipt);
+            assertFalse(f.coordinator.status().generations().containsKey(1L));
         }
     }
 
