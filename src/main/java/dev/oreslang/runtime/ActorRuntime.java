@@ -8493,12 +8493,20 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         behavior = created;
                     }
+                    // The startup outcome is linearized under the actor
+                    // lifecycle monitor, but OresFuture settlement drains
+                    // runtime waiters synchronously on this thread. Never
+                    // publish READY while holding lifecycleLock: a host
+                    // subscriber may block, stop this actor, or inspect other
+                    // actor lifecycle state.
+                    final boolean startupCancelled;
                     synchronized (lifecycleLock) {
-                        if (stopped.get() || forceKillFenced) {
-                            ref.readyFuture.failFromRuntime(terminated(ref));
-                        } else {
-                            ref.readyFuture.completeFromRuntime(null);
-                        }
+                        startupCancelled = stopped.get() || forceKillFenced;
+                    }
+                    if (startupCancelled) {
+                        ref.readyFuture.failFromRuntime(terminated(ref));
+                    } else {
+                        ref.readyFuture.completeFromRuntime(null);
                     }
                 }
 
