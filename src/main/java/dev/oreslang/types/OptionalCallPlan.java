@@ -42,6 +42,7 @@ public record OptionalCallPlan(
         boolean[] seenSource = new boolean[sourceOrder.size()];
         boolean[] seenTarget = new boolean[abiToSource.size()];
         boolean namedStarted = false;
+        int nextPositional = 0;
         Set<String> labels = new HashSet<>();
         Boolean provenanceMode = null;
         int previousCallItemIndex = -1;
@@ -66,6 +67,12 @@ public record OptionalCallPlan(
                 if (namedStarted) {
                     throw new IllegalArgumentException(
                             "positional argument follows named argument");
+                }
+                // Omission cannot skip an ABI slot within a positional prefix.
+                // Only explicitly named arguments may omit earlier formals.
+                if (slot.parameterIndex() != nextPositional++) {
+                    throw new IllegalArgumentException(
+                            "positional optional call slot skips or reorders a formal");
                 }
             } else {
                 namedStarted = true;
