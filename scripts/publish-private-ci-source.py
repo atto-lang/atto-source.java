@@ -79,6 +79,7 @@ CODEOWNER_PERMISSION_ROUTE = SOURCE_METADATA_ROUTE + "/collaborators/ORESoftware
 REQUIRED_CODEOWNER_PATHS = (
     "/.github/CODEOWNERS",
     "/.github/private-ci-approved-repositories.txt",
+    "/.github/private-ci-carrier-contracts.json",
     "/.github/private-ci-approved-source-snapshots.txt",
     "/scripts/check-private-ci-destination.sh",
     "/scripts/run-in-private-ci-destination.sh",
@@ -86,7 +87,12 @@ REQUIRED_CODEOWNER_PATHS = (
     "/.github/workflows/private-ci-mirror-preflight.yml",
     "/docs/security/CI_PRIVATE_SOURCE_MIRRORING.md",
     "/scripts/publish-private-ci-source.py",
+    "/scripts/publish-private-ci-source-v3.py",
     "/scripts/test-publish-private-ci-source.py",
+    "/scripts/test-publish-private-ci-source-v3.py",
+    "/.github/workflows/",
+    "/scripts/",
+    "/pom.xml",
 )
 REQUIRED_CODEOWNER = "@ORESoftware"
 
