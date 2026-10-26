@@ -8963,16 +8963,16 @@ public final class TypeChecker {
             this(expression, staticType, null, callItemIndex, -1);
         }
 
-        private FixedProductCallPlan.InputSlot inputSlot() {
+        private CheckedCallPlan.InputSlot inputSlot() {
             if (label == null) {
                 return projectionIndex < 0
-                        ? FixedProductCallPlan.InputSlot.positional(callItemIndex)
-                        : FixedProductCallPlan.InputSlot.positionalProjection(
+                        ? CheckedCallPlan.InputSlot.positional(callItemIndex)
+                        : CheckedCallPlan.InputSlot.positionalProjection(
                                 callItemIndex, projectionIndex);
             }
             return projectionIndex < 0
-                    ? FixedProductCallPlan.InputSlot.named(label, callItemIndex)
-                    : FixedProductCallPlan.InputSlot.namedProjection(
+                    ? CheckedCallPlan.InputSlot.named(label, callItemIndex)
+                    : CheckedCallPlan.InputSlot.namedProjection(
                             label, callItemIndex, projectionIndex);
         }
     }
@@ -9224,7 +9224,7 @@ public final class TypeChecker {
                 expandFixedCallArguments(
                         arguments, env, callerGenerics, callerSelf,
                         label, permitLabeledProducts);
-        List<FixedProductCallPlan.InputSlot> inputs =
+        List<CheckedCallPlan.InputSlot> inputs =
                 expanded.stream().map(ExpandedCallArgument::inputSlot).toList();
 
         CheckedCallPlan plan = CheckedCallPlan.bind(
