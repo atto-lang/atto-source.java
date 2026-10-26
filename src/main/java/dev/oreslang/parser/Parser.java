@@ -4528,6 +4528,13 @@ public final class Parser {
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
+        for (Ast.Param param : params) {
+            if (param.omittable()) {
+                throw error(
+                        previous(),
+                        "omittable lambda parameters require an omission-aware callable value ABI");
+            }
+        }
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
         return parseLambdaBody(params, nonLexical);
