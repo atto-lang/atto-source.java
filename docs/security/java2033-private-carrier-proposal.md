@@ -13,28 +13,29 @@ below is independently satisfied.
 | Source repository | `ores-truffle-oreslang/oreslang-source.java` |
 | Source numeric repository ID | `1400792274` |
 | Source PR | `#2033` |
-| Source PR head | `ecbb1c59ad8a862d2d47f2d0da1efd34384f30ef` |
-| Source root Git tree | `fbbbdd44f079fd995751650c1557f765e8802817` |
+| Source PR head | `eee3c517779d9839c479eeea8482216c24cbacba` |
+| Source root Git tree | `15225884efd47797bd4a88f3b51a3273b60463d6` |
 | Source base/main observed | `f40b9c3a3b5b4691eb4f4a5d5d0558a112f237aa` |
 | Candidate carrier | `opto-sync-test/go-java-validation` |
 | Carrier numeric repository ID | `1323598177` |
 | Carrier visibility observed | `private` |
 | Carrier PR | `opto-sync-test/go-java-validation#25` |
-| Carrier PR head | `8406d2df572099718a46c43c7defa22545a197e5` |
+| Carrier PR head | `bcad0c9800f7c7adf97e6cd0f482e2724baec25a` |
 | Carrier workflow blob | `4cfef14d5976b193a16c02a574c406defaeac874` |
-| PR #2033 test-plan blob | `a7564e8e00c22bcdff8cddd56058ff555a9e7303` |
+| PR #2033 test-plan blob | `16f7f5b0b58239611b9219a8949ff95804183069` |
 
 The carrier test plan pins the current PR #2033 production/test blobs and runs a
 focused ActorGroup cleanup/pipe/supervisor suite followed by the full Maven
-test suite.
+test suite. The current plan also pins the exact ActorPipeTransportTest blob
+that contains the fatal-sibling structural-close regression.
 
 Current source-free validation receipts:
-- cleanup semantic harness head `9975bc82765cc9cad9070ca9a9f246627e0c69ad`,
-  Sonus run `40268407131` / job `121395719730`: executed checkout,
+- cleanup semantic harness head `0065d36ef776d2f9cfe439adfd06456476e75038`,
+  Sonus run `40349883441` / job `121666735498`: executed checkout,
   Java compile, and adversarial cleanup cases including cross-phase VM-fatal
   precedence with retained earlier evidence; PASS;
-- exact carrier-plan mirror head `f82a11547ba2db27d3b9faef91c7bdb697045253`,
-  Sonus run `40268462544` / job `121395889781`: executed checkout,
+- exact carrier-plan mirror head `ec6280c5f0703d6960068e87b4974884f63b3a66`,
+  Sonus run `40350715256` / job `121669699882`: executed checkout,
   carrier verifier regression, and trusted-plan runner regression; PASS.
 Both are source-free and therefore do not certify the private Oreslang source. Source-free carrier regression code has executed successfully in a
 separate funded private repository, but that evidence is **carrier-code only**:
@@ -87,7 +88,7 @@ this proposal**.
    provenance, carrier ID/private state and exact carrier control-plane pins.
 6. Transfer only the exact source Git tree into a generation-specific private
    carrier commit/ref. Prove the nested destination subtree tree SHA equals
-   `fbbbdd44f079fd995751650c1557f765e8802817` and pin the destination commit.
+   `15225884efd47797bd4a88f3b51a3273b60463d6` and pin the destination commit.
 7. Execute the immutable #2033 plan and require actual nonzero job steps:
    - focused `ActorGroupCleanupFailureTest` / pipe / supervisor coverage;
    - full Maven/JDK suite;
