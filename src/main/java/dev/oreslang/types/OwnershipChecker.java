@@ -2582,36 +2582,16 @@ public final class OwnershipChecker {
                         permitLabeledProducts,
                         callable);
 
-        boolean optional =
-                params.stream().anyMatch(Ast.Param::omittable);
-        List<Ast.Param> sourceParameters;
-        if (optional) {
-            OptionalCallPlan plan = OptionalCallPlan.bind(
-                    params.stream().map(Ast.Param::name).toList(),
-                    params.stream().map(Ast.Param::omittable).toList(),
-                    inputs);
-            List<Ast.Param> reordered =
-                    new ArrayList<>(plan.sourceOrder().size());
-            for (OptionalCallPlan.BoundSlot slot : plan.sourceOrder()) {
-                reordered.add(params.get(slot.parameterIndex()));
-            }
-            sourceParameters = List.copyOf(reordered);
-        } else {
-            if (inputs.size() != params.size()) {
-                throw error(callable
-                        + " expanded argument arity mismatch: expected "
-                        + params.size() + ", got " + inputs.size());
-            }
-            FixedProductCallPlan plan = FixedProductCallPlan.bind(
-                    params.stream().map(Ast.Param::name).toList(),
-                    inputs);
-            List<Ast.Param> reordered =
-                    new ArrayList<>(params.size());
-            for (FixedProductCallPlan.BoundSlot slot : plan.sourceOrder()) {
-                reordered.add(params.get(slot.parameterIndex()));
-            }
-            sourceParameters = List.copyOf(reordered);
+        CheckedCallPlan plan = CheckedCallPlan.bind(
+                params.stream().map(Ast.Param::name).toList(),
+                params.stream().map(Ast.Param::omittable).toList(),
+                inputs);
+        List<Ast.Param> reordered =
+                new ArrayList<>(plan.sourceOrder().size());
+        for (CheckedCallPlan.BoundSlot slot : plan.sourceOrder()) {
+            reordered.add(params.get(slot.parameterIndex()));
         }
+        List<Ast.Param> sourceParameters = List.copyOf(reordered);
 
         int parameterIndex = 0;
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
@@ -4114,23 +4094,14 @@ public final class OwnershipChecker {
 
         Ast.FunctionDecl exact = family.get(inputs.size());
         if (exact != null) {
-            if (exact.parameters().stream().anyMatch(Ast.Param::omittable)) {
-                OptionalCallPlan.bind(
-                        exact.parameters().stream()
-                                .map(Ast.Param::name)
-                                .toList(),
-                        exact.parameters().stream()
-                                .map(Ast.Param::omittable)
-                                .toList(),
-                        inputs);
-            } else if (inputs.stream()
-                    .anyMatch(slot -> slot.label() != null)) {
-                FixedProductCallPlan.bind(
-                        exact.parameters().stream()
-                                .map(Ast.Param::name)
-                                .toList(),
-                        inputs);
-            }
+            CheckedCallPlan.bind(
+                    exact.parameters().stream()
+                            .map(Ast.Param::name)
+                            .toList(),
+                    exact.parameters().stream()
+                            .map(Ast.Param::omittable)
+                            .toList(),
+                    inputs);
             return exact;
         }
 
@@ -4142,7 +4113,7 @@ public final class OwnershipChecker {
                 continue;
             }
             try {
-                OptionalCallPlan.bind(
+                CheckedCallPlan.bind(
                         candidate.parameters().stream()
                                 .map(Ast.Param::name)
                                 .toList(),
@@ -4243,24 +4214,14 @@ public final class OwnershipChecker {
         // Infer each generic from the formal selected by the same checked
         // source-order plan consumed by the type checker and runtime.
         // Omitted ABI slots have no source value and supply no inference.
-        List<Integer> sourceToFormal;
-        if (parameters.stream().anyMatch(Ast.Param::omittable)) {
-            OptionalCallPlan plan = OptionalCallPlan.bind(
-                    parameters.stream().map(Ast.Param::name).toList(),
-                    parameters.stream().map(Ast.Param::omittable).toList(),
-                    inputSlots);
-            sourceToFormal = plan.sourceOrder().stream()
-                    .map(OptionalCallPlan.BoundSlot::parameterIndex).toList();
-        } else {
-            if (parameters.size() != inputSlots.size()) {
-                throw error("generic call expanded argument arity mismatch");
-            }
-            FixedProductCallPlan plan = FixedProductCallPlan.bind(
-                    parameters.stream().map(Ast.Param::name).toList(),
-                    inputSlots);
-            sourceToFormal = plan.sourceOrder().stream()
-                    .map(FixedProductCallPlan.BoundSlot::parameterIndex).toList();
-        }
+        CheckedCallPlan plan = CheckedCallPlan.bind(
+                parameters.stream().map(Ast.Param::name).toList(),
+                parameters.stream().map(Ast.Param::omittable).toList(),
+                inputSlots);
+        List<Integer> sourceToFormal =
+                plan.sourceOrder().stream()
+                        .map(CheckedCallPlan.BoundSlot::parameterIndex)
+                        .toList();
         Set<String> genericNames = Set.copyOf(allGenericNames);
         for (int sourceIndex = 0; sourceIndex < actualTypes.size(); sourceIndex++) {
             int formalIndex = sourceToFormal.get(sourceIndex);
