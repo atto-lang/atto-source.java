@@ -3667,7 +3667,8 @@ public final class TypeChecker {
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     int staticArity = fixedCallArity(
                             call.arguments(), env, generics, self,
-                            "static function " + klass.name() + "." + member.member());
+                            "static function " + klass.name() + "." + member.member(),
+                            true);
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), staticArity, new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + staticArity + " on " + klass.name());
                     Ast.ClassDecl fnOwner = findDeclaringClass(klass, fn, new LinkedHashSet<>());
@@ -3683,7 +3684,10 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label,
+                            List.of(),
+                            Set.of(),
+                            true);
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
                     return callableResult(fn.async(), false, result);
                 }
@@ -3715,7 +3719,8 @@ public final class TypeChecker {
                     if (klass != null) {
                         int methodArity = fixedCallArity(
                                 call.arguments(), env, generics, self,
-                                "method " + named.name() + "." + member.member());
+                                "method " + named.name() + "." + member.member(),
+                                true);
                         ResolvedMethod target = findMethodTarget(
                                 klass, named, member.member(), methodArity, new LinkedHashSet<>());
                         if (target == null) {
@@ -3796,7 +3801,10 @@ public final class TypeChecker {
                                 env, generics, self,
                                 callableReceiver,
                                 bindings,
-                                label);
+                                label,
+                                List.of(),
+                                Set.of(),
+                                true);
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
@@ -9159,6 +9167,11 @@ public final class TypeChecker {
                             + " argument(s), got " + expanded.size());
         }
 
+        FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                params.stream().map(Ast.Param::name).toList(),
+                expanded.stream()
+                        .map(ExpandedCallArgument::inputSlot)
+                        .toList());
         if (expanded.stream().anyMatch(slot -> slot.label() != null)) {
             if (!genericNames.isEmpty()) {
                 throw new IllegalArgumentException(
@@ -9166,11 +9179,6 @@ public final class TypeChecker {
                                 + "is not enabled until generic inference consumes the "
                                 + "same checked source-to-ABI plan");
             }
-            FixedProductCallPlan plan = FixedProductCallPlan.bind(
-                    params.stream().map(Ast.Param::name).toList(),
-                    expanded.stream()
-                            .map(ExpandedCallArgument::inputSlot)
-                            .toList());
             List<ExpandedCallArgument> byAbi =
                     new ArrayList<>(expanded.size());
             for (int source : plan.abiToSource()) {
