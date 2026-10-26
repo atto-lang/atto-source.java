@@ -1,0 +1,146 @@
+package dev.oreslang.runtime;
+
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+final class WebSocketOpeningRequestTest {
+
+    @Test
+    void parsesBoundedCanonicalOpeningRequestAndPreservesOrigin() throws Exception {
+        String raw = """
+                GET /chat?room=1 HTTP/1.1
+                Host: example.test
+                Upgrade: websocket
+                Connection: keep-alive, Upgrade
+                Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+                Sec-WebSocket-Version: 13
+                Origin: https://app.example.test
+                Content-Length: 0
+                
+                """;
+
+        var request = WebSocketOpeningRequest.read(
+                new ByteArrayInputStream(raw.getBytes(StandardCharsets.US_ASCII)),
+                4096,
+                16);
+
+        assertEquals("GET", request.method());
+        assertEquals("/chat?room=1", request.target());
+        assertEquals("example.test", request.host());
+        assertEquals("https://app.example.test", request.origin().orElseThrow());
+        assertEquals("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", request.admit());
+    }
+
+    @Test
+    void rejectsDuplicateSingletonHeadersBeforeNormalization() {
+        for (String duplicate : new String[] {
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
+                "Sec-WebSocket-Version: 13\r\n",
+                "Host: second.example.test\r\n",
+                "Origin: https://second.example.test\r\n"
+        }) {
+            String raw = baseHead()
+                    .replace("\r\n\r\n", "\r\n" + duplicate + "\r\n");
+            assertThrows(IllegalArgumentException.class, () ->
+                    WebSocketOpeningRequest.read(bytes(raw), 4096, 32));
+        }
+    }
+
+    @Test
+    void combinesRepeatableUpgradeAndConnectionTokenLists() throws Exception {
+        String raw = """
+                GET /chat HTTP/1.1
+                Host: example.test
+                Upgrade: h2c
+                Upgrade: websocket
+                Connection: keep-alive
+                Connection: Upgrade
+                Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+                Sec-WebSocket-Version: 13
+                
+                """;
+        var request = WebSocketOpeningRequest.read(bytes(raw), 4096, 16);
+        assertEquals("h2c,websocket", request.upgrade());
+        assertEquals("keep-alive,Upgrade", request.connection());
+        assertEquals("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", request.admit());
+    }
+
+    @Test
+    void rejectsObsFoldBareLfBodiesAndNonOriginTargets() {
+        String folded = baseHead().replace(
+                "Connection: Upgrade\r\n",
+                "Connection: Upgrade\r\n\tkeep-alive\r\n");
+        assertThrows(IllegalArgumentException.class, () ->
+                WebSocketOpeningRequest.read(bytes(folded), 4096, 32));
+
+        String bareLf = baseHead().replace("\r\n", "\n");
+        assertThrows(IllegalArgumentException.class, () ->
+                WebSocketOpeningRequest.read(bytes(bareLf), 4096, 32));
+
+        String body = baseHead().replace(
+                "\r\n\r\n",
+                "\r\nContent-Length: 1\r\n\r\n");
+        assertThrows(IllegalArgumentException.class, () ->
+                WebSocketOpeningRequest.read(bytes(body), 4096, 32));
+
+        String transfer = baseHead().replace(
+                "\r\n\r\n",
+                "\r\nTransfer-Encoding: chunked\r\n\r\n");
+        assertThrows(IllegalArgumentException.class, () ->
+                WebSocketOpeningRequest.read(bytes(transfer), 4096, 32));
+
+        String absolute = baseHead().replace(
+                "GET /chat HTTP/1.1",
+                "GET http://example.test/chat HTTP/1.1");
+        assertThrows(IllegalArgumentException.class, () ->
+                WebSocketOpeningRequest.read(bytes(absolute), 4096, 32));
+    }
+
+    @Test
+    void enforcesByteAndHeaderCountBoundsBeforeUnboundedAccumulation() {
+        assertThrows(IllegalArgumentException.class, () ->
+                WebSocketOpeningRequest.read(bytes(baseHead()), 256, 32));
+
+        String count = """
+                GET /chat HTTP/1.1
+                Host: example.test
+                X-1: a
+                X-2: b
+                X-3: c
+                Upgrade: websocket
+                Connection: Upgrade
+                Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+                Sec-WebSocket-Version: 13
+                
+                """;
+        assertThrows(IllegalArgumentException.class, () ->
+                WebSocketOpeningRequest.read(bytes(count), 4096, 4));
+    }
+
+    @Test
+    void missingOriginRemainsExplicitlyAbsentForNonBrowserPolicyLayer() throws Exception {
+        var request = WebSocketOpeningRequest.read(bytes(baseHead()), 4096, 16);
+        assertFalse(request.origin().isPresent());
+        assertTrue(request.target().startsWith("/"));
+    }
+
+    private static ByteArrayInputStream bytes(String value) {
+        return new ByteArrayInputStream(value.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    private static String baseHead() {
+        return "GET /chat HTTP/1.1\r\n"
+                + "Host: example.test\r\n"
+                + "Upgrade: websocket\r\n"
+                + "Connection: Upgrade\r\n"
+                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                + "Sec-WebSocket-Version: 13\r\n"
+                + "\r\n";
+    }
+}
