@@ -172,7 +172,129 @@ public final class ExplicitExportResolver {
             }
         }
 
-        return List.copyOf(external.values());
+        List<ExportBinding> bindings = List.copyOf(external.values());
+        validateLocalApiVisibility(module, declarations, bindings);
+        return bindings;
+    }
+
+    private static void validateLocalApiVisibility(
+            Ast.ModuleDecl module,
+            List<Ast.Decl> declarations,
+            List<ExportBinding> bindings) {
+        java.util.Set<String> publicTypeSymbols = new java.util.HashSet<>();
+        for (ExportBinding binding : bindings) {
+            if (binding.scope() != Ast.ExportScope.PUBLIC || !isTypeKind(binding.localKind())) continue;
+            publicTypeSymbols.add(binding.localKind().name() + "\0" + binding.localName());
+        }
+
+        LinkedHashMap<String, List<Ast.ExportKind>> localTypesByName = new LinkedHashMap<>();
+        for (Ast.Decl declaration : declarations) {
+            Ast.ExportKind kind = declarationKind(declaration);
+            if (!isTypeKind(kind)) continue;
+            localTypesByName.computeIfAbsent(declarationName(declaration), ignored -> new ArrayList<>())
+                    .add(kind);
+        }
+
+        for (ExportBinding binding : bindings) {
+            if (binding.scope() != Ast.ExportScope.PUBLIC) continue;
+            for (int index : binding.declarationIndices()) {
+                Ast.Decl declaration = declarations.get(index);
+                for (Ast.TypeRef type : exportedSignatureTypes(declaration)) {
+                    validateTypeRefVisibility(
+                            module, type, localTypesByName, publicTypeSymbols,
+                            binding.externalName());
+                }
+            }
+        }
+    }
+
+    private static boolean isTypeKind(Ast.ExportKind kind) {
+        return kind == Ast.ExportKind.CLASS
+                || kind == Ast.ExportKind.ACTOR
+                || kind == Ast.ExportKind.INTERFACE
+                || kind == Ast.ExportKind.CONTRACT
+                || kind == Ast.ExportKind.TYPE
+                || kind == Ast.ExportKind.TRAIT
+                || kind == Ast.ExportKind.STRUCT
+                || kind == Ast.ExportKind.MODEL;
+    }
+
+    private static List<Ast.TypeRef> exportedSignatureTypes(Ast.Decl declaration) {
+        ArrayList<Ast.TypeRef> result = new ArrayList<>();
+        if (declaration instanceof Ast.FunctionDecl d) {
+            for (Ast.Param parameter : d.parameters()) result.add(parameter.type());
+            result.add(d.returnType());
+            return List.copyOf(result);
+        }
+        if (declaration instanceof Ast.FieldDecl d) {
+            result.add(d.type());
+            return List.copyOf(result);
+        }
+        if (declaration instanceof Ast.TypeAliasDecl d) {
+            result.add(d.target());
+            return List.copyOf(result);
+        }
+        if (declaration instanceof Ast.ClassDecl d) {
+            result.addAll(d.parents());
+            result.addAll(d.interfaces());
+            for (Ast.FieldDecl field : d.fields()) {
+                if (field.visibility() == Ast.Visibility.PUBLIC) result.add(field.type());
+            }
+            if (d.constructor() != null
+                    && d.constructor().visibility() == Ast.Visibility.PUBLIC) {
+                for (Ast.Param parameter : d.constructor().parameters()) result.add(parameter.type());
+            }
+            for (Ast.MethodDecl method : d.methods()) {
+                if (method.visibility() != Ast.Visibility.PUBLIC) continue;
+                if (method.explicitReceiverType() != null) result.add(method.explicitReceiverType());
+                for (Ast.Param parameter : method.parameters()) result.add(parameter.type());
+                result.add(method.returnType());
+            }
+            return List.copyOf(result);
+        }
+        if (declaration instanceof Ast.InterfaceDecl d) {
+            result.addAll(d.parents());
+            for (Ast.InterfaceMember member : d.members()) {
+                if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                    for (Ast.Param parameter : fn.parameters()) result.add(parameter.type());
+                    result.add(fn.returnType());
+                } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                    result.add(field.type());
+                }
+            }
+            return List.copyOf(result);
+        }
+        return List.of();
+    }
+
+    private static void validateTypeRefVisibility(
+            Ast.ModuleDecl module,
+            Ast.TypeRef type,
+            Map<String, List<Ast.ExportKind>> localTypesByName,
+            java.util.Set<String> publicTypeSymbols,
+            String exportedName) {
+        if (type == null) return;
+
+        List<Ast.ExportKind> localKinds = localTypesByName.get(type.name());
+        if (localKinds != null && !localKinds.isEmpty()) {
+            long exposed = localKinds.stream()
+                    .filter(kind -> publicTypeSymbols.contains(kind.name() + "\0" + type.name()))
+                    .count();
+            if (exposed == 0) {
+                throw semantic("public export '" + exportedName
+                        + "' leaks non-public local type '" + type.name()
+                        + "' from namespace '" + module.name() + "'");
+            }
+            if (localKinds.size() > 1 && exposed != 1) {
+                throw semantic("public export '" + exportedName
+                        + "' references ambiguous local type spelling '" + type.name() + "'");
+            }
+        }
+
+        for (Ast.TypeRef argument : type.arguments()) {
+            validateTypeRefVisibility(
+                    module, argument, localTypesByName, publicTypeSymbols, exportedName);
+        }
     }
 
     private static List<Integer> filterByKind(
