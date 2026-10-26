@@ -5,6 +5,8 @@ import dev.oreslang.ast.Ast;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
+import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -135,10 +137,35 @@ public final class MacroIdentifierHygiene {
         if (localOrdinal < 0) {
             throw new IllegalArgumentException("generated identifier ordinal cannot be negative");
         }
-        // expansionOrdinal is unique inside one deterministic expansion pass;
-        // localOrdinal disambiguates multiple generated names in one invocation.
-        // Source cannot spell '$', so textual caller capture is impossible.
-        String internalName = "$macro$g$"
+        // The source-unit id is encoded losslessly, not hashed: collisions in
+        // a digest must never become identifier equality. Expansion/local
+        // ordinals are deterministic within that exact source unit. Source
+        // cannot spell '
+        Ast.NameExpr expression = new Ast.NameExpr(internalName);
+        return record(expression,
+                new Generated(hygiene, hint, localOrdinal, internalName));
+    }
+
+    public static Ast.NameExpr capturedFunction(
+            String callerModule,
+            String macroOwnerModule,
+            Ast.MacroIdentifierArgument identifier,
+            List<Ast.FunctionDecl> declarations) {
+        java.util.Objects.requireNonNull(identifier, "capture identifier");
+        Ast.NameExpr expression = new Ast.NameExpr(identifier.name());
+        return record(expression,
+                new CapturedFunction(
+                        callerModule,
+                        macroOwnerModule,
+                        identifier.name(),
+                        identifier.site(),
+                        declarations));
+    }
+}
+, so textual caller capture is impossible.
+        String encodedUnit = HexFormat.of().formatHex(
+                hygiene.sourceUnitId().getBytes(StandardCharsets.UTF_8));
+        String internalName = "$macro$g$" + encodedUnit + "$"
                 + hygiene.expansionOrdinal() + "$" + localOrdinal;
         Ast.NameExpr expression = new Ast.NameExpr(internalName);
         return record(expression,
