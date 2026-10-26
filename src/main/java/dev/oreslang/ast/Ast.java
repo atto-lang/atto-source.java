@@ -33,7 +33,7 @@ public final class Ast {
      */
     public enum ExportKind {
         UNTYPED, MODULE, ACTOR, CLASS, FNC, ROUTINE, INTERFACE, CONTRACT,
-        TRAIT, STRUCT, TYPE, CONST, VAL, LET, SYMBOL, MODEL
+        TRAIT, STRUCT, TYPE, CONST, VAL, LET, SYMBOL
     }
 
     /**
