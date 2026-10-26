@@ -1051,53 +1051,51 @@ public final class Ast {
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     /**
-     * Expression-form match arm. The body is a real lexical statement block,
-     * but its terminal explicit return is scoped to MatchExpr (ARM_RESULT),
-     * never to the surrounding callable.
+     * Expression-form match arm. Source block arms spell their result as
+     * `return value;`, but parsing normalizes that token sequence into this
+     * dedicated value field. Ordinary ReturnStmt is therefore always
+     * FUNCTION_RETURN; MatchValueArm.value is always ARM_RESULT.
      *
-     * V1 requires a top-level terminal return carrying a value. This keeps
-     * result completeness fail-closed while allowing statements before the
-     * result; richer CFG-proven early/nested arm returns can be admitted later
-     * without changing this AST shape.
+     * V1 permits lexical prefix statements followed by exactly one terminal
+     * top-level ARM_RESULT. Prefix control flow may not contain ReturnStmt.
      */
-    public record MatchValueArm(Pattern pattern, Expr guard, List<Stmt> body) {
+    public record MatchValueArm(
+            Pattern pattern,
+            Expr guard,
+            List<Stmt> prefixStatements,
+            Expr value) {
         public MatchValueArm {
             java.util.Objects.requireNonNull(pattern, "value match pattern");
-            body = List.copyOf(java.util.Objects.requireNonNull(body, "value match body"));
-            if (body.isEmpty()) {
-                throw new IllegalArgumentException("value match arm requires an explicit result");
-            }
-            if (!(body.getLast() instanceof ReturnStmt returned) || returned.value() == null) {
-                throw new IllegalArgumentException(
-                        "value match arm must end with explicit 'return value;'");
-            }
-            for (Stmt statement : body.subList(0, body.size() - 1)) {
+            prefixStatements = List.copyOf(java.util.Objects.requireNonNull(
+                    prefixStatements, "value match prefix"));
+            java.util.Objects.requireNonNull(value, "value match ARM_RESULT");
+            for (Stmt statement : prefixStatements) {
                 if (valueArmPrefixContainsReturn(statement)) {
                     throw new IllegalArgumentException(
-                            "value match arm v1 permits only its terminal top-level ARM_RESULT return");
+                            "value match arm v1 permits only its dedicated terminal ARM_RESULT");
                 }
             }
         }
 
-        /** Compatibility constructor for expression arms and historical one-return arms. */
+        /** Compatibility constructor for expression arms. */
         public MatchValueArm(Pattern pattern, Expr guard, Expr value) {
-            this(pattern, guard, List.of(new ReturnStmt(
-                    java.util.Objects.requireNonNull(value, "value match return expression"))));
+            this(pattern, guard, List.of(), value);
         }
 
-        /** Canonical terminal ARM_RESULT expression. */
-        public Expr value() {
-            return ((ReturnStmt) body.getLast()).value();
-        }
-
-        /** Statements evaluated before the terminal ARM_RESULT. */
-        public List<Stmt> prefixStatements() {
-            return body.subList(0, body.size() - 1);
+        /**
+         * Runtime/checker lowering helper. The synthetic ReturnStmt is created
+         * only after the AST has already typed the destination as ARM_RESULT.
+         * Consumers must catch it at the value-arm boundary.
+         */
+        public List<Stmt> loweringBody() {
+            ArrayList<Stmt> lowered = new ArrayList<>(prefixStatements);
+            lowered.add(new ReturnStmt(value));
+            return List.copyOf(lowered);
         }
     }
 
     /**
-     * ARM_RESULT return scanning deliberately walks statement control flow but
+     * ARM_RESULT prefix scanning deliberately walks statement control flow but
      * not expressions. Returns inside nested lambdas/tasks/value-dispatch
      * expressions belong to their own control-flow domain.
      */
@@ -1143,7 +1141,9 @@ public final class Ast {
             return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
         }
         if (statement instanceof ForStmt loop) {
-            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+            return (loop.initializer() != null
+                            && valueArmPrefixContainsReturn(loop.initializer()))
+                    || loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
         }
         if (statement instanceof DoWhileStmt loop) {
             return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
