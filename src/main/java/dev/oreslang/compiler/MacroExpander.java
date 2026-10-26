@@ -534,7 +534,7 @@ public final class MacroExpander {
                 List<Ast.FunctionDecl> captured =
                         resolveCapturedFunctions(module, owner, identifier);
                 emitted = MacroIdentifierHygiene.capturedFunction(
-                        module, owner, identifier, captured);
+                        hygiene, identifier, captured);
             }
         } else {
             if (invocation.arguments().size() != macro.parameters().size()) {
