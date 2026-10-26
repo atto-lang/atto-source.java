@@ -48,7 +48,7 @@ final class ExplicitExportSyntaxTest {
                         export class Box;
                         import type Id from './dep';
                         """));
-        assertTrue(failure.getMessage().contains("IMPORT_AFTER_DECLARATION"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("EXPORT_IMPORT_PRELUDE"), failure.getMessage());
     }
 
     @Test
@@ -184,7 +184,7 @@ final class ExplicitExportSyntaxTest {
                         import class X from './dep';
                         fnc main(): void { return; }
                         """)));
-        assertTrue(failure.getMessage().contains("IMPORTED_BINDING_EXPORT_NOT_ALLOWED"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("EXPORT_IMPORTED_NAME"), failure.getMessage());
     }
 
     @Test
@@ -210,7 +210,54 @@ final class ExplicitExportSyntaxTest {
                         define type X = int;
                         const int X = 1;
                         """)));
-        assertTrue(failure.getMessage().contains("AMBIGUOUS_EXPORT_TARGET"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("EXPORT_AMBIGUOUS_TARGET"), failure.getMessage());
+    }
+
+    @Test
+    void duplicateIdenticalExportIsIdempotentAndFileScopeIsPreserved() {
+        ExportResolver.Result duplicate = ExportResolver.resolve(Parser.parse("""
+                export class Box;
+                export class Box;
+                define class Box as
+                end
+                """));
+        assertEquals(1, duplicate.bindings().size());
+
+        ExportResolver.Result fileScoped = ExportResolver.resolve(Parser.parse("""
+                export[file] type Local;
+                define type Local = int;
+                """));
+        assertEquals(Ast.ExportScope.FILE, fileScoped.bindings().getFirst().scope());
+    }
+
+    @Test
+    void unknownAndUntypedTargetsUseCanonicalSemanticDiagnostics() {
+        IllegalArgumentException unknown = assertThrows(
+                IllegalArgumentException.class,
+                () -> ExportResolver.resolve(Parser.parse("""
+                        export class Missing;
+                        fnc main(): void { return; }
+                        """)));
+        assertTrue(unknown.getMessage().contains("EXPORT_UNKNOWN_TARGET"), unknown.getMessage());
+
+        ExportResolver.Result untyped = ExportResolver.resolve(Parser.parse("""
+                export Count;
+                define type Count = int;
+                """));
+        assertEquals(Ast.ExportKind.TYPE, untyped.bindings().getFirst().localKind());
+    }
+
+    @Test
+    void sameSpellingDistinctSymbolsCannotShareAlias() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ExportResolver.resolve(Parser.parse("""
+                        export type Thing as Shared;
+                        export const Thing as Shared;
+                        define type Thing = int;
+                        const int Thing = 1;
+                        """)));
+        assertTrue(failure.getMessage().contains("EXPORT_ALIAS_COLLISION"), failure.getMessage());
     }
 
     @Test
@@ -223,7 +270,7 @@ final class ExplicitExportSyntaxTest {
                         define type Internal = int;
                         fnc reveal(Internal value): int { return 1; }
                         """)));
-        assertTrue(failure.getMessage().contains("EXPORT_API_VISIBILITY_LEAK"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("EXPORT_API_LEAK"), failure.getMessage());
     }
 
     @Test
