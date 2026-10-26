@@ -334,6 +334,74 @@ public final class FuturePipelineTypingCheck {
                     "consumed direct async producer lost ownership/effect provenance");
         }
 
+        // A consumed pipeline that type-checks but fails ownership later must
+        // not publish executable authority for its already-staged pipe.
+        TypeChecker.TypeCheckResult consumedOwnershipPending =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
+                        fnc keep(int value): int { return value; }
+                        fnc main(Future<int> source): void {
+                          val Future<int> pending = rt take source |> keep();
+                          val Option<int> reused = trap await (source);
+                          return;
+                        }
+                        """));
+        Ast.FunctionDecl consumedOwnershipMain = (Ast.FunctionDecl)
+                consumedOwnershipPending.program().modules().getFirst().declarations().get(1);
+        Ast.CallExpr consumedOwnershipPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) consumedOwnershipMain.body().getFirst()).initializer();
+        if (!consumedOwnershipPending.pendingFutureStages().containsKey(consumedOwnershipPipe)) {
+            throw new AssertionError("consumed pipeline was not staged before ownership admission");
+        }
+        try {
+            TypeChecker.check(consumedOwnershipPending.program());
+            throw new AssertionError("use-after-take unexpectedly passed ownership admission");
+        } catch (IllegalArgumentException expected) {
+            if (expected.getMessage() == null || !expected.getMessage().contains("moved")) {
+                throw new AssertionError(
+                        "wrong consumed ownership rejection: " + expected.getMessage(), expected);
+            }
+            if (TypeChecker.CheckedFuturePipe.lookup(consumedOwnershipPipe)) {
+                throw new AssertionError(
+                        "ownership-failed consumed pipeline published executable authority");
+            }
+        }
+
+        // Two consuming pipelines cannot both take the same affine Future.
+        // Failure of the second take must keep both staged plans unpublished.
+        TypeChecker.TypeCheckResult repeatedTakePending =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
+                        fnc keep(int value): int { return value; }
+                        fnc main(Future<int> source): void {
+                          val Future<int> first = rt take source |> keep();
+                          val Future<int> second = rt take source |> keep();
+                          return;
+                        }
+                        """));
+        Ast.FunctionDecl repeatedTakeMain = (Ast.FunctionDecl)
+                repeatedTakePending.program().modules().getFirst().declarations().get(1);
+        Ast.CallExpr firstTakePipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) repeatedTakeMain.body().get(0)).initializer();
+        Ast.CallExpr secondTakePipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) repeatedTakeMain.body().get(1)).initializer();
+        if (!repeatedTakePending.pendingFutureStages().containsKey(firstTakePipe)
+                || !repeatedTakePending.pendingFutureStages().containsKey(secondTakePipe)) {
+            throw new AssertionError("repeated take pipelines were not both staged");
+        }
+        try {
+            TypeChecker.check(repeatedTakePending.program());
+            throw new AssertionError("second rt take of the same Future unexpectedly passed");
+        } catch (IllegalArgumentException expected) {
+            if (expected.getMessage() == null || !expected.getMessage().contains("moved")) {
+                throw new AssertionError(
+                        "wrong repeated-take rejection: " + expected.getMessage(), expected);
+            }
+            if (TypeChecker.CheckedFuturePipe.lookup(firstTakePipe)
+                    || TypeChecker.CheckedFuturePipe.lookup(secondTakePipe)) {
+                throw new AssertionError(
+                        "failed repeated-take admission published a pipeline proof");
+            }
+        }
+
         Ast.Program syncFutureStage = TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
                 async fnc delayed(int value): int {

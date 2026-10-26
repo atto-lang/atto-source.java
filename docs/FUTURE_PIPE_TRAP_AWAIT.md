@@ -10,13 +10,12 @@ and internally also has scheduler and tracked completion Futures; do not
 claim that only one Future allocation occurs. It does not yet create a
 source-visible Task or TaskScope, although the trusted Java runtime now exposes
 `TaskPipeline.startTracked` (a TaskHandle-owned pipeline) and
-`TaskPipeline.startInScope` (a TaskScope child), with `PipelineHandle.getDone()`
+`TaskPipeline.startInScope` (a TaskScope child), and `TaskPipeline.startOwnedInCurrentTaskOrRoot` for compiler-proven consuming roots, with `PipelineHandle.getDone()`
 as the underlying Task's physical quiescence witness. This does **not**
 establish physical retirement of any independently scheduled FFI/child work
 which lacks a separate owned lifetime receipt. For Java/GraalVM, non-actor
 SourceTask admission now uses tracked child handles; the restricted source
-pipeline is admitted through `TaskPipeline.startInCurrentTaskOrRoot` and
-joins its active tracked parent Task's cancellation/physical-retirement tree.
+pipeline is admitted through `TaskPipeline.startInCurrentTaskOrRoot` for borrowed roots or `TaskPipeline.startOwnedInCurrentTaskOrRoot` for compiler-proven `rt take` roots, and joins its active tracked parent Task's cancellation/physical-retirement tree.
 Non-actor source Future composition helpers also use tracked parent-aware
 admission; a composed Future no longer silently escapes through an untracked
 scheduler Task. Canceling an exposed tracked Task result now requests
@@ -37,12 +36,11 @@ issues `TypeChecker.CheckedFuturePipe` identity-bound proofs to a **restricted**
 non-generic, no captures, no executable exceptional effects, no additional stage arguments
 and no actor execution. A checked async stage may contain cooperative scheduler
 yield points and may `await` a same-module pure async unary helper; the
-helper is recursively checked under the same closed restrictions. Each admitted stage gets an identity-bound `PipelinePlan` containing resolved input/output types, whether one Future layer is flattened, per-stage and cumulative `throws`/`raises`/`panics` rows, borrowed-upstream ownership, and stage-result Future cancellation ownership. The plan also records whether its cumulative exceptional-effect row has `COMPLETE_STATIC` provenance or an `UPSTREAM_FUTURE_UNKNOWN` prefix; an opaque `Future<T>` binding must never be silently reclassified as effect-free. Likewise, a synchronous function returning `Future<T>` retains unknown deferred-effect provenance because it may only be forwarding another Future; only a statically resolved async producer currently establishes complete Future-origin provenance. Source exceptional-effect declarations remain globally fail-closed until executable throw/raise/panic lowering exists; carrying the row in the plan is not a claim that those effects execute yet.
+helper is recursively checked under the same closed restrictions. Each admitted stage gets an identity-bound `PipelinePlan` containing resolved input/output types, whether one Future layer is flattened, per-stage and cumulative `throws`/`raises`/`panics` rows, one of the three input-ownership states below, and stage-result Future cancellation ownership. The plan also records whether its cumulative exceptional-effect row has `COMPLETE_STATIC` provenance or an `UPSTREAM_FUTURE_UNKNOWN` prefix; an opaque `Future<T>` binding must never be silently reclassified as effect-free. Likewise, a synchronous function returning `Future<T>` retains unknown deferred-effect provenance because it may only be forwarding another Future; only a statically resolved async producer currently establishes complete Future-origin provenance. Source exceptional-effect declarations remain globally fail-closed until executable throw/raise/panic lowering exists; carrying the row in the plan is not a claim that those effects execute yet.
 
 Stages must also be declared in the current lexical module:
 imported/cross-module execution has not yet proven evaluator/environment
-ownership. Adjacent checked stages lower to one TaskPipeline task, preserving
-borrowed input-Future ownership. Proofs bind exact checked declarations and
+ownership. Adjacent checked stages lower to one TaskPipeline task. The root edge preserves its checked borrowed-or-consumed ownership mode, while every later deferred edge is pipeline-owned. Proofs bind exact checked declarations and
 rewritten ASTs lose authorization. Proof issuance is private to TypeChecker:
 host code may inspect the checked declaration but cannot call a public
 `record` method to authorize an unchecked AST. Chained value pipes are checked from the inner stage outward. Plans are staged
@@ -66,10 +64,13 @@ Ordinary (non-Future) source `|>` still injects the left operand eagerly.
 If such an eager scalar stage returns `Future<int>`, the next checked pipe
 stage switches into Future-aware lowering; for example
 `21 |> start_async() |> finish()` invokes `start_async(21)` eagerly and
-defers `finish` until that Future succeeds. Only the narrow, checked pure-unary subset above has compiler-to-runtime lifting. Because the initial Future is only observed, not consumed, its payload must
-currently prove **Send + Share**. Unique Send-only payloads (for example
-`Box<T>`) require a future explicit consuming/`rt take` pipeline mode and
-are rejected by this borrowed form.
+defers `finish` until that Future succeeds. Only the narrow, checked pure-unary subset above has compiler-to-runtime lifting. Pipeline input ownership is explicit and per edge:
+
+- `BORROWED_UPSTREAM_SHARED_PAYLOAD`: an ordinary root such as `source |> stage()` observes the source Future without consuming it, so the payload must prove **Send + Share** and downstream cancellation must not cancel the producer Future.
+- `CONSUMED_UPSTREAM_OWNED_PAYLOAD`: `rt take source |> stage()` transfers the root Future into the pipeline. The payload must prove **Send** but does not need Share; cancellation/admission failure may revoke the still-pending owned input Future.
+- `OWNED_PIPELINE_VALUE`: every deferred value produced inside the checked pipeline after the root is already pipeline-owned and requires **Send**, not Share.
+
+The ownership state does not change effect provenance. In particular, `rt take` cannot turn an opaque/forwarded Future into `COMPLETE_STATIC`; a direct checked async producer retains complete provenance because of its producer identity, not because it was taken. The first consuming slice deliberately rejects `rt take (already |> lifted())`; consume the Future binding/direct producer before lifting instead.
 
 Within that subset, an async
 stage's Future result is flattened by
@@ -77,7 +78,7 @@ the same single `TaskPipeline` task, and the compiler marks the stage-created
 Future as pipeline-owned so cancellation revokes it while leaving the borrowed
 producer Future alone.
 Synchronous `Future<B>`-returning stages are admitted only when the returned Future is proven fresh from a checked async helper; returning a borrowed/shared Future does not grant the pipeline cancellation ownership. Future stages with effect declarations, extra arguments, generic stages,
-HasFuture projections, actor affinity, non-Share borrowed payloads, or
+HasFuture projections, actor affinity, non-Share payloads in borrowed-root mode, or
 loan/capture requirements still fail closed. There is no general
 `Task.pipeline` source intrinsic or Java/LLVM/JS/Wasm executable parity.
 Do not claim the general example below runs.
@@ -200,26 +201,24 @@ regressions. These tests are committed, but require an executing JDK 25 runner.
 
 **Structured root-task lifetime:** SourceTask functions and methods now
 enter tracked scheduler tasks, and compiler-lowered pipelines use
-`TaskPipeline.startInCurrentTaskOrRoot`. A running tracked parent captures
+borrowed-root `TaskPipeline.startInCurrentTaskOrRoot` or consumed-root `TaskPipeline.startOwnedInCurrentTaskOrRoot`. A running tracked parent captures
 its cancellation authority before child admission; cancelling its exposed
 result revokes descendant pipeline work, and the parent's `getDone()` waits
 for descendants' scheduler-confirmed physical retirement. A top-level
 synchronous entry point instead creates a separately tracked root pipeline.
-The borrowed input Future is not cancelled. Exact-head host and guest tests
+A borrowed root input Future is not cancelled. A compiler-proven consumed root is owned by the pipeline and may be cancelled while still pending. Exact-head host and guest tests
 remain necessary: this linkage does not prove physical completion of
 arbitrary independently owned FFI operations or actor arena cleanup, and
 actor-affine pipeline lowering is still rejected.
 
 The runtime also tracks active pipeline bridge-await edges by Future identity,
 rejecting both direct self-await and multi-pipeline cycles, and removes edges
-after completion/cancellation/resume. Stage implementations must not wrap the
-original borrowed input as an Owned child. Ownership tokens for independently
+after completion/cancellation/resume. Stage implementations must not re-register the root input as a stage-owned child; root cancellation authority comes only from the checked root ownership mode. Ownership tokens for independently
 shared futures and physical cancellation receipts remain a separate proof
 obligation.
 
 Limitations: this helper does **not** implement source `Task.pipeline`
-spelling, compiler lowering, checked-effect inference, or proven ownership
-transfer for arbitrary `TaskPipeline.owned` host Future wrappers. In
+spelling, general/unrestricted compiler lowering, executable checked exceptional effects, HasFuture projection, actor-affine lowering, or proven ownership transfer for arbitrary `TaskPipeline.owned` host Future wrappers. The restricted checked pure-unary compiler lowering described above is implemented. In
 particular, `TaskScope.getDone()` does not mean independently owned foreign
 work has physically stopped; before reclaiming arenas or FFI resources, also
 await that operation's quiescence receipt. Do not expose arbitrary host Stage
