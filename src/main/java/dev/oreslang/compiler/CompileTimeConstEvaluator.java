@@ -514,7 +514,7 @@ final class CompileTimeConstEvaluator {
     }
 
     private void charge(int depth) {
-        if (depth >= MAX_DEPTH) {
+        if (depth > MAX_DEPTH) {
             throw new Failure(
                     FailureKind.RESOURCE,
                     "compile-time constant depth exceeds " + MAX_DEPTH);
