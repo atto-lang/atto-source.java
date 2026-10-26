@@ -805,6 +805,30 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void duplicatedUnquoteStillReentersOwnershipCheckingPerOccurrence() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                            pub let int value = 7;
+                        end
+
+                        define macro duplicate(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote(unquote(value) + unquote(value));
+                        }
+
+                        fnc bad() -> int {
+                            let Box box = new Box();
+                            return duplicate!(syntax expr rt take box).value;
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().toLowerCase().contains("move")
+                        || failure.getMessage().toLowerCase().contains("moved"),
+                failure::toString);
+    }
+
+    @Test
     void typedQuoteTemplateCannotIntroduceUnhygienicIdentifier() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
