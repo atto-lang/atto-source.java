@@ -67,6 +67,30 @@ final class HotCodeGenerationRetentionV1Test {
         assertEquals(25, budget.status().heldBytes());
     }
 
+    @Test void servingImageCannotEnterCleanupQuarantineDirectly() {
+        var budget = new HotCodeGenerationRetentionV1(1, 50);
+        var serving = budget.reserve(1, sha('a'), 10);
+        budget.activated(serving);
+        assertThrows(IllegalStateException.class, () -> budget.quarantine(serving));
+        assertEquals(HotCodeGenerationRetentionV1.Phase.SERVING,
+                budget.status().retained().get(0).phase());
+        assertEquals(10, budget.status().heldBytes());
+        budget.draining(serving);
+        budget.quarantine(serving);
+        assertEquals(HotCodeGenerationRetentionV1.Phase.QUARANTINED,
+                budget.status().retained().get(0).phase());
+    }
+
+    @Test void abortedReservationGenerationCannotBeReused() {
+        var budget = new HotCodeGenerationRetentionV1(1, 100);
+        var abandoned = budget.reserve(7, sha('a'), 12);
+        budget.acknowledgePhysicalCleanup(abandoned, null, true);
+        assertThrows(IllegalStateException.class,
+                () -> budget.reserve(7, sha('b'), 12));
+        var next = budget.reserve(8, sha('b'), 12);
+        assertEquals(8, next.generation());
+    }
+
     @Test void quarantinedImageOccupiesQuotaUntilRealCleanup() {
         var budget = new HotCodeGenerationRetentionV1(2, 100);
         var old = budget.reserve(1, sha('a'), 40);
@@ -105,7 +129,9 @@ final class HotCodeGenerationRetentionV1Test {
         a.acknowledgePhysicalCleanup(old, right, true);
         assertThrows(IllegalStateException.class,
                 () -> a.acknowledgePhysicalCleanup(old, right, true));
-        var replacement = a.reserve(1, sha('b'), 10);
+        assertThrows(IllegalStateException.class,
+                () -> a.reserve(1, sha('b'), 10)); // cannot recycle epoch after cleanup
+        var replacement = a.reserve(2, sha('b'), 10);
         assertThrows(IllegalStateException.class, () -> a.activated(old));
         a.activated(replacement);
     }
