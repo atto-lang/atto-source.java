@@ -272,23 +272,27 @@ final class TupleFixedArraySpreadTest {
 
     @Test
     void spreadExpressionIsEvaluatedExactlyOnceAtRuntime() throws Exception {
+        // Match the current-main top-level routine and stdio.stdout.write syntax.
+        // The exact stdout oracle rejects duplicate evaluation, missing output,
+        // and unrelated diagnostics accidentally containing "42".
         String program = """
-                define module app as
-                  fnc pair(): (int, int) {
-                    stdio.println("pair-evaluated");
-                    return (20, 22);
-                  }
+                fnc pair(): (int, int) {
+                  stdio.stdout.write("pair-evaluated:");
+                  return (20, 22);
+                }
 
-                  fnc add(int a, int b): int {
-                    return a + b;
-                  }
+                fnc add(int a, int b): int {
+                  return a + b;
+                }
 
-                  pub fnc main(): void {
-                    stdio.println(add(...pair()));
-                    return;
-                  }
-                end
+                pub routine main(): void {
+                  stdio.stdout.write(add(...pair()));
+                  return;
+                }
                 """;
+
+        Ast.Program typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "tuple-spread-once.ores")
@@ -302,18 +306,6 @@ final class TupleFixedArraySpreadTest {
             context.eval(source);
         }
 
-        String text = output.toString(StandardCharsets.UTF_8);
-        assertEquals(1, occurrences(text, "pair-evaluated"));
-        assertTrue(text.contains("42"));
-    }
-
-    private static int occurrences(String text, String needle) {
-        int count = 0;
-        int from = 0;
-        while ((from = text.indexOf(needle, from)) >= 0) {
-            count++;
-            from += needle.length();
-        }
-        return count;
+        assertEquals("pair-evaluated:42", output.toString(StandardCharsets.UTF_8));
     }
 }
