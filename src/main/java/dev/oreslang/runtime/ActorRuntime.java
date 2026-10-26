@@ -8940,19 +8940,22 @@ public final class ActorRuntime implements AutoCloseable {
             boolean scheduleTeardown;
             synchronized (lifecycleLock) {
                 if (finalized) return;
+
+                // STOP is the one-shot terminal admission claim. A losing
+                // reentrant stop/cancel/failure must not rewrite the winner's
+                // cause or revoke a graceful teardown that it did not own.
+                if (!stopped.compareAndSet(false, true)) return;
+
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
                 if (cause != null || closed.get() || forceKillFenced) {
                     gracefulTeardownPending = false;
                     gracefulTeardownRevoked = true;
-                } else if (!stopped.get() && codeExecutor != null
+                } else if (codeExecutor != null
                         && codeActorState != null && !sourceReceiveSuspended) {
                     gracefulTeardownPending = true;
                 }
-                // STOP is single-shot. Reentrant supervisor/host requests must
-                // not re-close a channel or reset the cleanup admission fence.
-                if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
                 cleanupScheduler = sourceScheduler;
                 sourceStopCleanupPending = cleanupScheduler != null;
