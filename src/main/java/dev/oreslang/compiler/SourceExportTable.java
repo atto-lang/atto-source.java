@@ -93,6 +93,32 @@ public final class SourceExportTable {
                 externalName);
     }
 
+    /**
+     * Mixed Java/Ores source execution historically accepts public routines
+     * as well as fnc. A routine remains direct-call-only for source imports;
+     * this explicit host bridge is not a JVM symbol export.
+     */
+    public static ExportResolver.ExportBinding resolvePublicCallable(
+            Ast.Program program,
+            String externalName) {
+        Objects.requireNonNull(program, "program");
+        ArrayList<ExportResolver.ExportBinding> matches = new ArrayList<>();
+        for (var namespace : ExportResolver.resolve(program).namespaces().values()) {
+            for (ExportResolver.ExportBinding binding : namespace) {
+                if (binding.scope() != Ast.ExportScope.PUBLIC
+                        || !binding.externalName().equals(externalName)
+                        || (binding.localKind() != Ast.ExportKind.FNC
+                                && binding.localKind() != Ast.ExportKind.ROUTINE)) {
+                    continue;
+                }
+                if (!localDeclarations(program, binding).isEmpty()) {
+                    matches.add(binding);
+                }
+            }
+        }
+        return requireAtMostOne(matches, Ast.ImportKind.FUNCTION, externalName);
+    }
+
     public static ExportResolver.ExportBinding resolvePublicAny(
             Ast.Program program,
             String externalName) {
