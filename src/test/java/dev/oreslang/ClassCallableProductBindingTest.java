@@ -160,6 +160,81 @@ final class ClassCallableProductBindingTest {
     }
 
     @Test
+    void suspendedInstanceMethodNamedArgumentsKeepLexicalOrder()
+            throws Exception {
+        String code = """
+                async fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 19;
+                }
+
+                async fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 23;
+                }
+
+                define class Codec as
+                    pub encode(int a, int b): int {
+                        return a * 100 + b;
+                    }
+                end
+
+                async fnc forwarded(): int {
+                    const codec = new Codec();
+                    return codec.encode(
+                            b: await second(),
+                            a: await first());
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(await forwarded());
+                    return;
+                }
+                """;
+
+        assertEquals("BA1923", checkedExecution(code));
+    }
+
+    @Test
+    void suspendedConstructorRecordFieldsEvaluateOnceBeforeAbiPermutation()
+            throws Exception {
+        String code = """
+                async fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 19;
+                }
+
+                async fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 23;
+                }
+
+                define class Pair as
+                    constructor(int a, int b) {
+                        stdio.stdout.write(a);
+                        stdio.stdout.write(b);
+                    }
+                end
+
+                async fnc build(): int {
+                    new Pair(
+                            ...record{
+                                b: await second(),
+                                a: await first()
+                            });
+                    return 7;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(await build());
+                    return;
+                }
+                """;
+
+        assertEquals("BA19237", checkedExecution(code));
+    }
+
+    @Test
     void synthesizedAndGenericConstructorProductSyntaxRemainFailClosed() {
         IllegalArgumentException synthesized = assertThrows(
                 IllegalArgumentException.class,
