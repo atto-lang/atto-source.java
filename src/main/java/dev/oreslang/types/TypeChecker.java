@@ -792,6 +792,7 @@ public final class TypeChecker {
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         validateFunctionGenericDefaults(fn);
+        validateParameterPresence(fn);
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
@@ -2924,11 +2925,22 @@ public final class TypeChecker {
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
             if (call.callee() instanceof Ast.NameExpr functionName
-                    && env.lookup(functionName.name()) == null) {
-                int arity = fixedCallArity(
-                        call.arguments(), env, generics, self,
-                        "function " + functionName.name(), true);
-                Ast.FunctionDecl target = findFunction(functionName.name(), arity);
+                    && env.lookup(functionName.name()) == null
+                    && hasFunctionFamily(functionName.name())) {
+                String label = "function " + functionName.name();
+                List<ExpandedCallArgument> expanded =
+                        expandFixedCallArguments(
+                                call.arguments(),
+                                env,
+                                generics,
+                                self,
+                                label,
+                                true);
+                Ast.FunctionDecl target =
+                        selectDirectFunction(
+                                functionName.name(),
+                                expanded,
+                                label);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
                     if (target.actorKind() != Ast.ActorKind.NONE
@@ -2938,22 +2950,60 @@ public final class TypeChecker {
                                         + "' cannot be synchronously invoked from another actor turn; "
                                         + "use mailbox-oriented actor composition");
                     }
-                    String label = "function " + functionName.name();
-                    validateCallTypeArgumentMarker(call, target.genericParameters(), label);
-                    Type result = checkGenericCallable(
+                    validateCallTypeArgumentMarker(
+                            call,
                             target.genericParameters(),
-                            target.parameters(),
-                            target.returnType(),
-                            call.arguments(),
-                            env, generics, self,
-                            null,
-                            explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label, target.genericSpecs(),
-                            GenericCallArguments.bind(
-                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles(),
-                            true);
-                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
-                    return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                            label);
+                    Type result;
+                    if (target.parameters().stream()
+                            .anyMatch(Ast.Param::omittable)) {
+                        if (!target.genericParameters().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    label
+                                            + " optional/default binding with generic parameters "
+                                            + "is not enabled until inference consumes the same "
+                                            + "omission-aware source-to-ABI plan");
+                        }
+                        result = checkOptionalCallable(
+                                target,
+                                expanded,
+                                env,
+                                generics,
+                                self,
+                                label);
+                    } else {
+                        result = checkGenericCallable(
+                                target.genericParameters(),
+                                target.parameters(),
+                                target.returnType(),
+                                call.arguments(),
+                                env,
+                                generics,
+                                self,
+                                null,
+                                explicitGenericBindings(
+                                        target.genericParameters(),
+                                        call.typeArguments(),
+                                        generics,
+                                        self,
+                                        label),
+                                label,
+                                target.genericSpecs(),
+                                GenericCallArguments.bind(
+                                        target.genericParameters(),
+                                        call.typeArguments(),
+                                        label).inferenceHoles(),
+                                true);
+                    }
+                    requireSuspendableCall(
+                            target.suspends(),
+                            "function '" + target.name() + "'");
+                    return trapResult(
+                            target.trapped(),
+                            callableResult(
+                                    target.async(),
+                                    target.generator(),
+                                    result));
                 }
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
@@ -10120,6 +10170,271 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    private Map<String, Ast.TypeRef> defaultArgumentValues(
+            Ast.FunctionDecl fn) {
+        LinkedHashMap<String, Ast.TypeRef> defaults = new LinkedHashMap<>();
+        boolean seen = false;
+        for (Ast.Annotation annotation : fn.annotations()) {
+            if (!annotation.name().equals("DefaultArgVals")) continue;
+            if (seen) {
+                throw new IllegalArgumentException(
+                        "function " + fn.name()
+                                + " declares @DefaultArgVals more than once");
+            }
+            seen = true;
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                if (!argument.isNamedParameter()) {
+                    throw new IllegalArgumentException(
+                            "@DefaultArgVals entries must be named");
+                }
+                String name = argument.namedParameterName();
+                if (defaults.putIfAbsent(
+                                name,
+                                argument.namedParameterValue())
+                        != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate default for parameter '" + name + "'");
+                }
+            }
+        }
+        return java.util.Collections.unmodifiableMap(defaults);
+    }
+
+    private static boolean isOptionType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Option")
+                && named.arguments().size() == 1;
+    }
+
+    private Type defaultLiteralType(
+            Ast.TypeRef literal,
+            Type expected,
+            String where) {
+        if (literal.isIntLiteral()) return Primitive.INT;
+        if (literal.isBoolLiteral()) {
+            return new BoolLiteral(literal.boolLiteralValue());
+        }
+        if (literal.isStringLiteral()) {
+            return new StringLiteral(literal.stringLiteralValue());
+        }
+        if (literal.name().equals("None")
+                && literal.arguments().isEmpty()
+                && !literal.inferArguments()) {
+            if (!isOptionType(expected)) {
+                throw new IllegalArgumentException(
+                        where + " uses None for a non-Option parameter");
+            }
+            return expected;
+        }
+        throw new IllegalArgumentException(
+                where + " is not a closed supported default literal");
+    }
+
+    private void validateParameterPresence(Ast.FunctionDecl fn) {
+        Map<String, Ast.TypeRef> defaults = defaultArgumentValues(fn);
+        Map<String, Ast.Param> byName = new LinkedHashMap<>();
+        Set<String> generics = Set.copyOf(fn.genericParameters());
+
+        for (Ast.Param param : fn.parameters()) {
+            byName.put(param.name(), param);
+            if (param.omittable() && (fn.actorKind() != Ast.ActorKind.NONE)) {
+                throw new IllegalArgumentException(
+                        "actor callable parameter '" + param.name()
+                                + "' cannot be omittable until mailbox ABI "
+                                + "presence metadata is versioned");
+            }
+
+            Type expected = resolveParam(param, generics, null);
+            Ast.TypeRef explicit = defaults.get(param.name());
+            if (!param.omittable()) {
+                if (explicit != null) {
+                    throw new IllegalArgumentException(
+                            "@DefaultArgVals key '" + param.name()
+                                    + "' requires an omittable '"
+                                    + param.name() + "?' parameter");
+                }
+                continue;
+            }
+
+            if (!fn.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "omittable parameters on generic function '"
+                                + fn.name()
+                                + "' are not enabled until generic inference "
+                                + "consumes the omission-aware plan");
+            }
+
+            if (explicit == null) {
+                if (!isOptionType(expected)) {
+                    throw new IllegalArgumentException(
+                            "omittable scalar parameter '" + param.name()
+                                    + "' requires @DefaultArgVals("
+                                    + param.name() + ": literal); "
+                                    + "Option<T> omittable parameters default to None");
+                }
+            } else {
+                Type actual = defaultLiteralType(
+                        explicit,
+                        expected,
+                        "default for parameter '" + param.name() + "'");
+                requireAssignable(
+                        actual,
+                        expected,
+                        "default for parameter '" + param.name() + "'");
+            }
+        }
+
+        for (String name : defaults.keySet()) {
+            if (!byName.containsKey(name)) {
+                throw new IllegalArgumentException(
+                        "@DefaultArgVals names unknown parameter '" + name + "'");
+            }
+        }
+    }
+
+    private Ast.FunctionDecl selectDirectFunction(
+            String name,
+            List<ExpandedCallArgument> expanded,
+            String label) {
+        if (ambiguousFunctions.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous function/routine name '" + name
+                            + "'; qualify it with its module");
+        }
+        LinkedHashMap<Integer, Ast.FunctionDecl> family =
+                functions.get(name);
+        if (family == null) return null;
+
+        Ast.FunctionDecl exact = family.get(expanded.size());
+        if (exact != null) {
+            // Exact declared arity always wins. Binding errors on this slot
+            // are real errors; do not label-fallback to a larger overload.
+            if (exact.parameters().stream().anyMatch(Ast.Param::omittable)) {
+                OptionalCallPlan.bind(
+                        exact.parameters().stream().map(Ast.Param::name).toList(),
+                        exact.parameters().stream().map(Ast.Param::omittable).toList(),
+                        expanded.stream()
+                                .map(slot ->
+                                        new FixedProductCallPlan.InputSlot(
+                                                slot.label()))
+                                .toList());
+            } else if (expanded.stream()
+                    .anyMatch(slot -> slot.label() != null)) {
+                FixedProductCallPlan.bind(
+                        exact.parameters().stream().map(Ast.Param::name).toList(),
+                        expanded.stream()
+                                .map(slot ->
+                                        new FixedProductCallPlan.InputSlot(
+                                                slot.label()))
+                                .toList());
+            }
+            return exact;
+        }
+
+        List<Ast.FunctionDecl> matches = new ArrayList<>();
+        for (Ast.FunctionDecl candidate : family.values()) {
+            if (candidate.parameters().size() <= expanded.size()
+                    || candidate.parameters().stream()
+                            .noneMatch(Ast.Param::omittable)) {
+                continue;
+            }
+            try {
+                OptionalCallPlan.bind(
+                        candidate.parameters().stream()
+                                .map(Ast.Param::name)
+                                .toList(),
+                        candidate.parameters().stream()
+                                .map(Ast.Param::omittable)
+                                .toList(),
+                        expanded.stream()
+                                .map(slot ->
+                                        new FixedProductCallPlan.InputSlot(
+                                                slot.label()))
+                                .toList());
+                matches.add(candidate);
+            } catch (IllegalArgumentException ignored) {
+                // Not a viable omission shape for this declaration.
+            }
+        }
+
+        if (matches.size() > 1) {
+            throw new IllegalArgumentException(
+                    label
+                            + " is ambiguous across multiple omittable "
+                            + "declaration arities; labels do not select overloads");
+        }
+        return matches.isEmpty() ? null : matches.getFirst();
+    }
+
+    private Type checkOptionalCallable(
+            Ast.FunctionDecl target,
+            List<ExpandedCallArgument> expanded,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            String label) {
+        OptionalCallPlan plan = OptionalCallPlan.bind(
+                target.parameters().stream().map(Ast.Param::name).toList(),
+                target.parameters().stream().map(Ast.Param::omittable).toList(),
+                expanded.stream()
+                        .map(slot ->
+                                new FixedProductCallPlan.InputSlot(slot.label()))
+                        .toList());
+        Map<String, Ast.TypeRef> defaults =
+                defaultArgumentValues(target);
+
+        for (int parameterIndex = 0;
+                parameterIndex < target.parameters().size();
+                parameterIndex++) {
+            Ast.Param param = target.parameters().get(parameterIndex);
+            Type expected = resolveParam(param, Set.of(), null);
+            int sourceIndex = plan.abiToSource().get(parameterIndex);
+
+            if (sourceIndex == -1) {
+                Ast.TypeRef explicit = defaults.get(param.name());
+                if (explicit == null) {
+                    if (!isOptionType(expected)) {
+                        throw new IllegalArgumentException(
+                                label + " omitted parameter '" + param.name()
+                                        + "' without a checked default");
+                    }
+                } else {
+                    Type actual = defaultLiteralType(
+                            explicit,
+                            expected,
+                            "default for parameter '" + param.name() + "'");
+                    requireAssignable(
+                            actual,
+                            expected,
+                            "default for parameter '" + param.name() + "'");
+                }
+                continue;
+            }
+
+            ExpandedCallArgument argument = expanded.get(sourceIndex);
+            Type actual = expandedCallArgumentType(
+                    argument,
+                    expected,
+                    env,
+                    callerGenerics,
+                    callerSelf);
+            requireReadonlyCapabilityPreserved(
+                    actual,
+                    expected,
+                    "argument for parameter '" + param.name() + "'");
+            requireMutableReferentCompatible(
+                    actual,
+                    param.mutable(),
+                    "argument for parameter '" + param.name() + "'");
+            requireAssignable(
+                    actual,
+                    expected,
+                    "argument for parameter '" + param.name() + "'");
+        }
+
+        return resolve(target.returnType(), Set.of(), null);
     }
 
     private boolean hasFunctionFamily(String name) {
