@@ -8860,7 +8860,8 @@ public final class TypeChecker {
                         target.genericParameters(), call.typeArguments(), generics, self, label),
                 label, target.genericSpecs(),
                 GenericCallArguments.bind(
-                        target.genericParameters(), call.typeArguments(), label).inferenceHoles());
+                        target.genericParameters(), call.typeArguments(), label).inferenceHoles(),
+                plan.sourceToFormal());
         requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
         return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
     }
@@ -8942,6 +8943,32 @@ public final class TypeChecker {
             String label,
             List<Ast.GenericParameter> genericSpecs,
             Set<String> inferenceHoles) {
+        return checkGenericCallable(
+                genericNames, params, returnRef, arguments,
+                env, callerGenerics, callerSelf, callableSelf,
+                initialBindings, label, genericSpecs, inferenceHoles, null);
+    }
+
+    /**
+     * When arguments bind by name, type analysis must still traverse operands
+     * in lexical source order. Only parameter lookup and the final result use
+     * formal order; otherwise a reordered named call can reorder compile-time
+     * effects or generic inference.
+     */
+    private Type checkGenericCallable(
+            List<String> genericNames,
+            List<Ast.Param> params,
+            Ast.TypeRef returnRef,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type callableSelf,
+            Map<String, Type> initialBindings,
+            String label,
+            List<Ast.GenericParameter> genericSpecs,
+            Set<String> inferenceHoles,
+            List<Integer> sourceToFormal) {
         List<ExpandedCallArgument> expanded =
                 expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
         if (params.size() != expanded.size()) {
@@ -8960,11 +8987,30 @@ public final class TypeChecker {
         // typechecking time (the 128-stage value-pipeline boundary exposed it).
         // Preserve a second context-sensitive pass for lambdas and for
         // arguments whose expected type changes after generic inference.
+        List<Integer> traversal;
+        if (sourceToFormal == null) {
+            traversal = new ArrayList<>(expanded.size());
+            for (int i = 0; i < expanded.size(); i++) traversal.add(i);
+        } else {
+            // Never trust a synthetic AST or future lowering to smuggle in a
+            // non-permutation that could skip analysis of a source argument.
+            if (sourceToFormal.size() != expanded.size()
+                    || new HashSet<>(sourceToFormal).size() != expanded.size()) {
+                throw new IllegalArgumentException(label + " has an invalid named argument order");
+            }
+            for (Integer slot : sourceToFormal) {
+                if (slot == null || slot < 0 || slot >= expanded.size()) {
+                    throw new IllegalArgumentException(label + " has an invalid named argument slot");
+                }
+            }
+            traversal = sourceToFormal;
+        }
         List<Type> inferredArgumentTypes = new ArrayList<>(expanded.size());
-        for (int i = 0; i < expanded.size(); i++) {
+        for (int i = 0; i < expanded.size(); i++) inferredArgumentTypes.add(null);
+        for (int i : traversal) {
             Type actual = expandedCallArgumentType(
                     expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
-            inferredArgumentTypes.add(actual);
+            inferredArgumentTypes.set(i, actual);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
         GenericCallArguments.applyDefaults(
@@ -8978,7 +9024,7 @@ public final class TypeChecker {
         unbound.removeAll(bindings.keySet());
 
 
-        for (int i = 0; i < expanded.size(); i++) {
+        for (int i : traversal) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
             if (containsGenericNamed(expected, unbound)) {
                 throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
