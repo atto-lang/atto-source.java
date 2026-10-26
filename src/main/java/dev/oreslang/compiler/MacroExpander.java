@@ -34,6 +34,8 @@ public final class MacroExpander {
     static final int MAX_EXPANSION_DEPTH = 64;
     static final int MAX_TEMPLATE_DEPTH = 64;
     static final int MAX_TEMPLATE_NODES = 2_048;
+    static final int MAX_REWRITE_TRAVERSAL_DEPTH = 512;
+    static final int MAX_REWRITE_TRAVERSAL_NODES = 1_000_000;
 
     private final Map<String, Ast.MacroDecl> macros = new HashMap<>();
     private final Map<String, List<Ast.Decl>> declarationsByModule = new HashMap<>();
@@ -41,6 +43,8 @@ public final class MacroExpander {
     private final Set<String> active = new HashSet<>();
     private final String sourceUnitId;
     private int expansions;
+    private int rewriteTraversalDepth;
+    private int rewriteTraversalNodes;
 
     private MacroExpander(String sourceUnitId) {
         this.sourceUnitId = sourceUnitId;
@@ -766,6 +770,29 @@ public final class MacroExpander {
         }
     }
 
+    private void enterRewriteTraversal() {
+        if (++rewriteTraversalNodes > MAX_REWRITE_TRAVERSAL_NODES) {
+            throw new IllegalArgumentException(
+                    "macro rewrite traversal node budget exceeds "
+                            + MAX_REWRITE_TRAVERSAL_NODES
+                            + "; runtime fallback is forbidden");
+        }
+        if (++rewriteTraversalDepth > MAX_REWRITE_TRAVERSAL_DEPTH) {
+            rewriteTraversalDepth--;
+            throw new IllegalArgumentException(
+                    "macro rewrite traversal depth exceeds "
+                            + MAX_REWRITE_TRAVERSAL_DEPTH
+                            + "; runtime fallback is forbidden");
+        }
+    }
+
+    private void exitRewriteTraversal() {
+        if (--rewriteTraversalDepth < 0) {
+            rewriteTraversalDepth = 0;
+            throw new IllegalStateException("macro rewrite traversal depth underflow");
+        }
+    }
+
     private Ast.Decl rewriteDeclaration(
             String module, Ast.Decl declaration, int depth) {
         if (declaration instanceof Ast.FunctionDecl fn) {
@@ -830,6 +857,8 @@ public final class MacroExpander {
 
     private Ast.Stmt rewriteStatement(
             String module, Ast.Stmt statement, int depth) {
+        enterRewriteTraversal();
+        try {
         if (statement instanceof Ast.BindingStmt s) {
             return new Ast.BindingStmt(
                     s.kind(), s.declaredType(), s.name(),
@@ -969,10 +998,16 @@ public final class MacroExpander {
         throw new IllegalStateException(
                 "unhandled macro-expansion statement "
                         + statement.getClass().getSimpleName());
+    
+        } finally {
+            exitRewriteTraversal();
+        }
     }
 
     private Ast.Expr rewriteExpression(
             String module, Ast.Expr expression, int depth) {
+        enterRewriteTraversal();
+        try {
         if (expression == null) return null;
 
         if (expression instanceof Ast.MacroInvocationExpr invocation) {
@@ -1131,5 +1166,9 @@ public final class MacroExpander {
         throw new IllegalStateException(
                 "unhandled macro-expansion expression "
                         + expression.getClass().getSimpleName());
+    
+        } finally {
+            exitRewriteTraversal();
+        }
     }
 }
