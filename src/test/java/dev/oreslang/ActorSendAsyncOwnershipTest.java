@@ -60,6 +60,41 @@ final class ActorSendAsyncOwnershipTest {
     }
 
     @Test
+    void projectedActorRefFieldKeepsTheSameSubmissionTimeMoveBoundary() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define actor Sink as
+                          receive(ActorMail<List<int>> mail): void {
+                            return;
+                          }
+                        end
+
+                        define actor Producer as
+                          val ActorRef<Sink> sink;
+
+                          on_start(): void {
+                            self.sink = spawn Sink();
+                            return;
+                          }
+
+                          receive(ActorMail<String> mail): void {
+                            let List<int> payload = new List<int>();
+                            val Future<void> admission =
+                                    self.sink.send_async(payload);
+                            stdio.println(payload.size());
+                            return;
+                          }
+                        end
+                        """));
+
+        assertTrue(
+                failure.getMessage().contains("use of moved value 'payload'")
+                        || failure.getMessage().contains("cannot move"),
+                failure::getMessage);
+    }
+
+    @Test
     void sendAsyncRejectsBorrowedMailboxPayload() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
