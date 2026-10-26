@@ -90,6 +90,22 @@ final class ProductValueBoundaryTest {
     }
 
     @Test
+    void mapKeysDoNotBecomeCompileTimeDestructureFields() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc read_x(Map<string, int> values): int {
+                          const {x} = values;
+                          return x;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("Map")
+                        || failure.getMessage().contains("runtime"),
+                failure.getMessage());
+    }
+
+    @Test
     void returnedTupleRecordAndConcreteStructDestructureOnTheirOwnAxes() {
         String program = """
                 fnc tuple_result(): [int, string] {
