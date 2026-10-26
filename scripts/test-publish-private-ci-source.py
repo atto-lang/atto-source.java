@@ -164,28 +164,40 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
-    def test_quarantined_repository_id_rejected_even_after_slug_rename(self):
-        renamed = b"renamed-owner/renamed-carrier 1323575966\n"
-        with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
-            pub._parse_policy_approval(
-                renamed,
-                "renamed-owner/renamed-carrier",
-                "private CI approval policy",
-            )
+    def test_quarantined_repository_ids_rejected_even_after_slug_rename(self):
+        for repository_id in (1323575966, 1370782550, 1324139596):
+            with self.subTest(repository_id=repository_id):
+                renamed = (
+                    "renamed-owner/renamed-carrier "
+                    + str(repository_id)
+                    + "\n"
+                ).encode("ascii")
+                with self.assertRaisesRegex(
+                    pub.Denied, "repository ID is quarantined"
+                ):
+                    pub._parse_policy_approval(
+                        renamed,
+                        "renamed-owner/renamed-carrier",
+                        "private CI approval policy",
+                    )
 
-        metadata = {
-            "id": 1323575966,
-            "full_name": "renamed-owner/renamed-carrier",
-            "visibility": "private",
-            "private": True,
-            "archived": False,
-            "disabled": False,
-            "fork": False,
-            "default_branch": "main",
-        }
-        with patch.object(pub, "gh_api", return_value=metadata):
-            with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
-                pub.checked_repo("renamed-owner/renamed-carrier", 1323575966)
+                metadata = {
+                    "id": repository_id,
+                    "full_name": "renamed-owner/renamed-carrier",
+                    "visibility": "private",
+                    "private": True,
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                }
+                with patch.object(pub, "gh_api", return_value=metadata):
+                    with self.assertRaisesRegex(
+                        pub.Denied, "repository ID is quarantined"
+                    ):
+                        pub.checked_repo(
+                            "renamed-owner/renamed-carrier", repository_id
+                        )
 
     def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
         with (
