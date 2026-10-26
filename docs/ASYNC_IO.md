@@ -1,44 +1,71 @@
-# Async standard-library I/O
+# Awaitable standard-library I/O
 
-The async APIs return native Oreslang `Future<T>` values. `await` suspends the
-source continuation and releases its actor/root execution carrier. Completion
-resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs remain available for compatibility.
+Oreslang I/O is **awaitable by default**. Canonical I/O method names do not use
+an `_async` suffix: they return native `Future<T>` values and are consumed with
+`await`. Await suspends the source continuation and releases its actor/root
+execution carrier; I/O workers never execute guest callbacks.
 
-| API | Awaited result |
+The method name describes the operation, not the scheduling mechanism:
+
+| Canonical API | Awaited result |
 | --- | --- |
-| `fs.read_text_async(path)` | `String` (UTF-8) |
-| `fs.exists_async(path)` | `bool` |
-| `fs.write_text_async(path, text)` | `void` |
-| `fs.append_text_async(path, text)` | `void` |
-| `fs.remove_async(path)` | `void` |
-| `fs.mkdir_all_async(path)` | `void` |
-| `network.connect_async(host, port)` | `TcpConnection` |
-| `socket.read_line_async()` | `Option<String>` (`None` at EOF) |
-| `socket.write_text_async(text)` | `void` (flushes the text) |
-| `socket.close_async()` | `void` |
-| `http.get_text_async(url)` | `String` (response body) |
-| `http.post_text_async(url, text)` | `String` (response body) |
+| `fs.read_text(path)` | `String` (UTF-8) |
+| `fs.exists(path)` | `bool` |
+| `fs.list_dir(path)` | `List<String>` |
+| `fs.is_dir(path)` / `fs.is_symlink(path)` | `bool` |
+| `fs.write_text(path, text)` | `void` |
+| `fs.write_text_atomic(path, text)` | `void` |
+| `fs.append_text(path, text)` | `void` |
+| `fs.remove(path)` / `fs.mkdir_all(path)` | `void` |
+| `network.connect(host, port)` | `TcpConnection` |
+| `socket.read_line()` | `Option<String>` (`None` at EOF) |
+| `socket.write_text(text)` | `void` |
+| `socket.close()` | `void` |
+| `http.get_text(url)` | `String` (response body) |
+| `http.post_text(url, text)` | `String` (response body) |
 
-`File` aliases `fs`; `net` aliases `network`. Async TCP connections are local
+`File` aliases `fs`; `net` aliases `network`. TCP connections are local
 capabilities, not mailbox-sendable values. Await each operation before starting
-the next operation in the same direction; TCP reads and writes may run in parallel.
+the next operation in the same direction; TCP reads and writes may run in
+parallel when the ownership rules permit it.
 
 ```ores
 pub async routine main(): void {
-  await fs.write_text_async("./message.txt", "hello");
-  val String text = await fs.read_text_async("./message.txt");
+  await fs.write_text("./message.txt", "hello");
+  val String text = await fs.read_text("./message.txt");
   stdio.println(text);
   return;
 }
 ```
 
-Grant the same filesystem/network permissions required by synchronous calls.
-Actor-local capabilities are checked before submission. Canonical path resolution,
-resource permission checks, DNS/connect, file operations and blocking client HTTP
-work execute off the actor carrier. Only immutable argument values are captured.
-HTTP redirects remain disabled so a response cannot bypass the destination grant.
-Failures retain their cause and a bounded `native:io` boundary annotation.
+## Explicit synchronous/blocking implementation names
+
+When an API needs to expose that its **underlying host implementation** is
+synchronous/blocking, use the `*_sync` suffix. The guest call is still
+awaitable and still returns `Future<T>`:
+
+```ores
+val String text = await fs.read_text_sync("./message.txt");
+val TcpConnection socket = await network.connect_sync("127.0.0.1", 9000);
+```
+
+`_sync` means “this implementation performs synchronous/blocking host I/O on
+a bounded native-I/O worker”; it does **not** mean “park the actor carrier”.
+A future `*_blocking` spelling, if ever needed for a distinct API contract,
+must follow the same rule: it remains awaitable unless a separate language
+proposal explicitly introduces carrier-blocking execution.
+
+Historical `*_async` spellings that already shipped remain compatibility
+aliases during the migration window. New APIs must not add an `_async` suffix.
+For example, the outbound proxy API is `await http.request(...)`, not
+`await http.request_async(...)`.
+
+Scoped filesystem/network permissions are checked before or during native-I/O
+admission as appropriate. Canonical path resolution, resource permission checks,
+DNS/connect, file operations and blocking client HTTP work execute off the actor
+carrier. Only immutable argument values are captured. HTTP redirects remain
+disabled so a response cannot bypass the destination grant. Failures retain
+their cause and a bounded `native:io` boundary annotation.
 
 ## Execution and lifecycle
 
@@ -80,14 +107,18 @@ EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
 
-## Synchronous directory operations (Oreslang stack CLI)
+## Directory operations (Oreslang stack CLI)
 
-The Java/Graal interpreter exposes capability-gated `fs.list_dir(path): List<String>`,
-`fs.is_dir(path): bool` and `fs.is_symlink(path): bool`. `list_dir` returns only
-the immediate child **names**, sorted lexically, and refuses directories with
-more than 20,000 children. It rejects a symlink at the input path; callers
-must check children before descending. Each operation requires scoped filesystem
-read permission. These metadata operations are not a race-free openat-style
+The Java/Graal interpreter exposes capability-gated, awaitable
+`fs.list_dir(path): Future<List<String>>`,
+`fs.is_dir(path): Future<bool>` and
+`fs.is_symlink(path): Future<bool>`. `list_dir` returns only the immediate
+child **names**, sorted lexically, and refuses directories with more than
+20,000 children. It rejects a symlink at the input path; callers must check
+children before descending. Each operation requires scoped filesystem read
+permission. The `*_sync` forms expose the same Future-returning guest contract
+while documenting the synchronous host implementation. These metadata
+operations are not a race-free openat-style
 directory handle and are not sufficient for processing hostile mutable trees.
 The language also exposes `String.split_literal`, `trim`, `starts_with`,
 `ends_with`, and `contains_literal` for source-level code generators.
