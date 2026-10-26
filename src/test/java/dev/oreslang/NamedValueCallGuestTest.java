@@ -157,6 +157,27 @@ final class NamedValueCallGuestTest {
     }
 
     @Test
+    void reorderedNamedExclusiveBorrowsRejectAliasing() {
+        String source = """
+                define class Cell as
+                  pub let int value = 1;
+                end
+                fnc write(borrow mut Cell first, borrow mut Cell second): int {
+                  return first.value + second.value;
+                }
+                fnc invalid(): int {
+                  val Cell cell = new Cell();
+                  return write(second: rt borrow mut cell, first: rt borrow mut cell);
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void capabilityCheckerTraversesNestedNamedValueOperands() {
         var parsed = Parser.parse("""
                 fnc sink(int left, int right): int { return left; }
