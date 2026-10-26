@@ -4417,7 +4417,6 @@ public final class TypeChecker {
                         "value match cannot produce an explicit borrowed result until loan escape is proven");
             }
             Type result = declaredResult;
-            List<Ast.MatchArm> proofArms = new ArrayList<>();
             Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
             try {
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
@@ -4431,7 +4430,7 @@ public final class TypeChecker {
                                 "value match guard");
                     }
 
-                    // V1 rejects earlier arm returns at parse time. Check the
+                    // V1 rejects earlier arm returns at AST admission. Check the
                     // statement prefix as an isolated control region so a
                     // break/continue cannot target a loop outside MatchExpr,
                     // while preserving async/suspends authority of the caller.
@@ -4472,18 +4471,10 @@ public final class TypeChecker {
                         requireAssignable(result, actual, "value match arm");
                     }
 
-                    // Reuse canonical pattern reachability/exhaustiveness
-                    // without re-checking the executable block a second time.
-                    // The lexical prefix/result were already checked above in
-                    // one isolated arm environment. Empty proof bodies avoid
-                    // cross-arm definite-init pollution.
-                    proofArms.add(new Ast.MatchArm(
-                            arm.pattern(), arm.guard(), List.of()));
                 }
 
-                checkMatch(
-                        new Ast.MatchStmt(valueMatch.subject(), true, proofArms),
-                        subject, env, generics, result, self);
+                checkValueMatchCoverage(
+                        valueMatch.arms(), subject, generics, self);
                 return result;
             } finally {
                 // Only the selected arm executes at runtime. Type-checking all
@@ -6275,6 +6266,57 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "non-exhaustive match for " + subject
                             + "; add an unguarded 'on _ -> { ... }' arm or cover every provable case");
+        }
+    }
+
+    /**
+     * Coverage/reachability for MatchExpr after each arm has already been
+     * type-checked in its own isolated environment. This routine is pure with
+     * respect to expression flow: it never re-types guards or executes body
+     * checks, so definite-initialization state cannot leak between arms.
+     */
+    private void checkValueMatchCoverage(
+            List<Ast.MatchValueArm> arms,
+            Type subject,
+            Set<String> generics,
+            Type self) {
+        for (int i = 0; i < arms.size(); i++) {
+            Ast.MatchValueArm arm = arms.get(i);
+
+            if (i > 0 && patternsProvablyExhaustive(
+                    arms.subList(0, i).stream()
+                            .filter(previous -> previous.guard() == null)
+                            .map(Ast.MatchValueArm::pattern)
+                            .toList(),
+                    subject, generics, self, 0)) {
+                throw new IllegalArgumentException(
+                        "unreachable match arm " + (i + 1)
+                                + ": earlier arms already exhaust " + subject);
+            }
+
+            for (int j = 0; j < i; j++) {
+                Ast.MatchValueArm previous = arms.get(j);
+                if (previous.guard() != null) continue;
+                if (patternSubsumes(
+                        previous.pattern(), arm.pattern(),
+                        subject, generics, self)) {
+                    throw new IllegalArgumentException(
+                            "unreachable match arm " + (i + 1)
+                                    + ": earlier arm " + (j + 1)
+                                    + " already matches every value accepted by it");
+                }
+            }
+        }
+
+        List<Ast.Pattern> unguarded = arms.stream()
+                .filter(arm -> arm.guard() == null)
+                .map(Ast.MatchValueArm::pattern)
+                .toList();
+        if (!patternsProvablyExhaustive(
+                unguarded, subject, generics, self, 0)) {
+            throw new IllegalArgumentException(
+                    "non-exhaustive match for " + subject
+                            + "; add an unguarded 'on _' arm or cover every provable case");
         }
     }
 
