@@ -95,6 +95,53 @@ final class MacroCanonicalIdentityTest {
     }
 
     @Test
+    void canonicalStringsUseUtf8ByteLengthsAndRejectMalformedUnicode() {
+        Ast.MacroParam parameter = new Ast.MacroParam(
+                Ast.MacroParamType.syntax(Ast.MacroSyntaxKind.EXPR),
+                "value");
+        Ast.SourceSite site = new Ast.SourceSite(1, 1);
+        Ast.MacroDecl unicode = new Ast.MacroDecl(
+                "unicode",
+                Ast.Visibility.PUBLIC,
+                List.of(parameter),
+                Ast.MacroResultKind.syntax(Ast.MacroSyntaxKind.EXPR),
+                List.of(new Ast.ReturnStmt(new Ast.LiteralExpr("é"))),
+                site);
+
+        String encoded = MacroCanonicalIdentity.encode(unicode);
+        assertTrue(encoded.contains("6:string=2:é;"),
+                "UTF-8 canonical stream must count é as two bytes");
+
+        Ast.MacroDecl malformed = new Ast.MacroDecl(
+                "malformed",
+                Ast.Visibility.PUBLIC,
+                List.of(parameter),
+                Ast.MacroResultKind.syntax(Ast.MacroSyntaxKind.EXPR),
+                List.of(new Ast.ReturnStmt(new Ast.LiteralExpr("\uD800"))),
+                site);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroCanonicalIdentity.encode(malformed));
+        assertTrue(failure.getMessage().contains("invalid UTF-16"),
+                failure::toString);
+    }
+
+    @Test
+    void canonicalContentBindsMacroSemanticsAndResourceProfile() {
+        Ast.MacroDecl identity = macro("""
+                define pub macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+                """);
+        String encoded = MacroCanonicalIdentity.encode(identity);
+
+        assertTrue(encoded.contains(MacroCanonicalIdentity.FORMAT));
+        assertTrue(encoded.contains(MacroCanonicalIdentity.SEMANTICS_ABI));
+        assertTrue(encoded.contains("const-v1"));
+        assertTrue(encoded.length() < MacroCanonicalIdentity.MAX_BYTES);
+    }
+
+    @Test
     void canonicalEncodingFailsClosedOnUnsupportedOrOverdeepBody() {
         Ast.MacroParam parameter = new Ast.MacroParam(
                 Ast.MacroParamType.syntax(Ast.MacroSyntaxKind.EXPR),
