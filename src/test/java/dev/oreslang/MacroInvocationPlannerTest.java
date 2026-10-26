@@ -155,7 +155,8 @@ final class MacroInvocationPlannerTest {
                 second.workItems().getFirst().hygieneMark());
         MacroExpansionPlanner.HygieneMark mark =
                 first.workItems().getFirst().hygieneMark();
-        assertEquals(Parser.ROOT_MODULE, mark.module());
+        assertEquals(Parser.ROOT_MODULE, mark.callerModule());
+        assertEquals(Parser.ROOT_MODULE, mark.macroOwnerModule());
         assertEquals("literal", mark.macroName());
         assertTrue(mark.line() > 0);
         assertTrue(mark.column() > 0);
@@ -200,6 +201,12 @@ final class MacroInvocationPlannerTest {
         assertEquals(1, plan.workItems().size());
         assertEquals("exposed", plan.workItems().getFirst().macro().name());
         assertEquals(Ast.Visibility.PUBLIC, plan.workItems().getFirst().macro().visibility());
+        MacroExpansionPlanner.HygieneMark qualified =
+                plan.workItems().getFirst().hygieneMark();
+        assertEquals("Consumer", qualified.callerModule());
+        assertEquals("Producer", qualified.macroOwnerModule());
+        assertEquals("exposed", qualified.macroName(),
+                "canonical macro identity must not include invocation qualification spelling");
     }
 
     @Test
@@ -662,7 +669,8 @@ final class MacroInvocationPlannerTest {
         assertEquals(
                 MacroSyntaxProvenance.EmissionKind.CONST_QUOTE,
                 origin.emissionKind());
-        assertEquals(Parser.ROOT_MODULE, origin.hygiene().module());
+        assertEquals(Parser.ROOT_MODULE, origin.hygiene().callerModule());
+        assertEquals(Parser.ROOT_MODULE, origin.hygiene().macroOwnerModule());
         assertEquals("literal", origin.hygiene().macroName());
         assertEquals(0, origin.hygiene().expansionOrdinal());
         assertTrue(origin.hygiene().invocationSite().line() > 0);
