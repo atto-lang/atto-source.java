@@ -229,6 +229,22 @@ final class ExplicitExportResolverTest {
     }
 
     @Test
+    void publicFunctionEffectCannotLeakUnexportedLocalType() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export fnc expose;
+
+                        define type Hidden = int;
+
+                        fnc expose(): void throws Hidden {
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("leaks non-public local type 'Hidden'"), failure.getMessage());
+    }
+
+    @Test
     void privateClassMemberDoesNotBecomePartOfExportedApiSurface() {
         assertDoesNotThrow(() -> resolve("""
                 export class Api;
