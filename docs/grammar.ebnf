@@ -146,18 +146,31 @@ type_decl       = [ "define" ] visibility "type"
                   stmt_terminator
                 | visibility "define" "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
-annotation      = "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_args ] ")" ] ;
+annotation      = default_arg_values_annotation
+                | "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_args ] ")" ] ;
+default_arg_values_annotation
+                = "@DefaultArgVals" "(" default_arg_value { "," default_arg_value } ")" ;
+default_arg_value
+                = IDENT ":" ( [ "-" ] INT_LITERAL | STRING_LITERAL | "true" | "false" | "None" ) ;
 annotation_args = annotation_arg { "," annotation_arg } ;
 annotation_arg  = named_type_param | meta_value | type_ref ;
 return_spec     = [ ( ":" | "->" ) type_ref ] ;
 type_return_spec= [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
-param           = type_ref [ "mut" ] IDENT
-                | IDENT ":" type_ref [ "mut" ]  (* compatibility; formatter emits type-first *)
-                | "structural" type_ref IDENT
-                | "@Structural" type_ref IDENT
-                | IDENT "structural" type_ref ;
+formal_param_type
+                = type_ref [ "?" ] ;
+param           = formal_param_type [ "mut" ] IDENT [ "?" ]
+                | IDENT ":" formal_param_type [ "mut" ]  (* compatibility; formatter emits type-first *)
+                | "structural" formal_param_type IDENT
+                | "@Structural" formal_param_type IDENT
+                | IDENT "structural" formal_param_type ;
+(* In canonical type-first parameters the two '?' positions are independent:
+   T? name  -> required Option<T> value
+   T name?  -> omittable call slot
+   T? name? -> omittable Option<T> slot.
+   Current executable omission lowering is limited to direct free/source
+   functions. Omittable methods, constructors, interfaces and lambdas reject. *)
 
 binding_decl    = named_inferred_binding
                 | "const" "fnc" IDENT "=" lambda stmt_terminator
