@@ -171,6 +171,55 @@ final class MacroDeclarationParserTest {
     }
 
     @Test
+    void directAstConstTypesCannotBypassParserMetaTypeAndClosureChecks() {
+        IllegalArgumentException nestedMeta = assertThrows(
+                IllegalArgumentException.class,
+                () -> Ast.MacroParamType.constant(
+                        new Ast.TypeRef(
+                                "List",
+                                java.util.List.of(Ast.TypeRef.simple("Type")),
+                                false)));
+        assertTrue(nestedMeta.getMessage().contains("compiler-only macro meta type"),
+                nestedMeta::toString);
+
+        IllegalArgumentException inferred = assertThrows(
+                IllegalArgumentException.class,
+                () -> Ast.MacroParamType.constant(
+                        new Ast.TypeRef(
+                                "List",
+                                java.util.List.of(Ast.TypeRef.inferred()),
+                                false)));
+        assertTrue(inferred.getMessage().contains("must be closed"),
+                inferred::toString);
+
+        IllegalArgumentException borrowed = assertThrows(
+                IllegalArgumentException.class,
+                () -> Ast.MacroParamType.constant(
+                        new Ast.TypeRef(
+                                "List",
+                                java.util.List.of(
+                                        Ast.TypeRef.borrowed(Ast.TypeRef.simple("int"), false)),
+                                false)));
+        assertTrue(borrowed.getMessage().contains("runtime borrow capability"),
+                borrowed::toString);
+    }
+
+    @Test
+    void directAstConstTypeValidationIsBounded() {
+        Ast.TypeRef nested = Ast.TypeRef.simple("int");
+        for (int i = 0; i < 65; i++) {
+            nested = new Ast.TypeRef("List", java.util.List.of(nested), false);
+        }
+        Ast.TypeRef overDepth = nested;
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Ast.MacroParamType.constant(overDepth));
+        assertTrue(failure.getMessage().contains("bounded compiler meta-type validation budget"),
+                failure::toString);
+    }
+
+    @Test
     void quoteIntrinsicCannotBeShadowedByMacroParameter() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
