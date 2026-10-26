@@ -65,6 +65,49 @@ final class CompileTimeConstEvaluator {
         return new CompileTimeConstEvaluator().evaluate(expression, 0);
     }
 
+    static Evaluation evaluate(Ast.Expr expression, Ast.TypeRef expected) {
+        if (expression == null) {
+            throw new Failure(FailureKind.INVALID, "compile-time constant expression cannot be null");
+        }
+        if (expected == null || expected.inferArguments()) {
+            throw new Failure(
+                    FailureKind.INVALID,
+                    "expected Const<T> type must be closed for compile-time evaluation");
+        }
+
+        CompileTimeConstEvaluator evaluator = new CompileTimeConstEvaluator();
+        Evaluation evaluated;
+        if (expression instanceof Ast.ListExpr list && list.elements().isEmpty()) {
+            String expectedName = normalizeTypeName(expected.name());
+            if (!expectedName.equals("List") || expected.arguments().size() != 1
+                    || expected.arguments().getFirst().inferArguments()) {
+                throw new Failure(
+                        FailureKind.INVALID,
+                        "empty list Const<T> requires an exact expected List<Element> type");
+            }
+            evaluator.charge(0);
+            evaluator.addAggregateElements(0);
+            evaluator.accountBytes(32L);
+            evaluated = new Evaluation(
+                    new Ast.ListExpr(List.of()),
+                    new Ast.TypeRef(
+                            "List",
+                            List.of(expected.arguments().getFirst()),
+                            false));
+        } else {
+            evaluated = evaluator.evaluate(expression, 0);
+        }
+
+        if (!typeMatches(expected, evaluated.type())) {
+            throw new Failure(
+                    FailureKind.INVALID,
+                    "compile-time type " + displayType(evaluated.type())
+                            + " does not match declared Const<"
+                            + displayType(expected) + "> exactly");
+        }
+        return evaluated;
+    }
+
     static boolean typeMatches(Ast.TypeRef expected, Ast.TypeRef actual) {
         if (expected == null || actual == null || expected.inferArguments() || actual.inferArguments()) {
             return false;
