@@ -34,14 +34,27 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
-    /** Ownership of the already-created upstream Future observation. */
+    /** Ownership of the value crossing into one deferred Future-pipeline stage. */
     public enum PipelineInputOwnership {
         /**
-         * The source Future is not consumed or cancelled by the pipeline.
-         * Therefore its payload must be both Send and Share: a merely-Send
-         * unique value cannot be duplicated through a second observer.
+         * The root source Future remains usable outside the pipeline, so
+         * observing its payload creates an aliasing edge. The payload must
+         * therefore prove both Send and Share.
          */
-        BORROWED_UPSTREAM_SHARED_PAYLOAD
+        BORROWED_UPSTREAM_SHARED_PAYLOAD,
+
+        /**
+         * The root source Future is explicitly transferred with rt take.
+         * The payload crosses the scheduler boundary exactly once and needs
+         * Send, but it does not need Share.
+         */
+        CONSUMED_UPSTREAM_OWNED_PAYLOAD,
+
+        /**
+         * A preceding checked stage produced this value inside the same
+         * pipeline task. It is already pipeline-owned and needs Send only.
+         */
+        OWNED_PIPELINE_VALUE
     }
 
     /** Whether the cumulative checked-effect row accounts for the upstream Future origin. */
@@ -5043,15 +5056,34 @@ public final class TypeChecker {
                 || call.arguments().isEmpty()) return null;
 
         Ast.Expr source = call.arguments().getFirst();
-        if (!(source instanceof Ast.NameExpr) && !(source instanceof Ast.CallExpr)) {
+        boolean explicitTake = isExplicitPipelineTake(source);
+        Ast.Expr rootSource = source;
+        if (explicitTake) {
+            Ast.RuntimeCallExpr take = (Ast.RuntimeCallExpr) source;
+            rootSource = take.arguments().getFirst();
+            if (rootSource instanceof Ast.CallExpr takenPipeline
+                    && takenPipeline.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT) {
+                throw new IllegalArgumentException(
+                        "rt take must consume a Future binding or direct producer before pipeline lifting; "
+                                + "taking an already-lifted pipeline is not yet supported");
+            }
+            if (!(rootSource instanceof Ast.NameExpr)
+                    && !(rootSource instanceof Ast.CallExpr)) {
+                throw new IllegalArgumentException(
+                        "consuming Future pipeline currently requires rt take of a Future binding or direct producer");
+            }
+        } else if (!(source instanceof Ast.NameExpr)
+                && !(source instanceof Ast.CallExpr)) {
             return null;
         }
 
         final Type prior;
+        PipelineInputOwnership inputOwnership;
         PipelineEffectSummary priorEffects = new PipelineEffectSummary(
                 Types.CheckedEffects.none(),
                 PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN);
-        if (source instanceof Ast.CallExpr candidate
+        if (!explicitTake
+                && source instanceof Ast.CallExpr candidate
                 && candidate.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT) {
             // Prefer an already-lifted inner stage, but allow an eager scalar
             // prefix to become asynchronous:
@@ -5061,6 +5093,7 @@ public final class TypeChecker {
             Type nested = checkedFuturePipe(candidate, env, generics, self);
             if (nested != null) {
                 prior = nested;
+                inputOwnership = PipelineInputOwnership.OWNED_PIPELINE_VALUE;
                 PipelinePlan nestedPlan = pendingFutureStages.get(candidate);
                 if (nestedPlan == null) {
                     throw new IllegalStateException(
@@ -5071,10 +5104,15 @@ public final class TypeChecker {
                         nestedPlan.effectProvenance());
             } else {
                 prior = typeOf(candidate, env, generics, self);
+                inputOwnership =
+                        PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD;
                 priorEffects = sourceFutureEffects(candidate);
             }
         } else {
-            if (source instanceof Ast.CallExpr candidate) {
+            inputOwnership = explicitTake
+                    ? PipelineInputOwnership.CONSUMED_UPSTREAM_OWNED_PAYLOAD
+                    : PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD;
+            if (rootSource instanceof Ast.CallExpr candidate) {
                 // Avoid speculative retyping of arbitrary scalar producers.
                 if (candidate.origin() != Ast.CallOrigin.DIRECT
                         || !(candidate.callee() instanceof Ast.NameExpr producerName)
@@ -5093,10 +5131,15 @@ public final class TypeChecker {
                 || pending.arguments().size() != 1) return null;
 
         Type upstreamPayload = pending.arguments().getFirst();
-        if (!isBorrowedPipelinePayloadSafe(upstreamPayload)) {
+        if (inputOwnership == PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD) {
+            if (!isBorrowedPipelinePayloadSafe(upstreamPayload)) {
+                throw new IllegalArgumentException(
+                        "borrowed Future pipeline input requires a Send + Share payload; "
+                                + "move-only/send-only payloads require rt take");
+            }
+        } else if (!isPipelinePayloadSend(upstreamPayload)) {
             throw new IllegalArgumentException(
-                    "borrowed Future pipeline input requires a Send + Share payload; "
-                            + "move-only/send-only payloads require an explicit consuming pipeline");
+                    "owned Future pipeline input requires a Send payload");
         }
 
         if (currentActorKind != Ast.ActorKind.NONE) {
@@ -5131,16 +5174,17 @@ public final class TypeChecker {
         Type input = resolveParam(param, Set.of(), null);
         requireAssignable(upstreamPayload, input,
                 "Future pipeline stage " + name.name() + " input");
-        if (!isBorrowedPipelinePayloadSafe(input)) {
+        if (inputOwnership == PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD) {
+            if (!isBorrowedPipelinePayloadSafe(input)) {
+                throw new IllegalArgumentException(
+                        "Future pipeline borrowed stage input must preserve Send + Share");
+            }
+        } else if (!isPipelinePayloadSend(input)) {
             throw new IllegalArgumentException(
-                    "Future pipeline stage input must preserve Send + Share "
-                            + "for a borrowed upstream payload");
+                    "Future pipeline owned stage input must preserve Send");
         }
 
         if (!stage.effects().isEmpty()) {
-            // Keep the local boundary explicit even if the global source-effect
-            // gate is relaxed independently. Pipeline runtime classification
-            // must exist before an exceptional row becomes executable.
             throw new IllegalArgumentException(
                     "Future value-pipe stage effects are preserved in PipelinePlan but "
                             + "exceptional effect execution is not yet enabled");
@@ -5161,9 +5205,6 @@ public final class TypeChecker {
         Type output = flattensFuture
                 ? ((Named) invocationResult).arguments().getFirst()
                 : invocationResult;
-        // The pipeline itself is a tracked scheduler Task. Its final payload
-        // crosses back out of that Task through the exposed Future, so it must
-        // satisfy the same concrete owned Send boundary as an async return.
         validateAsyncBoundaryType(
                 output, true, "Future pipeline stage '" + name.name() + "' output");
         if (flattensFuture && !stage.async()
@@ -5187,7 +5228,7 @@ public final class TypeChecker {
                 stageEffects,
                 cumulative.effects(),
                 cumulative.provenance(),
-                PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD,
+                inputOwnership,
                 flattensFuture
                         ? PipelineStageFutureOwnership.OWNED_STAGE_RESULT
                         : PipelineStageFutureOwnership.NONE);
@@ -5201,16 +5242,27 @@ public final class TypeChecker {
         return new Named("Future", List.of(output));
     }
 
+    private static boolean isExplicitPipelineTake(Ast.Expr expression) {
+        return expression instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("take")
+                && runtime.arguments().size() == 1;
+    }
+
     /**
      * Borrowing a Future creates an additional observer without consuming the
      * owner's affine Future handle. A payload crossing that observation edge
      * therefore needs both scheduler transfer safety (Send) and alias safety
-     * (Share). Unique Send-only data needs a future consuming-pipeline mode.
+     * (Share).
      */
     private boolean isBorrowedPipelinePayloadSafe(Type type) {
         AutoTraitRules.Capabilities capabilities =
                 inferBoundaryAutoTraits(type, new LinkedHashSet<>(), Map.of());
         return capabilities.send() && capabilities.share();
+    }
+
+    /** Owned/consumed pipeline edges transfer one value and therefore need Send only. */
+    private boolean isPipelinePayloadSend(Type type) {
+        return inferBoundaryAutoTraits(type, new LinkedHashSet<>(), Map.of()).send();
     }
 
     /**

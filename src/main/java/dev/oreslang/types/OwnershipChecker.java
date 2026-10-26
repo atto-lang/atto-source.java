@@ -1604,20 +1604,51 @@ public final class OwnershipChecker {
             pipelinePlan = TypeChecker.CheckedFuturePipe.plan(call);
         }
         if (pipelinePlan != null) {
-            // The producer is an observation only. Stage-created Future work
-            // has separate ownership in PipelinePlan and is revoked by the
-            // runtime pipeline rather than by consuming the source Future.
             if (call.arguments().size() != 1
-                    || !(call.callee() instanceof Ast.NameExpr)
-                    || pipelinePlan.inputOwnership()
-                            != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD) {
+                    || !(call.callee() instanceof Ast.NameExpr)) {
                 throw error("checked Future stage was rewritten after type checking");
             }
-            ValueInfo upstream = checkExpr(call.arguments().getFirst(), scope, false);
+
+            Ast.Expr upstreamExpr = call.arguments().getFirst();
+            boolean explicitTake = upstreamExpr instanceof Ast.RuntimeCallExpr runtime
+                    && runtime.operation().equals("take")
+                    && runtime.arguments().size() == 1;
+            boolean nestedCheckedPipeline = upstreamExpr instanceof Ast.CallExpr nested
+                    && (validatedFuturePipelines.containsKey(nested)
+                            || TypeChecker.CheckedFuturePipe.plan(nested) != null);
+
+            switch (pipelinePlan.inputOwnership()) {
+                case BORROWED_UPSTREAM_SHARED_PAYLOAD -> {
+                    if (explicitTake || nestedCheckedPipeline) {
+                        throw error("checked borrowed Future stage ownership shape changed");
+                    }
+                }
+                case CONSUMED_UPSTREAM_OWNED_PAYLOAD -> {
+                    if (!explicitTake) {
+                        throw error("checked consuming Future stage lost its rt take source");
+                    }
+                    Ast.RuntimeCallExpr take = (Ast.RuntimeCallExpr) upstreamExpr;
+                    Ast.Expr taken = take.arguments().getFirst();
+                    if (taken instanceof Ast.CallExpr takenPipe
+                            && takenPipe.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT) {
+                        throw error("checked consuming Future stage cannot take an already-lifted pipeline");
+                    }
+                }
+                case OWNED_PIPELINE_VALUE -> {
+                    if (!nestedCheckedPipeline) {
+                        throw error("checked pipeline-owned stage lost its preceding checked stage");
+                    }
+                }
+            }
+
+            // For consumed roots this deliberately walks the canonical rt take
+            // expression. That existing ownership path marks the source binding
+            // moved; no pipeline-specific move mechanism is allowed here.
+            ValueInfo upstream = checkExpr(upstreamExpr, scope, false);
             Ast.TypeRef type = upstream.type;
             if (type == null || !type.name().equals("Future")
                     || type.arguments().size() != 1) {
-                throw error("checked Future stage requires a borrowed Future<T> input");
+                throw error("checked Future stage requires a Future<T> input");
             }
             Ast.TypeRef result = new Ast.TypeRef(
                     "Future", List.of(pipelinePlan.outputTypeRef()), false);
