@@ -1,0 +1,47 @@
+name: Async atomic filesystem contract
+on:
+  push:
+    branches:
+      - feat/async-atomic-fs-metadata-20261026
+  pull_request:
+    branches:
+      - main
+    paths:
+      - src/main/java/dev/oreslang/runtime/NativeIo.java
+      - src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
+      - src/main/java/dev/oreslang/types/TypeChecker.java
+      - src/test/java/dev/oreslang/runtime/AsyncFilesystemAtomicLanguageTest.java
+      - .github/workflows/async-atomic-fs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  async-fs:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, oreslang-jdk25]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Record exact source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "source_head=$(git rev-parse HEAD)"
+          echo "source_tree=$(git rev-parse HEAD^{tree})"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Run async atomic filesystem contracts
+        run: mvn -B -ntp -Dtest=dev.oreslang.runtime.AsyncFilesystemAtomicLanguageTest test
+      - name: Run existing native filesystem regression suite
+        run: mvn -B -ntp -Dtest=dev.oreslang.runtime.NativeCliIoTest test
