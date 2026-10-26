@@ -166,37 +166,50 @@ public final class IncrementalCompiler {
             if (source == null) {
                 throw new IllegalArgumentException("missing linked class source '" + sourceId + "'");
             }
-            for (String name : imported.names()) {
-                Ast.ClassDecl resolved = null;
-                Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
-                for (Ast.ModuleDecl module : source.modules()) {
-                    for (Ast.Decl declaration : module.declarations()) {
-                        if (declaration instanceof Ast.ClassDecl klass
-                                && klass.name().equals(name)
-                                && klass.visibility() == Ast.Visibility.PUBLIC) {
-                            if (resolved != null) {
-                                throw new IllegalArgumentException(
-                                        "ambiguous linked public class '" + name + "'");
-                            }
-                            resolved = klass;
-                            LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
-                            for (Ast.Decl companion : module.declarations()) {
-                                if (companion instanceof Ast.TypeAliasDecl alias
-                                        && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
-                                    throw new IllegalArgumentException(
-                                            "duplicate type alias in linked class module: " + alias.name());
-                                }
-                            }
-                            classAliases = Map.copyOf(moduleAliases);
-                        }
+
+            for (String externalName : imported.names()) {
+                ExportResolver.ExportBinding binding =
+                        SourceExportTable.resolvePublic(
+                                source, Ast.ImportKind.CLASS, externalName);
+                if (binding == null) {
+                    throw new IllegalArgumentException(
+                            "missing public export binding for linked class '"
+                                    + externalName + "' in '" + sourceId + "'");
+                }
+
+                List<Ast.Decl> family =
+                        SourceExportTable.localDeclarations(source, binding);
+                if (family.size() != 1
+                        || !(family.getFirst() instanceof Ast.ClassDecl resolved)) {
+                    throw new IllegalArgumentException(
+                            "linked class export '" + externalName
+                                    + "' does not resolve to exactly one local class declaration");
+                }
+
+                Ast.ModuleDecl owner = source.modules().stream()
+                        .filter(module -> module.name().equals(binding.ownerNamespaceId()))
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "missing owner namespace '" + binding.ownerNamespaceId()
+                                        + "' for linked class export '" + externalName + "'"));
+
+                LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases =
+                        new LinkedHashMap<>();
+                for (Ast.Decl companion : owner.declarations()) {
+                    if (companion instanceof Ast.TypeAliasDecl alias
+                            && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate type alias in linked class module: "
+                                        + alias.name());
                     }
                 }
-                if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
+
+                String localName = ImportRules.localName(imported, externalName);
+                if (linked.putIfAbsent(localName, resolved) != null) {
                     throw new IllegalArgumentException(
-                            "missing or duplicate public linked class '" + name
-                                    + "' in source unit '" + unitId + "'");
+                            "duplicate linked class import binding '" + localName + "'");
                 }
-                aliases.put(name, classAliases);
+                aliases.put(localName, Map.copyOf(moduleAliases));
             }
         }
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
@@ -234,43 +247,41 @@ public final class IncrementalCompiler {
             if (targetId == null) continue; // external/package resolver owns it
             Ast.Program target = programs.get(targetId);
 
-            for (String sourceName : imported.names()) {
-                Ast.InterfaceDecl match = null;
-                for (Ast.ModuleDecl module : target.modules()) {
-                    for (Ast.Decl declaration : module.declarations()) {
-                        if (declaration instanceof Ast.InterfaceDecl iface
-                                && iface.moduleContract()
-                                && iface.visibility() == Ast.Visibility.PUBLIC
-                                && iface.name().equals(sourceName)) {
-                            if (match != null) {
-                                throw new IllegalArgumentException(
-                                        "import contract '" + sourceName + "' from '" + imported.path()
-                                                + "' is ambiguous in '" + targetId + "'");
-                            }
-                            match = iface;
-                        }
-                    }
-                }
-                if (match == null) {
-                    // ImportGraph.validateLinkedImports should already diagnose
-                    // this, but keep this boundary independently fail-closed.
+            for (String externalName : imported.names()) {
+                ExportResolver.ExportBinding binding =
+                        SourceExportTable.resolvePublic(
+                                target, Ast.ImportKind.CONTRACT, externalName);
+                if (binding == null) {
                     throw new IllegalArgumentException(
-                            "import contract '" + sourceName + "' from '" + imported.path()
+                            "import contract '" + externalName + "' from '"
+                                    + imported.path()
                                     + "' does not resolve to an exported module contract");
+                }
+
+                List<Ast.Decl> family =
+                        SourceExportTable.localDeclarations(target, binding);
+                if (family.size() != 1
+                        || !(family.getFirst() instanceof Ast.InterfaceDecl match)
+                        || !match.moduleContract()) {
+                    throw new IllegalArgumentException(
+                            "import contract '" + externalName + "' from '"
+                                    + imported.path()
+                                    + "' does not resolve to exactly one local module contract");
                 }
                 if (!match.parents().isEmpty()) {
                     throw new IllegalArgumentException(
-                            "imported module contract '" + sourceName
+                            "imported module contract '" + externalName
                                     + "' extends another contract; cross-file inherited contract metadata "
                                     + "is not yet linkable without explicit parent provenance");
                 }
                 validatePortableImportedContract(match, targetId);
 
-                String localName = ImportRules.localName(imported, sourceName);
+                String localName = ImportRules.localName(imported, externalName);
                 Ast.InterfaceDecl previous = result.putIfAbsent(localName, match);
                 if (previous != null && previous != match) {
                     throw new IllegalArgumentException(
-                            "duplicate imported contract metadata for local name '" + localName + "'");
+                            "duplicate imported contract metadata for local name '"
+                                    + localName + "'");
                 }
             }
         }
