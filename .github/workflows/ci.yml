@@ -291,6 +291,85 @@ jobs:
           grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-hybrid.out
           grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-hybrid.out
 
+
+  # Full-width hybrid image: independently exercise native64 references alongside
+  # the compressed32 hybrid job, with the same exact-head provenance gate.
+  native-hybrid-ref64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Verify exactly the PR branch HEAD, not GitHub's synthetic merge commit.
+          # Push workflows still resolve to their triggering commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Pin actual source checkout and Git tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A pull_request event's GITHUB_SHA normally names a synthetic merge
+          # commit. Explicitly pin the PR's immutable head SHA instead.
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          test -n "$expected"
+          actual="$(git rev-parse --verify HEAD)"
+          tree="$(git rev-parse --verify HEAD^{tree})"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "checkout differs from exact event PR head / push commit" >&2
+            exit 1
+          fi
+          test -n "$tree"
+          git diff --quiet
+          git diff --cached --quiet
+          printf 'ORESLANG_CI_SOURCE_COMMIT=%s\n' "$actual"
+          printf 'ORESLANG_CI_SOURCE_TREE=%s\n' "$tree"
+          printf 'ORESLANG_CI_EVENT_SHA=%s\n' "$GITHUB_SHA"
+          printf 'ORESLANG_CI_EXACT_PR_HEAD_OR_PUSH_SHA=%s\n' "$expected"
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: GraalVM diagnostics
+        run: |
+          java --version
+          native-image --version
+      - name: Build AOT host with guest JIT
+        run: sh scripts/build-and-verify-native-image.sh hybrid native64
+      - name: Verify full-width reference mode is baked into hybrid image
+        run: |
+          ./target/ores-hybrid --build-info | tee /tmp/ores-hybrid-build-info.json
+          grep -F '"managed_reference_mode":"native64"' /tmp/ores-hybrid-build-info.json
+      - name: Run hybrid image
+        run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
+      - name: Load packaged native stdlib under hybrid
+        run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-core-library.ores
+      - name: Run hybrid proper tail-call stress
+        run: |
+          set -euo pipefail
+          ./target/ores-hybrid --mode=hybrid --platform=linux examples/proper-tail-call.ores | tee /tmp/ores-hybrid-tail.out
+          grep -F "0|0|0" /tmp/ores-hybrid-tail.out
+      - name: Run native Oreslang tests under hybrid host
+        run: |
+          set -euo pipefail
+          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-hybrid.out
+          grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-hybrid.out
+          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-hybrid.out
+          grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-hybrid.out
+          grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-hybrid.out
+      - name: Run Orestra integration smoke under native hybrid
+        run: |
+          set -euo pipefail
+          for case in placement-smoke edge-guards workload-state-smoke control-plane-smoke; do
+            ./target/ores-hybrid --mode=hybrid --platform=linux "integration/orestra/examples/${case}.ores" | tee "/tmp/${case}-hybrid.out"
+          done
+          grep -x "orestra-placement-ok" /tmp/placement-smoke-hybrid.out
+          grep -x "orestra-edge-guards-ok" /tmp/edge-guards-hybrid.out
+          grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-hybrid.out
+          grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-hybrid.out
+
   polyglot-isolate:
     runs-on: ubuntu-latest
     steps:
