@@ -1212,6 +1212,8 @@ public final class TypeChecker {
             return true;
         }
         if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression());
+        if (expr instanceof Ast.NamedValueArgumentExpr named)
+            return fieldInitializerMaySuspend(named.expression());
         if (expr instanceof Ast.ListExpr list)
             return list.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
         if (expr instanceof Ast.TupleExpr tuple)
@@ -7085,6 +7087,8 @@ public final class TypeChecker {
             return hasSuspendingSumCallbackSyntax(cast.value());
         if (expr instanceof Ast.SpreadExpr spread)
             return hasSuspendingSumCallbackSyntax(spread.expression());
+        if (expr instanceof Ast.NamedValueArgumentExpr named)
+            return hasSuspendingSumCallbackSyntax(named.expression());
         if (expr instanceof Ast.CallExpr call)
             return hasSuspendingSumCallbackSyntax(call.callee())
                     || call.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
@@ -8604,6 +8608,8 @@ public final class TypeChecker {
             rejectStaticClassGenericReferences(conditional.whenFalse(), classGenerics, klass, method);
         } else if (expression instanceof Ast.SpreadExpr spread) {
             rejectStaticClassGenericReferences(spread.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.NamedValueArgumentExpr named) {
+            rejectStaticClassGenericReferences(named.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
             for (Ast.Expr argument : runtime.arguments()) {
                 rejectStaticClassGenericReferences(argument, classGenerics, klass, method);
