@@ -46,6 +46,22 @@ All returned payloads are defensive copies. The implementation uses only
 closed-world JDK primitives and has no reflection requirement, preserving the
 Native Image/AOT direction.
 
+## Implemented raw HTTP opening-request boundary
+
+`WebSocketOpeningRequest` reads one raw request head with a total byte bound
+and header-count bound. It requires CRLF line endings, ASCII without NUL,
+canonical origin-form request targets, and rejects obsolete folded headers.
+It retains duplicate detection before normalization: Host,
+Sec-WebSocket-Key, Sec-WebSocket-Version, Origin, Content-Length and
+Transfer-Encoding are singleton inputs. Upgrade and Connection may repeat and
+are combined as token lists before the protocol validator runs.
+
+Opening-request bodies are rejected: Content-Length may be absent or exactly
+zero, while Transfer-Encoding is rejected. Unknown application/authentication
+headers are deliberately not materialized by this minimal parser; the future
+listener must pass a separately bounded reviewed header view to application
+authentication rather than silently granting access to raw host parser state.
+
 ## Implemented opening-handshake boundary
 
 `WebSocketHandshake.admit` now validates the protocol-defining fields before
