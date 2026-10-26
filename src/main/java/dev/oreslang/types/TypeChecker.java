@@ -5231,7 +5231,7 @@ public final class TypeChecker {
                 || named.name().equals("SelectResult") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("RawPointer")
                 || named.name().equals("NativePointer") || named.name().equals("Pointer")
-                || named.name().equals("ThreadLocal")) {
+                || named.name().equals("Ptr") || named.name().equals("ThreadLocal")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
