@@ -1621,11 +1621,23 @@ public final class OwnershipChecker {
             Ast.FunctionDecl fn = findFunction(
                     name.name(), syntacticCallArgumentTypes(call.arguments(), scope).size());
             if (fn != null) {
+                if (!fn.genericParameters().isEmpty()
+                        && hasLabeledProductSyntax(call.arguments(), scope)) {
+                    throw error("function " + fn.name()
+                            + " named/record-spread binding with generic parameters "
+                            + "is not enabled until ownership specialization consumes "
+                            + "the same checked source-to-ABI plan");
+                }
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
-                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
+                checkArguments(
+                        call.arguments(),
+                        signature.parameters(),
+                        scope,
+                        "function " + fn.name(),
+                        true);
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -3848,6 +3860,24 @@ public final class OwnershipChecker {
                 inferGenericBindings(pattern.arguments().get(i), actual.arguments().get(i), genericNames, bindings, fixed);
             }
         }
+    }
+
+    private boolean hasLabeledProductSyntax(
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.NamedArgExpr) return true;
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef type = syntacticType(spread.expression(), scope);
+                if (type.isBorrow()) type = type.borrowedTarget();
+                if (type.isReadonlyRecordType()
+                        && spread.expression() instanceof Ast.ObjectExpr object
+                        && object.structuralRecord()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private List<Ast.TypeRef> syntacticCallArgumentTypes(
