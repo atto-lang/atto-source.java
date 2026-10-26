@@ -99,6 +99,39 @@ final class WebSocketOpeningRequestTest {
     }
 
     @Test
+    void rejectsAmbiguousRequestTargetsAndHostAuthorities() {
+        for (String target : new String[] {
+                "/chat\tbad",
+                "/chat%0d%0aX-Evil:yes",
+                "/chat%00",
+                "/chat%5cadmin",
+                "//example.test/chat"
+        }) {
+            String raw = baseHead().replace(
+                    "GET /chat HTTP/1.1",
+                    "GET " + target + " HTTP/1.1");
+            assertThrows(IllegalArgumentException.class, () ->
+                    WebSocketOpeningRequest.read(bytes(raw), 4096, 32), target);
+        }
+
+        for (String host : new String[] {
+                "example.test evil.test",
+                "user@example.test",
+                "example.test/path",
+                "example.test,evil.test",
+                "2001:db8::1",
+                "example.test:0",
+                "example.test:65536"
+        }) {
+            String raw = baseHead().replace(
+                    "Host: example.test",
+                    "Host: " + host);
+            assertThrows(IllegalArgumentException.class, () ->
+                    WebSocketOpeningRequest.read(bytes(raw), 4096, 32), host);
+        }
+    }
+
+    @Test
     void enforcesByteAndHeaderCountBoundsBeforeUnboundedAccumulation() {
         assertThrows(IllegalArgumentException.class, () ->
                 WebSocketOpeningRequest.read(bytes(baseHead()), 256, 32));
