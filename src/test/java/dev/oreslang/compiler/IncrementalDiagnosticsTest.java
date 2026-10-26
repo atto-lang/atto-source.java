@@ -75,6 +75,31 @@ final class IncrementalDiagnosticsTest {
     }
 
     @Test
+    void bracesInStringLiteralsDoNotBecomeRecoveryBoundaries() {
+        String source = "define module strings as\n"
+                + "  pub fnc first(): int { let string sample = \"}\"; return 1 + ; }\n"
+                + "  pub fnc second(): int { return 2 + ; }\n"
+                + "end\n";
+        var failure = assertThrows(CompilationDiagnosticsException.class,
+                () -> new IncrementalCompiler().compileWithDiagnostics(
+                        Map.of("strings.ores", source), 10));
+        assertEquals(2, failure.diagnostics().size());
+    }
+
+    @Test
+    void missingBraceCannotBeRecoveredByGuessingATopLevelBoundary() {
+        String source = "define module unclosed as\n"
+                + "  pub fnc first(): int { return 1 + ;\n"
+                + "  pub fnc second(): int { return 2 + ; }\n"
+                + "end\n";
+        var failure = assertThrows(CompilationDiagnosticsException.class,
+                () -> new IncrementalCompiler().compileWithDiagnostics(
+                        Map.of("unclosed.ores", source), 10));
+        assertEquals(1, failure.diagnostics().size());
+        assertTrue(failure.mayHaveMore());
+    }
+
+    @Test
     void cleanParseStillUsesNormalSemanticAndOwnershipChecks() {
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compileWithDiagnostics(
