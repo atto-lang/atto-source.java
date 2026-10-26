@@ -115,7 +115,8 @@ public final class IncrementalCompiler {
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
-                                Parser.parse(normalized.get(id)),
+                                MacroSourceUnitIdentity.attach(
+                                        Parser.parse(normalized.get(id)), id),
                                 linked.classes(), linked.aliases(), contracts);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
