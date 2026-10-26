@@ -53,7 +53,7 @@ cancellation and proven ownership, no callback convention or `Any` results.
 Proposed illustrative source forms (NOT executable yet):
 
     async fnc fetch_user(int id): User {
-        return await api.get_user_async(id);
+        return await api.get_user(id);
     }
 
     fnc validate(User user): ValidatedUser {
@@ -61,7 +61,7 @@ Proposed illustrative source forms (NOT executable yet):
     }
 
     async fnc enrich(ValidatedUser user): Profile {
-        return await analytics.enrich_async(user);
+        return await analytics.enrich(user);
     }
 
     let pipeline = Task.waterfall(
