@@ -10367,13 +10367,9 @@ public final class TypeChecker {
             String name,
             List<ExpandedCallArgument> expanded,
             String label) {
-        if (ambiguousFunctions.contains(name)) {
-            throw new IllegalArgumentException(
-                    "ambiguous function/routine name '" + name
-                            + "'; qualify it with its module");
-        }
+        String familyKey = resolveUnqualifiedFunctionKey(name);
         LinkedHashMap<Integer, Ast.FunctionDecl> family =
-                functions.get(name);
+                familyKey == null ? null : functions.get(familyKey);
         if (family == null) return null;
 
         Ast.FunctionDecl exact = family.get(expanded.size());
@@ -10506,29 +10502,39 @@ public final class TypeChecker {
         return resolve(target.returnType(), Set.of(), null);
     }
 
+    /**
+     * Unqualified source lookup is lexical: the current named module first,
+     * then the file-root namespace. A unique function in some other module is
+     * never ambient merely because no second module uses the same spelling.
+     */
+    private String resolveUnqualifiedFunctionKey(String name) {
+        String module = currentLexicalModule == null
+                ? Parser.ROOT_MODULE
+                : currentLexicalModule;
+        String local = module + "." + name;
+        if (functions.containsKey(local)) return local;
+
+        String root = Parser.ROOT_MODULE + "." + name;
+        if (!root.equals(local) && functions.containsKey(root)) return root;
+        return null;
+    }
+
     private boolean hasFunctionFamily(String name) {
-        if (ambiguousFunctions.contains(name)) {
-            throw new IllegalArgumentException(
-                    "ambiguous function/routine name '" + name + "'; qualify it with its module");
-        }
-        return functions.containsKey(name);
+        return resolveUnqualifiedFunctionKey(name) != null;
     }
 
     private Ast.FunctionDecl findFunction(String name, int arity) {
-        if (ambiguousFunctions.contains(name)) {
-            throw new IllegalArgumentException(
-                    "ambiguous function/routine name '" + name + "'; qualify it with its module");
-        }
-        LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
+        String key = resolveUnqualifiedFunctionKey(name);
+        LinkedHashMap<Integer, Ast.FunctionDecl> family =
+                key == null ? null : functions.get(key);
         return family == null ? null : family.get(arity);
     }
 
     private Ast.FunctionDecl findSingleFunction(String name) {
-        if (ambiguousFunctions.contains(name)) {
-            throw new IllegalArgumentException(
-                    "ambiguous function/routine name '" + name + "'; qualify it with its module");
-        }
-        return singleFunction(functions.get(name), name);
+        String key = resolveUnqualifiedFunctionKey(name);
+        return singleFunction(
+                key == null ? null : functions.get(key),
+                key == null ? name : key);
     }
 
     private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
