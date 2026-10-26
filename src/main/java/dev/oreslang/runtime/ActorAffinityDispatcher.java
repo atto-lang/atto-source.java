@@ -23,6 +23,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final int softSpillThreshold;
     private final AtomicLong spills = new AtomicLong();
     private final AtomicInteger nextLane = new AtomicInteger();
+    private final AtomicInteger nextHostLane = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus,
@@ -44,8 +45,90 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     }
 
     int reserveLane() { return Math.floorMod(nextLane.getAndIncrement(), lanes.size()); }
+
+    /**
+     * Submit host-only NIO completion work without allowing the selector to
+     * create/grow a carrier. Cold or saturated lanes are skipped; if none is
+     * safely warm the readiness owner retains the completion and retries.
+     */
+    void executeHostOnWarmLane(Runnable notification) {
+        Objects.requireNonNull(notification, "notification");
+        int count = lanes.size();
+        int start = Math.floorMod(nextHostLane.getAndIncrement(), count);
+        boolean reactor = NioReadinessGroup.onReactorThread();
+        int best = -1;
+        int bestLoad = Integer.MAX_VALUE;
+        for (int offset = 0; offset < count; ++offset) {
+            int index = (start + offset) % count;
+            int load = verifiedWarmHostLoad(lanes.get(index), reactor);
+            if (load < 0) continue;
+            if (load < bestLoad) {
+                best = index;
+                bestLoad = load;
+                if (load == 0) break;
+            }
+        }
+        if (best < 0) {
+            if (reactor)
+                throw new RejectedExecutionException(
+                        "no fully started actor carrier available for reactor completion");
+            executeOnLane(0, notification);
+            return;
+        }
+
+        RejectedExecutionException last = null;
+        try {
+            executeOnLane(best, notification, true);
+            return;
+        } catch (RejectedExecutionException rejected) {
+            last = rejected;
+        }
+        for (int offset = 0; offset < count; ++offset) {
+            int candidate = (start + offset) % count;
+            if (candidate == best) continue;
+            if (verifiedWarmHostLoad(lanes.get(candidate), reactor) < 0) continue;
+            try {
+                executeOnLane(candidate, notification, true);
+                return;
+            } catch (RejectedExecutionException rejected) {
+                // A warm lane can fill or begin shutdown after the census.
+                // Try another independently verified warm lane before asking
+                // the readiness owner to retain and retry the completion.
+                last = rejected;
+            }
+        }
+        if (last != null) throw last;
+        throw new RejectedExecutionException(
+                "no warm actor carrier accepted reactor completion");
+    }
+
+    private static int verifiedWarmHostLoad(ExecutorService lane, boolean reactor) {
+        if (lane instanceof NativeCarrierExecutor nativeLane) {
+            if (!nativeLane.readyForNoBootstrapAdmission()) return -1;
+            return nativeLane.getActiveCount() + nativeLane.getQueueSize();
+        }
+        if (lane instanceof AdaptiveCarrierExecutor javaLane) {
+            if (!javaLane.readyForNoGrowthAdmission()) return -1;
+            return javaLane.getActiveCount() + javaLane.getQueue().size();
+        }
+        if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
+            if (reactor || pool.getPoolSize() == 0) return -1;
+            return pool.getActiveCount() + pool.getQueue().size();
+        }
+        return -1;
+    }
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
+    int startedCarrierCount() {
+        int count = 0;
+        for (ExecutorService lane : lanes) {
+            if (lane instanceof NativeCarrierExecutor nativeLane)
+                count += nativeLane.getStartedCarrierCount();
+            else if (lane instanceof ThreadPoolExecutor pool)
+                count += pool.getPoolSize();
+        }
+        return count;
+    }
     long softSpills() { return spills.get(); }
 
     private int selectLane(int preferred) {
@@ -69,23 +152,40 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     }
 
     void executeOnLane(int lane, Runnable command) {
+        executeOnLane(lane, command, false);
+    }
+
+    private void executeOnLane(int lane, Runnable command, boolean noBootstrap) {
         Objects.requireNonNull(command);
-        if (closed.get() || !queueSlots.tryAcquire()) throw new RejectedExecutionException("actor lane queue unavailable");
-        // This is a dispatch-placement choice, not an ownership transfer:
-        // ActorCell's physical execution lease still guards serial entry.
+        if (lane < 0 || lane >= lanes.size())
+            throw new IllegalArgumentException("invalid actor dispatch lane");
+        if (closed.get() || !queueSlots.tryAcquire())
+            throw new RejectedExecutionException("actor lane queue unavailable");
+
         int target;
         try {
-            target = selectLane(lane);
+            target = noBootstrap ? lane : selectLane(lane);
         } catch (RuntimeException | Error failure) {
             queueSlots.release();
             throw failure;
         }
+
         QueuedTurn task = new QueuedTurn(command, target);
         queuedByLane.incrementAndGet(target);
         try {
             if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
-            lanes.get(target).execute(task);
-            if (target != lane) spills.incrementAndGet();
+            ExecutorService executor = lanes.get(target);
+            if (noBootstrap && executor instanceof NativeCarrierExecutor nativeLane) {
+                nativeLane.executeWithoutBootstrap(task);
+            } else if (noBootstrap && executor instanceof AdaptiveCarrierExecutor javaLane) {
+                javaLane.executeWithoutCarrierGrowth(task);
+            } else if (noBootstrap && NioReadinessGroup.onReactorThread()) {
+                throw new RejectedExecutionException(
+                        "reactor completion requires a verified no-bootstrap carrier lane");
+            } else {
+                executor.execute(task);
+            }
+            if (!noBootstrap && target != lane) spills.incrementAndGet();
         } catch (RuntimeException | Error failure) {
             task.rejectAdmission();
             throw failure;
