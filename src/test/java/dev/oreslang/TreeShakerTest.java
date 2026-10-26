@@ -15,6 +15,48 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class TreeShakerTest {
     @Test
+    void treeShakingPreservesCheckedEffectRowsOnRewrittenFunctions() {
+        Ast.EffectSpec effects = new Ast.EffectSpec(
+                List.of(Ast.TypeRef.simple("ThrowE")),
+                List.of(Ast.TypeRef.simple("RaiseE")),
+                List.of(Ast.TypeRef.simple("PanicE")));
+        Ast.FunctionDecl function = new Ast.FunctionDecl(
+                "effectful",
+                Ast.CallableKind.FNC,
+                Ast.Visibility.PUBLIC,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Ast.ActorKind.NONE,
+                List.of(),
+                List.of(),
+                Ast.TypeRef.simple("int"),
+                List.of(),
+                List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(42L))),
+                List.of(),
+                effects);
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl(
+                        Parser.ROOT_MODULE,
+                        List.of(function))));
+
+        TreeShaker.Result result =
+                TreeShaker.shake(program, BuildOptions.library(Map.of()));
+        Ast.FunctionDecl rewritten = result.program().modules().getFirst()
+                .declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(candidate -> candidate.name().equals("effectful"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(effects, rewritten.effects());
+    }
+
+    @Test
     void cliDefinesOverrideEnvironmentDefinesDeterministically() {
         Map<String, String> merged = BuildOptions.mergeDefines(
                 Map.of(
