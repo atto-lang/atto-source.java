@@ -736,6 +736,42 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void qualifiedExpansionProvenanceUsesCanonicalMacroIdentity() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define module Producer as
+                            define pub macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                                return value;
+                            }
+                        end
+
+                        define module Consumer as
+                            fnc answer() -> int {
+                                return Producer.identity!(syntax expr 42);
+                            }
+                        end
+                        """));
+
+        Ast.ModuleDecl consumer = checked.modules().stream()
+                .filter(module -> module.name().equals("Consumer"))
+                .findFirst()
+                .orElseThrow();
+        Ast.FunctionDecl fn = assertInstanceOf(
+                Ast.FunctionDecl.class, consumer.declarations().getFirst());
+        Ast.ReturnStmt returned =
+                assertInstanceOf(Ast.ReturnStmt.class, fn.body().getFirst());
+
+        MacroSyntaxProvenance.HygieneIdentity hygiene =
+                MacroSyntaxProvenance.lookup(returned.value())
+                        .getFirst()
+                        .hygiene();
+        assertEquals("Consumer", hygiene.callerModule());
+        assertEquals("Producer", hygiene.macroOwnerModule());
+        assertEquals("identity", hygiene.macroName());
+        assertEquals("Producer.identity", hygiene.qualifiedMacroName());
+    }
+
+    @Test
     void identifierFreeTypedQuoteTemplateSplicesSyntaxParameters() {
         Ast.Program checked = assertDoesNotThrow(
                 () -> OresCompiler.parseAndTypeCheck("""
@@ -785,6 +821,32 @@ final class MacroInvocationPlannerTest {
                 failure::toString);
         assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
                 failure::toString);
+    }
+
+    @Test
+    void typedUnquoteIntrinsicCannotBeShadowedInsideMacroScope() {
+        IllegalArgumentException parameterFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define macro bad(Syntax<Expr> unquote) -> Syntax<Expr> {
+                            return quote(unquote(unquote));
+                        }
+                        """));
+        assertTrue(parameterFailure.getMessage().contains("'unquote' is reserved"),
+                parameterFailure::toString);
+
+        IllegalArgumentException localFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define macro bad(Syntax<Expr> value) -> Syntax<Expr> {
+                            const unquote = value;
+                            return quote(unquote(value));
+                        }
+                        """));
+        assertTrue(localFailure.getMessage().contains("'unquote' is reserved"),
+                localFailure::toString);
+        assertTrue(localFailure.getMessage().contains("cannot be rebound"),
+                localFailure::toString);
     }
 
     @Test
