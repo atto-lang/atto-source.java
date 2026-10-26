@@ -3,6 +3,7 @@
 import importlib.util
 import base64
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
