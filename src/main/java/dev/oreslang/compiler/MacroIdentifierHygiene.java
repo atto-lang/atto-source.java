@@ -6,9 +6,8 @@ import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
-import java.util.HexFormat;
-import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -41,14 +40,19 @@ public final class MacroIdentifierHygiene {
                 throw new IllegalArgumentException("invalid generated identifier hint");
             }
             if (localOrdinal < 0) {
-                throw new IllegalArgumentException("generated identifier ordinal cannot be negative");
+                throw new IllegalArgumentException(
+                        "generated identifier ordinal cannot be negative");
             }
             if (internalName == null || !internalName.startsWith("$macro$g$")) {
-                throw new IllegalArgumentException("generated identifier must use compiler-only spelling");
+                throw new IllegalArgumentException(
+                        "generated identifier must use compiler-only spelling");
             }
         }
 
-        @Override public Kind kind() { return Kind.GENERATED; }
+        @Override
+        public Kind kind() {
+            return Kind.GENERATED;
+        }
     }
 
     public record CapturedFunction(
@@ -64,22 +68,30 @@ public final class MacroIdentifierHygiene {
                     || name.equals("_") || name.startsWith("$")) {
                 throw new IllegalArgumentException("invalid checked function capture");
             }
-            java.util.Objects.requireNonNull(identifierSite, "capture identifier call site");
+            java.util.Objects.requireNonNull(
+                    identifierSite, "capture identifier call site");
             declarations = List.copyOf(declarations);
             if (declarations.isEmpty()) {
-                throw new IllegalArgumentException("checked function capture needs a declaration");
+                throw new IllegalArgumentException(
+                        "checked function capture needs a declaration");
             }
             for (Ast.FunctionDecl function : declarations) {
-                if (!function.name().equals(name)) {
-                    throw new IllegalArgumentException("captured function family name mismatch");
+                if (!function.name().equals(name)
+                        || function.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "captured function family identity/authority mismatch");
                 }
             }
         }
 
-        @Override public Kind kind() { return Kind.CAPTURED_FUNCTION; }
+        @Override
+        public Kind kind() {
+            return Kind.CAPTURED_FUNCTION;
+        }
     }
 
-    private static final ReferenceQueue<Ast.NameExpr> CLEARED = new ReferenceQueue<>();
+    private static final ReferenceQueue<Ast.NameExpr> CLEARED =
+            new ReferenceQueue<>();
     private static final Map<IdentityKey, Identity> IDENTITIES = new HashMap<>();
 
     private MacroIdentifierHygiene() { }
@@ -94,7 +106,10 @@ public final class MacroIdentifierHygiene {
             hash = System.identityHashCode(expression);
         }
 
-        @Override public int hashCode() { return hash; }
+        @Override
+        public int hashCode() {
+            return hash;
+        }
 
         @Override
         public boolean equals(Object other) {
@@ -135,40 +150,21 @@ public final class MacroIdentifierHygiene {
             throw new IllegalArgumentException("invalid generated identifier hint");
         }
         if (localOrdinal < 0) {
-            throw new IllegalArgumentException("generated identifier ordinal cannot be negative");
+            throw new IllegalArgumentException(
+                    "generated identifier ordinal cannot be negative");
         }
-        // The source-unit id is encoded losslessly, not hashed: collisions in
-        // a digest must never become identifier equality. Expansion/local
-        // ordinals are deterministic within that exact source unit. Source
-        // cannot spell '
-        Ast.NameExpr expression = new Ast.NameExpr(internalName);
-        return record(expression,
-                new Generated(hygiene, hint, localOrdinal, internalName));
-    }
 
-    public static Ast.NameExpr capturedFunction(
-            String callerModule,
-            String macroOwnerModule,
-            Ast.MacroIdentifierArgument identifier,
-            List<Ast.FunctionDecl> declarations) {
-        java.util.Objects.requireNonNull(identifier, "capture identifier");
-        Ast.NameExpr expression = new Ast.NameExpr(identifier.name());
-        return record(expression,
-                new CapturedFunction(
-                        callerModule,
-                        macroOwnerModule,
-                        identifier.name(),
-                        identifier.site(),
-                        declarations));
-    }
-}
-, so textual caller capture is impossible.
+        // The source-unit id is encoded losslessly, not hashed: collisions in a
+        // digest must never become identifier equality. Expansion/local ordinals
+        // are deterministic within that exact source unit. Source cannot spell
+        // '$', so textual caller capture is impossible.
         String encodedUnit = HexFormat.of().formatHex(
                 hygiene.sourceUnitId().getBytes(StandardCharsets.UTF_8));
         String internalName = "$macro$g$" + encodedUnit + "$"
                 + hygiene.expansionOrdinal() + "$" + localOrdinal;
         Ast.NameExpr expression = new Ast.NameExpr(internalName);
-        return record(expression,
+        return record(
+                expression,
                 new Generated(hygiene, hint, localOrdinal, internalName));
     }
 
@@ -179,7 +175,8 @@ public final class MacroIdentifierHygiene {
             List<Ast.FunctionDecl> declarations) {
         java.util.Objects.requireNonNull(identifier, "capture identifier");
         Ast.NameExpr expression = new Ast.NameExpr(identifier.name());
-        return record(expression,
+        return record(
+                expression,
                 new CapturedFunction(
                         callerModule,
                         macroOwnerModule,
