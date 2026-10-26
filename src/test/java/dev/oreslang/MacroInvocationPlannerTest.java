@@ -836,6 +836,8 @@ final class MacroInvocationPlannerTest {
                 assertInstanceOf(Ast.NameExpr.class, expanded.left()).name());
         assertEquals("input",
                 assertInstanceOf(Ast.NameExpr.class, expanded.right()).name());
+        assertNotSame(expanded.left(), expanded.right(),
+                "duplicated unquote occurrences must not alias one AST identity");
 
         List<MacroSyntaxProvenance.Origin> origins =
                 MacroSyntaxProvenance.lookup(expanded);
