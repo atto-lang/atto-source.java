@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import dev.oreslang.types.Types.Borrow;
+import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
@@ -131,8 +132,8 @@ final class PipeEndpointContracts {
             }
             if (type == Unknown.INSTANCE || type instanceof Generic
                     || type instanceof Borrow || type instanceof Function
-                    || type instanceof SelfType || type instanceof Not
-                    || type == Primitive.VOID || type == Primitive.NULL) {
+                    || type instanceof SelfType || type instanceof ClassNamespace
+                    || type instanceof Not || type == Primitive.VOID || type == Primitive.NULL) {
                 throw new IllegalArgumentException(
                         "pipe payload requires a resolved, owned, non-void type: " + type);
             }
