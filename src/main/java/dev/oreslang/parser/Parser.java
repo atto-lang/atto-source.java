@@ -283,7 +283,7 @@ public final class Parser {
             if (check(RBRACE)) throw error(peek(), "[EXPORT_EMPTY_GROUP] export group cannot be empty");
             while (true) {
                 if (check(LBRACE)) throw error(peek(), "[EXPORT_NESTED_GROUP] nested export groups are not supported");
-                if (isExportKindToken(peek()) || isContextualIdentifier("symbol")) {
+                if (isExportKindToken(peek()) || isContextualSymbolExportKindAhead()) {
                     throw error(peek(), "[EXPORT_KIND_PREFIX_IN_GROUP] declaration kind belongs before the export group");
                 }
                 items.add(parseExportItem(kind));
@@ -314,11 +314,17 @@ public final class Parser {
         if (match(CONST)) return Ast.ExportKind.CONST;
         if (match(VAL)) return Ast.ExportKind.VAL;
         if (match(LET)) return Ast.ExportKind.LET;
-        if (isContextualIdentifier("symbol")) {
+        if (isContextualSymbolExportKindAhead()) {
             advance();
             return Ast.ExportKind.SYMBOL;
         }
         return null;
+    }
+
+    private boolean isContextualSymbolExportKindAhead() {
+        if (!isContextualIdentifier("symbol") || current + 1 >= tokens.size()) return false;
+        Token.Type next = tokens.get(current + 1).type();
+        return next == SYMBOL_LITERAL || next == IDENT || next == LBRACE;
     }
 
     private boolean isExportKindToken(Token token) {
