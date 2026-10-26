@@ -221,4 +221,77 @@ final class ValueMatchExpressionTest {
                 "defer cannot reassign returned binding"));
     }
 
+
+    @Test
+    void generatedAstCannotBypassTerminalOnlyArmResultRule() {
+        var early = new Ast.IfStmt(
+                java.util.List.of(new Ast.IfBranch(
+                        new Ast.LiteralExpr(true),
+                        java.util.List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(1L))))),
+                java.util.List.of());
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new Ast.MatchValueArm(
+                        new Ast.WildcardPattern(),
+                        null,
+                        java.util.List.of(
+                                early,
+                                new Ast.ReturnStmt(new Ast.LiteralExpr(2L)))));
+    }
+
+    @Test
+    void outerDeferDoesNotTreatArmResultAsFunctionReturn() {
+        assertDoesNotThrow(() -> ReturnCleanupChecker.check(Parser.parse("""
+            fnc f(bool selected): int {
+                let int source = 1;
+                defer source = 2;
+
+                val int result = match<int> selected over
+                    on true -> ::
+                        return source;
+                    end
+                    on false -> 0;
+                end;
+
+                return result;
+            }
+            """)));
+    }
+
+    @Test
+    void matchExecutingInsideOuterDeferStillCountsItsMutationsAsDeferred() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(Parser.parse("""
+                    define class Box as
+                    end
+
+                    fnc f(bool selected): Box {
+                        let mut Box result = new Box();
+                        defer match<int> selected over
+                            on true -> ::
+                                result = new Box();
+                                return 1;
+                            end
+                            on false -> 0;
+                        end;
+                        return result;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains(
+                "defer cannot reassign returned binding"));
+    }
+
+    @Test
+    void historicalFirstMarkerRemainsAcceptedForValueMatch() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+            fnc f(bool selected): int {
+                return match<int> first selected over {
+                    on true { return 1; }
+                    on false { return 0; }
+                };
+            }
+            """)));
+    }
+
 }
