@@ -194,6 +194,29 @@ final class TreeShakerTest {
     }
 
     @Test
+    void libraryBuildPreservesExplicitlyExportedDefaultPrivateApi() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                export fnc exported_answer;
+                fnc exported_answer(): int { return 42; }
+                fnc hidden_answer(): int { return 7; }
+                """, BuildOptions.library(Map.of()));
+
+        String exported = Parser.ROOT_MODULE + ".exported_answer";
+        String hidden = Parser.ROOT_MODULE + ".hidden_answer";
+        assertTrue(result.retained(exported));
+        assertTrue(result.rootSymbols().contains(exported));
+        assertFalse(result.rootSymbols().contains(hidden));
+        assertTrue(result.removed(hidden));
+
+        Ast.ModuleDecl root = result.program().modules().stream()
+                .filter(module -> module.name().equals(Parser.ROOT_MODULE))
+                .findFirst().orElseThrow();
+        assertEquals(1, root.exports().size(),
+                "tree rewriting/pruning must preserve source export metadata");
+        assertEquals("exported_answer", root.exports().getFirst().items().getFirst().localName());
+    }
+
+    @Test
     void defineMustTargetAConstDeclaration() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.compileForBuild("""
                 pub val bool use_a = false;
