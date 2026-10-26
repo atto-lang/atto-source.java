@@ -305,6 +305,17 @@ public final class ReturnCleanupChecker {
             expression(conditional.condition(), scope, inDefer, state);
             expression(conditional.whenTrue(), scope, inDefer, state);
             expression(conditional.whenFalse(), scope, inDefer, state);
+        } else if (expr instanceof Ast.MatchExpr matched) {
+            expression(matched.subject(), scope, inDefer, state);
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                Scope armScope = new Scope(scope);
+                bindPattern(arm.pattern(), armScope);
+                expression(arm.guard(), armScope, inDefer, state);
+                // The terminal return is ARM_RESULT, so it does not escape an
+                // enclosing finally. Still track it as this arm's pending
+                // result so defer-rebind checks remain exact.
+                statements(arm.body(), armScope, false, inDefer, true, state);
+            }
         } else if (expr instanceof Ast.TypeTestExpr test) {
             expression(test.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.PatternTestExpr test) {
