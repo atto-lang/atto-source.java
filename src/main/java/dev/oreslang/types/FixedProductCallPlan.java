@@ -6,16 +6,12 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Immutable compiler-only plan for a fixed positional/labeled product call.
+ * Compatibility view of a required fixed product call.
  *
- * <p>Inputs are already flattened into lexical scalar-evaluation order. This
- * binder maps those scalar values to declaration-order ABI slots without
- * changing evaluation order. Tuple expansion therefore contributes positional
- * inputs while record expansion contributes named inputs.</p>
- *
- * <p>This is deliberately not runtime dispatch. The selected callable, types,
- * effects, ownership, borrowing, suspension and aggregate provenance must be
- * checked by compiler passes before an executable lowering consumes this plan.</p>
+ * <p>{@link CheckedCallPlan} is the canonical binder used by compiler and
+ * runtime paths. This record remains as a narrow compatibility/test surface;
+ * {@link #bind(List, List)} delegates to the canonical plan and then projects
+ * the required-call representation.</p>
  */
 public record FixedProductCallPlan(
         List<FixedProductCallPlan.BoundSlot> sourceOrder,
