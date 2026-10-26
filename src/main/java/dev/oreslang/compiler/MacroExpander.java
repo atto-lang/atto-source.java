@@ -130,6 +130,7 @@ public final class MacroExpander {
                 || !(returned.value() instanceof Ast.CallExpr call)
                 || !(call.callee() instanceof Ast.NameExpr callee)
                 || !callee.name().equals("quote")
+                || call.origin() != Ast.CallOrigin.DIRECT
                 || call.typeArgumentsPresent()
                 || call.arguments().size() != 1
                 || !(call.arguments().getFirst() instanceof Ast.NameExpr input)) {
