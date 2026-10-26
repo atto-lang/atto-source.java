@@ -60,38 +60,44 @@ final class ActorSourceTaskLifetimeGateTest {
                         };
                     });
 
-            actor.send("launch");
-            assertTrue(
-                    retirementHookEntered.await(5, TimeUnit.SECONDS),
-                    "source Task never reached its post-carrier retirement hook");
+            try {
+                actor.send("launch");
+                assertTrue(
+                        retirementHookEntered.await(5, TimeUnit.SECONDS),
+                        "source Task never reached its post-carrier retirement hook");
 
-            ActorRuntime.PrivateMemoryBlock block = memory.get();
-            assertNotNull(block);
-            assertFalse(block.closed());
+                ActorRuntime.PrivateMemoryBlock block = memory.get();
+                assertNotNull(block);
+                assertFalse(block.closed());
 
-            actor.stop();
+                actor.stop();
 
-            assertFalse(
-                    actor.done().isDone(),
-                    "actor done must not publish while a source Task lease is live");
-            assertFalse(
-                    actor.awaitTermination(100, TimeUnit.MILLISECONDS),
-                    "actor must not finalize while post-carrier retirement is deferred");
-            assertFalse(
-                    block.closed(),
-                    "actor-owned memory must remain live until physical retirement");
-            assertEquals(1, runtime.actorCount());
+                assertFalse(
+                        actor.done().isDone(),
+                        "actor done must not publish while a source Task lease is live");
+                assertFalse(
+                        actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                        "actor must not finalize while post-carrier retirement is deferred");
+                assertFalse(
+                        block.closed(),
+                        "actor-owned memory must remain live until physical retirement");
+                assertEquals(1, runtime.actorCount());
 
-            Runnable retire = releaseRetirement.getAndSet(null);
-            assertNotNull(retire);
-            retire.run();
+                Runnable retire = releaseRetirement.getAndSet(null);
+                assertNotNull(retire);
+                retire.run();
 
-            assertTrue(
-                    actor.awaitTermination(5, TimeUnit.SECONDS),
-                    "actor should finalize after the last source Task lease retires");
-            assertTrue(block.closed());
-            assertEquals(0, runtime.actorCount());
-            assertNotNull(sourceTask.get());
+                assertTrue(
+                        actor.awaitTermination(5, TimeUnit.SECONDS),
+                        "actor should finalize after the last source Task lease retires");
+                assertTrue(block.closed());
+                assertEquals(0, runtime.actorCount());
+                assertNotNull(sourceTask.get());
+            } finally {
+                Runnable retire = releaseRetirement.getAndSet(null);
+                if (retire != null) retire.run();
+                actor.stop();
+            }
         }
     }
 
