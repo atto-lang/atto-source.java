@@ -6,12 +6,12 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Compiler-only plan for fixed calls with omittable formal slots.
+ * Compatibility view of a fixed call with omittable formal slots.
  *
- * <p>Source expressions remain in lexical order. {@code abiToSource[i] == -1}
- * means formal slot {@code i} is omitted and must be filled from the
- * declaration's checked default. No omitted slot corresponds to an evaluated
- * source expression.</p>
+ * <p>{@link CheckedCallPlan} is the canonical binder used by compiler and
+ * runtime paths. This record remains as a narrow compatibility/test surface;
+ * {@link #bind(List, List, List)} delegates to the canonical plan and projects
+ * the omission-aware representation.</p>
  */
 public record OptionalCallPlan(
         List<OptionalCallPlan.BoundSlot> sourceOrder,
