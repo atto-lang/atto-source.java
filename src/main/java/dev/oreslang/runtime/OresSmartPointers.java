@@ -293,14 +293,18 @@ public final class OresSmartPointers {
 
         public Rc<T> retain() {
             requireLiveHandle();
+            // Like Arc, construct before changing the count: a failed host
+            // allocation must not strand an unowned strong reference.
+            Rc<T> retained = new Rc<>(control, true);
             incrementLocalStrong(control);
-            return new Rc<>(control, true);
+            return retained;
         }
 
         public RcWeak<T> downgrade() {
             requireLiveHandle();
+            RcWeak<T> weak = new RcWeak<>(control);
             incrementLocalWeak(control);
-            return new RcWeak<>(control);
+            return weak;
         }
 
         public long strongCount() {
@@ -356,8 +360,10 @@ public final class OresSmartPointers {
         public Optional<Rc<T>> upgrade() {
             requireLiveHandle();
             if (control.strong == 0) return Optional.empty();
+            // Both objects must exist before acquiring another strong ref.
+            Optional<Rc<T>> upgraded = Optional.of(new Rc<>(control, true));
             incrementLocalStrong(control);
-            return Optional.of(new Rc<>(control, true));
+            return upgraded;
         }
 
         public long strongCount() {
@@ -413,8 +419,11 @@ public final class OresSmartPointers {
             if (readers == Integer.MAX_VALUE) {
                 throw new IllegalStateException("RefCell<T> shared borrow count overflow");
             }
+            // Allocate the guard before admitting its shared loan; a failed
+            // allocation must not leave the cell permanently borrowed.
+            Ref<T> guard = new Ref<>(this, Thread.currentThread());
             readers++;
-            return new Ref<>(this, Thread.currentThread());
+            return guard;
         }
 
         public synchronized RefMut<T> borrowMut() {
@@ -422,8 +431,11 @@ public final class OresSmartPointers {
                 throw new IllegalStateException(
                         "RefCell<T> is already borrowed");
             }
+            // The exclusive flag may only be published after the guard
+            // exists; allocation failure must leave borrowMut retryable.
+            RefMut<T> guard = new RefMut<>(this, Thread.currentThread());
             writer = true;
-            return new RefMut<>(this, Thread.currentThread());
+            return guard;
         }
 
         private synchronized T readForGuard(Thread owner, boolean mutable) {
