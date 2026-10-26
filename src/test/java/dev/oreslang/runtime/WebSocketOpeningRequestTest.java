@@ -68,6 +68,24 @@ final class WebSocketOpeningRequestTest {
     }
 
     @Test
+    void acceptsCanonicalHostPortAndBracketedIpv6Authorities() throws Exception {
+        for (String host : new String[] {
+                "example.test",
+                "example.test:443",
+                "127.0.0.1:8080",
+                "[::1]",
+                "[2001:db8::1]:8443"
+        }) {
+            String raw = baseHead().replace(
+                    "Host: example.test",
+                    "Host: " + host);
+            var request = WebSocketOpeningRequest.read(bytes(raw), 4096, 32);
+            assertEquals(host, request.host());
+            assertEquals("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", request.admit());
+        }
+    }
+
+    @Test
     void rejectsObsFoldBareLfBodiesAndNonOriginTargets() {
         String folded = baseHead().replace(
                 "Connection: Upgrade\r\n",
