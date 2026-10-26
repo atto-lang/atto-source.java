@@ -22,6 +22,7 @@ final class CompileTimeConstEvaluator {
     static final int MAX_STEPS = 512;
     static final int MAX_DEPTH = 64;
     static final int MAX_AGGREGATE_ELEMENTS = 256;
+    static final int MAX_STRING_CHARS = 65_536;
     static final long MAX_ESTIMATED_BYTES = 1_048_576L;
 
     enum FailureKind {
@@ -163,14 +164,16 @@ final class CompileTimeConstEvaluator {
         if (value instanceof Long) {
             return scalar(value, "int");
         }
-        if (value instanceof Double) {
-            return scalar(value, "float");
+        if (value instanceof Double number) {
+            if (!Double.isFinite(number)) throw invalid("non-finite compile-time float is unsupported");
+            return scalar(number, "float");
         }
         if (value instanceof Boolean) {
             return scalar(value, "bool");
         }
-        if (value instanceof String) {
-            return scalar(value, "String");
+        if (value instanceof String text) {
+            checkStringBudget(text.length());
+            return scalar(text, "String");
         }
         if (value instanceof OresSymbol) {
             return scalar(value, "Symbol");
@@ -189,7 +192,13 @@ final class CompileTimeConstEvaluator {
                 yield operand;
             }
             case "-" -> {
-                if (value instanceof Long integer) yield scalar(-integer, "int");
+                if (value instanceof Long integer) {
+                    try {
+                        yield scalar(Math.negateExact(integer), "int");
+                    } catch (ArithmeticException overflow) {
+                        throw invalid("compile-time integer negation overflow");
+                    }
+                }
                 if (value instanceof Double floating) yield scalar(-floating, "float");
                 throw invalid("unary - requires a number");
             }
@@ -248,6 +257,7 @@ final class CompileTimeConstEvaluator {
 
     private Evaluation add(Object left, Object right) {
         if (left instanceof String a && right instanceof String b) {
+            checkStringBudget((long) a.length() + b.length());
             return scalar(a + b, "String");
         }
         return numeric("+", left, right);
@@ -265,13 +275,17 @@ final class CompileTimeConstEvaluator {
             if (operator.equals("%") && y == 0) {
                 throw invalid("compile-time remainder by zero");
             }
-            return scalar(switch (operator) {
-                case "+" -> x + y;
-                case "-" -> x - y;
-                case "*" -> x * y;
-                case "%" -> x % y;
-                default -> throw new AssertionError(operator);
-            }, "int");
+            try {
+                return scalar(switch (operator) {
+                    case "+" -> Math.addExact(x, y);
+                    case "-" -> Math.subtractExact(x, y);
+                    case "*" -> Math.multiplyExact(x, y);
+                    case "%" -> x % y;
+                    default -> throw new AssertionError(operator);
+                }, "int");
+            } catch (ArithmeticException overflow) {
+                throw invalid("compile-time integer " + operator + " overflow");
+            }
         }
 
         double x = a.doubleValue();
@@ -284,12 +298,19 @@ final class CompileTimeConstEvaluator {
             case "%" -> x % y;
             default -> throw new AssertionError(operator);
         };
+        if (!Double.isFinite(value)) {
+            throw invalid("non-finite compile-time arithmetic result is unsupported");
+        }
         return scalar(value, "float");
     }
 
     private Evaluation compare(String operator, Object left, Object right) {
         int comparison;
         if (left instanceof Number a && right instanceof Number b) {
+            // IEEE NaN is unordered, never less/greater/equal in a relational test.
+            if (Double.isNaN(a.doubleValue()) || Double.isNaN(b.doubleValue())) {
+                return scalar(false, "bool");
+            }
             comparison = compareNumbers(a, b);
         } else if (left instanceof String a && right instanceof String b) {
             comparison = a.compareTo(b);
@@ -427,11 +448,11 @@ final class CompileTimeConstEvaluator {
     }
 
     private boolean valueEquals(Object left, Object right) {
-        if (left == right) return true;
-        if (left == null || right == null) return false;
         if (left instanceof Number a && right instanceof Number b) {
             return numericValueEquals(a, b);
         }
+        if (left == right) return true;
+        if (left == null || right == null) return false;
         if (left instanceof OresSymbol || right instanceof OresSymbol) {
             return left instanceof OresSymbol
                     && right instanceof OresSymbol
@@ -464,7 +485,28 @@ final class CompileTimeConstEvaluator {
         if (left instanceof Long && right instanceof Long) {
             return Long.compare(left.longValue(), right.longValue());
         }
-        return Double.compare(left.doubleValue(), right.doubleValue());
+        // Double.compare distinguishes -0.0 from +0.0, but language numeric
+        // comparisons use IEEE value ordering where these values are equal.
+        if (left instanceof Double && right instanceof Double) {
+            double a = left.doubleValue();
+            double b = right.doubleValue();
+            return a < b ? -1 : a > b ? 1 : 0;
+        }
+        Number integer = left instanceof Long ? left : right;
+        Number floating = left instanceof Long ? right : left;
+        double fp = floating.doubleValue();
+        int cmp = Double.isInfinite(fp)
+                ? (fp > 0 ? -1 : 1)
+                : BigDecimal.valueOf(integer.longValue())
+                    .compareTo(BigDecimal.valueOf(fp));
+        return left instanceof Long ? cmp : -cmp;
+    }
+
+    private void checkStringBudget(long chars) {
+        if (chars > MAX_STRING_CHARS) {
+            throw new Failure(FailureKind.RESOURCE,
+                    "compile-time string length exceeds " + MAX_STRING_CHARS);
+        }
     }
 
     private Failure invalid(String message) {
