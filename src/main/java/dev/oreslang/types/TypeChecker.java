@@ -461,7 +461,7 @@ public final class TypeChecker {
                 program, linkedClasses, linkedAliases).program();
     }
 
-    /** Proof metadata must cross both type and ownership passes in linked builds. */
+    /** Linked type analysis only; executable plan publication requires full admission. */
     public static TypeCheckResult checkTypesWithImportedClassesWithDiagnostics(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
