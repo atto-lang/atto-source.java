@@ -274,11 +274,14 @@ expected_summary='ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered
 # duplicating one PASS event while omitting another. The checked-in fixture
 # requests machine-readable records, so *all* stdout must be ORES_TEST events;
 # stray logs/warnings/diagnostics must not hide behind a valid summary.
-# Tolerate detail text only after a recognized test name.
+# Tolerate detail text only after a recognized test name. The summary is
+# terminal: accepting PASS/SKIP events after SUMMARY can falsely certify an
+# incomplete test run whose supposedly final summary was emitted too early.
 if ! awk -F '|' -v expected="$expected_summary" '
   !/^ORES_TEST\|/ { bad=1; next }
   /^ORES_TEST\|/ {
     if ($0 == expected) { summaries++; next }
+    if (summaries) { bad=1; next }
     if ($1 != "ORES_TEST") { bad=1; next }
     if ($2 == "PASS" && $3 == "core/arithmetic/adds") { adds++; next }
     if ($2 == "PASS" && $3 == "core/float/tolerance") { floats++; next }
