@@ -5061,6 +5061,11 @@ public final class TypeChecker {
         Type output = flattensFuture
                 ? ((Named) invocationResult).arguments().getFirst()
                 : invocationResult;
+        // The pipeline itself is a tracked scheduler Task. Its final payload
+        // crosses back out of that Task through the exposed Future, so it must
+        // satisfy the same concrete owned Send boundary as an async return.
+        validateAsyncBoundaryType(
+                output, true, "Future pipeline stage '" + name.name() + "' output");
         if (flattensFuture && !stage.async()
                 && !syncStageReturnsFreshOwnedFuture(stage, param.name())) {
             throw new IllegalArgumentException(
