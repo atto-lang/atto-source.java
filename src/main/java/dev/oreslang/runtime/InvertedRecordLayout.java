@@ -58,9 +58,20 @@ public final class InvertedRecordLayout {
         if (recordMembers.size() > MAX_RECORD_MEMBERS) {
             throw new IllegalArgumentException("inverted record has too many members");
         }
+        // Canonicalize again at the ABI boundary. Parser-built record types are
+        // sorted already, but direct or rewritten ASTs must not be able to
+        // perturb the byte layout of the same structural record.
+        List<Map.Entry<String, Ast.TypeRef>> canonicalMembers =
+                new ArrayList<>(recordMembers.entrySet());
+        canonicalMembers.sort(Map.Entry.comparingByKey());
+
         List<Member> members = new ArrayList<>();
         int offset = 0;
-        for (Map.Entry<String, Ast.TypeRef> entry : recordMembers.entrySet()) {
+        for (Map.Entry<String, Ast.TypeRef> entry : canonicalMembers) {
+            if (!entry.getKey().matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException(
+                        "invalid inverted record member name '" + entry.getKey() + "'");
+            }
             // A nested record is NOT implicitly expanded to grandchild
             // columns. A future nested fixed-layout codec may support it as
             // an opaque element, but this initial ABI deliberately fails closed.
