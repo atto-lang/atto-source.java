@@ -17,6 +17,93 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class InvertedArrayTest {
     @Test
+    void generatedTransposeNamespaceDoesNotCollideWithGuestMemberNames() {
+        var decl = declaration("""
+                define inverted class UnusualNames as
+                    row: i32;
+                    columns: i32;
+                    at: i32;
+                    bindField: i32;
+                    __ores_internal_row: i32;
+                end
+                """);
+        var schema = InvertedArray.Schema.fromClass(decl);
+        var unrelated = InvertedArray.Schema.fromClass(decl);
+        var field = schema.bindField("__ores_internal_row");
+        assertEquals("__ores_internal_row", field.name());
+        assertEquals(InvertedColumnStore.Kind.I32, field.kind());
+
+        try (var first = new InvertedArray(schema, 0);
+             var second = new InvertedArray(schema, 0);
+             var unrelatedStore = new InvertedArray(unrelated, 0)) {
+            var a = first.pushValues(1, 2, 3, 4, 5);
+            var b = second.pushValues(11, 12, 13, 14, 15);
+            unrelatedStore.pushValues(21, 22, 23, 24, 25);
+
+            // The same nominal schema namespace can bind different owners.
+            assertEquals(5, first.bindField(field).get(a));
+            assertEquals(15, second.bindField(field).get(b));
+            assertEquals(5, first.bindField(field).getAt(0));
+            assertEquals(15, second.bindField(field).getAt(0));
+
+            first.bindField(schema.bindField("row")).setAt(0, 100);
+            first.bindField(schema.bindField("columns")).setAt(0, 200);
+            first.bindField(schema.bindField("at")).setAt(0, 300);
+            first.bindField(schema.bindField("bindField")).setAt(0, 400);
+            first.bindField(field).setAt(0, 500);
+            assertArrayEquals(new Object[]{100, 200, 300, 400, 500},
+                    first.snapshot(a).values().toArray());
+
+            // Class names and field spellings alone cannot authorize reuse
+            // of a generated binding from an unrelated compiler namespace.
+            assertThrows(IllegalArgumentException.class,
+                    () -> unrelatedStore.bindField(field));
+            assertThrows(IllegalArgumentException.class,
+                    () -> first.bindField(unrelated.bindField("row")));
+            assertThrows(IllegalArgumentException.class,
+                    () -> first.bindField((InvertedArray.Schema.FieldBinding) null));
+            assertThrows(IllegalArgumentException.class,
+                    () -> schema.bindField("doesNotExist"));
+            assertEquals(21, unrelatedStore.bindField("row").getAt(0));
+        }
+    }
+
+    @Test
+    void fusedTransposeAccessTracksLiveDensePositionsAndLoanConflicts() {
+        try (var array = InvertedArray.fromClass(particle(), 0)) {
+            var x = array.bindField(array.schema().bindField("x"));
+            var ready = array.bindField(array.schema().bindField("ready"));
+            assertThrows(IndexOutOfBoundsException.class, () -> x.getAt(0));
+            assertThrows(IndexOutOfBoundsException.class, () -> x.setAt(0, 1.0));
+            var first = array.pushValues(1.0, 2.0, 3.0, 4.0, false);
+            var last = array.pushValues(9.0, 8.0, 7.0, 6.0, true);
+            assertEquals(1.0, x.getAt(0));
+            assertEquals(9.0, x.getAt(1));
+            assertEquals(true, ready.getAt(1));
+            assertThrows(IndexOutOfBoundsException.class, () -> x.getAt(-1));
+            assertThrows(IndexOutOfBoundsException.class, () -> x.getAt(Long.MAX_VALUE));
+            assertThrows(IndexOutOfBoundsException.class, () -> x.setAt(Long.MIN_VALUE, 8.0));
+            assertThrows(IllegalArgumentException.class, () -> x.setAt(0, 123));
+
+            // Field-disjoint loans permit other columns but block conflicting
+            // direct accesses. The fused target must not bypass this check.
+            try (var read = array.borrowRead("x");
+                 var write = array.borrowWrite("ready")) {
+                assertEquals(1.0, x.getAt(0));
+                assertThrows(IllegalStateException.class, () -> x.setAt(0, 7.0));
+                assertThrows(IllegalStateException.class, () -> ready.getAt(0));
+                assertThrows(IllegalStateException.class, () -> ready.setAt(0, true));
+            }
+            x.setAt(0, 5.0);
+            array.eraseSwap(first);
+            assertEquals(9.0, x.getAt(0));
+            assertEquals(9.0, x.get(last));
+            assertThrows(IndexOutOfBoundsException.class, () -> x.getAt(1));
+            assertThrows(IllegalArgumentException.class, () -> x.get(first));
+        }
+    }
+
+    @Test
     void proposedBracketTargetsResolvePositionsAndOpaqueHandlesWithoutAliasing() {
         try (var array = InvertedArray.fromClass(particle(), 0)) {
             assertThrows(IndexOutOfBoundsException.class, () -> array.at(0));
