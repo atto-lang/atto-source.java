@@ -436,9 +436,10 @@ public final class Ast {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
-            if (inverted && (isAbstract || actorKind != ActorKind.NONE || !parents.isEmpty())) {
+            if (inverted && (isAbstract || actorKind != ActorKind.NONE
+                    || !parents.isEmpty() || !interfaces.isEmpty() || constructor != null)) {
                 throw new IllegalArgumentException(
-                        "inverted classes cannot be abstract, actors, or inherit other classes");
+                        "inverted classes cannot be abstract, actors, inherit/implement, or declare constructors");
             }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
