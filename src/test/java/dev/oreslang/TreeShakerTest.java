@@ -486,4 +486,52 @@ final class TreeShakerTest {
                 Ast.CheckedStructuralFieldDomain.lookup(indexed.receiver()),
                 "optimizer must transfer the checked structural field domain");
     }
+
+    @Test
+    void namedArgumentWrapperPreservesReachabilityAndInnerRewrite() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc hidden(): int {
+                  return 41;
+                }
+
+                fnc sink(int value): int {
+                  return value + 1;
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(sink(value: hidden()));
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        assertTrue(
+                result.retained(Parser.ROOT_MODULE + ".hidden"),
+                "reachability must descend through NamedArgExpr");
+        assertTrue(
+                result.retained(Parser.ROOT_MODULE + ".sink"),
+                "named-call target must remain reachable");
+
+        Ast.FunctionDecl main = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("main"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ExprStmt output = main.body().stream()
+                .filter(Ast.ExprStmt.class::isInstance)
+                .map(Ast.ExprStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.CallExpr write = assertInstanceOf(
+                Ast.CallExpr.class, output.expression());
+        Ast.CallExpr sink = assertInstanceOf(
+                Ast.CallExpr.class, write.arguments().getFirst());
+        Ast.NamedArgExpr named = assertInstanceOf(
+                Ast.NamedArgExpr.class, sink.arguments().getFirst());
+        assertEquals("value", named.name());
+        assertInstanceOf(Ast.CallExpr.class, named.value());
+    }
+
 }
