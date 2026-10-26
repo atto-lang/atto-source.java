@@ -96,6 +96,62 @@ public final class ChannelRuntime {
     }
 
     /**
+     * Read-only channel capability. It cannot write, close, or expose the
+     * underlying bidirectional channel.
+     */
+    public static final class ReadChannel<T> {
+        private final Channel<T> channel;
+
+        private ReadChannel(Channel<T> channel) {
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        public Optional<T> tryRead() {
+            return channel.tryRead();
+        }
+
+        public OresFuture<T> readAsync() {
+            return channel.readAsync();
+        }
+
+        public boolean isClosed() {
+            return channel.isClosed();
+        }
+
+        private Channel<T> backingChannel() {
+            return channel;
+        }
+    }
+
+    /**
+     * Write-only channel capability. It cannot read, close, or expose the
+     * underlying bidirectional channel.
+     */
+    public static final class WriteChannel<T> {
+        private final Channel<T> channel;
+
+        private WriteChannel(Channel<T> channel) {
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        public boolean tryWrite(T value) {
+            return channel.tryWrite(value);
+        }
+
+        public OresFuture<Void> writeAsync(T value) {
+            return channel.writeAsync(value);
+        }
+
+        public boolean isClosed() {
+            return channel.isClosed();
+        }
+
+        private Channel<T> backingChannel() {
+            return channel;
+        }
+    }
+
+    /**
      * Bounded MPMC channel. Capacity zero is a rendezvous channel.
      *
      * <p>Null is deliberately rejected because Oreslang has no standalone null
@@ -104,6 +160,8 @@ public final class ChannelRuntime {
     public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
         private final int maxPendingRegistrations;
+        private final ReadChannel<T> output;
+        private final WriteChannel<T> input;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
@@ -129,6 +187,8 @@ public final class ChannelRuntime {
             }
             this.capacity = capacity;
             this.maxPendingRegistrations = maxPendingRegistrations;
+            this.output = new ReadChannel<>(this);
+            this.input = new WriteChannel<>(this);
         }
 
         public int capacity() {
@@ -168,6 +228,16 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
+        }
+
+        /** Stable write-only view; the full channel retains close authority. */
+        public WriteChannel<T> input() {
+            return input;
+        }
+
+        /** Stable read-only view; the full channel retains close authority. */
+        public ReadChannel<T> output() {
+            return output;
         }
 
         /**
@@ -308,19 +378,33 @@ public final class ChannelRuntime {
 
     public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
 
-    public record ReadCase<T>(Channel<T> channel) implements SelectCase {
+    /**
+     * Public select descriptors expose only their directional endpoint. The
+     * coordinator unwraps the shared channel privately for atomic arbitration.
+     */
+    public record ReadCase<T>(ReadChannel<T> channel) implements SelectCase {
         public ReadCase {
             Objects.requireNonNull(channel, "channel");
         }
+
+        /** Source-compatible constructor for callers that own a full channel. */
+        public ReadCase(Channel<T> channel) {
+            this(Objects.requireNonNull(channel, "channel").output());
+        }
     }
 
-    public record WriteCase<T>(Channel<T> channel, T value)
+    public record WriteCase<T>(WriteChannel<T> channel, T value)
             implements SelectCase {
         public WriteCase {
             Objects.requireNonNull(channel, "channel");
             Objects.requireNonNull(
                     value,
                     "Oreslang channels cannot carry null; use Option<T>");
+        }
+
+        /** Source-compatible constructor for callers that own a full channel. */
+        public WriteCase(Channel<T> channel, T value) {
+            this(Objects.requireNonNull(channel, "channel").input(), value);
         }
     }
 
@@ -341,7 +425,15 @@ public final class ChannelRuntime {
         return new ReadCase<>(channel);
     }
 
+    public static <T> ReadCase<T> read(ReadChannel<T> channel) {
+        return new ReadCase<>(channel);
+    }
+
     public static <T> WriteCase<T> write(Channel<T> channel, T value) {
+        return new WriteCase<>(channel, value);
+    }
+
+    public static <T> WriteCase<T> write(WriteChannel<T> channel, T value) {
         return new WriteCase<>(channel, value);
     }
 
@@ -768,8 +860,8 @@ public final class ChannelRuntime {
         }
 
         private Channel<?> channel() {
-            if (selectCase instanceof ReadCase<?> read) return read.channel();
-            if (selectCase instanceof WriteCase<?> write) return write.channel();
+            if (selectCase instanceof ReadCase<?> read) return read.channel().backingChannel();
+            if (selectCase instanceof WriteCase<?> write) return write.channel().backingChannel();
             throw new IllegalStateException(
                     "only channel cases have channel registrations");
         }
@@ -1453,8 +1545,8 @@ public final class ChannelRuntime {
     }
 
     private static Channel<?> channelOf(SelectCase selectCase) {
-        if (selectCase instanceof ReadCase<?> read) return read.channel();
-        if (selectCase instanceof WriteCase<?> write) return write.channel();
+        if (selectCase instanceof ReadCase<?> read) return read.channel().backingChannel();
+        if (selectCase instanceof WriteCase<?> write) return write.channel().backingChannel();
         throw new IllegalArgumentException(
                 "default select case has no channel");
     }
