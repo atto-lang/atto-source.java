@@ -104,6 +104,63 @@ final class FixedProductCallPlanTest {
     }
 
     @Test
+    void spreadProjectionProvenanceSurvivesNamedAbiPermutation() {
+        var plan = FixedProductCallPlan.bind(
+                PARAMS,
+                List.of(
+                        positional(0),
+                        FixedProductCallPlan.InputSlot.namedProjection(
+                                "c", 1, 0),
+                        FixedProductCallPlan.InputSlot.namedProjection(
+                                "b", 1, 1)));
+
+        assertEquals(List.of(0, 2, 1), plan.abiToSource());
+        assertEquals(
+                List.of(0, 1, 1),
+                plan.sourceOrder().stream()
+                        .map(FixedProductCallPlan.BoundSlot::callItemIndex)
+                        .toList());
+        assertEquals(
+                List.of(-1, 0, 1),
+                plan.sourceOrder().stream()
+                        .map(FixedProductCallPlan.BoundSlot::projectionIndex)
+                        .toList());
+    }
+
+    @Test
+    void publicConstructorRejectsForgedOrMixedSourceProvenance() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(
+                                new FixedProductCallPlan.BoundSlot(
+                                        0, 0, null, 0, -1),
+                                new FixedProductCallPlan.BoundSlot(
+                                        1, 1, null)),
+                        List.of(0, 1)));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(
+                                new FixedProductCallPlan.BoundSlot(
+                                        0, 0, null, 0, 1),
+                                new FixedProductCallPlan.BoundSlot(
+                                        1, 1, null, 0, 2)),
+                        List.of(0, 1)));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(
+                                new FixedProductCallPlan.BoundSlot(
+                                        0, 0, null, 1, 0),
+                                new FixedProductCallPlan.BoundSlot(
+                                        1, 1, null, 0, 0)),
+                        List.of(0, 1)));
+    }
+
+    @Test
     void planSnapshotsInputsAndIsImmutableIncludingZeroArity() {
         assertEquals(
                 List.of(),
