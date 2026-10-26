@@ -64,6 +64,26 @@ final class StringTransformTest {
     }
 
     @Test
+    void decodedUnpairedSurrogatesAreRejectedBeforeUtf8Boundary() {
+        String high = "\\uD800";
+        String low = "\\uDC00";
+        for (String escaped : new String[] {high, low}) {
+            IllegalArgumentException quoted = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("pub routine main(): void { val string value = \"" + escaped
+                            + "\"; return; }"));
+            assertTrue(quoted.getMessage().contains("unpaired Unicode surrogate"));
+
+            IllegalArgumentException template = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("pub routine main(): void { val string value = `" + escaped
+                            + "`; return; }"));
+            assertTrue(template.getMessage().contains("unpaired Unicode surrogate"));
+        }
+
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub routine main(): void { val string value = \"\\uD83D\\uDE00\"; return; }"));
+    }
+
+    @Test
     void emptyNeedleIsRejected() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""
