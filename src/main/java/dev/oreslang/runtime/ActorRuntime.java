@@ -473,6 +473,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    /** Unregistered actors whose post-monitor receipt/parent publication is still running. */
+    private final Set<ActorCell<?>> retiringActors = ConcurrentHashMap.newKeySet();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
     private final Map<SupervisorId, ActorSupervisor> supervisors =
@@ -7340,7 +7342,10 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("close an ActorRuntime");
         sealShutdownAdmission();
 
-        final List<ActorCell<?>> snapshot = List.copyOf(actors.values());
+        java.util.LinkedHashSet<ActorCell<?>> closingActors =
+                new java.util.LinkedHashSet<>(actors.values());
+        closingActors.addAll(retiringActors);
+        final List<ActorCell<?>> snapshot = List.copyOf(closingActors);
         for (ActorCell<?> cell : snapshot) cell.stop();
         // Distinct from closed CAS: admission may have been sealed before
         // the physical STOP and dispatcher shutdown sequence began.
@@ -8070,15 +8075,18 @@ public final class ActorRuntime implements AutoCloseable {
             // From this point forward no callback-capable cleanup may execute
             // under lifecycleLock. Claim exactly one post-monitor finalizer.
             finalizationScheduled = true;
+            retiringActors.add(this);
             try {
                 Thread.ofVirtual()
                         .name("ores-actor-" + ref.id() + "-finalize")
                         .start(this::completeFinalizationOutsideLock);
             } catch (VirtualMachineError | ThreadDeath fatal) {
                 finalizationScheduled = false;
+                retiringActors.remove(this);
                 throw fatal;
             } catch (Throwable schedulingFailure) {
                 finalizationScheduled = false;
+                retiringActors.remove(this);
                 sourceStopCleanupAborted = true;
                 recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
                         "actor finalization worker could not be scheduled",
@@ -8215,6 +8223,7 @@ public final class ActorRuntime implements AutoCloseable {
                     finalizationScheduled = false;
                     lifecycleLock.notifyAll();
                 }
+                if (finalized) retiringActors.remove(this);
                 if (previousFinalizer == null) finalizingOnThread.remove();
                 else finalizingOnThread.set(previousFinalizer);
             }
