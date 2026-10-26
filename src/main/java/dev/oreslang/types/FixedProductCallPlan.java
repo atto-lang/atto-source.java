@@ -163,9 +163,9 @@ public record FixedProductCallPlan(
                 if (slot.callItemIndex() == previousCallItemIndex) {
                     if (slot.projectionIndex() < 0
                             || previousProjectionIndex < 0
-                            || slot.projectionIndex() <= previousProjectionIndex) {
+                            || slot.projectionIndex() != previousProjectionIndex + 1) {
                         throw new IllegalArgumentException(
-                                "product call projection provenance is not strictly ordered");
+                                "product call projection provenance must be contiguous and ordered");
                     }
                 } else if (slot.projectionIndex() > 0) {
                     throw new IllegalArgumentException(
