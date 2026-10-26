@@ -76,8 +76,7 @@ public final class TaskCaptureNames {
                 Set<String> armLocals = new HashSet<>(locals);
                 bindPattern(arm.pattern(), armLocals);
                 visitConditionExpr(arm.guard(), armLocals, names);
-                visitBody(arm.prefixStatements(), armLocals, names);
-                visitExpr(arm.value(), armLocals, names);
+                visitBody(arm.body(), armLocals, names);
             }
         } else if (stmt instanceof Ast.SwitchStmt s) {
             visitExpr(s.subject(), locals, names);
