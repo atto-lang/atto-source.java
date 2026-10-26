@@ -49,6 +49,43 @@ Owner IDs saturate rather than wrap, and slot generations never revive a stale h
 
 [Native exact-source carrier audit #39182285383](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39182285383): 4/4 GCC/Clang normal/ASan+UBSan matrix passed with exact file SHA verification, negative type admission, deterministic row property stress and concurrency cases. This is host-model evidence only, not full LLVM CMake/CTest or Java guest compilation evidence.
 
+## Bracket indexing: staged typed generated-lowering contract
+
+The parser already represents `receiver[index]` as `Ast.IndexExpr`. **Do not
+implement inverted indexing as an untyped textual macro** or reinterpret it as
+an ordinary AoS array operation. Resolve `InvertedArray<Foo>` and the index
+type before code generation. Until verified borrow/escape admission is wired,
+guest inverted indexing remains **fail-closed**.
+
+- `rows[i]` with `i32` or `i64` selects position `i` in the **current
+  dense ordering**, zero-based. Reject negative, out-of-bounds and wide
+  non-narrowable indices before narrowing. Never index spare capacity.
+- `rows[h]` with a compiler-issued typed row handle selects stable logical
+  identity. Every use checks owner authority, live slot and generation; stale,
+  foreign, deleted, recycled and closed-store handles fail.
+- Swap-delete changes physical positions. A previously selected surviving
+  handle continues to name that row, not whichever row replaces its former
+  position. A later numeric subscript uses the new positions.
+- For `rows[i].field`, `rows[h].field`, method invocation, nested member
+  access and assignment, evaluate receiver/index/RHS exactly once in language
+  order. Bind the declared column accessor statically; do not materialize an
+  implicit AoS row or perform reflection-based runtime member lookup.
+  Compound updates need a verified atomic transform, not a racy get/set pair.
+- A row projection is nonescaping: no storing it in a field, returning it,
+  capturing it in Task/actor work, or suspending across await. A field write
+  requires exclusive loan rights. Structural mutation requires all loans
+  quiescent. Teardown revokes every pending view.
+- Ordinary arrays, tuples, maps, strings, slices and custom indexers retain
+  their own indexed-access rules. Invalid index types, wrong generic row
+  handles or unverified native/GPU targets fail closed.
+
+Java host reference now has `InvertedColumnStore.handleAt(long)` and
+`InvertedArray.at(long)` / `at(Handle)` as **potential generated lowering
+targets**. They are not proof of source `[]` code generation or Java/LLVM
+guest parity. Promotion requires executable source positive and compile-negative
+fixtures on pinned backend heads (including malicious/overflow indices,
+swap-delete, reuse, loans, concurrent mutation and owner teardown).
+
 ## Borrow and concurrency rules
 
 A column view is zero-copy and tied to its owning store; compiler-enforced, nonescaping lifetime is mandatory. Read loans on a field may coexist; a write loan excludes all other same-field access. Disjoint columns may have independent write loans. Structural changes (push, erase, reorder, reserve/reallocate, close, ownership transfer) require quiescence across *all* columns; no suspension or `await` may extend an unsafe exclusive loan without an explicit proof. A raw host-language `span` must not escape its loan; the compiler is responsible for enforcing this when lowered to Oreslang.
