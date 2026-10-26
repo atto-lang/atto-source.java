@@ -150,6 +150,25 @@ public final class TaskPipeline {
     }
 
     /**
+     * Admit a compiler-lowered pipeline as a child of the current tracked
+     * SourceTask when available; host/root entry points create their own
+     * tracked root. Parent cancellation revokes this pipeline, and parent
+     * getDone() waits for its physical retirement. The input Future is borrowed.
+     */
+    public static <T> PipelineHandle<T> startInCurrentTaskOrRoot(
+            OresScheduler scheduler,
+            OresFuture<?> input,
+            List<? extends Stage> stages) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        TaskCancellation parent = TaskHandle.currentParentForChild();
+        if (parent != null && OresScheduler.current() != scheduler) {
+            throw new IllegalStateException(
+                    "implicit pipeline child admission cannot cross scheduler domains");
+        }
+        return startInternal(task -> TaskHandle.start(scheduler, task, parent), input, stages);
+    }
+
+    /**
      * Admit the pipeline as one child of an explicit structured TaskScope.
      * Closing the scope requests cancellation without blocking a carrier.
      */
@@ -179,7 +198,19 @@ public final class TaskPipeline {
         }
 
         AtomicReference<OresFuture<?>> ownedStage = new AtomicReference<>();
+        // A scheduler may dispatch the child inline. Publish the exposed bridge
+        // before admission so the first await participates in cycle detection
+        // and cancellation cannot race TaskHandle publication.
+        AtomicReference<TaskHandle<T>> trackedRef = new AtomicReference<>();
         AtomicReference<OresFuture<T>> exposedRef = new AtomicReference<>();
+        OresFuture<T> exposed = new OresFuture<>(() -> {
+            retirePipelineAwait(exposedRef.get(), null);
+            TaskHandle<T> current = trackedRef.get();
+            if (current != null) current.cancel("pipeline cancelled");
+            OresFuture<?> currentOwned = ownedStage.getAndSet(null);
+            if (currentOwned != null) currentOwned.cancel(false);
+        });
+        exposedRef.set(exposed);
 
         TaskHandle<T> tracked = starter.start(new OresScheduler.Task<>() {
             private boolean started;
@@ -268,14 +299,12 @@ public final class TaskPipeline {
             }
         });
 
+        if (!trackedRef.compareAndSet(null, tracked)) {
+            throw new IllegalStateException("pipeline task handle bound twice");
+        }
+        // Cancellation can win during inline admission before trackedRef is set.
+        if (exposed.isCancelled()) tracked.cancel("pipeline cancelled");
         OresFuture<T> task = tracked.result();
-        OresFuture<T> exposed = new OresFuture<>(() -> {
-            retirePipelineAwait(exposedRef.get(), null);
-            tracked.cancel("pipeline cancelled");
-            OresFuture<?> currentOwned = ownedStage.getAndSet(null);
-            if (currentOwned != null) currentOwned.cancel(false);
-        });
-        exposedRef.set(exposed);
 
         AtomicReference<OresFuture.RuntimeWaiterRegistration<T>> subscription =
                 new AtomicReference<>();
