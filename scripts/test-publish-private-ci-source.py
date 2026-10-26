@@ -161,6 +161,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_quarantined_repository_id_rejected_even_after_slug_rename(self):
+        renamed = b"renamed-owner/renamed-carrier 1323575966\n"
+        with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
+            pub._parse_policy_approval(
+                renamed,
+                "renamed-owner/renamed-carrier",
+                "private CI approval policy",
+            )
+
+        metadata = {
+            "id": 1323575966,
+            "full_name": "renamed-owner/renamed-carrier",
+            "visibility": "private",
+            "private": True,
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with patch.object(pub, "gh_api", return_value=metadata):
+            with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
+                pub.checked_repo("renamed-owner/renamed-carrier", 1323575966)
+
     def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
         with (
             patch.object(pub, "require_resolved_blocking_incidents") as incidents,
