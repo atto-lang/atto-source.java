@@ -55,7 +55,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, MacroDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -63,6 +63,27 @@ public final class Ast {
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
+    }
+
+    /**
+     * Compile-time-only macro declaration. Macro declarations are never runtime
+     * callable values; an expansion phase must eliminate them before executable
+     * semantic analysis/code generation.
+     */
+    public record MacroDecl(
+            String name,
+            Visibility visibility,
+            List<Param> parameters,
+            TypeRef resultKind,
+            List<Stmt> body) implements Decl {
+        public MacroDecl {
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid macro name");
+            }
+            parameters = List.copyOf(parameters);
+            body = List.copyOf(body);
+            java.util.Objects.requireNonNull(resultKind, "macro result kind");
+        }
     }
 
     public record TypeRef(String name, List<TypeRef> arguments, boolean inferArguments) {
