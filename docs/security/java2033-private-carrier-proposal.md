@@ -13,37 +13,48 @@ below is independently satisfied.
 | Source repository | `ores-truffle-oreslang/oreslang-source.java` |
 | Source numeric repository ID | `1400792274` |
 | Source PR | `#2033` |
-| Source PR head | `6c54d3c2b2b24c1597fddabcbe0bf98aba074484` |
-| Source root Git tree | `39eee009b65772f958d2a401f0cdc224170b03c0` |
+| Source PR head | `31bb2de7e84184ad9051844b2cfef1cfe1db32f2` |
+| Source root Git tree | `4a2814cf647c0cb1e6da5e3820b86aa9e7af67e8` |
 | Source base/main observed | `f40b9c3a3b5b4691eb4f4a5d5d0558a112f237aa` |
 | Candidate carrier | `opto-sync-test/go-java-validation` |
 | Carrier numeric repository ID | `1323598177` |
 | Carrier visibility observed | `private` |
 | Carrier PR | `opto-sync-test/go-java-validation#25` |
-| Carrier PR head | `60d538aa9f80de94658880050bd73bf0f2d0a879` |
+| Carrier PR head | `b64ba33bd86cde3a434b76278c196694c543adaa` |
 | Carrier workflow blob | `4cfef14d5976b193a16c02a574c406defaeac874` |
-| PR #2033 test-plan blob | `34463ea91c6ab87d69f4337be23b51ed55b8d7ae` |
+| PR #2033 test-plan blob | `7612dee74280443ef95a99890c057ae7938c65a8` |
 
 The carrier test plan pins the current PR #2033 production/test blobs and runs a
 focused ActorGroup cleanup/pipe/supervisor suite followed by the full Maven
 test suite. The current plan also pins the exact ActorPipeTransportTest blob
-that contains the fatal-sibling structural-close regression and the exact
+that contains the fatal-sibling structural-close regression, the exact
 ActorGroupManagedWorkersReconciliationTest blob that proves runtime admission
-sealing does not collapse the active worker-done lifecycle barrier.
+sealing does not collapse the active worker-done lifecycle barrier, and the
+exact ActorOutputStreamTest blob that proves shutdown admission sealing wins
+buffered-output publication arbitration when it acquires the lifecycle monitor
+first.
 
 Current source-free validation receipts:
-- cleanup semantic harness head `0065d36ef776d2f9cfe439adfd06456476e75038`,
-  Sonus run `40349883441` / job `121666735498`: executed checkout,
-  Java compile, and adversarial cleanup cases including cross-phase VM-fatal
-  precedence with retained earlier evidence; PASS;
-- exact current carrier-plan mirror head
-  `b5375456591881a87e3e3f4cdec5af468f2e062c`, Sonus run
-  `40358615664` / job `121697702344`: executed checkout, carrier verifier
-  regression, and trusted-plan runner regression against plan blob
-  `34463ea91c6ab87d69f4337be23b51ed55b8d7ae`; PASS.
-Both are source-free and therefore do not certify the private Oreslang source. Source-free carrier regression code has executed successfully in a
-separate funded private repository, but that evidence is **carrier-code only**:
-it does not authorize private source placement and does not prove PR #2033.
+- funded private `sonus-auris-test/clients-api-contract` run
+  `40368574539`, JDK 25 job `121732831510`: executed checkout, immutable
+  `actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961`,
+  Temurin 25.0.4.1 compile, the actor cleanup/worker-barrier model, and the
+  shutdown-vs-buffered-output arbitration model; PASS with
+  `SOURCE_FREE_ACTOR_CLEANUP_PASS` and
+  `SOURCE_FREE_OUTPUT_ARBITRATION_PASS`. The job explicitly asserts no
+  `private-oreslang-source` and no `src/main/java/dev/oreslang` tree;
+- the same funded run, carrier-control job `121732831964`: asserted all seven
+  current carrier/control files byte-identical by Git blob SHA to carrier
+  #25 head `b64ba33bd86cde3a434b76278c196694c543adaa`, ran 6/6 carrier
+  verifier regressions and 6/6 trusted-plan runner regressions, and validated
+  current plan blob `7612dee74280443ef95a99890c057ae7938c65a8`
+  pins ActorRuntime blob `43b2c6fb9c7f594a32812d2a6c7f8f64cd03fe22`
+  plus ActorOutputStreamTest blob
+  `64572e929c7367eb37f08745b363e20c93ed7fc0`; PASS with
+  `CURRENT_JAVA2033_PLAN_PASS`.
+Both are source-free and therefore do not certify the private Oreslang source.
+They prove the cleanup/output semantic model and carrier control plane only;
+they do not authorize private source placement and do not prove PR #2033.
 
 Any change to the source head/tree, carrier head, workflow blob, test-plan blob,
 repository slug/ID, privacy state, or reviewed command set invalidates this
@@ -85,10 +96,10 @@ At proposal creation time:
 5. Platform-conformance P0 incidents #22, #77 and #127 remain OPEN and require
    independent disposition before private-source export resumes.
 6. Source-org Actions for PR #2033 still fail before job steps. On exact source
-   head `6c54d3c2b2b24c1597fddabcbe0bf98aba074484`, full ci run
-   `40358382678` has Maven test/AOT/ref64/hybrid/polyglot jobs at zero steps;
-   fast-ci `40358382787`, Graal conformance `40358382564`, and synthetic
-   smoke `40358382965` are likewise zero-step. These are
+   head `31bb2de7e84184ad9051844b2cfef1cfe1db32f2`, full ci run
+   `40367191942` has Maven test/AOT/ref64/hybrid/polyglot jobs at zero steps;
+   fast-ci `40367191565`, Graal conformance `40367191739`, and synthetic
+   smoke `40367192066` are likewise zero-step. These are
    admission/infrastructure evidence only and are not implementation failures
    or passing tests.
 
@@ -116,7 +127,7 @@ this proposal**.
    provenance, carrier ID/private state and exact carrier control-plane pins.
 6. Transfer only the exact source Git tree into a generation-specific private
    carrier commit/ref. Prove the nested destination subtree tree SHA equals
-   `39eee009b65772f958d2a401f0cdc224170b03c0` and pin the destination commit.
+   `4a2814cf647c0cb1e6da5e3820b86aa9e7af67e8` and pin the destination commit.
 7. Execute the immutable #2033 plan and require actual nonzero job steps:
    - focused `ActorGroupCleanupFailureTest` / pipe / supervisor coverage;
    - full Maven/JDK suite;
