@@ -180,23 +180,23 @@ public final class ExportResolver {
                                     + " does not match local declaration '" + item.localName() + "'");
                 }
                 if (isImportedName(program, module, item.localName())) {
-                    throw semantic("IMPORTED_EXPORT_REQUIRES_REEXPORT",
+                    throw semantic("EXPORT_IMPORTED_NAME",
                             "local export cannot re-export imported binding '" + item.localName() + "'");
                 }
-                throw semantic("UNKNOWN_EXPORT_TARGET",
+                throw semantic("EXPORT_UNKNOWN_TARGET",
                         "unknown local export target '" + item.localName() + "'");
             }
         } else {
             if (candidates.isEmpty()) {
                 if (isImportedName(program, module, item.localName())) {
-                    throw semantic("IMPORTED_EXPORT_REQUIRES_REEXPORT",
+                    throw semantic("EXPORT_IMPORTED_NAME",
                             "local export cannot re-export imported binding '" + item.localName() + "'");
                 }
-                throw semantic("UNKNOWN_EXPORT_TARGET",
+                throw semantic("EXPORT_UNKNOWN_TARGET",
                         "unknown local export target '" + item.localName() + "'");
             }
             if (candidates.size() != 1) {
-                throw semantic("AMBIGUOUS_EXPORT_TARGET",
+                throw semantic("EXPORT_AMBIGUOUS_TARGET",
                         "untyped export target '" + item.localName()
                                 + "' resolves to multiple declaration families");
             }
@@ -323,7 +323,7 @@ public final class ExportResolver {
                     int available = widestScopeBySymbol.getOrDefault(referencedId, -1);
                     int required = rank(binding.scope());
                     if (available < required) {
-                        throw semantic("EXPORT_API_VISIBILITY_LEAK",
+                        throw semantic("EXPORT_API_LEAK",
                                 "export '" + binding.externalName() + "' at "
                                         + binding.scope().name().toLowerCase()
                                         + " scope exposes narrower local type '" + typeName + "'");
