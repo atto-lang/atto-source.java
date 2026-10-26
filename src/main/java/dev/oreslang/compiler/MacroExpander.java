@@ -240,12 +240,14 @@ public final class MacroExpander {
                 continue;
             }
             if (node instanceof Ast.ListExpr list) {
+                checkTemplateQueueBudget(nodes, pending.size(), list.elements().size());
                 for (Ast.Expr child : list.elements()) {
                     pending.push(new TemplateNode(child, childDepth));
                 }
                 continue;
             }
             if (node instanceof Ast.TupleExpr tuple) {
+                checkTemplateQueueBudget(nodes, pending.size(), tuple.elements().size());
                 for (Ast.Expr child : tuple.elements()) {
                     pending.push(new TemplateNode(child, childDepth));
                 }
@@ -253,6 +255,7 @@ public final class MacroExpander {
             }
             if (node instanceof Ast.ObjectExpr object
                     && object.kind() != Ast.ObjectKind.EXPLICIT_STRUCT) {
+                checkTemplateQueueBudget(nodes, pending.size(), object.fields().size());
                 for (Ast.ObjectField field : object.fields()) {
                     pending.push(new TemplateNode(field.value(), childDepth));
                 }
@@ -269,6 +272,14 @@ public final class MacroExpander {
             return false;
         }
         return true;
+    }
+
+    private void checkTemplateQueueBudget(int visited, int pending, int children) {
+        if ((long) visited + pending + children > MAX_TEMPLATE_NODES) {
+            throw new IllegalArgumentException(
+                    "compile-time macro template budget exceeded (nodes/depth); "
+                            + "runtime fallback is forbidden");
+        }
     }
 
     private boolean isDirectUnquote(Ast.CallExpr call) {
