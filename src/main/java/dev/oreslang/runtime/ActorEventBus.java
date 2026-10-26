@@ -244,13 +244,9 @@ public final class ActorEventBus implements AutoCloseable {
 
     public <T> Subscription<T> subscribe(String name) {
         requireOpen();
-        ActorRuntime.ActorId subscriber =
-                group.requireCurrentMember("subscribe to ActorGroup events");
-        ActorRuntime.ActorRef<?> subscriberRef = ActorRuntime.currentActorRef();
-        if (subscriberRef == null || !subscriberRef.id().equals(subscriber)) {
-            throw new SecurityException(
-                    "event subscription requires the exact current actor incarnation");
-        }
+        ActorRuntime.ActorRef<?> subscriberRef =
+                group.requireCurrentMemberRef("subscribe to ActorGroup events");
+        ActorRuntime.ActorId subscriber = subscriberRef.id();
         if (ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.SHARED) {
             throw new SecurityException(
                     "private/isolated actors cannot subscribe to the zero-copy ActorGroup event bus yet; "
@@ -299,7 +295,7 @@ public final class ActorEventBus implements AutoCloseable {
                     return typed;
                 }
 
-                if (!group.isMember(subscriber) || closed.get()) {
+                if (!group.isMember(subscriberRef) || closed.get()) {
                     topic.subscriptions.remove(subscriber, created);
                     created.closeChannelOnly();
                     throw new IllegalStateException(
@@ -312,11 +308,12 @@ public final class ActorEventBus implements AutoCloseable {
 
     public PublishReceipt publish(String name, Object value) {
         requireOpen();
-        ActorRuntime.ActorId publisher = group.currentMemberOrSystem("publish ActorGroup events");
+        ActorRuntime.ActorRef<?> publisherRef =
+                group.currentMemberRefOrSystem("publish ActorGroup events");
         return publishFrozen(
                 requirePublishableTopic(name),
                 runtime.freezeActorGroupEventPayload(value),
-                publisher);
+                publisherRef);
     }
 
     /**
@@ -337,7 +334,8 @@ public final class ActorEventBus implements AutoCloseable {
         if (Double.isNaN(candidate)) {
             throw new IllegalArgumentException("double reduction candidate cannot be NaN");
         }
-        ActorRuntime.ActorId publisher = group.currentMemberOrSystem("update ActorGroup reductions");
+        ActorRuntime.ActorRef<?> publisherRef =
+                group.currentMemberRefOrSystem("update ActorGroup reductions");
         DoubleReductionState reduction = requireDoubleReduction(name);
         TopicState topic = requireTopic(name);
 
@@ -367,26 +365,30 @@ public final class ActorEventBus implements AutoCloseable {
             ActorRuntime.FrozenActorGroupEventPayload frozen =
                     runtime.freezeActorGroupEventPayload(candidate);
             PublishReceipt receipt = publishFrozen(
-                    topic, frozen, publisher, () -> reduction.set(candidate));
+                    topic, frozen, publisherRef, () -> reduction.set(candidate));
             return new DoubleReductionResult(candidate, true, receipt);
         }
     }
 
     public double readDoubleReduction(String name) {
         requireOpen();
-        group.currentMemberOrSystem("read ActorGroup reductions");
+        group.currentMemberRefOrSystem("read ActorGroup reductions");
         DoubleReductionState reduction = requireDoubleReduction(name);
         synchronized (reduction) {
             return reduction.current();
         }
     }
 
-    void removeActor(ActorRuntime.ActorId actorId) {
+    void removeActor(ActorRuntime.ActorRef<?> actorRef) {
+        ActorRuntime.ActorId actorId = actorRef.id();
         for (TopicState topic : topics.values()) {
             synchronized (topic.deliveryLock) {
-                Subscription<?> subscription =
-                        topic.subscriptions.remove(actorId);
-                if (subscription != null) subscription.closeChannelOnly();
+                Subscription<?> subscription = topic.subscriptions.get(actorId);
+                if (subscription != null
+                        && subscription.subscriberRef == actorRef
+                        && topic.subscriptions.remove(actorId, subscription)) {
+                    subscription.closeChannelOnly();
+                }
             }
         }
     }
@@ -417,15 +419,17 @@ public final class ActorEventBus implements AutoCloseable {
     private PublishReceipt publishFrozen(
             TopicState topic,
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
-            ActorRuntime.ActorId publisher) {
-        return publishFrozen(topic, frozenPayload, publisher, () -> { });
+            ActorRuntime.ActorRef<?> publisherRef) {
+        return publishFrozen(topic, frozenPayload, publisherRef, () -> { });
     }
 
     private PublishReceipt publishFrozen(
             TopicState topic,
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
-            ActorRuntime.ActorId publisher,
+            ActorRuntime.ActorRef<?> publisherRef,
             Runnable commitState) {
+        ActorRuntime.ActorId publisher =
+                publisherRef == null ? null : publisherRef.id();
         Event<Object> event = null;
         try {
             synchronized (topic.deliveryLock) {
@@ -434,7 +438,7 @@ public final class ActorEventBus implements AutoCloseable {
                 // frozen. Revalidate at the delivery admission boundary so
                 // no post-revocation publication can commit to subscribers.
                 // System publications have a separately checked authority.
-                if (publisher != null && !group.isMember(publisher)) {
+                if (publisherRef != null && !group.isMember(publisherRef)) {
                     throw new SecurityException(
                             "ActorGroup membership revoked before event publication");
                 }
@@ -469,7 +473,7 @@ public final class ActorEventBus implements AutoCloseable {
                         new ArrayList<>(snapshot.size());
                 for (Subscription<?> subscription : snapshot) {
                     if (subscription.closed()
-                            || !group.isMember(subscription.subscriber)) {
+                            || !group.isMember(subscription.subscriberRef)) {
                         topic.subscriptions.remove(
                                 subscription.subscriber, subscription);
                         subscription.closeChannelOnly();
@@ -899,8 +903,9 @@ public final class ActorEventBus implements AutoCloseable {
 
         private void requireReadable() {
             if (subscriptionClosed.get()) throw new IllegalStateException("event subscription is closed");
-            group.requireCurrentMember("read ActorGroup events");
-            if (ActorRuntime.currentActorRef() != subscriberRef) {
+            ActorRuntime.ActorRef<?> current =
+                    group.requireCurrentMemberRef("read ActorGroup events");
+            if (current != subscriberRef) {
                 throw new SecurityException(
                         "an actor may only read its own exact-incarnation ActorGroup event subscription");
             }
@@ -908,9 +913,10 @@ public final class ActorEventBus implements AutoCloseable {
 
         @Override
         public void close() {
-            group.requireCurrentMember(
-                    "close ActorGroup event subscriptions");
-            if (ActorRuntime.currentActorRef() != subscriberRef) {
+            ActorRuntime.ActorRef<?> current =
+                    group.requireCurrentMemberRef(
+                            "close ActorGroup event subscriptions");
+            if (current != subscriberRef) {
                 throw new SecurityException(
                         "an actor may only close its own exact-incarnation ActorGroup event subscription");
             }
