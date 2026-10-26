@@ -798,9 +798,9 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
-    void checkedFunctionCaptureResolvesExactCallSiteKind() {
+    void checkedFunctionCaptureLowersPublicFunctionToUnshadowableModuleRef() {
         Ast.Program expanded = MacroExpander.expand(Parser.parse("""
-                fnc helper() -> int {
+                pub fnc helper() -> int {
                     return 42;
                 }
 
@@ -821,9 +821,13 @@ final class MacroInvocationPlannerTest {
                 .orElseThrow();
         Ast.ReturnStmt returned =
                 assertInstanceOf(Ast.ReturnStmt.class, demo.body().getFirst());
-        Ast.NameExpr captured =
-                assertInstanceOf(Ast.NameExpr.class, returned.value());
-        assertEquals("helper", captured.name());
+        Ast.MemberExpr captured =
+                assertInstanceOf(Ast.MemberExpr.class, returned.value());
+        Ast.NameExpr moduleRef =
+                assertInstanceOf(Ast.NameExpr.class, captured.receiver());
+        assertEquals(Parser.ROOT_MODULE,
+                Ast.internalModuleReferenceTarget(moduleRef.name()));
+        assertEquals("helper", captured.member());
 
         MacroIdentifierHygiene.CapturedFunction identity = assertInstanceOf(
                 MacroIdentifierHygiene.CapturedFunction.class,
@@ -834,12 +838,57 @@ final class MacroInvocationPlannerTest {
         assertEquals(Parser.ROOT_MODULE, identity.hygiene().macroOwnerModule());
         assertEquals("helper", identity.name());
         assertEquals(1, identity.declarations().size());
-        assertEquals(Ast.Visibility.PRIVATE,
+        assertEquals(Ast.Visibility.PUBLIC,
                 identity.declarations().getFirst().visibility());
 
         assertEquals(
                 MacroSyntaxProvenance.EmissionKind.CHECKED_CAPTURE,
                 MacroSyntaxProvenance.lookup(captured).getFirst().emissionKind());
+    }
+
+    @Test
+    void checkedFunctionCaptureRejectsSameModulePrivateFunction() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MacroExpander.expand(Parser.parse("""
+                        fnc helper() -> int {
+                            return 42;
+                        }
+
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+
+                        fnc demo() -> int {
+                            return reference!(ident helper);
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains(
+                "capture_fnc requires public function 'helper'"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains(
+                "private function capture remains closed"),
+                failure::toString);
+    }
+
+    @Test
+    void checkedFunctionCaptureCannotBeShadowedByCallerLocal() {
+        assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc helper() -> int {
+                            return 42;
+                        }
+
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+
+                        fnc demo() -> int {
+                            const int helper = 1;
+                            return reference!(ident helper)();
+                        }
+                        """));
     }
 
     @Test
@@ -873,9 +922,14 @@ final class MacroInvocationPlannerTest {
                 .filter(fn -> fn.name().equals("demo"))
                 .findFirst()
                 .orElseThrow();
-        Ast.NameExpr captured = assertInstanceOf(
-                Ast.NameExpr.class,
+        Ast.MemberExpr captured = assertInstanceOf(
+                Ast.MemberExpr.class,
                 assertInstanceOf(Ast.ReturnStmt.class, demo.body().getFirst()).value());
+        Ast.NameExpr moduleRef = assertInstanceOf(
+                Ast.NameExpr.class, captured.receiver());
+        assertEquals("Consumer",
+                Ast.internalModuleReferenceTarget(moduleRef.name()));
+        assertEquals("exposed", captured.member());
         MacroIdentifierHygiene.CapturedFunction identity = assertInstanceOf(
                 MacroIdentifierHygiene.CapturedFunction.class,
                 MacroIdentifierHygiene.lookup(captured));
@@ -910,9 +964,11 @@ final class MacroInvocationPlannerTest {
                         """)));
 
         assertTrue(failure.getMessage().contains("capture_fnc"), failure::toString);
-        assertTrue(failure.getMessage().contains("private function family 'secret'"),
+        assertTrue(failure.getMessage().contains(
+                "capture_fnc requires public function 'secret'"),
                 failure::toString);
-        assertTrue(failure.getMessage().contains("module boundary"),
+        assertTrue(failure.getMessage().contains(
+                "private function capture remains closed"),
                 failure::toString);
     }
 
