@@ -624,8 +624,7 @@ public final class IncrementalCompiler {
     }
 
     private static String normalizeUnitId(String id) {
-        if (id == null || id.isBlank()) throw new IllegalArgumentException("source unit id cannot be blank");
-        return Path.of(id).normalize().toString().replace('\\', '/');
+        return MacroSourceUnitIdentity.normalizeUnitId(id);
     }
 
     private static String digest(String source) {
