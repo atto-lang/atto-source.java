@@ -53,6 +53,31 @@ final class FixedProductCallPlanTest {
     }
 
     @Test
+    void requiredFixedArityRemainsExactAfterCanonicalBinderDelegation() {
+        var tooFew = assertThrows(
+                IllegalArgumentException.class,
+                () -> FixedProductCallPlan.bind(
+                        List.of("a", "b", "c"),
+                        List.of(named("a"), named("b"))));
+        assertTrue(tooFew.getMessage().contains("arity"), tooFew.getMessage());
+
+        var tooMany = assertThrows(
+                IllegalArgumentException.class,
+                () -> FixedProductCallPlan.bind(
+                        List.of("a", "b"),
+                        List.of(named("a"), named("b"), named("c"))));
+        assertTrue(tooMany.getMessage().contains("arity"), tooMany.getMessage());
+
+        // Optional calls deliberately do not use this exact-count adapter;
+        // missing formal slots are represented only in OptionalCallPlan.
+        assertEquals(
+                List.of(0, 1),
+                FixedProductCallPlan.bind(
+                        List.of("a", "b"),
+                        List.of(named("a"), named("b"))).abiToSource());
+    }
+
+    @Test
     void positionalAfterFirstNamedSlotRejects() {
         assertRejected("positional", List.of(named("c"), positional(), named("a")));
     }
