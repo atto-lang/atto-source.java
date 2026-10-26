@@ -24,11 +24,11 @@ final class InvertedArrayTest {
     private static Ast.ClassDecl particle() {
         return declaration("""
                 define inverted class Particle as
-                    x: f64;
-                    y: f64;
-                    vx: f64;
-                    vy: f64;
-                    ready: bool;
+                    let f64 x;
+                    let f64 y;
+                    let f64 vx;
+                    let f64 vy;
+                    let bool ready;
                 end
                 """);
     }
@@ -151,10 +151,10 @@ final class InvertedArrayTest {
     void parsesAndExecutesRestrictedSourceMethodsOnPhysicalColumns() {
         Ast.ClassDecl declaration = declaration("""
                 define inverted class Particle as
-                    x: f64;
-                    y: f64;
-                    vx: f64;
-                    vy: f64;
+                    let f64 x;
+                    let f64 y;
+                    let f64 vx;
+                    let f64 vy;
 
                     move(f64 dt): void {
                         self.x = self.x + self.vx * dt;
@@ -191,7 +191,7 @@ final class InvertedArrayTest {
     void pureRowMethodsCommitAtomicallyWithoutLostConcurrentUpdates() throws InterruptedException {
         var declaration = declaration("""
                 define inverted class Counter as
-                    value: f64;
+                    let f64 value;
                     inc(f64 d): void { self.value = self.value + d; }
                 end
                 """);
@@ -219,7 +219,7 @@ final class InvertedArrayTest {
     void cannotSilentlyDropDeclaredMethodsThroughSchemaOnlyConstructor() {
         var withMethod = declaration("""
                 define inverted class Counter as
-                    value: f64;
+                    let f64 value;
                     inc(f64 d): void { self.value = self.value + d; }
                 end
                 """);
@@ -239,7 +239,7 @@ final class InvertedArrayTest {
             if (i != 0) params.append(", ");
             params.append("f64 p").append(i);
         }
-        String tooManyParams = "define inverted class Counter as value: f64; "
+        String tooManyParams = "define inverted class Counter as let f64 value; "
                 + "inc(" + params + "): void { self.value = self.value + p0; } end";
         assertThrows(IllegalArgumentException.class,
                 () -> InvertedArray.fromClass(declaration(tooManyParams), 1));
@@ -248,7 +248,7 @@ final class InvertedArrayTest {
         // exceeding the stage-one compiler's 4,096 expression-node ceiling.
         String expression = "self.value" + " + 1.0".repeat(45);
         String body = ("self.value = " + expression + "; ").repeat(60);
-        String tooManyNodes = "define inverted class Counter as value: f64; "
+        String tooManyNodes = "define inverted class Counter as let f64 value; "
                 + "inc(f64 delta): void { " + body + " } end";
         var ex = assertThrows(IllegalArgumentException.class,
                 () -> InvertedArray.fromClass(declaration(tooManyNodes), 1));
@@ -266,7 +266,7 @@ final class InvertedArrayTest {
                 "bad(i32 x): void { self.value = self.value + x; }"
         };
         for (String method : methods) {
-            String source = "define inverted class Counter as value: f64; "
+            String source = "define inverted class Counter as let f64 value; "
                     + method + " end";
             assertThrows(IllegalArgumentException.class,
                     () -> InvertedArray.fromClass(declaration(source), 0), source);
@@ -274,7 +274,7 @@ final class InvertedArrayTest {
 
         Ast.ClassDecl base = declaration("""
                 define inverted class Counter as
-                    value: f64;
+                    let f64 value;
                     inc(f64 d): void { self.value = self.value + d; }
                 end
                 """);
