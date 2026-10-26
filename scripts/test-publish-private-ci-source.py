@@ -399,6 +399,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "independent security owner"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
+    def test_origin_rejects_mixed_independent_and_author_codeowners(self):
+        mixed = (
+            "\n".join(path + " @ORESoftware @the1mills"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n"
+        ).encode("utf-8")
+        api, _ = self.verified_origin_api(codeowners_file=mixed)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "solely owned"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_protection_fingerprint_handles_duplicate_context_app_ids(self):
+        api, _ = self.verified_origin_api(
+            contexts=[],
+            named_checks=[
+                {"context": "private-ci-gate", "app_id": None},
+                {"context": "private-ci-gate", "app_id": 15368},
+            ],
+        )
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            self.assertEqual(
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
+                A,
+            )
+
     def test_origin_rejects_nonterminal_security_codeowners(self):
         valid = (
             "\n".join(path + " @ORESoftware"
