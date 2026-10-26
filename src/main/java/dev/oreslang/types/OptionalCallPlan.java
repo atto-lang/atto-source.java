@@ -144,84 +144,26 @@ public record OptionalCallPlan(
             List<String> parameterNames,
             List<Boolean> omittable,
             List<FixedProductCallPlan.InputSlot> inputs) {
-        Objects.requireNonNull(parameterNames, "parameterNames");
-        Objects.requireNonNull(omittable, "omittable");
-        Objects.requireNonNull(inputs, "inputs");
-        if (parameterNames.size() != omittable.size()) {
-            throw new IllegalArgumentException(
-                    "parameter/defaultability metadata size mismatch");
-        }
-        if (inputs.size() > parameterNames.size()) {
-            throw new IllegalArgumentException(
-                    "too many supplied arguments: expected at most "
-                            + parameterNames.size() + ", got " + inputs.size());
-        }
-
-        Map<String, Integer> byName = new HashMap<>();
-        for (int i = 0; i < parameterNames.size(); i++) {
-            String name = Objects.requireNonNull(
-                    parameterNames.get(i), "parameter name");
-            if (name.isBlank() || byName.putIfAbsent(name, i) != null) {
-                throw new IllegalArgumentException(
-                        "duplicate or empty declared parameter name: " + name);
-            }
-            Objects.requireNonNull(omittable.get(i), "omittable flag");
-        }
-
-        Integer[] abi = new Integer[parameterNames.size()];
-        java.util.Arrays.fill(abi, -1);
-        List<BoundSlot> source = new ArrayList<>(inputs.size());
-        Set<Integer> claimed = new HashSet<>();
-        boolean namedStarted = false;
-        int nextPositional = 0;
-
-        for (int sourceIndex = 0; sourceIndex < inputs.size(); sourceIndex++) {
-            FixedProductCallPlan.InputSlot input =
-                    Objects.requireNonNull(inputs.get(sourceIndex), "input slot");
-            int target;
-            if (input.label() == null) {
-                if (namedStarted) {
-                    throw new IllegalArgumentException(
-                            "positional argument follows named argument");
-                }
-                target = nextPositional++;
-            } else {
-                namedStarted = true;
-                Integer found = byName.get(input.label());
-                if (found == null) {
-                    throw new IllegalArgumentException(
-                            "unknown named argument '" + input.label() + "'");
-                }
-                target = found;
-            }
-
-            if (target >= parameterNames.size()) {
-                throw new IllegalArgumentException("too many positional arguments");
-            }
-            if (!claimed.add(target)) {
-                throw new IllegalArgumentException(
-                        "duplicate binding for parameter '"
-                                + parameterNames.get(target) + "'");
-            }
-            abi[target] = sourceIndex;
-            source.add(new BoundSlot(
-                    sourceIndex,
-                    target,
-                    input.label(),
-                    input.callItemIndex(),
-                    input.projectionIndex()));
-        }
-
-        for (int i = 0; i < parameterNames.size(); i++) {
-            if (abi[i] == -1 && !omittable.get(i)) {
-                throw new IllegalArgumentException(
-                        "missing required argument for parameter '"
-                                + parameterNames.get(i) + "'");
-            }
-        }
-
-        return new OptionalCallPlan(source, List.of(abi), omittable);
+        CheckedCallPlan checked =
+                CheckedCallPlan.bind(
+                        parameterNames,
+                        omittable,
+                        inputs);
+        List<BoundSlot> source =
+                checked.sourceOrder().stream()
+                        .map(slot -> new BoundSlot(
+                                slot.sourceIndex(),
+                                slot.parameterIndex(),
+                                slot.label(),
+                                slot.callItemIndex(),
+                                slot.projectionIndex()))
+                        .toList();
+        return new OptionalCallPlan(
+                source,
+                checked.abiToSource(),
+                checked.omittable());
     }
+
 
     public int suppliedCount() {
         return sourceOrder.size();
