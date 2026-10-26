@@ -171,6 +171,22 @@ final class MacroDeclarationParserTest {
     }
 
     @Test
+    void quoteIntrinsicCannotBeShadowedByMacroParameter() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define macro bad(Const<int> quote) -> Syntax<Expr> {
+                            return quote(quote);
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("'quote' is reserved"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("compile-time macro quotation"),
+                failure::toString);
+    }
+
+    @Test
     void rejectsMacroDeclarationsInsideRuntimeBlocks() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
