@@ -108,6 +108,10 @@ final class InvertedOneLevelLayoutTest {
                 """);
         var schema = InvertedArray.Schema.fromClass(source, Map.of("Position", point));
         assertEquals(2, schema.fieldCount());
+        var scalarSchema = InvertedArray.Schema.fromClass(
+                klass("define inverted class Scalar as x: f64; end"),
+                Map.of("f64", point));
+        assertEquals(InvertedColumnStore.Kind.F64, scalarSchema.fields().getFirst().kind());
         assertEquals(16, schema.fields().get(0).recordLayout().bytes());
         assertThrows(IllegalArgumentException.class, () -> InvertedArray.Schema.fromClass(source));
         assertThrows(IllegalArgumentException.class, () -> InvertedArray.Schema.fromClass(
