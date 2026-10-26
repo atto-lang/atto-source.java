@@ -34,20 +34,69 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    /** Ownership of the already-created upstream Future observation. */
+    public enum PipelineInputOwnership {
+        BORROWED_UPSTREAM
+    }
+
+    /** Cancellation authority for a Future produced by the deferred stage itself. */
+    public enum PipelineStageFutureOwnership {
+        NONE,
+        OWNED_STAGE_RESULT
+    }
+
     /**
-     * Compiler-issued, identity-bound authorization for the initial pure
-     * Future value-pipe lowering. Only this static type checker can write the
-     * table. Runtime/ownership consumers receive read-only lookup access.
+     * Compiler-owned lowering plan for one deferred Future value-pipe stage.
      *
-     * In particular, a host caller may construct an AST or function declaration
-     * but may not grant a new pipeline execution proof through public APIs.
+     * The plan binds the exact declaration identity plus resolved value types,
+     * async/flattening shape, effect rows and cancellation ownership. Runtime
+     * lowering consumes this plan; syntax provenance by itself is never enough.
      */
-    public static final class CheckedPureFuturePipe {
-        private CheckedPureFuturePipe() { }
+    public record PipelinePlan(
+            Ast.FunctionDecl target,
+            Type inputType,
+            Type outputType,
+            Ast.TypeRef outputTypeRef,
+            boolean asyncStage,
+            boolean flattensFuture,
+            Types.CheckedEffects stageEffects,
+            Types.CheckedEffects cumulativeEffects,
+            PipelineInputOwnership inputOwnership,
+            PipelineStageFutureOwnership producedFutureOwnership) {
+        public PipelinePlan {
+            java.util.Objects.requireNonNull(target, "pipeline target");
+            java.util.Objects.requireNonNull(inputType, "pipeline input type");
+            java.util.Objects.requireNonNull(outputType, "pipeline output type");
+            java.util.Objects.requireNonNull(outputTypeRef, "pipeline output type ref");
+            java.util.Objects.requireNonNull(stageEffects, "pipeline stage effects");
+            java.util.Objects.requireNonNull(cumulativeEffects, "pipeline cumulative effects");
+            java.util.Objects.requireNonNull(inputOwnership, "pipeline input ownership");
+            java.util.Objects.requireNonNull(
+                    producedFutureOwnership, "pipeline produced Future ownership");
+            if (target.parameters().size() != 1) {
+                throw new IllegalArgumentException(
+                        "checked Future pipeline target must be unary");
+            }
+            if (flattensFuture
+                    != (producedFutureOwnership
+                            == PipelineStageFutureOwnership.OWNED_STAGE_RESULT)) {
+                throw new IllegalArgumentException(
+                        "Future flattening and stage-Future ownership must agree");
+            }
+        }
+    }
+
+    /**
+     * Compiler-issued, identity-bound authorization for Future-aware value-pipe
+     * lowering. Only TypeChecker can publish plans; rewritten ASTs deliberately
+     * lose authorization and must be checked again.
+     */
+    public static final class CheckedFuturePipe {
+        private CheckedFuturePipe() { }
 
         private static final java.lang.ref.ReferenceQueue<Ast.CallExpr> CLEARED =
                 new java.lang.ref.ReferenceQueue<>();
-        private static final java.util.Map<IdentityKey, Ast.FunctionDecl> CHECKED =
+        private static final java.util.Map<IdentityKey, PipelinePlan> CHECKED =
                 new java.util.HashMap<>();
 
         private static final class IdentityKey
@@ -76,72 +125,70 @@ public final class TypeChecker {
             while ((cleared = CLEARED.poll()) != null) CHECKED.remove(cleared);
         }
 
-        /**
-         * Private issuance: called from the enclosing TypeChecker only after
-         * it has checked the input type, effects, lexical owner and pure body.
-         */
-        private static synchronized void record(
-                Ast.CallExpr call, Ast.FunctionDecl target) {
-            java.util.Objects.requireNonNull(target, "checked Future stage declaration");
-            if (call == null
+        private static void requireShape(Ast.CallExpr call, PipelinePlan plan) {
+            if (call == null || plan == null
                     || call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     || call.arguments().size() != 1
                     || !(call.callee() instanceof Ast.NameExpr name)
-                    || !name.name().equals(target.name())
-                    || target.parameters().size() != 1) {
+                    || !name.name().equals(plan.target().name())
+                    || plan.target().parameters().size() != 1) {
                 throw new IllegalArgumentException(
-                        "checked Future stage requires a matching unary declaration");
+                        "checked Future stage requires a matching unary pipeline plan");
             }
+        }
+
+        private static synchronized void record(
+                Ast.CallExpr call, PipelinePlan plan) {
+            requireShape(call, plan);
             expunge();
             IdentityKey key = new IdentityKey(call, CLEARED);
-            Ast.FunctionDecl prior = CHECKED.putIfAbsent(key, target);
-            if (prior != null && prior != target) {
+            PipelinePlan prior = CHECKED.putIfAbsent(key, plan);
+            if (prior != null
+                    && (prior.target() != plan.target() || !prior.equals(plan))) {
                 throw new IllegalStateException(
                         "Future pipeline stage rebound after type checking");
             }
         }
 
         /**
-         * Atomically publish only after every declaration has passed type
-         * checking. Preflight all shape/identity conflicts first so a bad
-         * compilation cannot leave a partially authorized prefix.
+         * Publish atomically only after the entire compilation unit validates.
+         * A later declaration failure therefore cannot leak an executable plan
+         * for an earlier pipeline prefix.
          */
         private static synchronized void publish(
-                Map<Ast.CallExpr, Ast.FunctionDecl> staged) {
-            java.util.Objects.requireNonNull(staged, "staged Future proofs");
+                Map<Ast.CallExpr, PipelinePlan> staged) {
+            java.util.Objects.requireNonNull(staged, "staged Future pipeline plans");
             expunge();
-            for (Map.Entry<Ast.CallExpr, Ast.FunctionDecl> entry : staged.entrySet()) {
+            for (Map.Entry<Ast.CallExpr, PipelinePlan> entry : staged.entrySet()) {
                 Ast.CallExpr call = entry.getKey();
-                Ast.FunctionDecl target = entry.getValue();
-                if (call == null || target == null
-                        || call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
-                        || call.arguments().size() != 1
-                        || !(call.callee() instanceof Ast.NameExpr name)
-                        || !name.name().equals(target.name())
-                        || target.parameters().size() != 1) {
-                    throw new IllegalArgumentException(
-                            "invalid staged Future pipeline proof");
-                }
-                Ast.FunctionDecl prior = CHECKED.get(new IdentityKey(call, null));
-                if (prior != null && prior != target) {
+                PipelinePlan plan = entry.getValue();
+                requireShape(call, plan);
+                PipelinePlan prior = CHECKED.get(new IdentityKey(call, null));
+                if (prior != null
+                        && (prior.target() != plan.target() || !prior.equals(plan))) {
                     throw new IllegalStateException(
                             "Future pipeline stage rebound after type checking");
                 }
             }
-            for (Map.Entry<Ast.CallExpr, Ast.FunctionDecl> entry : staged.entrySet()) {
+            for (Map.Entry<Ast.CallExpr, PipelinePlan> entry : staged.entrySet()) {
                 record(entry.getKey(), entry.getValue());
             }
         }
 
         /** Missing proofs, including fresh/rebuilt ASTs, fail closed. */
-        public static synchronized Ast.FunctionDecl target(Ast.CallExpr call) {
+        public static synchronized PipelinePlan plan(Ast.CallExpr call) {
             java.util.Objects.requireNonNull(call, "checked Future call");
             expunge();
             return CHECKED.get(new IdentityKey(call, null));
         }
 
+        public static synchronized Ast.FunctionDecl target(Ast.CallExpr call) {
+            PipelinePlan plan = plan(call);
+            return plan == null ? null : plan.target();
+        }
+
         public static synchronized boolean lookup(Ast.CallExpr call) {
-            return target(call) != null;
+            return plan(call) != null;
         }
     }
     // Keep the stage-one default-type allowlist consistent with concrete
@@ -192,7 +239,7 @@ public final class TypeChecker {
      * on AST nodes it partially visited. Stage only per-checker authorization
      * and publish once all module declarations validate successfully.
      */
-    private final IdentityHashMap<Ast.CallExpr, Ast.FunctionDecl> pendingPureFutureStages =
+    private final IdentityHashMap<Ast.CallExpr, PipelinePlan> pendingFutureStages =
             new IdentityHashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
@@ -320,7 +367,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        CheckedPureFuturePipe.publish(checker.pendingPureFutureStages);
+        CheckedFuturePipe.publish(checker.pendingFutureStages);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -436,7 +483,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        CheckedPureFuturePipe.publish(checker.pendingPureFutureStages);
+        CheckedFuturePipe.publish(checker.pendingFutureStages);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
