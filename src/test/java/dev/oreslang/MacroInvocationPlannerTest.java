@@ -805,7 +805,7 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
-    void duplicatedUnquoteStillReentersOwnershipCheckingPerOccurrence() {
+    void duplicatedUnquoteCannotCloneEffectsOrOwnershipTransfers() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
@@ -823,8 +823,11 @@ final class MacroInvocationPlannerTest {
                         }
                         """));
 
-        assertTrue(failure.getMessage().toLowerCase().contains("move")
-                        || failure.getMessage().toLowerCase().contains("moved"),
+        assertTrue(failure.getMessage().contains("repeated unquote"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("duplicate effects or ownership transfers"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
                 failure::toString);
     }
 
