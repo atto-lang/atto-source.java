@@ -119,6 +119,7 @@ final class ActorFinalizationOutsideLifecycleLockTest {
         CountDownLatch releaseDoneCallback = new CountDownLatch(1);
         AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
         AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
 
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
@@ -151,8 +152,22 @@ final class ActorFinalizationOutsideLifecycleLockTest {
             assertNull(stopFailure.get());
             assertTrue(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
 
-            releaseDoneCallback.countDown();
+            Thread closer = Thread.ofPlatform().start(() -> {
+                try {
+                    runtime.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                }
+            });
+            closer.join(300);
+            assertTrue(closer.isAlive(),
+                    "runtime close must wait for the full retirement callback drain");
 
+            releaseDoneCallback.countDown();
+            closer.join(2000);
+
+            assertFalse(closer.isAlive());
+            assertNull(closeFailure.get());
             assertDoesNotThrow(() -> actor.getDone().get(2, TimeUnit.SECONDS));
             assertNull(callbackFailure.get());
         } finally {
