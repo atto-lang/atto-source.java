@@ -45,14 +45,69 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+    public enum ExportScope { FILE, PACKAGE, PUBLIC }
+    public enum ExportKind {
+        MODULE, ACTOR, CLASS, FNC, ROUTINE, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE,
+        CONST, VAL, LET, SYMBOL
+    }
+
+    /**
+     * One unresolved item in a source export declaration. Symbol items retain
+     * their nominal #identity spelling instead of being coerced to String.
+     * selfIdentity is only legal for the redundant '#x as #x' form.
+     */
+    public record ExportItem(
+            String localName,
+            String externalName,
+            boolean symbol,
+            boolean selfIdentity) {
+        public ExportItem {
+            java.util.Objects.requireNonNull(localName, "export local name");
+            java.util.Objects.requireNonNull(externalName, "export external name");
+            if (localName.isBlank() || externalName.isBlank()) {
+                throw new IllegalArgumentException("export names cannot be blank");
+            }
+            if (selfIdentity && (!symbol || !localName.equals(externalName))) {
+                throw new IllegalArgumentException("symbol self-identity export must preserve exact identity");
+            }
+        }
+        public ExportItem(String name, boolean symbol) {
+            this(name, name, symbol, false);
+        }
+    }
+
+    /** Declarative, unresolved namespace metadata; never an executable Decl. */
+    public record ExportDecl(
+            ExportScope scope,
+            ExportKind kind,
+            List<ExportItem> items,
+            int line,
+            int column) {
+        public ExportDecl {
+            java.util.Objects.requireNonNull(scope, "export scope");
+            items = List.copyOf(items);
+            if (items.isEmpty()) throw new IllegalArgumentException("export declaration cannot be empty");
+            if (line < 1 || column < 1) throw new IllegalArgumentException("invalid export source position");
+        }
+    }
+
+    public record ModuleDecl(
+            String name,
+            List<Annotation> annotations,
+            List<TypeRef> contracts,
+            List<ExportDecl> exports,
+            List<Decl> declarations) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
+            exports = List.copyOf(exports);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
-        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+            this(name, annotations, contracts, List.of(), declarations);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), List.of(), declarations); }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
