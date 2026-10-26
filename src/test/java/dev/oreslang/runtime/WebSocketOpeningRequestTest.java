@@ -169,6 +169,45 @@ final class WebSocketOpeningRequestTest {
     }
 
     @Test
+    void directRequestConstructionCannotBypassTargetHostOrVersionChecks() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketOpeningRequest.Request(
+                        "GET",
+                        "http://example.test/chat",
+                        "HTTP/1.1",
+                        "example.test",
+                        "websocket",
+                        "Upgrade",
+                        "13",
+                        "dGhlIHNhbXBsZSBub25jZQ==",
+                        java.util.Optional.empty()));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketOpeningRequest.Request(
+                        "GET",
+                        "/chat",
+                        "HTTP/1.1",
+                        "user@example.test",
+                        "websocket",
+                        "Upgrade",
+                        "13",
+                        "dGhlIHNhbXBsZSBub25jZQ==",
+                        java.util.Optional.empty()));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketOpeningRequest.Request(
+                        "GET",
+                        "/chat",
+                        "HTTP/2",
+                        "example.test",
+                        "websocket",
+                        "Upgrade",
+                        "13",
+                        "dGhlIHNhbXBsZSBub25jZQ==",
+                        java.util.Optional.empty()));
+    }
+
+    @Test
     void missingOriginRemainsExplicitlyAbsentForNonBrowserPolicyLayer() throws Exception {
         var request = WebSocketOpeningRequest.read(bytes(baseHead()), 4096, 16);
         assertFalse(request.origin().isPresent());
