@@ -114,6 +114,24 @@ final class GenericNamedOptionalCallTest {
     }
 
     @Test
+    void genericRecordPackInferenceUsesSourceFieldOrderNotCanonicalKeyOrder()
+            throws Exception {
+        String code = """
+                fnc second<A, B>(A zed, B alpha): B {
+                    return alpha;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(
+                            second(...record{zed: "x", alpha: 42}));
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
     void omittedGenericWithoutInferenceOrExplicitBindingRejects() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
