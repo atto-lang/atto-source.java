@@ -301,23 +301,44 @@ public final class TaskScope {
          * revocation (when applicable) and before ordinary Future subscribers.
          */
         public void terminalReady(OresFuture<?> future) {
+            terminalReady(future, false);
+        }
+
+        /**
+         * Resource-like structured children may deliberately cancel their
+         * private backing Future as part of a successful close. The exact
+         * Future identity still supplies terminal authority; only the logical
+         * cancellation failure is suppressed. Physical quiescence remains
+         * mandatory.
+         */
+        public void terminalReadyAsSuccessfulClose(OresFuture<?> future) {
+            terminalReady(future, true);
+        }
+
+        private void terminalReady(
+                OresFuture<?> future,
+                boolean successfulClose) {
             Objects.requireNonNull(future, "terminal Future");
             Object terminalState = future.runtimeTerminalStateOrNull();
             if (terminalState == null) {
                 throw new IllegalStateException(
                         "Task scope received terminal hook before terminal authority");
             }
-            Throwable cause = OresFuture.runtimeTerminalFailure(terminalState);
+            Throwable cause = successfulClose
+                    ? null
+                    : OresFuture.runtimeTerminalFailure(terminalState);
             synchronized (this) {
                 if (notified) {
-                    // Duplicate terminal publication from the same scheduler
-                    // Future is harmless. A different Future, or any Future
-                    // after failed admission (terminalFuture == null), is an
-                    // authority mismatch and must not be silently ignored.
                     if (terminalFuture == future) return;
                     throw new IllegalStateException(
                             "retired Task scope ticket received a different Future");
                 }
+                // Scheduler terminal hooks run before ordinary Future waiters.
+                // Treat a repeated witness from the same exact Future as
+                // idempotent even before physical quiescence, so a fallback
+                // completion waiter cannot replace an already-classified
+                // successful resource close with CancellationException.
+                if (terminal && terminalFuture == future) return;
                 if (attachedFuture != null && attachedFuture != future) {
                     throw new IllegalStateException(
                             "Task scope terminal witness belongs to a different Future");
