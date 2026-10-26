@@ -194,7 +194,22 @@ public final class Lexer {
         }
         if (isAtEnd()) throw error("unterminated string");
         advance();
+        validateDecodedUnicode(value, "string");
         tokens.add(new Token(STRING, value.toString(), line, startColumn));
+    }
+
+    private void validateDecodedUnicode(CharSequence value, String kind) {
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw error(kind + " contains unpaired Unicode surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw error(kind + " contains unpaired Unicode surrogate");
+            }
+        }
     }
 
     private char unicodeEscape() {
