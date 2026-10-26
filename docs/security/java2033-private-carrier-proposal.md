@@ -70,13 +70,15 @@ destination activation or source-bearing publication:
 1. #1028 `3c50b227046c6f2aabbc9fb23960be3810dcf5fa`
    (checkout-controlled authorization hardening), based on current source
    `main`;
-2. #1743 `597c966208efbf7a6d9745fd11d16ad838667028`
-   (strict JSON / exact-head review hardening), based directly on #1028;
-3. #2072 `96bbfef8e1de7555ad600b85a90735644af8bad5`
-   (isolated GitHub API environment / carrier eligibility / quarantine
-   hardening), based directly on #1743;
-4. #2071 `380b662b512d96e1bf190cd2db50bb29aa3805e9`
-   (terminal exact CODEOWNERS contract), based directly on #2072.
+2. #1743 `f6f55a732f9fb265837ede84cdec074ef55916f4`
+   (strict JSON / exact-head review hardening plus fail-closed rollback of
+   payload/authorization refs on interrupts and unexpected failures), based
+   directly on #1028;
+3. #2072 `0c3421329053ba1d22b0200692a5f9366d4edaa6`
+   (isolated GitHub API environment / carrier eligibility / immutable
+   quarantine-ID hardening), rebuilt directly on the current #1743 head;
+4. #2071 `37b8448419e8fd9ed3d904eb68dbf6e71e507e63`
+   (terminal exact CODEOWNERS contract), rebuilt directly on current #2072.
 
 Any movement of one of these heads, a base relationship, or a reviewed
 security-control blob invalidates this prerequisite binding and requires a
@@ -98,7 +100,7 @@ At proposal creation time:
 5. Platform-conformance P0 incidents #22, #77 and #127 remain OPEN and require
    independent disposition before private-source export resumes.
 6. Source-org Actions for PR #2033 still fail before job steps. On exact source
-   head `31bb2de7e84184ad9051844b2cfef1cfe1db32f2`, full ci run
+   head `9d86b93d53ae1836c60bd230e1935190fe6426cf`, full ci run
    `40369386035` has Maven test/AOT/ref64/hybrid/polyglot jobs at zero steps;
    fast-ci `40369385985`, Graal conformance `40369385824`, and synthetic
    smoke `40369386021` are likewise zero-step. These are
@@ -129,7 +131,7 @@ this proposal**.
    provenance, carrier ID/private state and exact carrier control-plane pins.
 6. Transfer only the exact source Git tree into a generation-specific private
    carrier commit/ref. Prove the nested destination subtree tree SHA equals
-   `4a2814cf647c0cb1e6da5e3820b86aa9e7af67e8` and pin the destination commit.
+   `d75650c21ca58584b689aae7977f4750074aef8b` and pin the destination commit.
 7. Execute the immutable #2033 plan and require actual nonzero job steps:
    - focused `ActorGroupCleanupFailureTest` / pipe / supervisor coverage;
    - full Maven/JDK suite;
