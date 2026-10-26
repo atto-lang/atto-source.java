@@ -73,6 +73,90 @@ final class ActorShardStopRaceTest {
     }
 
     @Test
+    void sameLogicalIdCannotReadOrCloseRetainedSnapshotFromAnotherActorTurn() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch snapshotted = new CountDownLatch(1);
+            CountDownLatch attacked = new CountDownLatch(1);
+            AtomicReference<ActorShardColumns.ColumnSnapshot> retainedSnapshot =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> owner = runtime.spawnSharedTrusted(
+                    ctx -> (message, turn) -> {
+                        try {
+                            ActorShardColumns shard = new ActorShardColumns(
+                                    ActorShardColumns.Layout.SOA, 2, 1, 1);
+                            shard.write(0, 0, 42.0);
+                            retainedSnapshot.set(shard.snapshotColumnLeased(0));
+                            shard.close();
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            snapshotted.countDown();
+                        }
+                    });
+
+            owner.send(1);
+            assertTrue(snapshotted.await(5, TimeUnit.SECONDS));
+            owner.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+
+            ActorRuntime.ActorRef<Integer> foreign = runtime.spawnSharedTrusted(
+                    ctx -> (message, turn) -> {
+                        try {
+                            Field executionField =
+                                    ActorRuntime.class.getDeclaredField("CURRENT_ACTOR_EXECUTION");
+                            executionField.setAccessible(true);
+                            @SuppressWarnings("unchecked")
+                            ThreadLocal<Object> execution =
+                                    (ThreadLocal<Object>) executionField.get(null);
+                            Object original = execution.get();
+                            assertNotNull(original);
+
+                            var constructor = original.getClass().getDeclaredConstructors()[0];
+                            constructor.setAccessible(true);
+                            Object forged = constructor.newInstance(
+                                    runtime,
+                                    owner.id(),
+                                    ActorRuntime.currentActorKind(),
+                                    ActorRuntime.currentActorPolicy(),
+                                    ActorRuntime.currentActorExecutionDomain());
+
+                            execution.set(forged);
+                            try {
+                                assertThrows(
+                                        SecurityException.class,
+                                        () -> retainedSnapshot.get().read(0),
+                                        "same logical ActorId must not authorize a different actor incarnation");
+                                assertThrows(
+                                        SecurityException.class,
+                                        retainedSnapshot.get()::close,
+                                        "same logical ActorId must not authorize snapshot revocation");
+                            } finally {
+                                execution.set(original);
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            attacked.countDown();
+                        }
+                    });
+
+            foreign.send(1);
+            assertTrue(attacked.await(5, TimeUnit.SECONDS));
+            foreign.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+
+            assertEquals(42.0, retainedSnapshot.get().read(0),
+                    "rejected foreign access must leave the retained snapshot intact");
+            retainedSnapshot.get().close();
+
+            owner.gracefulStop().get(5, TimeUnit.SECONDS);
+            foreign.gracefulStop().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void forgedSameIdAndGenerationRefCannotOwnShardLease() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch allocated = new CountDownLatch(1);
