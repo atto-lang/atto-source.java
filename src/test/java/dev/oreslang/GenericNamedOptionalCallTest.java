@@ -179,6 +179,36 @@ final class GenericNamedOptionalCallTest {
                         """)));
     }
 
+    @Test
+    void explicitlySpecializedGenericOptionMayUseExplicitNoneDefault()
+            throws Exception {
+        String code = """
+                @DefaultArgVals(value: None)
+                fnc absent<T>(T? value?): bool {
+                    return value.is_none();
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(absent<int>());
+                    return;
+                }
+                """;
+        assertEquals("true", checkedExecution(code));
+    }
+
+    @Test
+    void genericDependentScalarDefaultIsInvalidAtDeclarationTime() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        @DefaultArgVals(value: 42)
+                        fnc unsound<T>(T value?): int {
+                            return 1;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("generic-dependent"),
+                failure.getMessage());
+    }
+
     private static String checkedExecution(String code) throws Exception {
         Ast.Program program = Parser.parse(code);
         var typed = TypeChecker.check(program);
