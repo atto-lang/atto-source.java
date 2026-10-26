@@ -5059,11 +5059,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /** The direct producer, not an eagerly invoked intermediate stage. */
-        private Ast.Expr pureFuturePipeInput(Ast.CallExpr pipe) {
+        private Ast.Expr checkedFuturePipeInput(Ast.CallExpr pipe) {
             Ast.Expr upstream = pipe;
             int depth = 0;
             while (upstream instanceof Ast.CallExpr stage
-                    && TypeChecker.CheckedPureFuturePipe.lookup(stage)) {
+                    && TypeChecker.CheckedFuturePipe.lookup(stage)) {
                 if (++depth > 128) throw new IllegalStateException("checked pipeline exceeds 128 stages");
                 upstream = stage.arguments().getFirst();
             }
@@ -5076,7 +5076,7 @@ public final class OresEvalRootNode extends RootNode {
          * No stage arguments, borrows, effects or actor continuations are
          * admitted by this initial proof.
          */
-        private Object startPureFuturePipe(Ast.CallExpr pipe, Object upstream) {
+        private Object startCheckedFuturePipe(Ast.CallExpr pipe, Object upstream) {
             if (ActorRuntime.inActorExecution()) {
                 throw new IllegalStateException(
                         "source Future pipeline actor affinity has not been proven");
@@ -5088,7 +5088,7 @@ public final class OresEvalRootNode extends RootNode {
             List<Ast.CallExpr> backwards = new ArrayList<>();
             Ast.Expr current = pipe;
             while (current instanceof Ast.CallExpr stage
-                    && TypeChecker.CheckedPureFuturePipe.lookup(stage)) {
+                    && TypeChecker.CheckedFuturePipe.lookup(stage)) {
                 if (backwards.size() >= 128) {
                     throw new IllegalStateException("checked pipeline exceeds 128 stages");
                 }
@@ -5102,25 +5102,34 @@ public final class OresEvalRootNode extends RootNode {
                         || call.arguments().size() != 1) {
                     throw new IllegalStateException("checked Future stage shape changed");
                 }
-                Ast.FunctionDecl target = TypeChecker.CheckedPureFuturePipe.target(call);
+                TypeChecker.PipelinePlan plan =
+                        TypeChecker.CheckedFuturePipe.plan(call);
+                Ast.FunctionDecl target = plan == null ? null : plan.target();
                 if (target == null || !target.name().equals(name.name())
-                        || target.parameters().size() != 1) {
+                        || target.parameters().size() != 1
+                        || plan.inputOwnership()
+                                != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM
+                        || !plan.stageEffects().isEmpty()) {
                     throw new IllegalStateException(
-                            "checked Future stage declaration proof is missing or incompatible");
+                            "checked Future stage plan is missing or incompatible");
                 }
-                // Invoke the exact AST declaration admitted by the type checker:
-                // no late name/arity lookup may substitute a different callable.
-                // An async stage creates work owned by this pipeline. Mark that
-                // Future owned so pipeline cancellation revokes it instead of
-                // merely detaching as it does from the borrowed input Future.
+                // Invoke the exact declaration admitted by the type checker.
+                // The plan, not target.async(), decides whether the invocation
+                // produces one Future layer to flatten: synchronous functions
+                // returning Future<T> participate too.
                 stages.add(value -> {
                     Object produced = invoke(functionInvocation(target, List.of(value)));
-                    if (target.async()) {
+                    if (plan.producedFutureOwnership()
+                            == TypeChecker.PipelineStageFutureOwnership.OWNED_STAGE_RESULT) {
                         if (!(produced instanceof OresFuture<?> future)) {
                             throw new IllegalStateException(
-                                    "checked async Future stage did not produce a Future");
+                                    "checked Future stage did not produce its planned Future");
                         }
                         return TaskPipeline.owned(future);
+                    }
+                    if (produced instanceof OresFuture<?>) {
+                        throw new IllegalStateException(
+                                "checked scalar pipeline stage unexpectedly produced a Future");
                     }
                     return produced;
                 });
@@ -5136,20 +5145,20 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
-            if (TypeChecker.CheckedPureFuturePipe.lookup(call)) {
+            if (TypeChecker.CheckedFuturePipe.lookup(call)) {
                 if (ActorRuntime.inActorExecution()) {
                     continuation.accept(task, null, new IllegalStateException(
                             "source Future pipeline actor affinity has not been proven"));
                     return;
                 }
-                evalSuspendableExpr(task, pureFuturePipeInput(call), env,
+                evalSuspendableExpr(task, checkedFuturePipeInput(call), env,
                         (t, source, failure) -> {
                             if (failure != null) {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
                             try {
-                                continuation.accept(t, startPureFuturePipe(call, source), null);
+                                continuation.accept(t, startCheckedFuturePipe(call, source), null);
                             } catch (RuntimeException | Error loweringFailure) {
                                 continuation.accept(t, null, loweringFailure);
                             }
@@ -7636,13 +7645,13 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
-                if (TypeChecker.CheckedPureFuturePipe.lookup(call)) {
+                if (TypeChecker.CheckedFuturePipe.lookup(call)) {
                     if (ActorRuntime.inActorExecution()) {
                         throw new IllegalStateException(
                                 "source Future pipeline actor affinity has not been proven");
                     }
-                    Object source = eval(pureFuturePipeInput(call), env);
-                    return startPureFuturePipe(call, source);
+                    Object source = eval(checkedFuturePipeInput(call), env);
+                    return startCheckedFuturePipe(call, source);
                 }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
