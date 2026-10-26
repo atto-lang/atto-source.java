@@ -141,6 +141,16 @@ final class MacroDeclarationParserTest {
                         """));
         assertTrue(nestedMeta.getMessage().contains("not another macro meta type"), nestedMeta::toString);
 
+        IllegalArgumentException nestedWrappedMeta = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define macro bad(Const<List<Syntax<Expr>>> values) -> Syntax<Decl> {
+                            return build_decl(values);
+                        }
+                        """));
+        assertTrue(nestedWrappedMeta.getMessage().contains("not another macro meta type"),
+                nestedWrappedMeta::toString);
+
         IllegalArgumentException duplicate = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
