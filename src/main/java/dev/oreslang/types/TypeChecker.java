@@ -8793,7 +8793,27 @@ public final class TypeChecker {
         }
     }
 
-    private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
+    private record ExpandedCallArgument(
+            Ast.Expr expression,
+            Type staticType,
+            String label) {
+        private ExpandedCallArgument(Ast.Expr expression, Type staticType) {
+            this(expression, staticType, null);
+        }
+    }
+
+    private static boolean isCopyRecordSlot(Type type) {
+        return type instanceof Primitive primitive
+                        && primitive != Primitive.VOID
+                        && primitive != Primitive.NULL
+                || type instanceof Types.StringLiteral
+                || type instanceof Types.BoolLiteral;
+    }
+
+    private static boolean isDirectClosedRecordPack(Ast.Expr expression) {
+        return expression instanceof Ast.ObjectExpr object
+                && object.structuralRecord();
+    }
 
     private List<ExpandedCallArgument> expandFixedCallArguments(
             List<Ast.Expr> arguments,
@@ -8801,17 +8821,62 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             String label) {
+        return expandFixedCallArguments(
+                arguments, env, generics, self, label, false);
+    }
+
+    private List<ExpandedCallArgument> expandFixedCallArguments(
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String label,
+            boolean permitLabeledProducts) {
         List<ExpandedCallArgument> expanded = new ArrayList<>();
         for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.NamedArgExpr named) {
+                if (!permitLabeledProducts) {
+                    throw new IllegalArgumentException(
+                            label + " does not support named arguments on this callable surface");
+                }
+                expanded.add(new ExpandedCallArgument(
+                        named.value(), null, named.name()));
+                continue;
+            }
+
             if (!(argument instanceof Ast.SpreadExpr spread)) {
                 expanded.add(new ExpandedCallArgument(argument, null));
                 continue;
             }
 
-            Type spreadType = deref(typeOf(spread.expression(), env, generics, self));
-            if (!(spreadType instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
+            Type spreadType =
+                    deref(typeOf(spread.expression(), env, generics, self));
+            if (spreadType instanceof Record record) {
+                if (!permitLabeledProducts
+                        || record.kind() != AggregateKind.RECORD
+                        || !record.readOnly()
+                        || record.members().isEmpty()
+                        || !isDirectClosedRecordPack(spread.expression())
+                        || !record.members().values().stream()
+                                .allMatch(TypeChecker::isCopyRecordSlot)) {
+                    throw new IllegalArgumentException(
+                            label
+                                    + " record spread requires a direct closed readonly "
+                                    + "Copy-only record literal; structs, Maps, widened "
+                                    + "record views and move-only fields are not argument packs");
+                }
+                for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                    expanded.add(new ExpandedCallArgument(
+                            null, field.getValue(), field.getKey()));
+                }
+                continue;
+            }
+
+            if (!(spreadType instanceof Tuple tuple)
+                    || tuple.kind() != TupleKind.TUPLE) {
                 throw new IllegalArgumentException(
-                        label + " spread requires a statically known tuple; got " + spreadType
+                        label + " spread requires a statically known tuple; got "
+                                + spreadType
                                 + ". Runtime-length spread arguments require a variadic callable.");
             }
             for (Type element : tuple.elements()) {
@@ -8827,7 +8892,25 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             String label) {
-        return expandFixedCallArguments(arguments, env, generics, self, label).size();
+        return fixedCallArity(
+                arguments, env, generics, self, label, false);
+    }
+
+    private int fixedCallArity(
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String label,
+            boolean permitLabeledProducts) {
+        return expandFixedCallArguments(
+                arguments,
+                env,
+                generics,
+                self,
+                label,
+                permitLabeledProducts)
+                .size();
     }
 
     private Type expandedCallArgumentType(
@@ -8838,7 +8921,12 @@ public final class TypeChecker {
             Type self) {
         return argument.expression() == null
                 ? argument.staticType()
-                : typeOfAgainstExpected(argument.expression(), expected, env, generics, self);
+                : typeOfAgainstExpected(
+                        argument.expression(),
+                        expected,
+                        env,
+                        generics,
+                        self);
     }
 
     private Type checkGenericCallable(
@@ -8852,9 +8940,20 @@ public final class TypeChecker {
             Type callableSelf,
             Map<String, Type> initialBindings,
             String label) {
-        return checkGenericCallable(genericNames, params, returnRef, arguments,
-                env, callerGenerics, callerSelf, callableSelf,
-                initialBindings, label, List.of(), Set.of());
+        return checkGenericCallable(
+                genericNames,
+                params,
+                returnRef,
+                arguments,
+                env,
+                callerGenerics,
+                callerSelf,
+                callableSelf,
+                initialBindings,
+                label,
+                List.of(),
+                Set.of(),
+                false);
     }
 
     private Type checkGenericCallable(
@@ -8870,57 +8969,135 @@ public final class TypeChecker {
             String label,
             List<Ast.GenericParameter> genericSpecs,
             Set<String> inferenceHoles) {
+        return checkGenericCallable(
+                genericNames,
+                params,
+                returnRef,
+                arguments,
+                env,
+                callerGenerics,
+                callerSelf,
+                callableSelf,
+                initialBindings,
+                label,
+                genericSpecs,
+                inferenceHoles,
+                false);
+    }
+
+    private Type checkGenericCallable(
+            List<String> genericNames,
+            List<Ast.Param> params,
+            Ast.TypeRef returnRef,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type callableSelf,
+            Map<String, Type> initialBindings,
+            String label,
+            List<Ast.GenericParameter> genericSpecs,
+            Set<String> inferenceHoles,
+            boolean permitLabeledProducts) {
         List<ExpandedCallArgument> expanded =
-                expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
+                expandFixedCallArguments(
+                        arguments,
+                        env,
+                        callerGenerics,
+                        callerSelf,
+                        label,
+                        permitLabeledProducts);
         if (params.size() != expanded.size()) {
             throw new IllegalArgumentException(
                     label + " arity mismatch: expected " + params.size()
                             + " argument(s), got " + expanded.size());
         }
+
+        if (expanded.stream().anyMatch(slot -> slot.label() != null)) {
+            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(),
+                    expanded.stream()
+                            .map(slot -> new FixedProductCallPlan.InputSlot(slot.label()))
+                            .toList());
+            List<ExpandedCallArgument> byAbi =
+                    new ArrayList<>(expanded.size());
+            for (int source : plan.abiToSource()) {
+                byAbi.add(expanded.get(source));
+            }
+            expanded = List.copyOf(byAbi);
+        }
+
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
-        Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
-        List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
+        Set<String> fixedBindings =
+                new HashSet<>(initialBindings.keySet());
+        List<Type> patterns = params.stream()
+                .map(param -> resolveParam(param, unique, callableSelf))
+                .toList();
 
         // Keep the result of the inference pass. Re-checking an unchanged,
         // non-lambda argument below duplicates its entire call subtree.
-        // A chain of N nested calls then takes exponential rather than linear
-        // typechecking time (the 128-stage value-pipeline boundary exposed it).
-        // Preserve a second context-sensitive pass for lambdas and for
-        // arguments whose expected type changes after generic inference.
-        List<Type> inferredArgumentTypes = new ArrayList<>(expanded.size());
+        List<Type> inferredArgumentTypes =
+                new ArrayList<>(expanded.size());
         for (int i = 0; i < expanded.size(); i++) {
             Type actual = expandedCallArgumentType(
-                    expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
+                    expanded.get(i),
+                    patterns.get(i),
+                    env,
+                    callerGenerics,
+                    callerSelf);
             inferredArgumentTypes.add(actual);
-            inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
+            inferGenericBindings(
+                    patterns.get(i),
+                    actual,
+                    bindings,
+                    fixedBindings,
+                    label);
         }
+
         GenericCallArguments.applyDefaults(
-                genericNames, genericSpecs, bindings, inferenceHoles,
+                genericNames,
+                genericSpecs,
+                bindings,
+                inferenceHoles,
                 ref -> resolve(ref, unique, callableSelf),
                 this::substituteGenerics,
                 type -> containsGenericNamed(type, unique),
                 label);
-        GenericCallArguments.requireBound(genericNames, bindings, label);
+        GenericCallArguments.requireBound(
+                genericNames, bindings, label);
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
 
-
         for (int i = 0; i < expanded.size(); i++) {
-            Type expected = substituteGenerics(patterns.get(i), bindings);
+            Type expected =
+                    substituteGenerics(patterns.get(i), bindings);
             if (containsGenericNamed(expected, unbound)) {
-                throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
+                throw new IllegalArgumentException(
+                        "cannot infer all generic parameters for "
+                                + label + " from argument " + (i + 1));
             }
+
             ExpandedCallArgument argument = expanded.get(i);
             if (argument.expression() != null) {
-                validateLambdaArgument(argument.expression(), expected, env, callerGenerics, callerSelf);
+                validateLambdaArgument(
+                        argument.expression(),
+                        expected,
+                        env,
+                        callerGenerics,
+                        callerSelf);
             }
+
             Type actual = argument.expression() != null
-                    && !(argument.expression() instanceof Ast.LambdaExpr)
-                    && expected.equals(patterns.get(i))
+                            && !(argument.expression() instanceof Ast.LambdaExpr)
+                            && expected.equals(patterns.get(i))
                     ? inferredArgumentTypes.get(i)
                     : expandedCallArgumentType(
-                            argument, expected, env, callerGenerics, callerSelf);
+                            argument,
+                            expected,
+                            env,
+                            callerGenerics,
+                            callerSelf);
             if (!params.get(i).structural()) {
                 requireReadonlyCapabilityPreserved(
                         actual,
@@ -8928,7 +9105,8 @@ public final class TypeChecker {
                         "argument " + (i + 1) + " to " + label);
             }
             requireMutableReferentCompatible(
-                    actual, params.get(i).mutable(),
+                    actual,
+                    params.get(i).mutable(),
                     "argument " + (i + 1) + " to mutable parameter");
             requireAssignable(
                     actual,
@@ -8936,9 +9114,15 @@ public final class TypeChecker {
                     "argument " + (i + 1));
         }
 
-        Type result = substituteGenerics(resolve(returnRef, unique, callableSelf), bindings);
+        Type result =
+                substituteGenerics(
+                        resolve(returnRef, unique, callableSelf),
+                        bindings);
         if (containsGenericNamed(result, unbound)) {
-            throw new IllegalArgumentException("cannot infer generic return type for " + label + "; add an inferable value parameter");
+            throw new IllegalArgumentException(
+                    "cannot infer generic return type for "
+                            + label
+                            + "; add an inferable value parameter");
         }
         return result;
     }
