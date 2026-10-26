@@ -3025,6 +3025,8 @@ public final class TypeChecker {
                                     target.generator(),
                                     result));
                 }
+                throw new IllegalArgumentException(
+                        label + " has no overload accepting the supplied fixed argument shape");
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
