@@ -78,3 +78,22 @@ Normative contract: [common-source HOT_UPGRADE_ERLANG_PITFALLS_V1](https://githu
 This quota ledger intentionally **does not** introduce a second active route pointer or an automatic purge API. Before promoting the new generation, the supervisor must reserve budget; if exhausted, reject/defer the deployment while keeping all serving generations valid. To reclaim budget, complete real image/HTTP retirement then acknowledge physical cleanup. The fact that this bookkeeping admits a new image does not mean its code or state schema passed ABI/effect checks.
 
 Focused host-only JDK25 CI is specified in `.github/workflows/hot-code-generations-exact-head.yml`. It must show actual executed steps and JUnit reports before promotion.
+
+## Stacked route integration (#2034)
+
+The first composition layer now lives in `HttpActorGenerationCoordinatorV1` on top of the single `ActorRoutePublicationV1` authority.
+
+- `ActorRoutePublicationV1.withCurrentAdmission(...)` binds route observation and HTTP generation admission under the same route lock. A request cannot observe V1 and accidentally pin V2 during a concurrent publication.
+- Compatible rolling publication does **not** wait for previously admitted HTTP exchanges. After the one route cutover, new admissions use V2 while V1 exchanges retain V1's `HttpGenerationDrainV1` and image reservation.
+- Actor mailbox/Task leases remain a different boundary: if the logical actor's own `ActorUpgradeEpochGate` is pinned, publication waits, while ordinary HTTP arrivals continue on the still-published old route.
+- Image revision and route epoch are distinct monotonic domains. An aborted staged image consumes its image revision forever, preventing ABA reuse, but because it never published, the next candidate may still target the same next route epoch.
+- Image-count/byte-budget exhaustion during staging rolls back the temporary actor freeze and preserves the current route. The new deployment is rejected/deferred; no old generation is killed or evicted.
+
+`NativeHttpRollingDispatchV1` is the first transport adapter. It intentionally supports only **fresh non-pooled handlers**. Once a generation lease is bound:
+1. handler-side quiescence is signalled only by the fresh actor's `ActorRef.done()`;
+2. transport-side quiescence is signalled only after the raw HTTP exchange is physically closed/aborted;
+3. the generation retires only after both sides and any supplementary physical pins are gone.
+
+Pooled HTTP workers are rejected by this adapter until the runtime provides a per-request authenticated receive-turn completion receipt. Response Future settlement is not sufficient because the worker may still be executing post-response code, which is exactly the lifecycle race tracked by #973.
+
+Current stacked draft: https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2034
