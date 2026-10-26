@@ -121,16 +121,29 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
             }
         }
 
-        synchronized void acknowledgeAbortedPhysicalCleanup(boolean loaderConfirmed) {
+        synchronized HotCodeGenerationRetentionV1.CleanupReceipt
+                abortedPhysicalCleanupCompleted(String loaderResourceId) {
             if (!closed || published)
                 throw new IllegalStateException("candidate is not an aborted stage");
-            if (candidateCleanupAcknowledged) return;
+            return retention.physicalCleanupCompleted(
+                    candidate.imageTicket, loaderResourceId);
+        }
+
+        synchronized void acknowledgeAbortedPhysicalCleanup(
+                HotCodeGenerationRetentionV1.CleanupReceipt receipt) {
+            if (!closed || published)
+                throw new IllegalStateException("candidate is not an aborted stage");
+            if (candidateCleanupAcknowledged)
+                throw new IllegalStateException("candidate cleanup already acknowledged");
             retention.acknowledgePhysicalCleanup(
-                    candidate.imageTicket, candidate.http, loaderConfirmed);
+                    candidate.imageTicket, candidate.routeEpoch,
+                    candidate.http, receipt);
             candidateCleanupAcknowledged = true;
         }
 
         long candidateRouteEpoch() { return candidate.routeEpoch; }
+        long candidateImageGeneration() { return candidate.imageGeneration; }
+        String candidateImageSha256() { return candidate.image.codeSha256(); }
 
         private void requireOpen() {
             requireCoordinatorOperational();
@@ -261,11 +274,23 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
     }
 
     /**
-     * Physically collected old image. Logical/HTTP quiescence is checked here;
-     * loaderConfirmed is a trusted-host placeholder until the loader returns a
-     * typed cleanup receipt.
+     * Trusted loader reports physical cleanup of the exact retained image.
+     * The returned receipt is bound to image generation/digest and one-shot.
      */
-    synchronized void collectRetired(long routeEpoch, boolean loaderConfirmed) {
+    synchronized HotCodeGenerationRetentionV1.CleanupReceipt
+            physicalCleanupCompleted(long routeEpoch, String loaderResourceId) {
+        requireCoordinatorOperational();
+        Generation<R> generation = generations.get(routeEpoch);
+        if (generation == null)
+            throw new IllegalStateException("unknown or already collected HTTP generation");
+        return retention.physicalCleanupCompleted(
+                generation.imageTicket, loaderResourceId);
+    }
+
+    /** Physically collected old image after typed loader receipt + HTTP drain. */
+    synchronized void collectRetired(
+            long routeEpoch,
+            HotCodeGenerationRetentionV1.CleanupReceipt receipt) {
         requireCoordinatorOperational();
         var current = routes.current();
         if (routeEpoch == current.routeEpoch())
@@ -274,7 +299,8 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
         if (generation == null)
             throw new IllegalStateException("unknown or already collected HTTP generation");
         retention.acknowledgePhysicalCleanup(
-                generation.imageTicket, generation.http, loaderConfirmed);
+                generation.imageTicket, generation.routeEpoch,
+                generation.http, receipt);
         if (!generations.remove(routeEpoch, generation)) {
             poisoned = true;
             throw new IllegalStateException("HTTP generation collection raced registry mutation");
