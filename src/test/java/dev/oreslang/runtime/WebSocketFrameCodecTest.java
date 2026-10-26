@@ -78,6 +78,44 @@ final class WebSocketFrameCodecTest {
     }
 
     @Test
+    void configuredPayloadLimitsAreHardCappedAndZeroProgressCannotSpin() throws Exception {
+        assertThrows(IllegalArgumentException.class, () ->
+                WebSocketFrameCodec.decodeClientFrame(
+                        maskedFrame(true, WebSocketFrameCodec.OPCODE_BINARY, new byte[0]),
+                        WebSocketFrameCodec.MAX_CONFIGURED_PAYLOAD_BYTES + 1));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketFrameCodec.MessageAssembler(
+                        WebSocketFrameCodec.MAX_CONFIGURED_PAYLOAD_BYTES + 1));
+
+        byte[] wire = maskedFrame(
+                true,
+                WebSocketFrameCodec.OPCODE_BINARY,
+                new byte[] {1, 2, 3});
+        InputStream zeroThenProgress = new InputStream() {
+            int index;
+            boolean zero;
+            @Override public int read() {
+                return index < wire.length ? Byte.toUnsignedInt(wire[index++]) : -1;
+            }
+            @Override public int read(byte[] target, int offset, int length) {
+                if (!zero) {
+                    zero = true;
+                    return 0;
+                }
+                zero = false;
+                if (index >= wire.length) return -1;
+                int n = Math.min(length, wire.length - index);
+                System.arraycopy(wire, index, target, offset, n);
+                index += n;
+                return n;
+            }
+        };
+        assertArrayEquals(
+                new byte[] {1, 2, 3},
+                WebSocketFrameCodec.readClientFrame(zeroThenProgress, 16).payload());
+    }
+
+    @Test
     void decodesMaskedTextWithoutLeakingMutablePayload() {
         byte[] wire = maskedFrame(true, WebSocketFrameCodec.OPCODE_TEXT,
                 "hello".getBytes(StandardCharsets.UTF_8));
