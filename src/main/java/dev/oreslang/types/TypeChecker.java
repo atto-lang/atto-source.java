@@ -169,6 +169,19 @@ public final class TypeChecker {
         }
     }
 
+    private static void rejectUnloweredInvertedClasses(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass && klass.inverted()) {
+                    throw new IllegalArgumentException(
+                            "inverted class '" + klass.name()
+                                    + "' requires typed InvertedArray ownership, columnar field lowering "
+                                    + "and checked borrow effects; executable SoA classes are not yet enabled");
+                }
+            }
+        }
+    }
+
     private static void rejectUnloweredCheckedClassEffects(Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.effects().isEmpty()) {
@@ -192,6 +205,7 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -237,8 +251,13 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
+            if (linked != null && linked.inverted()) {
+                throw new IllegalArgumentException(
+                        "linked inverted class requires checked SoA transport and lowering");
+            }
             rejectUnloweredCheckedClassEffects(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
@@ -1125,6 +1144,12 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        if (klass.inverted()) {
+            throw new IllegalArgumentException(
+                    "inverted class '" + klass.name()
+                            + "' requires typed InvertedArray ownership, columnar field lowering "
+                            + "and checked borrow effects; executable SoA classes are not yet enabled");
+        }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
