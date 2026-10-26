@@ -1,0 +1,151 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.ExplicitExportResolver;
+import dev.oreslang.parser.Parser;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class ExplicitExportResolverTest {
+
+    private static ExplicitExportResolver.Result resolve(String source) {
+        return ExplicitExportResolver.resolve(Parser.parse(source));
+    }
+
+    private static List<ExplicitExportResolver.ExportBinding> rootBindings(String source) {
+        return resolve(source).bindings(Parser.ROOT_MODULE);
+    }
+
+    @Test
+    void defaultPrivateDeclarationMayBeExplicitlyExported() {
+        List<ExplicitExportResolver.ExportBinding> bindings = rootBindings("""
+                export class X;
+
+                define class X as
+                end
+                """);
+
+        assertEquals(1, bindings.size());
+        ExplicitExportResolver.ExportBinding binding = bindings.getFirst();
+        assertEquals("X", binding.localName());
+        assertEquals("X", binding.externalName());
+        assertEquals(Ast.ExportKind.CLASS, binding.localKind());
+        assertEquals(ExplicitExportResolver.Origin.EXPLICIT_EXPORT, binding.origin());
+    }
+
+    @Test
+    void aliasCreatesExternalBindingWithoutRenamingLocalDeclaration() {
+        ExplicitExportResolver.ExportBinding binding = rootBindings("""
+                export class Internal as Public;
+
+                define class Internal as
+                end
+                """).getFirst();
+
+        assertEquals("Internal", binding.localName());
+        assertEquals("Public", binding.externalName());
+        assertTrue(binding.localSymbolId().endsWith("::class::Internal"));
+    }
+
+    @Test
+    void explicitPrivateDeclarationCannotBeExported() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export class X;
+
+                        private define class X as
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("explicitly private"), failure.getMessage());
+    }
+
+    @Test
+    void typedKindMismatchFails() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export actor X;
+
+                        define class X as
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("kind mismatch"), failure.getMessage());
+    }
+
+    @Test
+    void aliasCollisionFails() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export class A as Public;
+                        export class B as Public;
+
+                        define class A as
+                        end
+
+                        define class B as
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("collision"), failure.getMessage());
+    }
+
+    @Test
+    void inlinePubPlusIdenticalExplicitExportIsIdempotent() {
+        List<ExplicitExportResolver.ExportBinding> bindings = rootBindings("""
+                export class X;
+
+                pub define class X as
+                end
+                """);
+
+        assertEquals(1, bindings.size());
+        assertEquals(ExplicitExportResolver.Origin.IMPLICIT_PUB, bindings.getFirst().origin());
+    }
+
+    @Test
+    void packageAndFileScopesRemainFailClosedUntilJavaVisibilityParityLands() {
+        for (String scope : List.of("[pkg]", "[file]")) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> resolve("""
+                            export%s class X;
+
+                            define class X as
+                            end
+                            """.formatted(scope)));
+            assertTrue(failure.getMessage().contains("public scope only"), failure.getMessage());
+        }
+    }
+
+    @Test
+    void symbolSyntaxIsPreservedButSemanticLoweringRemainsFailClosed() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export symbol #ready as #ready;
+
+                        define class Placeholder as
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("Symbol declaration export resolution"), failure.getMessage());
+    }
+
+    @Test
+    void namedModuleDefaultPrivateExportWaitsForVisibilityOriginMetadata() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        define module M as
+                          export class X;
+
+                          define class X as
+                          end
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("visibility-origin metadata"), failure.getMessage());
+    }
+}
