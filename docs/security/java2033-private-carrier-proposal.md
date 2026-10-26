@@ -45,6 +45,26 @@ Any change to the source head/tree, carrier head, workflow blob, test-plan blob,
 repository slug/ID, privacy state, or reviewed command set invalidates this
 proposal and requires a fresh exact review.
 
+## Exact prerequisite security stack
+
+Independent review must cover this exact linear control-plane stack before any
+destination activation or source-bearing publication:
+
+1. #1028 `3c50b227046c6f2aabbc9fb23960be3810dcf5fa`
+   (checkout-controlled authorization hardening), based on current source
+   `main`;
+2. #1743 `597c966208efbf7a6d9745fd11d16ad838667028`
+   (strict JSON / exact-head review hardening), based directly on #1028;
+3. #2072 `96bbfef8e1de7555ad600b85a90735644af8bad5`
+   (isolated GitHub API environment / carrier eligibility / quarantine
+   hardening), based directly on #1743;
+4. #2071 `380b662b512d96e1bf190cd2db50bb29aa3805e9`
+   (terminal exact CODEOWNERS contract), based directly on #2072.
+
+Any movement of one of these heads, a base relationship, or a reviewed
+security-control blob invalidates this prerequisite binding and requires a
+fresh independent review. These PRs remain non-authorizing by themselves.
+
 ## Current HOLD reasons
 
 At proposal creation time:
