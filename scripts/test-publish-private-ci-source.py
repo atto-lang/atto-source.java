@@ -510,6 +510,41 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(r == "repos/trusted/ci/git/refs"
                              for m, r, _ in self.route_calls if m == "POST"))
 
+    def test_protected_origin_revocation_before_first_write_blocks_all_posts(self):
+        calls = [0]
+        def authority(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] > 1:
+                raise pub.Denied("source main is not protected; CODEOWNER approval is unenforced")
+            return A
+        with patch.object(pub, "verify_protected_origin", side_effect=authority):
+            with self.assertRaisesRegex(pub.Denied, "not protected"):
+                self.publish()
+        self.assertGreaterEqual(calls[0], 2)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_protected_origin_revocation_after_blob_blocks_next_write(self):
+        original = self.fake_api
+        revoked = [False]
+        def api(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                revoked[0] = True
+            return result
+        def authority(*args, **kwargs):
+            if revoked[0]:
+                raise pub.Denied("source main is not protected; CODEOWNER approval is unenforced")
+            return A
+        with patch.object(pub, "verify_protected_origin", side_effect=authority):
+            with patch.object(pub, "gh_api", side_effect=api):
+                with self.assertRaisesRegex(pub.Denied, "not protected"):
+                    pub.publish("trusted/ci", self.source,
+                                "ci/oreslang-test", self.root, A)
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
     def test_git_tree_proof_exactly_matches_all_local_files(self):
         data = (self.source / "hello.ores").read_bytes()
         git_blob = hashlib.sha1(
