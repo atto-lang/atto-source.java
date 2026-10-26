@@ -806,8 +806,10 @@ final class MacroInvocationPlannerTest {
         MacroIdentifierHygiene.CapturedFunction identity = assertInstanceOf(
                 MacroIdentifierHygiene.CapturedFunction.class,
                 MacroIdentifierHygiene.lookup(captured));
-        assertEquals(Parser.ROOT_MODULE, identity.callerModule());
-        assertEquals(Parser.ROOT_MODULE, identity.macroOwnerModule());
+        assertEquals(MacroSourceUnitIdentity.MEMORY_UNIT,
+                identity.hygiene().sourceUnitId());
+        assertEquals(Parser.ROOT_MODULE, identity.hygiene().callerModule());
+        assertEquals(Parser.ROOT_MODULE, identity.hygiene().macroOwnerModule());
         assertEquals("helper", identity.name());
         assertEquals(1, identity.declarations().size());
         assertEquals(Ast.Visibility.PRIVATE,
@@ -855,8 +857,10 @@ final class MacroInvocationPlannerTest {
         MacroIdentifierHygiene.CapturedFunction identity = assertInstanceOf(
                 MacroIdentifierHygiene.CapturedFunction.class,
                 MacroIdentifierHygiene.lookup(captured));
-        assertEquals("Consumer", identity.callerModule());
-        assertEquals("Producer", identity.macroOwnerModule());
+        assertEquals(MacroSourceUnitIdentity.MEMORY_UNIT,
+                identity.hygiene().sourceUnitId());
+        assertEquals("Consumer", identity.hygiene().callerModule());
+        assertEquals("Producer", identity.hygiene().macroOwnerModule());
         assertTrue(identity.declarations().stream()
                 .allMatch(fn -> fn.visibility() == Ast.Visibility.PUBLIC));
     }
