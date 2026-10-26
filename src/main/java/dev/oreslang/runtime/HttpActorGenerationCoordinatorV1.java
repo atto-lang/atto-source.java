@@ -27,6 +27,7 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
 
     record GenerationStatus(
             long routeEpoch,
+            long imageGeneration,
             HotCodeGenerationRetentionV1.Phase phase,
             HttpGenerationDrainV1.DrainStatus http) { }
 
@@ -39,15 +40,18 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
 
     private static final class Generation<R> {
         final long routeEpoch;
+        final long imageGeneration;
         final ActorUpgradeEpochGate.Image image;
         final R physicalRoute;
         final HotCodeGenerationRetentionV1.Ticket imageTicket;
         final HttpGenerationDrainV1 http;
 
-        Generation(long routeEpoch, ActorUpgradeEpochGate.Image image, R physicalRoute,
+        Generation(long routeEpoch, long imageGeneration,
+                   ActorUpgradeEpochGate.Image image, R physicalRoute,
                    HotCodeGenerationRetentionV1.Ticket imageTicket,
                    HttpGenerationDrainV1 http) {
             this.routeEpoch = routeEpoch;
+            this.imageGeneration = imageGeneration;
             this.image = image;
             this.physicalRoute = physicalRoute;
             this.imageTicket = imageTicket;
@@ -141,6 +145,7 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
     private final int maxResourcePinsPerGeneration;
     private final ConcurrentHashMap<Long, Generation<R>> generations =
             new ConcurrentHashMap<>();
+    private long highestImageGeneration;
     private volatile boolean poisoned;
     private volatile boolean closed;
 
@@ -160,12 +165,15 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
                 maxImages, maxReservedImageBytes);
 
         var current = routes.current();
+        long initialImageGeneration = 1L;
         var ticket = retention.reserve(
-                current.routeEpoch(), current.image().codeSha256(),
+                initialImageGeneration, current.image().codeSha256(),
                 initialReservedImageBytes);
         retention.activated(ticket);
+        highestImageGeneration = initialImageGeneration;
         var initial = new Generation<>(
-                current.routeEpoch(), current.image(), current.physicalRoute(),
+                current.routeEpoch(), initialImageGeneration,
+                current.image(), current.physicalRoute(),
                 ticket, new HttpGenerationDrainV1(
                         current.routeEpoch(), maxExchangesPerGeneration,
                         maxResourcePinsPerGeneration));
@@ -219,10 +227,11 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
         }
         long nextEpoch = Math.addExact(priorPublished.routeEpoch(), 1L);
         ActorRoutePublicationV1<R>.Stage routeStage = routes.stage(candidateImage);
+        final long imageGeneration = Math.addExact(highestImageGeneration, 1L);
         final HotCodeGenerationRetentionV1.Ticket ticket;
         try {
             ticket = retention.reserve(
-                    nextEpoch, candidateImage.codeSha256(), reservedImageBytes);
+                    imageGeneration, candidateImage.codeSha256(), reservedImageBytes);
         } catch (RuntimeException | Error failure) {
             try {
                 routeStage.close();
@@ -233,8 +242,9 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
             throw failure;
         }
 
+        highestImageGeneration = imageGeneration;
         Generation<R> candidate = new Generation<>(
-                nextEpoch, candidateImage, readyPhysicalRoute, ticket,
+                nextEpoch, imageGeneration, candidateImage, readyPhysicalRoute, ticket,
                 new HttpGenerationDrainV1(
                         nextEpoch, maxExchangesPerGeneration,
                         maxResourcePinsPerGeneration));
@@ -279,11 +289,12 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
                         entry -> {
                             var g = entry.getValue();
                             var blocker = retention.status().retained().stream()
-                                    .filter(item -> item.generation() == g.routeEpoch)
+                                    .filter(item -> item.generation() == g.imageGeneration)
                                     .findFirst()
                                     .orElseThrow();
                             return new GenerationStatus(
-                                    g.routeEpoch, blocker.phase(), g.http.status());
+                                    g.routeEpoch, g.imageGeneration,
+                                    blocker.phase(), g.http.status());
                         }));
         return new Status(current.routeEpoch(), retention.status(),
                 snapshots, poisoned, closed);
