@@ -49,7 +49,7 @@ final class CompileTimeConstEvaluatorTest {
                                 new Ast.LiteralExpr(1.0d),
                                 new Ast.LiteralExpr(0.0d))));
 
-        assertEquals(CompileTimeConstEvaluator.FailureKind.UNSUPPORTED, failure.kind());
+        assertEquals(CompileTimeConstEvaluator.FailureKind.INVALID, failure.kind());
         assertTrue(failure.getMessage().contains("non-finite"), failure::toString);
     }
 
@@ -71,15 +71,33 @@ final class CompileTimeConstEvaluatorTest {
 
     @Test
     void estimatedMemoryBudgetCountsCompileTimeStringMaterialization() {
-        String large = "x".repeat((int) CompileTimeConstEvaluator.MAX_ESTIMATED_BYTES);
+        String chunk = "x".repeat(CompileTimeConstEvaluator.MAX_STRING_CHARS);
+        ArrayList<Ast.Expr> chunks = new ArrayList<>();
+        for (int i = 0; i < 16; i++) {
+            chunks.add(new Ast.LiteralExpr(chunk));
+        }
 
         CompileTimeConstEvaluator.Failure failure = assertThrows(
                 CompileTimeConstEvaluator.Failure.class,
-                () -> CompileTimeConstEvaluator.evaluate(new Ast.LiteralExpr(large)));
+                () -> CompileTimeConstEvaluator.evaluate(new Ast.ListExpr(chunks)));
 
         assertEquals(CompileTimeConstEvaluator.FailureKind.RESOURCE, failure.kind());
         assertTrue(failure.getMessage().contains("estimated memory budget"),
                 failure::toString);
+    }
+
+    @Test
+    void compileTimeIntegerOverflowFailsClosedInsteadOfWrapping() {
+        CompileTimeConstEvaluator.Failure failure = assertThrows(
+                CompileTimeConstEvaluator.Failure.class,
+                () -> CompileTimeConstEvaluator.evaluate(
+                        new Ast.BinaryExpr(
+                                "+",
+                                new Ast.LiteralExpr(Long.MAX_VALUE),
+                                new Ast.LiteralExpr(1L))));
+
+        assertEquals(CompileTimeConstEvaluator.FailureKind.INVALID, failure.kind());
+        assertTrue(failure.getMessage().contains("overflow"), failure::toString);
     }
 
     @Test
