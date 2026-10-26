@@ -462,6 +462,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "response exceeds size limit"):
                 pub.gh_api("repos/trusted/ci")
 
+    def test_private_ci_policy_rejects_duplicate_numeric_repository_ids(self):
+        raw = b"trusted/ci 246810\nrenamed/alias 246810\n"
+        with self.assertRaisesRegex(pub.Denied, "duplicate numeric repository IDs"):
+            pub._parse_policy_approval(
+                raw, "trusted/ci", "protected source policy"
+            )
+
     def test_private_ci_policy_rejects_noncanonical_control_bytes(self):
         for raw in (
             b"trusted/ci 246810\r\n",
