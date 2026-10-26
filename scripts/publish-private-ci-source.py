@@ -376,11 +376,13 @@ def _require_strict_source_protection(protection):
     administrators = protection.get("enforce_admins")
     force_pushes = protection.get("allow_force_pushes")
     deletions = protection.get("allow_deletions")
+    conversation = protection.get("required_conversation_resolution")
     contexts = checks.get("contexts") if isinstance(checks, dict) else None
     named_checks = checks.get("checks") if isinstance(checks, dict) else None
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
+            or reviews.get("require_last_push_approval") is not True
             or not isinstance(reviews.get("required_approving_review_count"), int)
             or isinstance(reviews["required_approving_review_count"], bool)
             or reviews["required_approving_review_count"] < 1
@@ -398,10 +400,13 @@ def _require_strict_source_protection(protection):
             or not isinstance(force_pushes, dict)
             or force_pushes.get("enabled") is not False
             or not isinstance(deletions, dict)
-            or deletions.get("enabled") is not False):
+            or deletions.get("enabled") is not False
+            or not isinstance(conversation, dict)
+            or conversation.get("enabled") is not True):
         raise Denied(
             "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
-            "strict required CI, administrator protection and deny forced pushes/deletions")
+            "last-push approval, strict required CI, conversation resolution, "
+            "administrator protection and deny forced pushes/deletions")
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
         if (not isinstance(bypasses, dict)
@@ -417,6 +422,7 @@ def _require_strict_source_protection(protection):
     return (
         reviews["require_code_owner_reviews"],
         reviews["dismiss_stale_reviews"],
+        reviews["require_last_push_approval"],
         reviews["required_approving_review_count"],
         checks["strict"],
         tuple(sorted(contexts)),
@@ -424,6 +430,7 @@ def _require_strict_source_protection(protection):
         administrators["enabled"],
         force_pushes["enabled"],
         deletions["enabled"],
+        conversation["enabled"],
     )
 
 
