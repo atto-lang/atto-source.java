@@ -1228,6 +1228,9 @@ public final class OwnershipChecker {
                             : ValueKind.MOVE_ONLY,
                     null);
         }
+        if (expr instanceof Ast.NamedValueArgumentExpr) {
+            throw error("named value argument outside a statically resolved direct call");
+        }
         if (expr instanceof Ast.SpreadExpr spread) {
             return checkExpr(spread.expression(), scope, consuming);
         }
@@ -1534,6 +1537,12 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.arguments().stream().anyMatch(Ast.NamedValueArgumentExpr.class::isInstance)
+                && (!(call.callee() instanceof Ast.NameExpr name)
+                    || scope.lookup(name.name()) != null
+                    || findFunction(name.name(), call.arguments().size()) == null)) {
+            throw error("named value arguments require a statically resolved direct function");
+        }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
@@ -2382,11 +2391,28 @@ public final class OwnershipChecker {
     private record CallArgumentLoan(VarState root, boolean mutable) { }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
+        boolean hasNamed = arguments.stream().anyMatch(Ast.NamedValueArgumentExpr.class::isInstance);
+        NamedCallBindingPlan.Plan plan = null;
+        if (hasNamed) {
+            if (arguments.stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+                throw error(callable + " cannot mix named arguments with spreads");
+            }
+            List<String> labels = new ArrayList<>(arguments.size());
+            for (Ast.Expr arg : arguments) {
+                labels.add(arg instanceof Ast.NamedValueArgumentExpr named ? named.label() : null);
+            }
+            plan = NamedCallBindingPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(), labels);
+        }
+        int sourceIndex = 0;
         int parameterIndex = 0;
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
         try {
-            for (Ast.Expr argument : arguments) {
+            for (Ast.Expr originalArgument : arguments) {
+                int formalIndex = plan == null ? parameterIndex : plan.sourceToFormal().get(sourceIndex++);
+                Ast.Expr argument = originalArgument instanceof Ast.NamedValueArgumentExpr named
+                        ? named.expression() : originalArgument;
                 if (argument instanceof Ast.SpreadExpr spread) {
                     Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
                     if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
@@ -2415,8 +2441,8 @@ public final class OwnershipChecker {
                     continue;
                 }
 
-                if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-                Ast.Param param = params.get(parameterIndex);
+                if (formalIndex >= params.size()) return; // TypeChecker reports arity.
+                Ast.Param param = params.get(formalIndex);
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
@@ -2424,10 +2450,10 @@ public final class OwnershipChecker {
                     Boolean previous = invocationLoans.get(loanOwner);
                     if (previous != null && (previous || mutable)) {
                         throw error(callable + " has overlapping mutable borrow arguments at position "
-                                + (parameterIndex + 1));
+                                + (formalIndex + 1));
                     }
                 }
-                checkArgument(argument, param, scope, callable, parameterIndex + 1);
+                checkArgument(argument, param, scope, callable, formalIndex + 1);
                 if (loanOwner != null) {
                     // Borrowed arguments remain live until the call completes,
                     // including forwarded incoming &mut parameters. Their
@@ -3698,7 +3724,9 @@ public final class OwnershipChecker {
                     result.add(Ast.TypeRef.inferred());
                 }
             } else {
-                result.add(syntacticType(argument, scope));
+                result.add(syntacticType(
+                        argument instanceof Ast.NamedValueArgumentExpr named
+                                ? named.expression() : argument, scope));
             }
         }
         return List.copyOf(result);
@@ -3732,6 +3760,15 @@ public final class OwnershipChecker {
         bindings.putAll(bound.explicitTypes());
         fixed.addAll(bound.explicitTypes().keySet());
         List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(call.arguments(), scope);
+        if (call.arguments().stream().anyMatch(Ast.NamedValueArgumentExpr.class::isInstance)) {
+            List<String> labels = new ArrayList<>(call.arguments().size());
+            for (Ast.Expr arg : call.arguments()) {
+                labels.add(arg instanceof Ast.NamedValueArgumentExpr named ? named.label() : null);
+            }
+            var plan = NamedCallBindingPlan.bind(
+                    parameters.stream().map(Ast.Param::name).toList(), labels);
+            actualTypes = plan.inFormalOrder(actualTypes);
+        }
         for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
             inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
                     Set.copyOf(allGenericNames), bindings, fixed);
