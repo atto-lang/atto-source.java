@@ -177,6 +177,61 @@ final class StaticBorrowEscapeBoundaryTest {
                 """)));
     }
 
+
+    @Test
+    void escapingClosureCannotCaptureTransitiveBorrowFromParameter() {
+        rejects("""
+                fnc bad(Option<borrow int> wrapped): void {
+                  val callback = || -> { return wrapped; };
+                  return;
+                }
+                """, "closure cannot capture borrowed value");
+    }
+
+    @Test
+    void expressionBodyLambdaCannotReturnBorrowOfCapturedLocal() {
+        rejects("""
+                fnc bad(): void {
+                  let int owner = 7;
+                  val callback = || -> rt borrow owner;
+                  return;
+                }
+                """, "cannot return borrow rooted in");
+    }
+
+    @Test
+    void explicitTakeCopyAndShareCannotLaunderNestedBorrow() {
+        rejects("""
+                fnc bad(Option<borrow int> wrapped): void {
+                  rt take wrapped;
+                  return;
+                }
+                """, "rt take requires owned data");
+        rejects("""
+                fnc bad(Option<borrow int> wrapped): void {
+                  rt copy wrapped;
+                  return;
+                }
+                """, "rt copy cannot duplicate a borrowed capability");
+        rejects("""
+                fnc bad(Option<borrow int> wrapped): void {
+                  rt share wrapped;
+                  return;
+                }
+                """, "rt share cannot publish a borrowed capability");
+    }
+
+    @Test
+    void ownedClosureCaptureAndExpressionReturnRemainLegal() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                fnc valid(Option<int> wrapped): void {
+                  val callback = || -> { return wrapped; };
+                  val scalar = || -> 7;
+                  return;
+                }
+                """)));
+    }
+
     @Test
     void compilerEntrypointRejectsFreshLoanYieldBeforeExecution() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""

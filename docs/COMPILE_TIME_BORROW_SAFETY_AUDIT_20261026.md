@@ -31,6 +31,10 @@ memory reclamation and actor runtime synchronization remain distinct.
   unless a lexical lifetime is explicitly modeled.
 - Owned list/tuple/struct initialization, assignment, trap wrapping and channel
   writes also reject transitive loan-bearing values before lowering.
+- Closures reject nested borrowed captures; expression-bodied lambdas apply
+  the explicit-return provenance check to direct borrowed results and reject
+  borrowed wrappers. The `rt take`, `rt copy`, and `rt share` primitives
+  cannot conceal loans inside owned-looking generic carriers.
 
 All decisions are made over the AST's `TypeRef` tree by `OwnershipChecker`.
 No borrow state or counter is introduced in the guest runtime.

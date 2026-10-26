@@ -1147,9 +1147,8 @@ public final class OwnershipChecker {
                         }
                     }
                     ValueInfo taken = checkExpr(argument, scope, true);
-                    if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
-                            || (taken.type != null && taken.type.isBorrow())) {
-                        throw error("rt take requires owned data; a borrow cannot regain ownership");
+                    if (isBorrowValue(taken) || containsBorrowType(taken.type)) {
+                        throw error("rt take requires owned data; a borrow cannot regain ownership (including nested borrows)");
                     }
                     // Explicit take is a transfer, including for otherwise
                     // copyable handles such as Channel<T>. Ordinary calls and
@@ -1162,6 +1161,9 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    if (isBorrowValue(source) || containsBorrowType(source.type)) {
+                        throw error("rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
@@ -1171,6 +1173,9 @@ public final class OwnershipChecker {
                 }
                 case "share" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    if (isBorrowValue(source) || containsBorrowType(source.type)) {
+                        throw error("rt share cannot publish a borrowed capability without explicit lifetime proof");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt share of move-only values requires the owning Shared<T> convergence; "
@@ -2869,7 +2874,11 @@ public final class OwnershipChecker {
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
-            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
+            // An owned-looking wrapper can still hold a lexical loan.
+            // Capturing it in a closure would extend that loan beyond its
+            // source scope without any representable container lifetime.
+            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW
+                    || containsBorrowType(source.type)) {
                 if (allowActorSelfCapture
                         && capture.name.equals("self")
                         && isActorConfinedBorrow(source)) {
@@ -2925,6 +2934,13 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a lambda");
                 }
+                // Expression-bodied lambdas have the same lexical escape
+                // boundary as an explicit return statement in a block lambda.
+                if (returned.type != null && !returned.type.isBorrow()
+                        && containsBorrowType(returned.type)) {
+                    throw error("lambda cannot return a nested borrowed reference without an explicit container lifetime");
+                }
+                validateReturnedBorrow(lambda.expressionBody(), returned);
             } else {
                 for (Ast.Stmt stmt : lambda.blockBody()) {
                     checkStatement(stmt, closure, Ast.TypeRef.inferred());
