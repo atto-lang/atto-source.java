@@ -19,6 +19,11 @@ import java.util.Objects;
  * not recursive source lowering or an interpreter-visible guest builtin.
  */
 public final class InvertedRecordLayout {
+    // Host-reference admission caps. These are denial-of-service guards, not
+    // a committed language/interop ABI limit.
+    static final int MAX_RECORD_MEMBERS = 1024;
+    static final int MAX_RECORD_BYTES = 64 * 1024;
+
     public record Member(String name, InvertedColumnStore.Kind kind, int offset) { }
 
     private final List<Member> members;
@@ -49,9 +54,13 @@ public final class InvertedRecordLayout {
         if (!type.isRecordType() || type.inferArguments()) {
             throw new IllegalArgumentException("expected a fixed-layout structural record type");
         }
+        Map<String, Ast.TypeRef> recordMembers = type.recordMembers();
+        if (recordMembers.size() > MAX_RECORD_MEMBERS) {
+            throw new IllegalArgumentException("inverted record has too many members");
+        }
         List<Member> members = new ArrayList<>();
         int offset = 0;
-        for (Map.Entry<String, Ast.TypeRef> entry : type.recordMembers().entrySet()) {
+        for (Map.Entry<String, Ast.TypeRef> entry : recordMembers.entrySet()) {
             // A nested record is NOT implicitly expanded to grandchild
             // columns. A future nested fixed-layout codec may support it as
             // an opaque element, but this initial ABI deliberately fails closed.
@@ -61,7 +70,14 @@ public final class InvertedRecordLayout {
                         + "' has no verified fixed-width member ABI; no recursive SoA lowering");
             }
             members.add(new Member(entry.getKey(), kind, offset));
-            offset = Math.addExact(offset, kind.bytes());
+            try {
+                offset = Math.addExact(offset, kind.bytes());
+            } catch (ArithmeticException overflow) {
+                throw new IllegalArgumentException("inverted record byte width overflow", overflow);
+            }
+            if (offset > MAX_RECORD_BYTES) {
+                throw new IllegalArgumentException("inverted record exceeds host-reference byte limit");
+            }
         }
         if (offset == 0) throw new IllegalArgumentException("empty inverted value records are unsupported");
         return new InvertedRecordLayout(members, offset);
