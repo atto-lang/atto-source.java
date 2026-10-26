@@ -5622,10 +5622,11 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocationEvaluated(
                 Ast.CallExpr call,
                 Object receiver,
-                List<Object> args,
+                DirectArguments directArgs,
                 Env env) {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
+            List<Object> args = directArgs.values();
 
             if (receiver instanceof OptionValue option
                     && member.member().equals("unwrap_all")) {
@@ -5682,7 +5683,9 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method =
                         object.owner.findMethod(
                                 object.klass,
-                                CallableSelector.instance(member.member(), args.size()));
+                                CallableSelector.instance(
+                                        member.member(),
+                                        directArgs.inputs().size()));
                 if (method != null) {
                     object.owner.requireClassMemberVisible(
                             method.visibility(),
@@ -5693,7 +5696,12 @@ public final class OresEvalRootNode extends RootNode {
                     return object.owner.methodInvocation(
                             object,
                             method,
-                            args);
+                            directArgs.inAbiOrder(
+                                    method.parameters(),
+                                    "method "
+                                            + object.klass.name()
+                                            + "."
+                                            + method.name()));
                 }
 
                 OwnedField ownedField = object.owner.findField(
@@ -5711,7 +5719,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (fieldValue instanceof Invokable invokable) {
                     return object.owner.invokableInvocation(
                             invokable,
-                            args);
+                            directArgs.requireUnlabeled(
+                                    "function-valued field "
+                                            + object.klass.name()
+                                            + "."
+                                            + member.member()));
                 }
             }
 
@@ -5719,7 +5731,9 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method =
                         klass.owner().findStaticFunction(
                                 klass.klass(),
-                                CallableSelector.staticFunction(member.member(), args.size()));
+                                CallableSelector.staticFunction(
+                                        member.member(),
+                                        directArgs.inputs().size()));
                 if (method == null) {
                     throw new IllegalArgumentException(
                             "no static function " + klass.klass().name()
@@ -5730,21 +5744,28 @@ public final class OresEvalRootNode extends RootNode {
                         env.accessClass(), "static function", method.name());
                 return klass.owner().staticFunctionInvocation(
                         method,
-                        args);
+                        directArgs.inAbiOrder(
+                                method.parameters(),
+                                "static function "
+                                        + klass.klass().name()
+                                        + "."
+                                        + method.name()));
             }
 
             if (receiver instanceof ModuleFacade module) {
                 return module.owner().prepareModuleInvocation(
                         module.module(),
                         member.member(),
-                        args);
+                        directArgs.requireUnlabeled(
+                                "module function " + member.member()));
             }
 
             if (receiver instanceof ImportedNamespace namespace) {
                 return namespace.owner().prepareImportedInvocation(
                         namespace.kind(),
                         member.member(),
-                        args);
+                        directArgs.requireUnlabeled(
+                                "imported member " + member.member()));
             }
 
             Object callee = member(receiver, member.member(), env);
@@ -5752,7 +5773,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "member is not callable: " + member.member());
             }
-            return invokableInvocation(invokable, args);
+            return invokableInvocation(
+                    invokable,
+                    directArgs.requireUnlabeled(
+                            "dynamic member " + member.member()));
         }
 
         private static int sequenceIndex(Object value) {
