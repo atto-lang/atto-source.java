@@ -1051,17 +1051,42 @@ public final class Ast {
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     /**
-     * Expression-form match: each arm returns a value *to this expression*,
-     * never to the surrounding callable. Distinct from procedural MatchStmt.
+     * Expression-form match arm. The body is a real lexical statement block,
+     * but its terminal explicit return is scoped to MatchExpr (ARM_RESULT),
+     * never to the surrounding callable.
      *
-     * The initial compiler admission accepts exactly one explicit return
-     * expression per arm. More complex arm bodies need an explicit local
-     * control-flow representation and must not be silently lowered.
+     * V1 requires a top-level terminal return carrying a value. This keeps
+     * result completeness fail-closed while allowing statements before the
+     * result; richer CFG-proven early/nested arm returns can be admitted later
+     * without changing this AST shape.
      */
-    public record MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+    public record MatchValueArm(Pattern pattern, Expr guard, List<Stmt> body) {
         public MatchValueArm {
             java.util.Objects.requireNonNull(pattern, "value match pattern");
-            java.util.Objects.requireNonNull(value, "value match return expression");
+            body = List.copyOf(java.util.Objects.requireNonNull(body, "value match body"));
+            if (body.isEmpty()) {
+                throw new IllegalArgumentException("value match arm requires an explicit result");
+            }
+            if (!(body.getLast() instanceof ReturnStmt returned) || returned.value() == null) {
+                throw new IllegalArgumentException(
+                        "value match arm must end with explicit 'return value;'");
+            }
+        }
+
+        /** Compatibility constructor for expression arms and historical one-return arms. */
+        public MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+            this(pattern, guard, List.of(new ReturnStmt(
+                    java.util.Objects.requireNonNull(value, "value match return expression"))));
+        }
+
+        /** Canonical terminal ARM_RESULT expression. */
+        public Expr value() {
+            return ((ReturnStmt) body.getLast()).value();
+        }
+
+        /** Statements evaluated before the terminal ARM_RESULT. */
+        public List<Stmt> prefixStatements() {
+            return body.subList(0, body.size() - 1);
         }
     }
     public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) implements Expr {
