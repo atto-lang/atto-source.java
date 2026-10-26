@@ -7,10 +7,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static dev.oreslang.types.FixedProductCallPlan.InputSlot.named;
-import static dev.oreslang.types.FixedProductCallPlan.InputSlot.namedProjection;
-import static dev.oreslang.types.FixedProductCallPlan.InputSlot.positional;
-import static dev.oreslang.types.FixedProductCallPlan.InputSlot.positionalProjection;
+import static dev.oreslang.types.CheckedCallPlan.InputSlot.named;
+import static dev.oreslang.types.CheckedCallPlan.InputSlot.namedProjection;
+import static dev.oreslang.types.CheckedCallPlan.InputSlot.positional;
+import static dev.oreslang.types.CheckedCallPlan.InputSlot.positionalProjection;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -130,29 +130,43 @@ final class CheckedCallPlanTest {
     @Test
     void legacyPlansDelegateToExactlyTheSameCanonicalBinding() {
         List<String> names = List.of("a", "b", "c");
-        List<FixedProductCallPlan.InputSlot> fixedInputs =
+        List<CheckedCallPlan.InputSlot> checkedFixedInputs =
                 List.of(
                         positionalProjection(0, 0),
                         positionalProjection(0, 1),
                         named("c", 1));
+        List<FixedProductCallPlan.InputSlot> legacyFixedInputs =
+                checkedFixedInputs.stream()
+                        .map(input -> new FixedProductCallPlan.InputSlot(
+                                input.label(),
+                                input.callItemIndex(),
+                                input.projectionIndex()))
+                        .toList();
 
         CheckedCallPlan checkedRequired =
-                CheckedCallPlan.required(names, fixedInputs);
+                CheckedCallPlan.required(names, checkedFixedInputs);
         FixedProductCallPlan legacyRequired =
-                FixedProductCallPlan.bind(names, fixedInputs);
+                FixedProductCallPlan.bind(names, legacyFixedInputs);
         assertEquals(
                 checkedRequired.abiToSource(),
                 legacyRequired.abiToSource());
 
         List<Boolean> omittable = List.of(false, true, false);
-        List<FixedProductCallPlan.InputSlot> optionalInputs =
+        List<CheckedCallPlan.InputSlot> checkedOptionalInputs =
                 List.of(positional(0), named("c", 1));
+        List<FixedProductCallPlan.InputSlot> legacyOptionalInputs =
+                checkedOptionalInputs.stream()
+                        .map(input -> new FixedProductCallPlan.InputSlot(
+                                input.label(),
+                                input.callItemIndex(),
+                                input.projectionIndex()))
+                        .toList();
         CheckedCallPlan checkedOptional =
                 CheckedCallPlan.bind(
-                        names, omittable, optionalInputs);
+                        names, omittable, checkedOptionalInputs);
         OptionalCallPlan legacyOptional =
                 OptionalCallPlan.bind(
-                        names, omittable, optionalInputs);
+                        names, omittable, legacyOptionalInputs);
 
         assertEquals(
                 checkedOptional.abiToSource(),
