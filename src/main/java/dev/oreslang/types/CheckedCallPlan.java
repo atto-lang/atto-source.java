@@ -1,5 +1,7 @@
 package dev.oreslang.types;
 
+import dev.oreslang.ast.Ast;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -100,6 +102,97 @@ public record CheckedCallPlan(
 
         public boolean hasProvenance() {
             return callItemIndex >= 0;
+        }
+    }
+
+    private static final java.lang.ref.ReferenceQueue<Ast.Expr> CLEARED_CALL_SITES =
+            new java.lang.ref.ReferenceQueue<>();
+    private static final Map<IdentityKey, CheckedCallPlan> CHECKED_CALL_SITES =
+            new HashMap<>();
+
+    private static final class IdentityKey
+            extends java.lang.ref.WeakReference<Ast.Expr> {
+        private final int hash;
+
+        private IdentityKey(
+                Ast.Expr expression,
+                java.lang.ref.ReferenceQueue<Ast.Expr> queue) {
+            super(Objects.requireNonNull(expression, "checked call site"), queue);
+            hash = System.identityHashCode(expression);
+        }
+
+        @Override public int hashCode() {
+            return hash;
+        }
+
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof IdentityKey key)) return false;
+            Ast.Expr value = get();
+            return value != null && value == key.get();
+        }
+    }
+
+    private static void expungeCheckedCallSites() {
+        java.lang.ref.Reference<? extends Ast.Expr> cleared;
+        while ((cleared = CLEARED_CALL_SITES.poll()) != null) {
+            CHECKED_CALL_SITES.remove(cleared);
+        }
+    }
+
+    public static synchronized void record(
+            Ast.Expr callSite,
+            CheckedCallPlan plan) {
+        Objects.requireNonNull(callSite, "checked call site");
+        Objects.requireNonNull(plan, "checked call plan");
+        if (!(callSite instanceof Ast.CallExpr)
+                && !(callSite instanceof Ast.NewExpr)) {
+            throw new IllegalArgumentException(
+                    "checked call plans may attach only to CallExpr or NewExpr");
+        }
+        expungeCheckedCallSites();
+        IdentityKey key =
+                new IdentityKey(callSite, CLEARED_CALL_SITES);
+        CheckedCallPlan old =
+                CHECKED_CALL_SITES.putIfAbsent(key, plan);
+        if (old != null && !old.equals(plan)) {
+            throw new IllegalStateException(
+                    "same call-site AST identity received inconsistent checked call plans");
+        }
+    }
+
+    public static synchronized CheckedCallPlan lookup(
+            Ast.Expr callSite) {
+        Objects.requireNonNull(callSite, "checked call site");
+        expungeCheckedCallSites();
+        return CHECKED_CALL_SITES.get(
+                new IdentityKey(callSite, null));
+    }
+
+    public static CheckedCallPlan require(
+            Ast.Expr callSite) {
+        CheckedCallPlan plan = lookup(callSite);
+        if (plan == null) {
+            throw new IllegalStateException(
+                    "missing checked call plan for admitted call-site AST identity");
+        }
+        return plan;
+    }
+
+    public static void copyCheckedMetadata(
+            Ast.Expr source,
+            Ast.Expr target) {
+        Objects.requireNonNull(source, "source checked call site");
+        Objects.requireNonNull(target, "target checked call site");
+        boolean sameKind =
+                source instanceof Ast.CallExpr && target instanceof Ast.CallExpr
+                        || source instanceof Ast.NewExpr && target instanceof Ast.NewExpr;
+        if (!sameKind) {
+            return;
+        }
+        CheckedCallPlan plan = lookup(source);
+        if (plan != null) {
+            record(target, plan);
         }
     }
 
