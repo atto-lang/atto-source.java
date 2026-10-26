@@ -107,6 +107,32 @@ final class AutoTraitRulesTest {
     }
 
     @Test
+    void shareNeverBypassesMissingSendOrSyncProofs() {
+        assertFalse(new AutoTraitRules.Capabilities(false, true, true).share());
+        assertFalse(new AutoTraitRules.Capabilities(true, false, true).share());
+        assertFalse(new AutoTraitRules.Capabilities(false, false, true).share());
+        assertTrue(new AutoTraitRules.Capabilities(true, true, true).share());
+
+        for (var incomplete : new Set[]{Set.of(SHARE), Set.of(SEND, SHARE),
+                Set.of(SYNC, SHARE)}) {
+            @SuppressWarnings("unchecked")
+            Set<AutoTraitRules.AutoTrait> bounds = (Set<AutoTraitRules.AutoTrait>) incomplete;
+            var caps = AutoTraitRules.infer(AutoTraitRules.TypeModel.dyn(bounds, true));
+            assertFalse(caps.share(), "dyn Share must not imply Send or Sync");
+        }
+
+        var scalar = AutoTraitRules.TypeModel.scalar();
+        var nominal = AutoTraitRules.TypeModel.nominal(true, scalar);
+        var noSend = AutoTraitRules.infer(nominal.denying(SEND));
+        assertFalse(noSend.send());
+        assertFalse(noSend.share());
+        var noSync = AutoTraitRules.infer(nominal.denying(SYNC));
+        assertFalse(noSync.sync());
+        assertFalse(noSync.share());
+        assertTrue(AutoTraitRules.infer(nominal).share());
+    }
+
+    @Test
     void nominalCapabilitiesComposeAndNegativeTraitsWin() {
         var scalar = AutoTraitRules.TypeModel.scalar();
         var nested = AutoTraitRules.TypeModel.nominal(true, scalar, scalar);
