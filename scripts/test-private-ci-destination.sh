@@ -29,7 +29,7 @@ chmod +x "$work/gh" "$script_dir"/*.sh
 export PATH="$work:$PATH" MOCK_EXEC_LOG="$work/executed"
 expect_ok() {
   "$script_dir/check-private-ci-destination.sh" "$1" > "$work/out" 2>&1 || { cat "$work/out" >&2; exit 1; }
-  grep -q 'PRIVATE_CI_DESTINATION_APPROVED' "$work/out"
+  grep -q 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY' "$work/out"
 }
 expect_fail() {
   if "$script_dir/check-private-ci-destination.sh" "$@" > "$work/out" 2>&1; then echo 'Unsafe approval' >&2; exit 1; fi
@@ -54,6 +54,17 @@ printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
 expect_fail trusted/ci
+printf 'trusted/ci 246810\n' > "$policy"
+expect_ok trusted/ci
+printf 'trusted/ci 246810\r\n' > "$policy"
+expect_fail trusted/ci
+printf 'trusted/ci 246810\n' > "$policy"
+expect_ok trusted/ci
+printf 'trusted/ci 1323575966\n' > "$policy"
+export MOCK_REPOSITORY_ID=1323575966
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_REPOSITORY_ID
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
 for visibility in public internal null; do
