@@ -645,6 +645,37 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void emptyListConstUsesDeclaredElementTypeWithoutRuntimeInference() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro values(Const<List<int>> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc empty() -> List<int> {
+                            return values!(const []);
+                        }
+                        """));
+
+        assertEquals(1, checked.modules().getFirst().declarations().size(),
+                "macro declaration must be erased from executable AST");
+        Ast.FunctionDecl fn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned =
+                assertInstanceOf(Ast.ReturnStmt.class, fn.body().getFirst());
+        Ast.ListExpr emitted =
+                assertInstanceOf(Ast.ListExpr.class, returned.value());
+        assertTrue(emitted.elements().isEmpty());
+
+        List<MacroSyntaxProvenance.Origin> origins =
+                MacroSyntaxProvenance.lookup(emitted);
+        assertEquals(1, origins.size());
+        assertEquals(
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE,
+                origins.getFirst().emissionKind());
+    }
+
+    @Test
     void emittedConstSyntaxCarriesCompilerOnlyProvenance() {
         Ast.Program checked = assertDoesNotThrow(
                 () -> OresCompiler.parseAndTypeCheck("""
