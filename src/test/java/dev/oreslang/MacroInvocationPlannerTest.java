@@ -486,6 +486,85 @@ final class MacroInvocationPlannerTest {
                 failure::toString);
     }
 
+    @Test
+    void compileTimeConstQuoteEmitsLiteralIntoCheckedRuntimeProgram() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const 42);
+                        }
+                        """));
+
+        assertEquals(1, checked.modules().getFirst().declarations().size(),
+                "macro declarations must be erased from executable AST");
+        Ast.FunctionDecl function = assertInstanceOf(Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, function.body().getFirst());
+        Ast.LiteralExpr emitted = assertInstanceOf(
+                Ast.LiteralExpr.class, returned.value());
+        assertEquals(42L, emitted.value(),
+                "the macro must materialize a literal, not a runtime macro call");
+    }
+
+    @Test
+    void stringQuoteProducesRuntimeStringExpressionWithoutRuntimeCompiler() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro label(Const<String> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc heading() -> String {
+                            return label!(const "<h1>Count</h1>");
+                        }
+                        """));
+
+        Ast.FunctionDecl function = assertInstanceOf(Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, function.body().getFirst());
+        Ast.LiteralExpr emitted = assertInstanceOf(
+                Ast.LiteralExpr.class, returned.value());
+        assertEquals("<h1>Count</h1>", emitted.value());
+    }
+
+    @Test
+    void nonliteralConstQuoteFailsClosedRatherThanRunningAtRuntime() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const 40 + 2);
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("bounded comptime evaluator"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
+    void quoteCannotArbitrarilyTransformOrCallGuestCodeAtCompileTime() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value + 1);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const 42);
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("first evaluator slice"),
+                failure::toString);
+    }
+
     private static boolean containsMacroInvocation(Ast.Expr expression) {
         if (expression instanceof Ast.MacroInvocationExpr) return true;
         if (expression instanceof Ast.BinaryExpr e) {
