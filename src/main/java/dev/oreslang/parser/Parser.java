@@ -395,7 +395,7 @@ public final class Parser {
                 throw error(peek(), "'inverted' must immediately precede 'class'");
             }
             rejectUnloweredRuntimeEntityDeclaration();
-            ActorPrefix actorPrefix = invertedClass ? ActorPrefix.NONE : parseActorPrefix();
+            ActorPrefix actorPrefix = invertedClass ? ActorPrefix.DEFAULT : parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix);
             }
