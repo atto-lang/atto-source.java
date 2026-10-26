@@ -25,6 +25,9 @@ public final class Parser {
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
+    // Start of the most recently parsed module-member declaration prefix,
+    // after annotations but before visibility/kind modifiers.
+    private int lastModuleMemberPrefixStart = -1;
 
     // Forward type signatures are compile-time-only and intentionally absent
     // from executable ASTs. The v1 contract requires an exact same-scope
@@ -519,12 +522,11 @@ public final class Parser {
                     exports.add(parseExportDecl());
                     continue;
                 }
-                int declarationPrefixStart = current;
                 Ast.Decl declaration = parseModuleMember();
                 if (declaration != null) {
                     declarations.add(declaration);
                     if (hasExplicitPrivateModifierBeforeName(
-                            declarationPrefixStart, declarationName(declaration))) {
+                            lastModuleMemberPrefixStart, declarationName(declaration))) {
                         explicitlyPrivateNames.add(declarationName(declaration));
                     }
                 }
@@ -549,6 +551,7 @@ public final class Parser {
     private Ast.Decl parseModuleMember() {
         rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
+        lastModuleMemberPrefixStart = current;
         Modifiers modifiers = parseModifiers();
 
         if (isContextualIdentifier("declare")) {
