@@ -48,9 +48,11 @@ public final class MacroSyntaxProvenance {
 
     public record Origin(
             HygieneIdentity hygiene,
+            Ast.SourceSite definitionSite,
             EmissionKind emissionKind) {
         public Origin {
             java.util.Objects.requireNonNull(hygiene, "macro hygiene identity");
+            java.util.Objects.requireNonNull(definitionSite, "macro definition source site");
             java.util.Objects.requireNonNull(emissionKind, "macro emission kind");
         }
     }
