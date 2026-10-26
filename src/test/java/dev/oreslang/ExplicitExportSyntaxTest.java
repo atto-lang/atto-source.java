@@ -121,6 +121,7 @@ final class ExplicitExportSyntaxTest {
         assertSyntaxError("export string ready as 'ready';", "EXPORT_UNKNOWN_DECLARATION_KIND");
         assertSyntaxError("export const ready as 'ready';", "EXPORT_LITERAL_ALIAS_UNSUPPORTED");
         assertSyntaxError("export class Foo as \"foo\";", "EXPORT_LITERAL_ALIAS_UNSUPPORTED");
+        assertSyntaxError("export symbol ready as 'ready';", "EXPORT_LITERAL_ALIAS_UNSUPPORTED");
     }
 
     @Test
