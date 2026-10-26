@@ -85,7 +85,14 @@ cleanup_native_image_verifier() {
     fi
   done
 }
+# POSIX sh does not run EXIT traps for uncaught termination signals
+# (notably dash on Linux). Convert signals into explicit exits so that
+# partially allocated manifest, guest, and summary files are reclaimed.
+# Preserve conventional shell signal exit statuses for CI cancellation.
 trap 'cleanup_native_image_verifier' 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 build_info_stderr="$(mktemp)"
 build_info_expected="$(mktemp)"
 build_info_status=0
