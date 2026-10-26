@@ -1726,44 +1726,44 @@ public final class ActorRuntime implements AutoCloseable {
         UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
         try {
             synchronized (cell.lifecycleLock) {
-            // Unlike the physical-cohort count, this remains charged while a
-            // terminal Future subscriber is blocked AFTER guest quiescence.
-            if (cell.activeUntrustedTimedAdmissions >=
-                    UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS) {
-                throw new RejectedExecutionException(
-                        "untrusted actor timed source-task admission is full");
-            }
-            if (inheritedQuota == null) {
-                if (cell.activeUntrustedSourceQuota != null) {
-                    throw new SecurityException(
-                            "untrusted actor already has an active logical source-task quota");
+                // Unlike the physical-cohort count, this remains charged while a
+                // terminal Future subscriber is blocked AFTER guest quiescence.
+                if (cell.activeUntrustedTimedAdmissions >=
+                        UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS) {
+                    throw new RejectedExecutionException(
+                            "untrusted actor timed source-task admission is full");
                 }
-                long nowCpu = currentThreadCpuNanos();
-                long alreadyCpu = nowCpu >= 0 && cell.turnStartedCpuNanos >= 0
-                        ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
-                inheritedQuota = new UntrustedLogicalQuota(
-                        ActorRuntime.this,
-                        cell.ref.id(),
-                        cell.policy.maxWallTime().toNanos(),
-                        cell.untrustedFuelRemaining,
-                        cell.turnStartedWallNanos,
-                        alreadyCpu,
-                        System::nanoTime,
-                        ActorRuntime::currentThreadCpuNanos);
-                cell.activeUntrustedSourceQuota = inheritedQuota;
-            } else if (inheritedQuota != cell.activeUntrustedSourceQuota
-                    || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref.id())) {
-                throw new SecurityException(
-                        "untrusted source-task quota belongs to a different actor or runtime");
-            }
-            // Task creation is not itself a source loop backedge. Without a
-            // count cap, nested spawn can retain arbitrarily many queued
-            // tasks (and eventually overflow the signed reference counter)
-            // before hitting a fuel safepoint.
-            if (cell.activeUntrustedSourceTaskCount >= INTERNAL_CONTINUATION_SLOTS) {
-                throw new RejectedExecutionException(
-                        "untrusted actor logical source-task cohort is full");
-            }
+                if (inheritedQuota == null) {
+                    if (cell.activeUntrustedSourceQuota != null) {
+                        throw new SecurityException(
+                                "untrusted actor already has an active logical source-task quota");
+                    }
+                    long nowCpu = currentThreadCpuNanos();
+                    long alreadyCpu = nowCpu >= 0 && cell.turnStartedCpuNanos >= 0
+                            ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
+                    inheritedQuota = new UntrustedLogicalQuota(
+                            ActorRuntime.this,
+                            cell.ref.id(),
+                            cell.policy.maxWallTime().toNanos(),
+                            cell.untrustedFuelRemaining,
+                            cell.turnStartedWallNanos,
+                            alreadyCpu,
+                            System::nanoTime,
+                            ActorRuntime::currentThreadCpuNanos);
+                    cell.activeUntrustedSourceQuota = inheritedQuota;
+                } else if (inheritedQuota != cell.activeUntrustedSourceQuota
+                        || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref.id())) {
+                    throw new SecurityException(
+                            "untrusted source-task quota belongs to a different actor or runtime");
+                }
+                // Task creation is not itself a source loop backedge. Without a
+                // count cap, nested spawn can retain arbitrarily many queued
+                // tasks (and eventually overflow the signed reference counter)
+                // before hitting a fuel safepoint.
+                if (cell.activeUntrustedSourceTaskCount >= INTERNAL_CONTINUATION_SLOTS) {
+                    throw new RejectedExecutionException(
+                            "untrusted actor logical source-task cohort is full");
+                }
                 cell.activeUntrustedSourceTaskCount++;
                 cell.activeUntrustedTimedAdmissions++;
             }
