@@ -207,6 +207,27 @@ public final class FuturePipelineTypingCheck {
                     "Future binding incorrectly acquired complete upstream effect provenance");
         }
 
+        Ast.Program forwardedFutureEffects = TypeChecker.check(Parser.parse("""
+                fnc pass(Future<int> pending): Future<int> { return pending; }
+                fnc keep(int value): int { return value; }
+                fnc main(Future<int> opaque): void {
+                  val Future<int> pending = pass(opaque) |> keep();
+                  return;
+                }
+                """));
+        Ast.FunctionDecl forwardedMain = (Ast.FunctionDecl)
+                forwardedFutureEffects.modules().getFirst().declarations().get(2);
+        Ast.CallExpr forwardedPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) forwardedMain.body().getFirst()).initializer();
+        TypeChecker.PipelinePlan forwardedPlan =
+                TypeChecker.CheckedFuturePipe.plan(forwardedPipe);
+        if (forwardedPlan == null
+                || forwardedPlan.effectProvenance()
+                        != TypeChecker.PipelineEffectProvenance.UPSTREAM_FUTURE_UNKNOWN) {
+            throw new AssertionError(
+                    "sync Future forwarding incorrectly acquired complete effect provenance");
+        }
+
         rejected("""
                 fnc discard(Box<int> value): int { return 1; }
                 fnc main(Future<Box<int>> source): void {
