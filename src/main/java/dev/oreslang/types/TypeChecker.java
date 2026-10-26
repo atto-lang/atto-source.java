@@ -8951,29 +8951,22 @@ public final class TypeChecker {
     }
 
     private record ExpandedCallArgument(
-            Ast.Expr expression,
-            Type staticType,
-            String label,
-            int callItemIndex,
-            int projectionIndex) {
-        private ExpandedCallArgument(
-                Ast.Expr expression,
-                Type staticType,
-                int callItemIndex) {
-            this(expression, staticType, null, callItemIndex, -1);
+            CheckedCallItem item,
+            Type staticType) {
+        private ExpandedCallArgument {
+            java.util.Objects.requireNonNull(item, "checked call item");
+        }
+
+        private Ast.Expr expression() {
+            return item.projected() ? null : item.sourceExpression();
+        }
+
+        private String label() {
+            return item.label();
         }
 
         private CheckedCallPlan.InputSlot inputSlot() {
-            if (label == null) {
-                return projectionIndex < 0
-                        ? CheckedCallPlan.InputSlot.positional(callItemIndex)
-                        : CheckedCallPlan.InputSlot.positionalProjection(
-                                callItemIndex, projectionIndex);
-            }
-            return projectionIndex < 0
-                    ? CheckedCallPlan.InputSlot.named(label, callItemIndex)
-                    : CheckedCallPlan.InputSlot.namedProjection(
-                            label, callItemIndex, projectionIndex);
+            return item.inputSlot();
         }
     }
 
@@ -9018,17 +9011,20 @@ public final class TypeChecker {
                             label + " does not support named arguments on this callable surface");
                 }
                 expanded.add(new ExpandedCallArgument(
-                        named.value(),
-                        null,
-                        named.name(),
-                        callItemIndex,
-                        -1));
+                        CheckedCallItem.named(
+                                named.value(),
+                                named.name(),
+                                callItemIndex),
+                        null));
                 continue;
             }
 
             if (!(argument instanceof Ast.SpreadExpr spread)) {
                 expanded.add(new ExpandedCallArgument(
-                        argument, null, callItemIndex));
+                        CheckedCallItem.positional(
+                                argument,
+                                callItemIndex),
+                        null));
                 continue;
             }
 
@@ -9051,11 +9047,12 @@ public final class TypeChecker {
                 int projectionIndex = 0;
                 for (Map.Entry<String, Type> field : record.members().entrySet()) {
                     expanded.add(new ExpandedCallArgument(
-                            null,
-                            field.getValue(),
-                            field.getKey(),
-                            callItemIndex,
-                            projectionIndex++));
+                            CheckedCallItem.recordProjection(
+                                    spread.expression(),
+                                    field.getKey(),
+                                    callItemIndex,
+                                    projectionIndex++),
+                            field.getValue()));
                 }
                 continue;
             }
@@ -9070,11 +9067,11 @@ public final class TypeChecker {
             int projectionIndex = 0;
             for (Type element : tuple.elements()) {
                 expanded.add(new ExpandedCallArgument(
-                        null,
-                        element,
-                        null,
-                        callItemIndex,
-                        projectionIndex++));
+                        CheckedCallItem.tupleProjection(
+                                spread.expression(),
+                                callItemIndex,
+                                projectionIndex++),
+                        element));
             }
         }
         return List.copyOf(expanded);
