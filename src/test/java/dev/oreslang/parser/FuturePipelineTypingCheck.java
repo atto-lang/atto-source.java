@@ -300,6 +300,40 @@ public final class FuturePipelineTypingCheck {
                 }
                 """, "taking an already-lifted pipeline is not yet supported");
 
+        // Consuming removes the Share requirement, not the Send requirement.
+        rejected("""
+                fnc discard(Rc<int> value): int { return 1; }
+                fnc main(Future<Rc<int>> source): void {
+                  val Future<int> pending = rt take source |> discard();
+                  return;
+                }
+                """, "owned Future pipeline input requires a Send payload");
+
+        // Ownership transfer is independent of effect provenance. A direct
+        // checked async producer remains COMPLETE_STATIC when explicitly taken.
+        Ast.Program consumedDirectProducer = TypeChecker.check(Parser.parse("""
+                async fnc source(): int { return 21; }
+                fnc keep(int value): int { return value; }
+                fnc main(): void {
+                  val Future<int> pending = rt take source() |> keep();
+                  return;
+                }
+                """));
+        Ast.FunctionDecl consumedDirectMain = (Ast.FunctionDecl)
+                consumedDirectProducer.modules().getFirst().declarations().get(2);
+        Ast.CallExpr consumedDirectPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) consumedDirectMain.body().getFirst()).initializer();
+        TypeChecker.PipelinePlan consumedDirectPlan =
+                TypeChecker.CheckedFuturePipe.plan(consumedDirectPipe);
+        if (consumedDirectPlan == null
+                || consumedDirectPlan.inputOwnership()
+                        != TypeChecker.PipelineInputOwnership.CONSUMED_UPSTREAM_OWNED_PAYLOAD
+                || consumedDirectPlan.effectProvenance()
+                        != TypeChecker.PipelineEffectProvenance.COMPLETE_STATIC) {
+            throw new AssertionError(
+                    "consumed direct async producer lost ownership/effect provenance");
+        }
+
         Ast.Program syncFutureStage = TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
                 async fnc delayed(int value): int {
