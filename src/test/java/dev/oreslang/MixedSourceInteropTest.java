@@ -195,6 +195,49 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void javaBridgeRetainsPublicRoutineInvocationAndExportAliasLookup() throws Exception {
+        Path source = temp.resolve("RoutineBridge.java");
+        Files.writeString(source, """
+                public final class RoutineBridge {
+                  public static void main(String[] args) {
+                    if (Ores.multiply(6, 7) != 42) {
+                      throw new AssertionError("public routine bridge was not callable");
+                    }
+                    if (!java.util.Objects.equals(Ores.call("aliased", 3L), 4L)) {
+                      throw new AssertionError("explicit export alias was not linked");
+                    }
+                    try {
+                      Ores.call("private_impl", 3L);
+                      throw new AssertionError("local spelling leaked through bridge");
+                    } catch (IllegalArgumentException expected) {
+                      // Only the explicit external binding is source-public.
+                    }
+                  }
+
+                  ores {
+                    export fnc private_impl as aliased;
+
+                    fnc private_impl(int value): int {
+                      return value + 1;
+                    }
+
+                    pub routine multiply(int left, int right): int {
+                      return left * right;
+                    }
+                  }
+                }
+                """);
+
+        assertDoesNotThrow(() -> LinkedProgramRunner.run(
+                source,
+                trustedMixedPolicy(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                new ByteArrayOutputStream(),
+                new ByteArrayOutputStream()));
+    }
+
+    @Test
     void javaBridgeTreatsBoolAndBooleanReturnsAsTheSamePrimitive() throws Exception {
         Path source = temp.resolve("BooleanBridge.java");
         Files.writeString(source, """
