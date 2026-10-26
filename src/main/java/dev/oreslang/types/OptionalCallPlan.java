@@ -145,7 +145,12 @@ public record OptionalCallPlan(
                 CheckedCallPlan.bind(
                         parameterNames,
                         omittable,
-                        inputs);
+                        inputs.stream()
+                                .map(input -> new CheckedCallPlan.InputSlot(
+                                        input.label(),
+                                        input.callItemIndex(),
+                                        input.projectionIndex()))
+                                .toList());
         List<BoundSlot> source =
                 checked.sourceOrder().stream()
                         .map(slot -> new BoundSlot(
