@@ -55,10 +55,11 @@ final class CompileTimeConstEvaluatorTest {
 
     @Test
     void depthBudgetAdmits64AndRejects65() {
-        Ast.Expr atLimit = new Ast.LiteralExpr(1L);
+        Ast.Expr nested = new Ast.LiteralExpr(1L);
         for (int i = 0; i < CompileTimeConstEvaluator.MAX_DEPTH; i++) {
-            atLimit = new Ast.UnaryExpr("+", atLimit);
+            nested = new Ast.UnaryExpr("+", nested);
         }
+        Ast.Expr atLimit = nested;
         assertDoesNotThrow(() -> CompileTimeConstEvaluator.evaluate(atLimit));
 
         Ast.Expr overLimit = new Ast.UnaryExpr("+", atLimit);
