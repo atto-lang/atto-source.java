@@ -181,6 +181,23 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Optional.empty() : Optional.of(current.actorId());
     }
 
+    /**
+     * Exact runtime-owned ActorRef for the executing actor incarnation.
+     *
+     * <p>ActorId is a logical name and is not sufficient authority for
+     * generation-sensitive resources. Package-private runtime components use
+     * this identity when a retained capability must remain bound to the exact
+     * actor incarnation that created it.</p>
+     */
+    static ActorRef<?> currentActorRef() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null) return null;
+        ActorRuntime runtime = current.runtime();
+        ActorCell<?> cell = runtime.currentActor.get();
+        if (cell == null || !cell.ref.id().equals(current.actorId())) return null;
+        return cell.ref;
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
@@ -1207,8 +1224,21 @@ public final class ActorRuntime implements AutoCloseable {
                 attachedShard = Objects.requireNonNull(shard, "shard");
             }
         }
+        boolean ownedBy(ActorRuntime runtime, ActorRef<?> actor) {
+            return runtime == ActorRuntime.this && cell.ref == actor;
+        }
+
+        /**
+         * Compatibility path for older shard wrappers that still pass ActorId.
+         * The logical id is never sufficient authority by itself: require the
+         * currently executing exact ActorRef incarnation to be this lease owner.
+         */
         boolean ownedBy(ActorRuntime runtime, ActorId actor) {
-            return runtime == ActorRuntime.this && cell.ref.id().equals(actor);
+            ActorRef<?> current = ActorRuntime.currentActorRef();
+            return actor != null
+                    && current != null
+                    && current.id().equals(actor)
+                    && ownedBy(runtime, current);
         }
         void requireOwner() {
             if (currentActor.get() != cell) {
