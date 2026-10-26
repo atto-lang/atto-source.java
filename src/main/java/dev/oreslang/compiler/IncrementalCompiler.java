@@ -5,7 +5,6 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
-import dev.oreslang.types.OwnershipChecker;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -114,12 +113,10 @@ public final class IncrementalCompiler {
                     id, parsed.get(id), parsed, normalizedImportResolutions);
             try {
                 TypeChecker.TypeCheckResult analysis =
-                        TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        TypeChecker.checkWithLinkedMetadataWithDiagnostics(
                                 Parser.parse(normalized.get(id)),
                                 linked.classes(), linked.aliases(), contracts);
                 checked = analysis.program();
-                OwnershipChecker.checkWithImportedClasses(
-                        checked, linked.classes(), analysis.shortInferredAliases());
             } catch (IllegalArgumentException invalid) {
                 throw new IllegalArgumentException(
                         "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
