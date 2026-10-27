@@ -1,7 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -68,10 +70,56 @@ public final class TaskHandle<T> {
                 && marker.taskDomain == OresScheduler.currentTaskDomain();
     }
 
+    /**
+     * Runtime-private acquisition bridge. The current Task may transfer a
+     * logical, cross-thread-releasable lease into its own retirement stack.
+     * An actor/source guest MUST NOT acquire arbitrary Java lock ownership.
+     */
+    static boolean isCurrentTrackedTaskTurn() {
+        CancellationContext current = CURRENT_CANCELLATION.get();
+        return current != null
+                && current.taskDomain() == OresScheduler.currentTaskDomain();
+    }
+
+    static TaskOwnedLeases.Lease registerTransferableLease(
+            TaskOwnedLeases.TransferableRelease release) {
+        return registerTransferableLease(release, release);
+    }
+
+    static TaskOwnedLeases.Lease registerTransferableLease(
+            TaskOwnedLeases.TransferableRelease ordinary,
+            TaskOwnedLeases.TransferableRelease abandoned) {
+        CancellationContext current = CURRENT_CANCELLATION.get();
+        if (!isCurrentTrackedTaskTurn()) {
+            throw new IllegalStateException(
+                    "task lease registration requires current tracked Task turn");
+        }
+        return current.leases().register(ordinary, abandoned);
+    }
+
+    /** Called before an async mutex waiter can become visible to a granting carrier. */
+    static void registerPhysicalSettlement(CompletableFuture<Void> receipt) {
+        CancellationContext current = CURRENT_CANCELLATION.get();
+        if (!isCurrentTrackedTaskTurn()) {
+            throw new IllegalStateException(
+                    "task physical settlement registration requires current tracked Task turn");
+        }
+        current.leases().trackPhysicalSettlement(receipt);
+    }
+
+    static boolean isCurrentLeaseOwner(TaskOwnedLeases.Registry owner) {
+        CancellationContext current = CURRENT_CANCELLATION.get();
+        return current != null
+                && current.taskDomain() == OresScheduler.currentTaskDomain()
+                && current.leases() == owner;
+    }
+
     // Only the executing host Task turn can install this token. It is restored
     // after each resume, including nested inline scheduler dispatches, and is
     // never exposed as an actor/tenant cancellation capability.
-    private record CancellationContext(TaskCancellation token, Object taskDomain) { }
+    private record CancellationContext(
+            TaskCancellation token, Object taskDomain,
+            TaskOwnedLeases.Registry leases) { }
 
     private static final ThreadLocal<CancellationContext> CURRENT_CANCELLATION =
             new ThreadLocal<>();
@@ -96,6 +144,11 @@ public final class TaskHandle<T> {
     }
 
     private final TaskCancellation cancellation;
+    private final TaskOwnedLeases.Registry ownedLeases = new TaskOwnedLeases.Registry();
+    // Only host release tokens can be retired here; no guest defer callback
+    // may execute on a Future notification or actor control thread.
+    private final OresFuture<List<Throwable>> cleanupFailures =
+            new OresFuture<>(() -> false, () -> { });
     // Observation only: cancelling getDone() must never forge a quiescence
     // witness or suppress the scheduler's eventual terminal outcome.
     private final OresFuture<TaskOutcome<T>> done =
@@ -143,6 +196,15 @@ public final class TaskHandle<T> {
      */
     public OresFuture<TaskOutcome<T>> getDone() {
         return done;
+    }
+
+    /**
+     * The exact failures from nonblocking host-owned lease releases.
+     * This observer is uncancellable and only settles before getDone().
+     * A nonempty result is NOT a proven lock release/reclamation barrier.
+     */
+    public OresFuture<List<Throwable>> cleanupFailures() {
+        return cleanupFailures;
     }
 
     /**
@@ -205,7 +267,8 @@ public final class TaskHandle<T> {
         // cancellation authority of the caller.
         CancellationContext previous = CURRENT_CANCELLATION.get();
         CURRENT_CANCELLATION.set(
-                new CancellationContext(cancellation, OresScheduler.currentTaskDomain()));
+                new CancellationContext(
+                        cancellation, OresScheduler.currentTaskDomain(), ownedLeases));
         boolean returnedNormally = false;
         try {
             // Invalid null Steps remain a guest failure rather than being
@@ -277,13 +340,39 @@ public final class TaskHandle<T> {
     }
 
     private void publishAfterChildren() {
-        // Never claim done before lifecycle retirement succeeds. The parent
-        // join barrier stays pending until every owned descendant has retired
-        // or been explicitly transferred to another live owner.
+        // A cancelled Future is NOT permission to unlock state while guest
+        // code or descendants still run. Only here, after physical retirement
+        // and descendant joins, may transferable logical lock leases retire.
+        // Thread-affine Java locks MUST instead unwind on the original carrier.
+        // The release callbacks are synchronous, but a dequeued mutex grant
+        // may still be physically held by a foreign notification carrier.
+        // Observe its independently registered receipt without parking this
+        // scheduler carrier or falsely publishing getDone().
+        ownedLeases.releaseOnRetirementAsync().whenComplete((releaseErrors, failure) -> {
+            if (failure != null) {
+                Throwable root = OresFuture.unwrap(failure);
+                publishAfterPhysicalSettlements(List.of(root));
+            } else {
+                publishAfterPhysicalSettlements(releaseErrors);
+            }
+        });
+    }
+
+    private void publishAfterPhysicalSettlements(List<Throwable> releaseErrors) {
+        cleanupFailures.completeFromRuntime(releaseErrors);
+
+        // Never claim done before lifecycle retirement and cleanup were
+        // attempted. Retained host release errors fail physical completion;
+        // callers must NOT reclaim arenas on a Failed cleanup outcome.
         cancellation.retire();
         revoker.close();
         if (!published.compareAndSet(false, true)) return;
-        done.completeFromRuntime(settledOutcome.get());
+        TaskOutcome<T> outcome = settledOutcome.get();
+        if (!releaseErrors.isEmpty()) {
+            outcome = new Failed<>(new TaskOwnedLeases.CleanupFailure(
+                    releaseErrors, outcome));
+        }
+        done.completeFromRuntime(outcome);
     }
 
     /**

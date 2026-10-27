@@ -56,6 +56,8 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<ExecutionContext> CURRENT_EXECUTION_CONTEXT = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> CURRENT_CANCELLATION_CLEANUP =
+            new ThreadLocal<>();
     private static final ThreadLocal<ActorTurnWatchdog.Lease> CURRENT_WATCHDOG_LEASE =
             new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
@@ -97,6 +99,22 @@ public final class OresScheduler implements AutoCloseable {
     @FunctionalInterface
     public interface Task<T> {
         Step<T> resume(Resume resume) throws Exception;
+    }
+
+    /**
+     * Internal source task with heap-owned lexical unwind frames. Cancellation
+     * is delivered to its owning scheduler as an authenticated terminal
+     * resume, NOT as an ordinary producer failure or a foreign-thread callback.
+     * It must bypass source catch and finish its defers/guards before Done.
+     */
+    public interface CleanupAwareTask<T> extends Task<T> { }
+
+    /** Fatal failure of the physical cleanup witness; do not reclaim loans. */
+    public static final class CleanupIncompleteError extends Error {
+        public CleanupIncompleteError(String message) { super(message); }
+        public CleanupIncompleteError(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     /** Result of one resumable task turn. */
@@ -186,6 +204,13 @@ public final class OresScheduler implements AutoCloseable {
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** Actor STOP seals task admission without closing the cleanup executor. */
+    private final AtomicBoolean actorStopSealed = new AtomicBoolean();
+    private final AtomicInteger retiringPhysicalCallbacks = new AtomicInteger();
+    /** Tracks terminal subscriber drains even after a Task leaves the live set. */
+    private final AtomicInteger pendingTerminalNotifications = new AtomicInteger();
+    private final AtomicReference<Throwable> physicalRetirementFailure = new AtomicReference<>();
+    private volatile Runnable actorStopQuiescenceListener;
     private final AtomicLong watchdogOverruns = new AtomicLong();
 
     /**
@@ -412,6 +437,17 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Source interpreter only: true during every scheduler-authenticated
+     * terminal-cleanup turn, including subsequent awaited defer/iterator-close
+     * resumptions. Cancellation is injected exactly once, but its cleanup
+     * authority persists until the Task physically retires. This is NOT a
+     * caller-provided CancellationException classifier or general guest right.
+     */
+    public static boolean cancellationCleanupTurn() {
+        return Boolean.TRUE.equals(CURRENT_CANCELLATION_CLEANUP.get());
+    }
+
+    /**
      * Explicit cancellation checkpoint for compiler-lowered loops and
      * carefully selected synchronous boundaries. A pending cancellation
      * raises a private runtime marker, unwinding ordinary Java finally blocks
@@ -451,7 +487,7 @@ public final class OresScheduler implements AutoCloseable {
      */
     public TaskScope newTaskScope() {
         synchronized (taskAdmissionLock) {
-            ensureOpen();
+            ensureTaskAdmissionOpen();
             return new TaskScope(this);
         }
     }
@@ -479,6 +515,62 @@ public final class OresScheduler implements AutoCloseable {
                 deadlineFailure, () -> { });
     }
 
+    /**
+     * Conservative physical reclamation gate for runtime-owned actor schedulers.
+     * A Task stays in this live set until its physical onQuiescent callback
+     * has returned successfully. This also covers the interval when a Task
+     * has already reached TERMINAL but a host/FFI retirement callback is
+     * still running, and covers an ordinary Task's live carrier. A failed
+     * cleanup/retirement callback remains retained indefinitely for quarantine.
+     * The actor must never interpret Future.isDone() as a heap release proof.
+     */
+    public boolean hasIncompleteCleanup() {
+        return physicalRetirementFailure.get() != null
+                || !tasks.isEmpty()
+                || retiringPhysicalCallbacks.get() != 0
+                || pendingTerminalNotifications.get() != 0;
+    }
+    boolean actorStopPhysicallyQuiescent() {
+        return tasks.isEmpty() && retiringPhysicalCallbacks.get() == 0
+                && pendingTerminalNotifications.get() == 0;
+    }
+
+    Runnable sealActorStopAdmission(Runnable onPhysicallyQuiescent) {
+        Objects.requireNonNull(onPhysicallyQuiescent, "onPhysicallyQuiescent");
+        final Set<TaskRunner<?>> snapshot;
+        synchronized (taskAdmissionLock) {
+            if (!actorStopSealed.compareAndSet(false, true)) return () -> { };
+            actorStopQuiescenceListener = onPhysicallyQuiescent;
+            snapshot = Set.copyOf(tasks);
+        }
+        AtomicBoolean cancellationPublished = new AtomicBoolean();
+        return () -> {
+            if (!cancellationPublished.compareAndSet(false, true)) return;
+            Throwable firstFailure = null;
+            try {
+                for (TaskRunner<?> runner : snapshot) {
+                    try { runner.completion.cancel(false); }
+                    catch (RuntimeException | Error failure) {
+                        if (firstFailure == null) firstFailure = failure;
+                        else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+                    }
+                }
+            } finally {
+                notifyActorStopQuiescent();
+            }
+            if (firstFailure instanceof RuntimeException runtime) throw runtime;
+            if (firstFailure instanceof Error fatal) throw fatal;
+        };
+    }
+
+    private void notifyActorStopQuiescent() {
+        Runnable listener = actorStopQuiescenceListener;
+        if (listener != null && actorStopSealed.get() && actorStopPhysicallyQuiescent()) {
+            listener.run();
+        }
+    }
+
+
     /** Called only after the winning Future's terminal callbacks have drained. */
     <T> OresFuture<T> startWithWallDeadline(
             Task<T> task, Runnable onQuiescent, long remainingNanos,
@@ -502,7 +594,7 @@ public final class OresScheduler implements AutoCloseable {
         TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
                 deadlineFailure != null, onNotificationDrained);
         synchronized (taskAdmissionLock) {
-            ensureOpen();
+            ensureTaskAdmissionOpen();
             if (deadlineFailure != null) {
                 if (!WALL_DEADLINE_ADMISSIONS.tryAcquire()) {
                     throw new RejectedExecutionException(
@@ -512,6 +604,7 @@ public final class OresScheduler implements AutoCloseable {
             }
             try {
                 tasks.add(runner);
+                pendingTerminalNotifications.incrementAndGet();
             } catch (RuntimeException | Error failure) {
                 runner.releaseUnusedDeadlineSlot();
                 throw failure;
@@ -612,6 +705,14 @@ public final class OresScheduler implements AutoCloseable {
         });
     }
 
+    private void ensureTaskAdmissionOpen() {
+        ensureOpen();
+        if (actorStopSealed.get()) {
+            throw new RejectedExecutionException(
+                    "OresScheduler " + name + " sealed for actor cleanup");
+        }
+    }
+
     private void ensureOpen() {
         if (closed.get()) {
             throw new RejectedExecutionException(
@@ -673,11 +774,15 @@ public final class OresScheduler implements AutoCloseable {
         private static final int RUNNING = 2;
         private static final int WAITING = 3;
         private static final int TERMINAL = 4;
+        private static final int MAX_CLEANUP_DISPATCHES = 4_096;
 
         private final Task<T> task;
         private final ExecutionContext executionContext;
         private final Runnable onQuiescent;
-        private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
+        // 0=unclaimed, 1=retirement callback executing, 2=retired,
+        // 3=callback failed. The publication path cannot overtake state 1.
+        private final AtomicInteger quiescenceState = new AtomicInteger();
+        private final AtomicReference<Throwable> quiescenceFailure = new AtomicReference<>();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -688,6 +793,9 @@ public final class OresScheduler implements AutoCloseable {
          * boundary unwinds. Only the RUNNING -> TERMINAL winner owns this.
          */
         private final AtomicBoolean checkpointCancellationPending = new AtomicBoolean();
+        private final AtomicBoolean cleanupCancellationInjected = new AtomicBoolean();
+        private final AtomicBoolean cleanupIncomplete = new AtomicBoolean();
+        private final AtomicInteger cleanupDispatches = new AtomicInteger();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -700,6 +808,7 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicBoolean deadlineSlotReserved = new AtomicBoolean();
         private final AtomicBoolean deadlineSlotReleased = new AtomicBoolean();
         private final AtomicBoolean deadlineNotificationDrained = new AtomicBoolean();
+        private final AtomicBoolean terminalNotificationRetired = new AtomicBoolean();
         private final AtomicBoolean deadlineQuiescenceRetired = new AtomicBoolean();
         private final AtomicReference<ScheduledFuture<?>> wallDeadline =
                 new AtomicReference<>();
@@ -714,7 +823,8 @@ public final class OresScheduler implements AutoCloseable {
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
             this.completion = new OresFuture<>(
-                    this::cancelFromFuture, this::notificationDrained);
+                    () -> true, this::cancelFromFuture, this::notificationDrained,
+                    task instanceof CleanupAwareTask<?>);
         }
 
         private void reserveDeadlineSlot() {
@@ -725,13 +835,28 @@ public final class OresScheduler implements AutoCloseable {
 
         private void notificationDrained() {
             try {
-                // Logical actor-level admission remains reserved through the
-                // Future's synchronous subscriber drain, independently of the
-                // physical task quota's earlier quiescence callback.
+                // Terminal is visible before synchronous callbacks finish.
+                // An actor's memory must never be reclaimed while one such
+                // subscriber still owns host/FFI retirement references.
                 onNotificationDrained.run();
+            } catch (RuntimeException | Error failure) {
+                physicalRetirementFailure.compareAndSet(null, failure);
+                throw failure;
             } finally {
                 deadlineNotificationDrained.set(true);
-                releaseDeadlineSlotIfRetired();
+                try {
+                    releaseDeadlineSlotIfRetired();
+                } finally {
+                    if (terminalNotificationRetired.compareAndSet(false, true)) {
+                        int remaining = pendingTerminalNotifications.decrementAndGet();
+                        if (remaining < 0) {
+                            physicalRetirementFailure.compareAndSet(null,
+                                    new IllegalStateException(
+                                            "scheduler terminal notification receipt underflow"));
+                        }
+                        notifyActorStopQuiescent();
+                    }
+                }
             }
         }
 
@@ -827,7 +952,41 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                // Cancellation of a cleanup-aware SourceTask MUST reenter its
+                // saved lexical continuation rather than clearing it. Only
+                // one resume is injected; later awaits belong to shielded
+                // cleanup, and must be allowed to complete normally.
+                java.util.concurrent.CancellationException requested =
+                        completion.deferredCancellationCause();
+                if (requested != null && !cleanupCancellationInjected.get()
+                        && task instanceof CleanupAwareTask<?>) {
+                    if (resume.initial()) {
+                        failTerminal(requested); // no guest frames to unwind
+                        return;
+                    }
+                    cleanupCancellationInjected.set(true);
+                    resume = Resume.completed(null, requested);
+                }
+
+                if (cleanupCancellationInjected.get()
+                        && task instanceof CleanupAwareTask<?>
+                        && cleanupDispatches.incrementAndGet()
+                                > MAX_CLEANUP_DISPATCHES) {
+                    cleanupIncomplete.set(true);
+                    failTerminal(new CleanupIncompleteError(
+                            "source cancellation cleanup exceeded dispatch budget"));
+                    return;
+                }
+
                 final Step<T> step;
+                Boolean priorCleanup = CURRENT_CANCELLATION_CLEANUP.get();
+                // A source defer may itself suspend repeatedly. Every one of
+                // those resumes is still a cleanup-only Task turn.
+                if (cleanupCancellationInjected.get()) {
+                    CURRENT_CANCELLATION_CLEANUP.set(true);
+                } else {
+                    CURRENT_CANCELLATION_CLEANUP.remove();
+                }
                 try {
                     step = Objects.requireNonNull(
                             task.resume(resume),
@@ -850,6 +1009,9 @@ public final class OresScheduler implements AutoCloseable {
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                     if (failure instanceof LinkageError fatal) throw fatal;
                     return;
+                } finally {
+                    if (priorCleanup == null) CURRENT_CANCELLATION_CLEANUP.remove();
+                    else CURRENT_CANCELLATION_CLEANUP.set(priorCleanup);
                 }
 
                 if (step instanceof Done<?> done) {
@@ -902,6 +1064,11 @@ public final class OresScheduler implements AutoCloseable {
             watchdogLease = null;
             if (lease != null) lease.close();
             executing.set(false);
+            if (task instanceof CleanupAwareTask<?>
+                    && completion.deferredCancellationCause() != null
+                    && !cleanupCancellationInjected.get()) {
+                requestCleanupCancellation();
+            }
             // After the guest turn has unwound, release its lifecycle
             // resources before notifying arbitrary Future subscribers.
             // Completion callbacks are synchronous and can block indefinitely;
@@ -1029,7 +1196,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) {
+            if (phase.get() == TERMINAL
+                    || (task instanceof CleanupAwareTask<?>
+                        && completion.deferredCancellationCause() != null
+                        && !cleanupCancellationInjected.get())) {
                 removeAwaitDependency(completion);
                 return;
             }
@@ -1096,6 +1266,13 @@ public final class OresScheduler implements AutoCloseable {
          */
         private void expireFromWallDeadline(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
+            if (task instanceof CleanupAwareTask<?>
+                    && cleanupCancellationInjected.get()) {
+                cleanupIncomplete.set(true);
+                failure = new CleanupIncompleteError(
+                        "deadline terminated in-progress source cleanup; quarantine loans",
+                        failure);
+            }
             detachActiveAwaitRegistration();
             int observed;
             do {
@@ -1123,6 +1300,28 @@ public final class OresScheduler implements AutoCloseable {
 
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
+            if (task instanceof CleanupAwareTask<?>
+                    && (failure instanceof CleanupIncompleteError
+                        || failure instanceof ActorRuntime.UntrustedActorQuotaExceededException
+                        // An untrappable panic while unwinding may leave a
+                        // later defer/guard/FFI loan unexecuted. Preserve the
+                        // original panic identity, but quarantine its owner.
+                        || (cleanupCancellationInjected.get()
+                            && failure instanceof Error)
+                        || (completion.deferredCancellationCause() != null
+                            && failure instanceof RejectedExecutionException))) {
+                // Quota rejection can occur BEFORE a cancellation resume even
+                // reaches SourceTask. Treat it as incomplete lexical cleanup
+                // and never issue a false heap/guard retirement receipt.
+                cleanupIncomplete.set(true);
+                if (!(failure instanceof CleanupIncompleteError)
+                        && !(cleanupCancellationInjected.get()
+                            && failure instanceof Error)) {
+                    failure = new CleanupIncompleteError(
+                            "source cleanup denied or quota exhausted; quarantine loans",
+                            failure);
+                }
+            }
             detachActiveAwaitRegistration();
             int observed;
             do {
@@ -1141,31 +1340,100 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void retireWhenQuiescent() {
-            if (phase.get() == TERMINAL && !executing.get()
-                    && quiescenceNotified.compareAndSet(false, true)) {
-                // Keep the task observable in the scheduler's live set while a
-                // cancelled/failed guest turn is still physically executing.
-                // A terminal Future is not a carrier-exit witness.
-                tasks.remove(this);
-                cancelWallDeadline();
-                try {
-                    onQuiescent.run();
-                } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
-                }
+            // Never run physical retirement while a source defer/finally/FFI
+            // obligation remains incomplete, or while a guest carrier runs.
+            if (cleanupIncomplete.get() || phase.get() != TERMINAL
+                    || executing.get() || !quiescenceState.compareAndSet(0, 1))
+                return;
+            cancelWallDeadline();
+            try {
+                // Keep the Task registered until the callback has actually
+                // finished: it may revoke actor-owned loans and can fail.
+                if (cleanupIncomplete.get()) return;
+                onQuiescent.run();
+                if (!cleanupIncomplete.get()) tasks.remove(this);
+            } catch (Throwable retirementFailure) {
+                // Do not publish a preceding successful guest result when
+                // physical owner/FFI loan retirement failed. The callback is
+                // at-most-once; leave the Task strongly held in quarantine.
+                quiescenceFailure.compareAndSet(null, retirementFailure);
+                cleanupIncomplete.set(true);
+                if (retirementFailure instanceof VirtualMachineError fatal) throw fatal;
+                if (retirementFailure instanceof ThreadDeath fatal) throw fatal;
+                if (retirementFailure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                deadlineQuiescenceRetired.set(true);
+                releaseDeadlineSlotIfRetired();
+                quiescenceState.set(cleanupIncomplete.get() ? 3 : 2);
             }
         }
 
         private void publishTerminalIfReady() {
             if (phase.get() != TERMINAL || completion.isDone()) return;
+            // Scheduler.close() can invoke publication from an external thread
+            // while a cleanup Task still executes on its owning carrier. The
+            // TERMINAL phase is merely logical arbitration, never proof that
+            // the physical guest turn has left the actor/Truffle boundary.
+            if (executing.get()) return;
+            // State 1 denotes an in-flight physical release callback.
+            // Scheduler.close() may race it but cannot issue a terminal Future.
+            int retirement = quiescenceState.get();
+            if (retirement == 1) return;
+            if (!cleanupIncomplete.get()
+                    && (retirement != 2 || !deadlineQuiescenceRetired.get()))
+                return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
-            if (outcome instanceof TerminalSuccess<?> success) {
+            // Terminal phase CAS can precede the outcome write. Never
+            // synthesize a clean cancellation receipt without an outcome.
+            if (outcome == null) return;
+            java.util.concurrent.CancellationException pendingCancellation =
+                    completion.deferredCancellationCause();
+            if (cleanupIncomplete.get() && task instanceof CleanupAwareTask<?>) {
+                // A terminal outcome can race denied cleanup dispatch or a
+                // fatal defer. Neither a winning Done nor logical Cancelled
+                // proves physical release after quarantine has been latched.
+                Throwable retirementFailure = quiescenceFailure.get();
+                Throwable incomplete = outcome instanceof TerminalFailure<?> failed
+                        ? failed.failure() : retirementFailure != null
+                            ? retirementFailure : new CleanupIncompleteError(
+                                "physical source cleanup incomplete; quarantine actor loans");
+                if (!(incomplete instanceof Error)) {
+                    incomplete = new CleanupIncompleteError(
+                            "physical source cleanup incomplete; quarantine actor loans",
+                            incomplete);
+                }
+                if (pendingCancellation != null) {
+                    completion.failDeferredCleanupFromRuntime(incomplete);
+                } else {
+                    completion.failFromRuntime(incomplete);
+                }
+                return;
+            }
+            Throwable retirementFailure = quiescenceFailure.get();
+            if (retirementFailure != null) {
+                // Ordinary Tasks also require the physical onQuiescent lease
+                // before their result is observable. Preserve the callback
+                // failure identity rather than converting it into success.
+                completion.failFromRuntime(retirementFailure);
+                return;
+            }
+            if (pendingCancellation != null
+                    && task instanceof CleanupAwareTask<?>
+                    && !(outcome instanceof TerminalFailure<?> failure
+                            && dominatesSourceCleanupCancellation(failure.failure()))) {
+                completion.completeDeferredCancellationFromRuntime();
+            } else if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
                 T value = (T) success.value();
                 completion.completeFromRuntime(value);
             } else if (outcome instanceof TerminalFailure<?> failure) {
-                completion.failFromRuntime(failure.failure());
+                if (pendingCancellation != null && task instanceof CleanupAwareTask<?>) {
+                    // Fatal cleanup error or unavailable cleanup carrier:
+                    // cancellation cannot serve as a successful release proof.
+                    completion.failDeferredCleanupFromRuntime(failure.failure());
+                } else {
+                    completion.failFromRuntime(failure.failure());
+                }
             }
         }
 
@@ -1173,7 +1441,41 @@ public final class OresScheduler implements AutoCloseable {
             failTerminal(failure);
         }
 
+        private boolean dominatesSourceCleanupCancellation(Throwable failure) {
+            // Fatal panic/host failure in a cleanup frame must not be hidden
+            // behind cancellation. The source compiler's typed effect system
+            // will strengthen this staging classifier.
+            Throwable cause = OresFuture.unwrap(failure);
+            return cause instanceof Error
+                    || cause instanceof UntrappableTaskFailure;
+        }
+
+        private void requestCleanupCancellation() {
+            java.util.concurrent.CancellationException cause =
+                    completion.deferredCancellationCause();
+            if (cause == null || cleanupCancellationInjected.get()) return;
+            detachActiveAwaitRegistration();
+            int phaseNow = phase.get();
+            if (phaseNow == TERMINAL) return;
+            if (phaseNow == NEW
+                    || (phaseNow == QUEUED
+                            && pendingResume.get() != null
+                            && pendingResume.get().initial())) {
+                // A cancellation before initial execution has no guest scope.
+                failTerminal(cause);
+                return;
+            }
+            if (phaseNow == RUNNING) return; // physical turn must unwind first
+            pendingResume.set(Resume.completed(null, cause));
+            if (phaseNow == WAITING) scheduleReadyResume();
+            // QUEUED already owns its execution slot. No duplicate enqueue.
+        }
+
         private void cancelFromFuture() {
+            if (task instanceof CleanupAwareTask<?>) {
+                requestCleanupCancellation();
+                return;
+            }
             detachActiveAwaitRegistration();
             int observed;
             do {
@@ -1185,15 +1487,34 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void revokeFromSchedulerClose() {
-            // Quiesce internal state even when another cancellation thread has
-            // settled the Future but is blocked notifying its waiters.
-            cancelFromFuture();
+            // Scheduler CLOSE is not a runnable cleanup lane. A queued or
+            // suspended guest cleanup cannot truthfully be reported as done.
+            // Fail closed; retire physical resources only once a running
+            // carrier has actually exited. Do NOT publish fake cancellation
+            // while lexical guards may still remain.
+            if (task instanceof CleanupAwareTask<?>) {
+                if (phase.get() == TERMINAL) return;
+                completion.cancel(false);
+                // Cancellation BEFORE initial guest execution has no lexical
+                // frames; failTerminal() inside requestCleanupCancellation
+                // already handled that case without a quarantine.
+                if (phase.get() != TERMINAL) {
+                    cleanupIncomplete.set(true);
+                    failTerminal(new CleanupIncompleteError(
+                            "scheduler closed before source Task unwind completed"));
+                }
+            } else {
+                cancelFromFuture();
+            }
         }
 
         private void publishCancelledFromSchedulerClose() {
-            // Task-local revocation for the entire snapshot has completed.
-            // Subscriber delivery is allowed to block, but cannot now delay
-            // cancellation/await detachment for any other admitted task.
+            if (task instanceof CleanupAwareTask<?>) {
+                publishTerminalIfReady();
+                return;
+            }
+            // Ordinary tasks may publish immediate cancellation after their
+            // await revokers have been detached.
             completion.cancel(false);
         }
     }

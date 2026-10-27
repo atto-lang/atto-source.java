@@ -88,6 +88,693 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(outside.resolve("secret.txt")));
     }
 
+    @Test void concurrentActorStopAndContextRetirementAreIdempotent()
+            throws Exception {
+        for (int round = 0; round < 16; round++) {
+            var runtime = new ActorRuntime();
+            var io = new AsyncNativeIo(2);
+            var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var stopFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var go = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+            try {
+                actor.ready().get(3, TimeUnit.SECONDS);
+                Thread explicitStop = Thread.ofVirtual().start(() -> {
+                    try {
+                        if (!go.await(3, TimeUnit.SECONDS)) throw new AssertionError("missing start");
+                        actor.cancel();
+                    } catch (Throwable failure) {
+                        stopFailure.compareAndSet(null, failure);
+                    }
+                });
+                Thread contextClose = Thread.ofVirtual().start(() -> {
+                    try {
+                        if (!go.await(3, TimeUnit.SECONDS)) throw new AssertionError("missing start");
+                        OresContext.joinActorsAndNativeIo(runtime, io);
+                    } catch (Throwable failure) {
+                        closeFailure.compareAndSet(null, failure);
+                    }
+                });
+                go.countDown();
+                explicitStop.join(3000);
+                contextClose.join(3000);
+                assertFalse(explicitStop.isAlive(), "host STOP hung in round " + round);
+                assertFalse(contextClose.isAlive(), "context close hung in round " + round);
+                assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
+                assertNull(closeFailure.get(), () -> String.valueOf(closeFailure.get()));
+                assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+                OresContext.joinActorsAndNativeIo(runtime, io);
+            } finally {
+                go.countDown();
+                runtime.close();
+                io.close();
+            }
+        }
+    }
+
+    @Test void sealedRuntimeRetainsUnretiredActorAndCanFinishAfterPhysicalReceipt()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var physicalLoanRetired = new java.util.concurrent.atomic.AtomicBoolean();
+        runtime.setNativeIoLoanRetirementGate(id -> physicalLoanRetired.get());
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+        try {
+            actor.ready().get(3, TimeUnit.SECONDS);
+            runtime.sealShutdownAdmission();
+            assertThrows(RuntimeException.class, () -> actor.send("sealed"));
+            assertThrows(IllegalStateException.class, runtime::close,
+                    "a missing physical receipt must quarantine the unretired ActorCell");
+            assertFalse(actor.done().isDone(),
+                    "arena and DONE cannot be released by dispatcher shutdown");
+            physicalLoanRetired.set(true);
+            runtime.onNativeIoLoanRetired(actor.id());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                    "the last physical receipt must unblock retirement on a retry");
+            runtime.close();
+        } finally {
+            physicalLoanRetired.set(true);
+            runtime.onNativeIoLoanRetired(actor.id());
+            runtime.close();
+        }
+    }
+
+    @Test void contextShutdownSealsActorMailBeforeWakingNativeSocket()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var io = new AsyncNativeIo(2);
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+        var socketWake = new CountDownLatch(1);
+        var observedSealed = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            actor.ready().get(3, TimeUnit.SECONDS);
+            // The socket's close callback happens in requestShutdown(), BEFORE
+            // ActorRuntime.close() enters any user cleanup hooks.
+            Socket socket = new Socket() {
+                @Override public synchronized void close() throws IOException {
+                    assertThrows(RuntimeException.class,
+                            () -> actor.send("forbidden-after-context-seal"));
+                    observedSealed.set(true);
+                    socketWake.countDown();
+                    super.close();
+                }
+            };
+            io.register(socket);
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(socketWake.await(2, TimeUnit.SECONDS));
+            assertTrue(observedSealed.get(),
+                    "actor mail must already be fenced when transport revocation runs");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(socket.isClosed());
+            assertTrue(io.submit("closed", () -> 1).isDone());
+        } finally {
+            runtime.close();
+            io.close();
+        }
+    }
+
+    @Test void contextShutdownJoinsAfterPhysicalLoanAndSupportsQuarantinedRetry()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var io = new AsyncNativeIo(2, 1, 2);
+        var closeCount = new java.util.concurrent.atomic.AtomicInteger();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var exited = new CountDownLatch(1);
+        try {
+            io.register(closeCount::incrementAndGet);
+            var pending = io.submit("uncooperative-native-work", () -> {
+                entered.countDown();
+                try {
+                    while (!release.await(25, TimeUnit.MILLISECONDS)) { }
+                } catch (InterruptedException interrupted) {
+                    while (release.getCount() != 0) {
+                        try { release.await(25, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { }
+                    }
+                } finally {
+                    exited.countDown();
+                }
+                return 1;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class,
+                    () -> OresContext.joinActorsAndNativeIo(runtime, io),
+                    "a running physical I/O worker must force quarantine");
+            assertEquals(0, closeCount.get(),
+                    "incomplete native worker cannot release registered resources");
+            assertFalse(pending.isDone());
+            release.countDown();
+            assertTrue(exited.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> pending.get(2, TimeUnit.SECONDS)).getCause());
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertEquals(1, closeCount.get(),
+                    "verified retry must release resource exactly once");
+        } finally {
+            release.countDown();
+            runtime.close();
+            io.close();
+        }
+    }
+
+    @Test void differentActorIncarnationsCannotReleaseEachOthersNativeLoans()
+            throws Exception {
+        try (var io = new AsyncNativeIo(4);
+             var runtime = new ActorRuntime()) {
+            var registeredClosed = new java.util.concurrent.atomic.AtomicInteger();
+            AutoCloseable resource = registeredClosed::incrementAndGet;
+            io.register(resource);
+            runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+            io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+
+            var firstLoan = new java.util.concurrent.atomic.AtomicReference<AsyncNativeIo.IoLoan>();
+            var secondLoan = new java.util.concurrent.atomic.AtomicReference<AsyncNativeIo.IoLoan>();
+            var admitted = new CountDownLatch(2);
+            var a = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                firstLoan.set(io.borrow(resource));
+                admitted.countDown();
+            });
+            var b = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                secondLoan.set(io.borrow(resource));
+                admitted.countDown();
+            });
+            a.send("borrow");
+            b.send("borrow");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            assertNotEquals(a.id(), b.id());
+            assertEquals(a.id(), firstLoan.get().identity().actorId());
+            assertEquals(b.id(), secondLoan.get().identity().actorId());
+            assertEquals(1, io.outstandingActorOperations(a.id()));
+            assertEquals(1, io.outstandingActorOperations(b.id()));
+
+            a.cancel();
+            b.cancel();
+            assertFalse(a.done().isDone());
+            assertFalse(b.done().isDone());
+            firstLoan.get().close();
+            assertTrue(a.awaitTermination(3, TimeUnit.SECONDS),
+                    "first arena must be released by its own final physical loan");
+            assertFalse(b.done().isDone(),
+                    "a stale or foreign generation receipt cannot finalize another actor");
+            assertEquals(0, io.outstandingActorOperations(a.id()));
+            assertEquals(1, io.outstandingActorOperations(b.id()));
+            secondLoan.get().close();
+            assertTrue(b.awaitTermination(3, TimeUnit.SECONDS));
+            io.close();
+            assertEquals(1, registeredClosed.get());
+        }
+    }
+
+    @Test void actorNativeOperationAdmissionBlocksDoneBeforePhysicalWorkerExit()
+            throws Exception {
+        try (var io = new AsyncNativeIo(2);
+             var runtime = new ActorRuntime()) {
+            runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+            io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var admitted = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                io.submit("actor-owned-native", () -> {
+                    entered.countDown();
+                    release.await();
+                    return 3;
+                });
+                admitted.countDown();
+            });
+            try {
+                actor.send("start");
+                assertTrue(admitted.await(3, TimeUnit.SECONDS));
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertEquals(1, io.outstandingActorOperations(actor.id()));
+                actor.cancel();
+                assertFalse(actor.done().isDone(),
+                        "task completion alone cannot free the actor while native work runs");
+            } finally {
+                release.countDown();
+            }
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, io.outstandingActorOperations(actor.id()));
+        }
+    }
+
+    @Test void equalButDistinctNativeResourcesRetireIndependently()
+            throws Exception {
+        var io = new AsyncNativeIo(2);
+        var firstClosed = new java.util.concurrent.atomic.AtomicInteger();
+        var secondClosed = new java.util.concurrent.atomic.AtomicInteger();
+        final class EqualResource implements AutoCloseable {
+            final java.util.concurrent.atomic.AtomicInteger counter;
+            EqualResource(java.util.concurrent.atomic.AtomicInteger counter) {
+                this.counter = counter;
+            }
+            @Override public boolean equals(Object other) {
+                return other instanceof EqualResource;
+            }
+            @Override public int hashCode() { return 17; }
+            @Override public void close() { counter.incrementAndGet(); }
+        }
+        AutoCloseable first = new EqualResource(firstClosed);
+        AutoCloseable second = new EqualResource(secondClosed);
+        try {
+            io.register(first);
+            io.register(second);
+            var firstLoan = io.borrow(first);
+            var secondLoan = io.borrow(second);
+            assertNotEquals(firstLoan.identity().resourceGeneration(),
+                    secondLoan.identity().resourceGeneration());
+            firstLoan.close();
+            secondLoan.close();
+            io.close();
+            assertEquals(1, firstClosed.get(),
+                    "the first handle must retain its own identity and cleanup");
+            assertEquals(1, secondClosed.get(),
+                    "a distinct equals()-equivalent handle cannot disappear");
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void nativeLoanGenerationAndDuplicateReceiptAreFailClosed()
+            throws Exception {
+        var io = new AsyncNativeIo(2);
+        var closed = new java.util.concurrent.atomic.AtomicInteger();
+        AutoCloseable resource = closed::incrementAndGet;
+        try {
+            io.register(resource);
+            AsyncNativeIo.IoLoan first = io.borrow(resource);
+            AsyncNativeIo.IoLoan second = io.borrow(resource);
+            assertEquals(first.identity().resourceGeneration(),
+                    second.identity().resourceGeneration());
+            assertNotEquals(first.identity().loanGeneration(),
+                    second.identity().loanGeneration());
+            assertNull(first.identity().actorId(),
+                    "host/ROOT loans do not invent an actor incarnation");
+
+            io.requestShutdown();
+            assertThrows(RejectedExecutionException.class, () -> io.borrow(resource),
+                    "logical shutdown must seal new per-resource admission");
+            assertThrows(IllegalStateException.class, io::close,
+                    "an outstanding physical resource loan must keep context quarantined");
+            assertEquals(0, closed.get(),
+                    "resource close is not proof that a loan has physically exited");
+
+            first.close();
+            assertThrows(IllegalStateException.class, first::close,
+                    "the same physical receipt cannot decrement the loan count twice");
+            assertThrows(IllegalStateException.class, io::close,
+                    "the second independent loan must remain outstanding");
+            second.close();
+            io.close();
+            assertEquals(1, closed.get(),
+                    "resource must close exactly once after the final loan");
+        } finally {
+            try { io.close(); } catch (IllegalStateException quarantined) { }
+        }
+    }
+
+    @Test void retiredResourceHandleCannotBeReusedUnderStaleGeneration()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var closed = new java.util.concurrent.atomic.AtomicInteger();
+        AutoCloseable resource = closed::incrementAndGet;
+        try {
+            io.register(resource);
+            AsyncNativeIo.IoLoan older = io.borrow(resource);
+            io.unregister(resource);
+            assertThrows(RejectedExecutionException.class, () -> io.borrow(resource));
+            assertThrows(IllegalStateException.class, () -> io.register(resource),
+                    "a handle with an outstanding old-generation loan cannot be reused");
+            older.close();
+            io.register(resource);
+            AsyncNativeIo.IoLoan newer = io.borrow(resource);
+            assertTrue(newer.identity().resourceGeneration()
+                    > older.identity().resourceGeneration());
+            assertNotEquals(older.identity().loanGeneration(),
+                    newer.identity().loanGeneration());
+            assertThrows(IllegalStateException.class, older::close,
+                    "an old receipt may never retire a fresh generation");
+            newer.close();
+            io.close();
+            assertEquals(1, closed.get());
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void requestShutdownUnblocksRegisteredSocketReadBeforePhysicalJoin()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var socket = new Socket(InetAddress.getLoopbackAddress(),
+                     server.getLocalPort());
+             var peer = server.accept()) {
+            io.register(socket);
+            var readEntered = new CountDownLatch(1);
+            var readExited = new CountDownLatch(1);
+            var read = io.submit("socket.read", () -> {
+                try (AsyncNativeIo.IoLoan lease = io.borrow(socket)) {
+                    readEntered.countDown();
+                    try {
+                        return socket.getInputStream().read();
+                    } finally {
+                        readExited.countDown();
+                    }
+                }
+            });
+            assertTrue(readEntered.await(2, TimeUnit.SECONDS));
+            assertFalse(read.isDone());
+            io.requestShutdown();
+            assertTrue(readExited.await(2, TimeUnit.SECONDS),
+                    "transport wakeup must exit the blocking read without a peer write");
+            assertInstanceOf(Exception.class,
+                    assertThrows(ExecutionException.class,
+                            () -> read.get(2, TimeUnit.SECONDS)).getCause());
+            io.close();
+            assertTrue(socket.isClosed());
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void queuedOperationDiscardIsDistinctFromRunningPhysicalRetirement()
+            throws Exception {
+        var io = new AsyncNativeIo(3, 1, 2);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var firstExited = new CountDownLatch(1);
+        var closedResources = new java.util.concurrent.atomic.AtomicInteger();
+        var neverStarted = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(closedResources::incrementAndGet);
+            var running = io.submit("blocking", () -> {
+                entered.countDown();
+                try {
+                    while (!release.await(50, TimeUnit.MILLISECONDS)) { }
+                } catch (InterruptedException interrupted) {
+                    // This fake native driver ignores interruption and keeps
+                    // its physical loan until the host releases the gate.
+                    while (release.getCount() != 0) {
+                        try { release.await(50, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { }
+                    }
+                } finally {
+                    firstExited.countDown();
+                }
+                return 1;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            var queued = io.submit("never-started", () -> {
+                neverStarted.incrementAndGet();
+                return 2;
+            });
+            assertThrows(IllegalStateException.class, io::close,
+                    "physical shutdown cannot claim a live worker retired");
+            assertEquals(0, closedResources.get(),
+                    "registered resources must remain quarantined while any loan is running");
+            assertFalse(running.isDone(),
+                    "even after shutdownNow, a running Future is not a physical receipt");
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> queued.get(2, TimeUnit.SECONDS)).getCause());
+            assertEquals(0, neverStarted.get());
+            release.countDown();
+            assertTrue(firstExited.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> running.get(2, TimeUnit.SECONDS)).getCause());
+            io.close(); // retry after actual physical retirement
+            assertEquals(1, closedResources.get(),
+                    "registered resources close exactly once after all physical loans");
+        } finally {
+            release.countDown();
+            io.close();
+        }
+    }
+
+    @Test void lateResourceRegistrationAfterShutdownRemainsRetainedUntilWorkerExit()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var entered = new CountDownLatch(1);
+        var permitRegistration = new CountDownLatch(1);
+        var attemptedRegistration = new CountDownLatch(1);
+        var closedResource = new java.util.concurrent.atomic.AtomicInteger();
+        var deniedRegistration = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            var future = io.submit("late-connect", () -> {
+                entered.countDown();
+                while (permitRegistration.getCount() != 0) {
+                    try { permitRegistration.await(50, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { }
+                }
+                try {
+                    io.register(closedResource::incrementAndGet);
+                } catch (IllegalStateException contextClosed) {
+                    deniedRegistration.incrementAndGet();
+                } finally {
+                    attemptedRegistration.countDown();
+                }
+                return 7;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, io::close);
+            assertEquals(0, closedResource.get());
+            permitRegistration.countDown();
+            assertTrue(attemptedRegistration.await(2, TimeUnit.SECONDS));
+            assertEquals(1, deniedRegistration.get());
+            assertEquals(0, closedResource.get(),
+                    "registration on a closing context must not close an active native handle");
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> future.get(2, TimeUnit.SECONDS)).getCause());
+            io.close();
+            assertEquals(1, closedResource.get(),
+                    "the post-join resource sweep must close the late resource exactly once");
+        } finally {
+            permitRegistration.countDown();
+            io.close();
+        }
+    }
+
+    @Test void blockedTerminalSubscriberPreventsNativeResourceReclamation()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var started = new CountDownLatch(1);
+        var finishWork = new CountDownLatch(1);
+        var subscriberEntered = new CountDownLatch(1);
+        var releaseSubscriber = new CountDownLatch(1);
+        var resourcesClosed = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(resourcesClosed::incrementAndGet);
+            var future = io.submit("terminal", () -> {
+                started.countDown();
+                finishWork.await();
+                return 17;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            future.whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                try {
+                    while (!releaseSubscriber.await(50, TimeUnit.MILLISECONDS)) { }
+                } catch (InterruptedException interrupted) {
+                    while (releaseSubscriber.getCount() != 0) {
+                        try { releaseSubscriber.await(50, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { }
+                    }
+                }
+            });
+            finishWork.countDown();
+            assertTrue(subscriberEntered.await(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, io::close,
+                    "terminal state alone is not a drained notification receipt");
+            assertEquals(0, resourcesClosed.get());
+            releaseSubscriber.countDown();
+            io.close();
+            assertEquals(1, resourcesClosed.get());
+        } finally {
+            finishWork.countDown();
+            releaseSubscriber.countDown();
+            io.close();
+        }
+    }
+
+    @Test void blockedNeverStartedNotificationQuarantinesResourcesWithoutBlockingClose()
+            throws Exception {
+        var io = new AsyncNativeIo(2, 1, 1);
+        var entered = new CountDownLatch(1);
+        var subscriberEntered = new CountDownLatch(1);
+        var releaseSubscriber = new CountDownLatch(1);
+        var released = new java.util.concurrent.atomic.AtomicInteger();
+        var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        try {
+            io.register(released::incrementAndGet);
+            var running = io.submit("running", () -> {
+                entered.countDown();
+                new CountDownLatch(1).await();
+                return 1;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            var queued = io.submit("discard", () -> 2);
+            queued.whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                while (releaseSubscriber.getCount() != 0) {
+                    try { releaseSubscriber.await(50, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { }
+                }
+            });
+
+            Thread closer = Thread.ofVirtual().start(() -> {
+                try {
+                    assertThrows(IllegalStateException.class, io::close);
+                } catch (Throwable problem) {
+                    closeFailure.compareAndSet(null, problem);
+                }
+            });
+            try {
+                assertTrue(subscriberEntered.await(2, TimeUnit.SECONDS),
+                        "never-started notification must run independently of close");
+                closer.join(2000);
+                assertFalse(closer.isAlive(),
+                        "blocked terminal subscriber may quarantine but cannot hang the close caller");
+                assertNull(closeFailure.get(), () -> String.valueOf(closeFailure.get()));
+                assertEquals(0, released.get(),
+                        "resources remain held until every callback physically drains");
+                assertInstanceOf(IllegalStateException.class,
+                        assertThrows(ExecutionException.class,
+                                () -> running.get(2, TimeUnit.SECONDS)).getCause());
+            } finally {
+                releaseSubscriber.countDown();
+            }
+            io.close();
+            assertEquals(1, released.get());
+        } finally {
+            releaseSubscriber.countDown();
+            io.close();
+        }
+    }
+
+    @Test void resourceRegisteredAfterVerifiedRetirementRemainsCallerOwned()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var firstClosed = new java.util.concurrent.atomic.AtomicInteger();
+        var lateClosed = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(firstClosed::incrementAndGet);
+            io.close();
+            assertEquals(1, firstClosed.get());
+            AutoCloseable callerOwned = lateClosed::incrementAndGet;
+            IllegalStateException rejection =
+                    assertThrows(IllegalStateException.class,
+                            () -> io.register(callerOwned));
+            assertTrue(rejection.getMessage().contains("caller retains resource ownership"),
+                    "fully retired context cannot silently assume ownership of a late handle");
+            io.close();
+            assertEquals(0, lateClosed.get(),
+                    "a rejected post-retirement transfer is owned by the caller");
+            callerOwned.close();
+            assertEquals(1, lateClosed.get(), "caller explicitly retires rejected handle");
+            assertEquals(1, firstClosed.get(), "former context resources close once");
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void lateRegistrationDuringResourceCloseKeepsContextQuarantinedUntilRetry()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var firstClosed = new java.util.concurrent.atomic.AtomicInteger();
+        var lateClosed = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(() -> {
+                firstClosed.incrementAndGet();
+                // A callback may swallow the expected registration failure.
+                // Its late handle is still retained by register(), but was
+                // absent from the closing resources snapshot.
+                assertThrows(IllegalStateException.class,
+                        () -> io.register(lateClosed::incrementAndGet));
+            });
+            IllegalStateException incomplete =
+                    assertThrows(IllegalStateException.class, io::close);
+            assertTrue(incomplete.getMessage().contains("context quarantined"));
+            assertInstanceOf(IllegalStateException.class, incomplete.getCause());
+            assertTrue(incomplete.getCause().getMessage()
+                    .contains("resources remain after post-join close sweep"));
+            assertEquals(1, firstClosed.get());
+            assertEquals(0, lateClosed.get(),
+                    "the retained handle must not be silently abandoned");
+            io.close();
+            assertEquals(1, firstClosed.get(), "retired resource cannot close twice");
+            assertEquals(1, lateClosed.get(), "retry must close the late handle");
+            io.close();
+            assertEquals(1, lateClosed.get(), "fully retired close is idempotent");
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void resourceCloseCallbackCannotRecursivelyCloseItsNativeContext()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var closes = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(() -> {
+                closes.incrementAndGet();
+                IllegalStateException denied =
+                        assertThrows(IllegalStateException.class, io::close);
+                assertTrue(denied.getMessage().contains("cannot recursively close"));
+            });
+            io.close();
+            assertEquals(1, closes.get(),
+                    "a reentrant host callback cannot re-close the same resource");
+            io.close();
+            assertEquals(1, closes.get(), "a successful close is idempotent");
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void uncaughtResourceCloseReentryQuarantinesAndCanBeRetried()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var closes = new java.util.concurrent.atomic.AtomicInteger();
+        var recurseOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+        try {
+            io.register(() -> {
+                closes.incrementAndGet();
+                if (recurseOnce.getAndSet(false)) io.close();
+            });
+            IllegalStateException incomplete =
+                    assertThrows(IllegalStateException.class, io::close);
+            assertTrue(incomplete.getMessage().contains("resource close failed"));
+            assertInstanceOf(IllegalStateException.class, incomplete.getCause());
+            assertTrue(incomplete.getCause().getMessage()
+                    .contains("cannot recursively close"));
+            assertEquals(1, closes.get(),
+                    "a failed reentrant close must retain, not recursively release, the resource");
+            io.close();
+            assertEquals(2, closes.get(),
+                    "the retained resource must be closed by the next verified sweep");
+            io.close();
+            assertEquals(2, closes.get(), "the retired resource must close exactly once");
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void nativeCloseRejectsReentrantJoinFromItsOwnWorker()
+            throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            var blocked = io.submit("self-close", () -> {
+                IllegalStateException rejected =
+                        assertThrows(IllegalStateException.class, io::close);
+                assertTrue(rejected.getMessage().contains("cannot join its own"));
+                return 11;
+            });
+            assertEquals(11, blocked.get(2, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void boundedAdmissionNeverRunsOnCallerAndCloseSettlesPendingWork() throws Exception {
         try (var io = new AsyncNativeIo(1)) {
             CountDownLatch entered = new CountDownLatch(1);

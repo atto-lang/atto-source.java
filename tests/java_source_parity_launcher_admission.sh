@@ -9,6 +9,17 @@ cp "$root/scripts/run-source-parity.sh" "$sandbox/scripts/run-source-parity.sh"
 chmod +x "$sandbox/scripts/run-source-parity.sh"
 bash -n "$sandbox/scripts/run-source-parity.sh"
 launcher="$sandbox/scripts/run-source-parity.sh"
+# The LLVM differential gate requires a committed regular executable script.
+# Running the launcher via bash would conceal a broken 100644 Git file mode.
+source_mode="$(git -C "$root" ls-files --stage -- scripts/run-source-parity.sh)"
+if [[ ! "$source_mode" =~ ^100755[[:space:]] ]]; then
+  echo "FAIL: source parity launcher must be tracked as Git mode 100755" >&2
+  exit 1
+fi
+if [[ ! -x "$root/scripts/run-source-parity.sh" ]]; then
+  echo "FAIL: source parity launcher is not executable" >&2
+  exit 1
+fi
 
 expect_failure() {
   local name="$1" expected="$2" message="$3"
