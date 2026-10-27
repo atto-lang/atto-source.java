@@ -25,6 +25,8 @@ public final class Lexer {
         KEYWORDS.put("type", TYPE); KEYWORDS.put("types", TYPES); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("trait", TRAIT); KEYWORDS.put("struct", STRUCT); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER);
+        // Future typed unsafe boundary: reserved, never a generic guest identifier.
+        KEYWORDS.put("unsafe", UNSAFE);
         // Reserved until compiler-checked typed effects and source lowering exist.
         KEYWORDS.put("throw", THROW); KEYWORDS.put("raise", RAISE);
         KEYWORDS.put("panic", PANIC); KEYWORDS.put("recover", RECOVER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
