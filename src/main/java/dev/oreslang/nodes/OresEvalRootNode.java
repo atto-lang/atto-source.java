@@ -4274,6 +4274,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MemberExpr member) {
+                    if (isImportsMember(member)) {
+                        try {
+                            continuation.accept(task, explicitImportValue(member.member()), null);
+                        } catch (RuntimeException | Error failure) {
+                            continuation.accept(task, null, failure);
+                        }
+                        return;
+                    }
                     if (isPkgRootMember(member)) {
                         try {
                             continuation.accept(task, pkgRootFunctionValue(member.member(), env), null);
@@ -5067,6 +5075,30 @@ public final class OresEvalRootNode extends RootNode {
             Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
             if (implicit != null) {
                 evalSuspendableCall(task, implicit, env, continuation);
+                return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr imported && isImportsMember(imported)) {
+                try {
+                    namedImportedFnc(imported.member());
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Invocation invocation = prepareExplicitImportInvocation(
+                                        imported.member(), values);
+                                completeSourceInvocation(t, invocation,
+                                        invocationDeclaresAsync(invocation), env, continuation);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
                 return;
             }
             if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
@@ -6975,6 +7007,49 @@ public final class OresEvalRootNode extends RootNode {
                     && name.name().equals(Parser.PKG_ROOT_NAMESPACE);
         }
 
+        private static boolean isImportsMember(Ast.MemberExpr member) {
+            return member.receiver() instanceof Ast.NameExpr name
+                    && name.name().equals(Parser.IMPORTS_NAMESPACE);
+        }
+
+        private ImportedBinding namedImportedFnc(String name) {
+            ImportedBinding imported = namedImports.get(name);
+            if (imported == null || imported.declaration().kind() != Ast.ImportKind.FUNCTION
+                    || imported.declaration().wildcard()) {
+                throw new IllegalArgumentException(
+                        "imports::" + name
+                                + " must name an explicitly imported fnc in this source unit");
+            }
+            return imported;
+        }
+
+        private Invocation prepareExplicitImportInvocation(String name, List<Object> args) {
+            ImportedBinding imported = namedImportedFnc(name);
+            if (ImportRules.isJavaPath(imported.declaration().path())) {
+                Invokable host = hostFunctions.get(name);
+                if (host == null) {
+                    throw new IllegalArgumentException(
+                            "imports::" + name + " has no authorized Java host function");
+                }
+                // Host allowlist/capability checks reside in this wrapper.
+                return invokableInvocation(host, args);
+            }
+            return importedTarget(imported.declaration()).prepareImportedInvocation(
+                    Ast.ImportKind.FUNCTION, imported.sourceName(), args);
+        }
+
+        private Object explicitImportValue(String name) {
+            ImportedBinding imported = namedImportedFnc(name);
+            if (ImportRules.isJavaPath(imported.declaration().path())) {
+                Invokable host = hostFunctions.get(name);
+                if (host == null) throw new IllegalArgumentException(
+                        "imports::" + name + " has no authorized Java host function");
+                return host;
+            }
+            return importedTarget(imported.declaration())
+                    .exportValue(Ast.ImportKind.FUNCTION, imported.sourceName());
+        }
+
         private Ast.FunctionDecl pkgRootCallable(String name, int arity, Env env) {
             requireExplicitClassCallableImport(env, name);
             if (name.equals("init")) {
@@ -7034,6 +7109,10 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
                 Ast.FunctionDecl direct = pkgRootCallable(pkg.member(), call.arguments().size(), env);
                 return functionInvocation(direct, evaluateArguments(call.arguments(), env));
+            }
+            if (call.callee() instanceof Ast.MemberExpr imported && isImportsMember(imported)) {
+                return prepareExplicitImportInvocation(
+                        imported.member(), evaluateArguments(call.arguments(), env));
             }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
@@ -7642,6 +7721,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.MemberExpr member) {
                 if (isPkgRootMember(member)) return pkgRootFunctionValue(member.member(), env);
+                if (isImportsMember(member)) return explicitImportValue(member.member());
                 return member(eval(member.receiver(), env), member.member(), env);
             }
             if (expr instanceof Ast.IndexExpr indexed) {
