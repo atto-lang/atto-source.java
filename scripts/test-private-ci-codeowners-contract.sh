@@ -23,6 +23,8 @@ expected_tail() {
 /.github/private-ci-approved-repositories.txt @ORESoftware
 /.github/private-ci-incident-dispositions.json @ORESoftware
 /.github/private-ci-carrier-contracts.json @ORESoftware
+/.github/workflows/private-ci-mirror-preflight.yml @ORESoftware
+/.github/workflows/source-free-private-ci-gates.yml @ORESoftware
 /scripts/check-private-ci-destination.sh @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
@@ -33,7 +35,7 @@ RULES
 check() {
   local input="$1"
   [[ -f "$input" && ! -L "$input" ]] || return 1
-  cmp -s <(effective_rules "$input" | tail -n 8) <(expected_tail)
+  cmp -s <(effective_rules "$input" | tail -n 10) <(expected_tail)
 }
 
 if ! check "$policy"; then
@@ -84,4 +86,4 @@ reject "$work/reordered" 'reordered exact rules'
 ln -s "$work/good" "$work/link"
 reject "$work/link" 'symlinked CODEOWNERS'
 
-printf 'PASS: terminal private-export ownership and 12 adversarial cases\n'
+printf 'PASS: terminal private-export ownership and 14 adversarial cases\n'
