@@ -15,6 +15,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.VmNioTcpListener;
+import dev.oreslang.runtime.VmNioTcpConnection;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
@@ -7824,8 +7825,13 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "connect" -> (Invokable) args ->
                             strictNonblockingIoRejected("network.connect");
-                    case "connect_async" -> (Invokable) args ->
-                            strictNonblockingIoFuture("network.connect_async");
+                    case "connect_async" -> (Invokable) args -> {
+                        requireTwo(args, "network.connect_async");
+                        String host = requireString(args.get(0), "host");
+                        if (!(args.get(1) instanceof Number port))
+                            throw new IllegalArgumentException("port must be an integer");
+                        return context.connectNioIpv4(host, port.intValue());
+                    };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
                 };
             }
@@ -7850,6 +7856,32 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof VmNioTcpListener.Connection connection) {
+                if (ActorRuntime.inActorExecution())
+                    throw new SecurityException(
+                            "TCP connection ownership transfer to actor is not implemented");
+                context.requireNioOwner(connection, "net.connection." + name);
+                return switch (name) {
+                    case "read_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "NioTcpConnection.read_bytes_async");
+                        if (!(args.getFirst() instanceof Number maximum))
+                            throw new IllegalArgumentException("read size must be an integer");
+                        return connection.readBytesAsync(maximum.intValue());
+                    };
+                    case "write_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "NioTcpConnection.write_bytes_async");
+                        if (!(args.getFirst() instanceof java.util.List<?> bytes))
+                            throw new IllegalArgumentException("write bytes must be Array<int>");
+                        return connection.writeBytesAsync(bytes);
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpConnection.close_async");
+                        return connection.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown nonblocking TCP connection member " + name);
+                };
+            }
+            if (receiver instanceof VmNioTcpConnection connection) {
                 if (ActorRuntime.inActorExecution())
                     throw new SecurityException(
                             "TCP connection ownership transfer to actor is not implemented");
