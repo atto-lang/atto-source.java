@@ -1019,7 +1019,11 @@ public final class OwnershipChecker {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
 
-        ValueKind storedKind = binding.declaredType() == null ? value.kind : kindOfType(storedType);
+        ValueKind storedKind = isBorrowValue(value)
+                ? (value.kind == ValueKind.MUT_BORROW
+                    ? ValueKind.MUT_BORROW
+                    : ValueKind.IMM_BORROW)
+                : binding.declaredType() == null ? value.kind : kindOfType(storedType);
         VarState state = new VarState(
                 storedType,
                 binding.mutableReferent(),
@@ -1310,9 +1314,11 @@ public final class OwnershipChecker {
                 if (leftSource == null || rightSource == null || leftSource != rightSource) {
                     throw error("conditional expression cannot merge borrowed values with ambiguous lifetime provenance");
                 }
-                ValueKind joinedKind = joinedType.isBorrow()
-                        ? kindOfType(joinedType)
-                        : ValueKind.MOVE_ONLY;
+                ValueKind joinedKind =
+                        left.kind == ValueKind.MUT_BORROW
+                                && right.kind == ValueKind.MUT_BORROW
+                                ? ValueKind.MUT_BORROW
+                                : ValueKind.IMM_BORROW;
                 return new ValueInfo(joinedType, joinedKind, leftSource);
             }
             return new ValueInfo(
@@ -2043,9 +2049,14 @@ public final class OwnershipChecker {
                     }
                     resultProvenance = ownershipRoot(receiverValue.borrowSource);
                 }
+                ValueKind resultKind = resultProvenance == null
+                        ? kindOfType(callResult)
+                        : receiverValue.kind == ValueKind.MUT_BORROW
+                                ? ValueKind.MUT_BORROW
+                                : ValueKind.IMM_BORROW;
                 return new ValueInfo(
                         callResult,
-                        kindOfType(callResult),
+                        resultKind,
                         method.async() ? null : resultProvenance);
             }
         }
@@ -2930,7 +2941,8 @@ public final class OwnershipChecker {
                     + "use an explicit lexical rt borrow projection");
         }
         ValueInfo retained = retainBorrowForBinding(
-                new ValueInfo(type, kind, source.borrowSource));
+                new ValueInfo(type, ValueKind.IMM_BORROW, source.borrowSource));
+        state.kind = ValueKind.IMM_BORROW;
         state.borrowSource = retained.borrowSource;
         state.borrowLease = retained.borrowLease;
         return state;
