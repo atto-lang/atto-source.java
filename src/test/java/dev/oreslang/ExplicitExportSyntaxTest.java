@@ -486,6 +486,42 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void publicMemberInsideFileScopedModuleIsNotAGlobalLibraryRoot() {
+        var result = OresCompiler.compileForBuild("""
+                define pub[file] module Local as
+                  pub fnc hidden(): int { return 1; }
+                end
+                pub fnc main(): int { return 0; }
+                """, BuildOptions.library(Map.of()));
+
+        assertFalse(result.retainedSymbols().contains("Local.hidden"),
+                "owner-scope capping must prevent a file-scoped module member from becoming a public root");
+        assertTrue(result.retainedSymbols().contains(Parser.ROOT_MODULE + ".main"));
+    }
+
+    @Test
+    void emptyPublicExportedModuleIdentitySurvivesTreeShaking() {
+        var result = OresCompiler.compileForBuild("""
+                export module Api;
+                define module Api as
+                end
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(result.program().modules().stream().anyMatch(module -> module.name().equals("Api")));
+        Ast.ModuleDecl root = root(result.program());
+        assertEquals(1, root.exports().size());
+        assertEquals(Ast.ExportKind.MODULE, root.exports().getFirst().kind());
+
+        ExportResolver.ExportBinding binding =
+                ExportResolver.resolve(result.program()).bindings().stream()
+                        .filter(candidate -> candidate.localKind() == Ast.ExportKind.MODULE)
+                        .findFirst()
+                        .orElseThrow();
+        assertEquals("Api", binding.externalName());
+        assertEquals(Ast.ExportScope.PUBLIC, binding.scope());
+    }
+
+    @Test
     void symbolExportRequiresALocalDeclaration() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,

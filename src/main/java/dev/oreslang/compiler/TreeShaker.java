@@ -79,6 +79,7 @@ public final class TreeShaker {
         private final Set<String> scannedModuleMetadata = new LinkedHashSet<>();
 
         private final LinkedHashSet<String> retained = new LinkedHashSet<>();
+        private final LinkedHashSet<String> retainedModules = new LinkedHashSet<>();
         private final LinkedHashSet<String> roots = new LinkedHashSet<>();
         private final LinkedHashSet<String> externalBindings = new LinkedHashSet<>();
         private final ArrayDeque<String> work = new ArrayDeque<>();
@@ -1065,23 +1066,18 @@ public final class TreeShaker {
 
         private void seedRoots() {
             if (options.preservePublicApi()) {
-                for (Symbol symbol : symbols.values()) {
-                    if (isPublicApi(symbol.declaration())) markRoot(symbol.id());
-                }
-                // Explicit public exports are API roots even when the local
-                // declaration is default-private. Aliases never create a
-                // second executable symbol; they retain the local target.
-                for (Ast.ModuleDecl module : rewritten.modules()) {
-                    for (Ast.ExportDecl export : module.exports()) {
-                        if (export.scope() != Ast.ExportScope.PUBLIC) continue;
-                        for (Ast.ExportItem item : export.items()) {
-                            if (export.kind() == Ast.ExportKind.MODULE
-                                    && module.name().equals(Parser.ROOT_MODULE)) {
-                                markRuntimeModuleMembers(item.localName());
-                            } else {
-                                markRoot(qualify(module.name(), item.localName()));
-                            }
-                        }
+                // Source-interface reachability is defined by effective
+                // ExportBindings, not raw declaration visibility. This is
+                // essential for owner-scope capping: a 'pub' member inside a
+                // file/package-scoped module is not a process-public API root.
+                for (ExportResolver.ExportBinding binding
+                        : ExportResolver.resolve(rewritten).bindings()) {
+                    if (binding.scope() != Ast.ExportScope.PUBLIC) continue;
+                    String localName = exportLocalName(binding.localSymbolId());
+                    if (binding.localKind() == Ast.ExportKind.MODULE) {
+                        retainedModules.add(localName);
+                    } else {
+                        markRoot(qualify(binding.ownerNamespaceId(), localName));
                     }
                 }
             }
@@ -1094,6 +1090,15 @@ public final class TreeShaker {
                 }
                 markRoot(root);
             }
+        }
+
+        private static String exportLocalName(String localSymbolId) {
+            int marker = localSymbolId.lastIndexOf("::");
+            if (marker < 0 || marker + 2 >= localSymbolId.length()) {
+                throw new IllegalArgumentException(
+                        "malformed export local symbol id: " + localSymbolId);
+            }
+            return localSymbolId.substring(marker + 2);
         }
 
         private boolean isPublicApi(Ast.Decl declaration) {
@@ -1514,7 +1519,8 @@ public final class TreeShaker {
                     }
                 }
                 List<Ast.ExportDecl> exports = retainedExports(module, declarations);
-                if (!declarations.isEmpty() || !exports.isEmpty()) {
+                if (!declarations.isEmpty() || !exports.isEmpty()
+                        || retainedModules.contains(module.name())) {
                     modules.add(new Ast.ModuleDecl(
                             module.name(), module.annotations(), module.contracts(),
                             declarations, exports, module.visibility()));
@@ -1548,7 +1554,9 @@ public final class TreeShaker {
                     }
                     if (export.kind() == Ast.ExportKind.MODULE
                             && module.name().equals(Parser.ROOT_MODULE)
-                            && rewritten.modules().stream().anyMatch(m -> m.name().equals(item.localName()))) {
+                            && (retainedModules.contains(item.localName())
+                                || retained.stream().anyMatch(
+                                        id -> moduleOf(id).equals(item.localName())))) {
                         items.add(item);
                     }
                 }

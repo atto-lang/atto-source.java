@@ -18,6 +18,7 @@ on:
       - "src/test/java/dev/oreslang/ExplicitExportSemanticMatrixTest.java"
       - "src/test/java/dev/oreslang/ExplicitVisibilityContractTest.java"
       - "src/test/java/dev/oreslang/ExplicitExportLinkedImportTest.java"
+      - "src/test/java/dev/oreslang/ModuleContractHardeningTest.java"
       - ".github/workflows/explicit-exports-exact-head.yml"
   workflow_dispatch:
 
@@ -54,5 +55,5 @@ jobs:
       - name: Run explicit export v1 tests
         run: >-
           mvn -B -ntp
-          -Dtest=ExplicitExportSyntaxTest,ExplicitExportSemanticMatrixTest,ExplicitVisibilityContractTest,ExplicitExportLinkedImportTest
+          -Dtest=ExplicitExportSyntaxTest,ExplicitExportSemanticMatrixTest,ExplicitVisibilityContractTest,ExplicitExportLinkedImportTest,ModuleContractHardeningTest
           test
