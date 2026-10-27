@@ -54,6 +54,9 @@ public final class Parser {
     static Ast.Expr parseInterpolatedExpression(String source) {
         Parser parser = new Parser(new Lexer(source).scan());
         for (Token token : parser.tokens) {
+            if (token.type() == UNSAFE) {
+                throw parser.error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
+            }
             if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
                 throw parser.error(token, "execution domain requires checked backend lowering");
             }
@@ -76,6 +79,9 @@ public final class Parser {
         // deliberately rejected later until a physical device provider exists.
         for (int i = 0; i < tokens.size(); i++) {
             Token token = tokens.get(i);
+            if (token.type() == UNSAFE) {
+                throw error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
+            }
             if (token.type() == QUANTUM) {
                 throw error(token, "quantum execution requires explicit backend lowering; no implicit CPU fallback");
             }
