@@ -31,6 +31,8 @@ public final class TypedScalarSmtTest {
         if (input.length > 65_536 || timeoutMillis <= 0 || timeoutMillis > 30_000) {
             throw new IllegalArgumentException("invalid SMT input length or solver deadline");
         }
+        long deadlineNanos = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         Process process = new ProcessBuilder(command).start();
         java.util.concurrent.ExecutorService streams =
                 java.util.concurrent.Executors.newFixedThreadPool(3, runnable -> {
@@ -55,9 +57,22 @@ public final class TypedScalarSmtTest {
             }
             // The child may exit while an inherited pipe remains open. Neither
             // a completed process nor an empty stdout alone is a valid receipt.
-            write.get(2, TimeUnit.SECONDS);
-            byte[] stdoutBytes = stdout.get(2, TimeUnit.SECONDS);
-            byte[] stderrBytes = stderr.get(2, TimeUnit.SECONDS);
+            // A child can exit and leave stdout/stderr open in a descendant.
+            // Enforce one overall deadline, including all stream completion.
+            byte[] stdoutBytes;
+            byte[] stderrBytes;
+            try {
+                write.get(Math.max(1, deadlineNanos - System.nanoTime()),
+                        TimeUnit.NANOSECONDS);
+                stdoutBytes = stdout.get(Math.max(1, deadlineNanos - System.nanoTime()),
+                        TimeUnit.NANOSECONDS);
+                stderrBytes = stderr.get(Math.max(1, deadlineNanos - System.nanoTime()),
+                        TimeUnit.NANOSECONDS);
+            } catch (java.util.concurrent.TimeoutException
+                    | java.util.concurrent.ExecutionException failure) {
+                throw new IllegalArgumentException(
+                        "Z3 stream transport incomplete at proof deadline", failure);
+            }
             if (stdoutBytes.length > 4096 || stderrBytes.length > 4096) {
                 throw new IllegalArgumentException("Z3 output exceeds proof transcript budget");
             }
@@ -281,6 +296,10 @@ public final class TypedScalarSmtTest {
                 List.of("sh", "-c", "cat >/dev/null; yes error | head -c 200000 >&2"), 1_000));
         assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("x".repeat(65_536),
                 List.of("sh", "-c", "sleep 5"), 250));
+        // A child may exit successfully while its descendant holds the output
+        // pipe open: the proof must not be accepted after the deadline.
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("x\n",
+                List.of("sh", "-c", "cat >/dev/null; sleep 5 & printf 'unsat\\n'"), 350));
     }
 
     @Test
