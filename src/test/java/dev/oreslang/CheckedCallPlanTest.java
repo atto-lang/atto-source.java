@@ -256,6 +256,60 @@ final class CheckedCallPlanTest {
     }
 
     @Test
+    void checkedPlanTransferRejectsRetargetedCallableOrConstructor() {
+        Ast.CallExpr direct = new Ast.CallExpr(
+                new Ast.NameExpr("f"),
+                List.of(new Ast.LiteralExpr(1L)));
+        CheckedCallPlan plan = CheckedCallPlan.required(
+                List.of("value"), List.of(positional(0)));
+        CheckedCallPlan.record(direct, plan);
+
+        Ast.CallExpr otherCallee = direct.rewrite(
+                new Ast.NameExpr("g"),
+                direct.typeArguments(),
+                direct.typeArgumentsPresent(),
+                direct.arguments());
+        Ast.copyCheckedMetadata(direct, otherCallee);
+        assertNull(CheckedCallPlan.lookup(otherCallee),
+                "changing the resolved callable must revoke copied binding authority");
+
+        Ast.CallExpr changedTypeArguments = direct.rewrite(
+                direct.callee(),
+                List.of(Ast.TypeRef.simple("int")),
+                true,
+                direct.arguments());
+        Ast.copyCheckedMetadata(direct, changedTypeArguments);
+        assertNull(CheckedCallPlan.lookup(changedTypeArguments),
+                "changing explicit generics must require a fresh checked call");
+
+        Ast.CallExpr sameTarget = direct.rewrite(
+                new Ast.NameExpr("f"),
+                direct.typeArguments(),
+                direct.typeArgumentsPresent(),
+                List.of(new Ast.LiteralExpr(9L)));
+        Ast.copyCheckedMetadata(direct, sameTarget);
+        assertEquals(plan, CheckedCallPlan.require(sameTarget),
+                "value-only rewrites on the same callable retain the plan");
+
+        Ast.NewExpr firstConstructor = new Ast.NewExpr(
+                Ast.TypeRef.simple("Foo"),
+                List.of(new Ast.LiteralExpr(1L)));
+        CheckedCallPlan.record(firstConstructor, plan);
+        Ast.NewExpr otherConstructor = new Ast.NewExpr(
+                Ast.TypeRef.simple("Bar"),
+                firstConstructor.arguments());
+        Ast.copyCheckedMetadata(firstConstructor, otherConstructor);
+        assertNull(CheckedCallPlan.lookup(otherConstructor),
+                "changing the constructor type must require a new binding proof");
+
+        Ast.NewExpr sameConstructor = new Ast.NewExpr(
+                Ast.TypeRef.simple("Foo"),
+                List.of(new Ast.LiteralExpr(2L)));
+        Ast.copyCheckedMetadata(firstConstructor, sameConstructor);
+        assertEquals(plan, CheckedCallPlan.require(sameConstructor));
+    }
+
+    @Test
     void legacyPlansDelegateToExactlyTheSameCanonicalBinding() {
         List<String> names = List.of("a", "b", "c");
         List<CheckedCallPlan.InputSlot> checkedFixedInputs =
