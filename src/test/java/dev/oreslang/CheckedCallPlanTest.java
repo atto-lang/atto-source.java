@@ -345,4 +345,67 @@ final class CheckedCallPlanTest {
                         List.of(false, false, true)));
     }
 
+    @Test
+    void oneSourceItemCannotForgeBothTupleAndRecordProjectionKinds() {
+        List<String> names = List.of("a", "b");
+        List<CheckedCallPlan.InputSlot> mixed = List.of(
+                positionalProjection(0, 0),
+                namedProjection("b", 0, 1));
+
+        // This used to pass binding: contiguous indices and correct ABI
+        // mapping do not prove two projections have the same shape.
+        assertThrows(IllegalArgumentException.class,
+                () -> CheckedCallPlan.required(names, mixed));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CheckedCallPlan(
+                        names,
+                        List.of(false, false),
+                        List.of(
+                                new CheckedCallPlan.BoundSlot(0, 0, null, 0, 0),
+                                new CheckedCallPlan.BoundSlot(1, 1, "b", 0, 1)),
+                        List.of(0, 1)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> FixedProductCallPlan.bind(names, List.of(
+                        FixedProductCallPlan.InputSlot.positionalProjection(0, 0),
+                        FixedProductCallPlan.InputSlot.namedProjection("b", 0, 1))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(
+                                new FixedProductCallPlan.BoundSlot(0, 0, null, 0, 0),
+                                new FixedProductCallPlan.BoundSlot(1, 1, "b", 0, 1)),
+                        List.of(0, 1)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallPlan.bind(
+                        names, List.of(false, false), List.of(
+                                FixedProductCallPlan.InputSlot.positionalProjection(0, 0),
+                                FixedProductCallPlan.InputSlot.namedProjection("b", 0, 1))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallPlan(
+                        List.of(
+                                new OptionalCallPlan.BoundSlot(0, 0, null, 0, 0),
+                                new OptionalCallPlan.BoundSlot(1, 1, "b", 0, 1)),
+                        List.of(0, 1),
+                        List.of(false, false)));
+    }
+
+    @Test
+    void distinctRawItemsMayChangeProjectionKinds() {
+        CheckedCallPlan plan = CheckedCallPlan.required(
+                List.of("a", "b", "c"),
+                List.of(
+                        positionalProjection(0, 0),
+                        positionalProjection(0, 1),
+                        namedProjection("c", 1, 0)));
+        assertEquals(List.of(0, 1, 2), plan.abiToSource());
+
+        CheckedCallPlan reorderedRecord = CheckedCallPlan.required(
+                List.of("a", "b"),
+                List.of(
+                        namedProjection("b", 0, 0),
+                        namedProjection("a", 0, 1)));
+        assertEquals(List.of(1, 0), reorderedRecord.abiToSource());
+    }
+
 }
