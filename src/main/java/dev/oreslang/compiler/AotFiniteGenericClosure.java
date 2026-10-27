@@ -52,6 +52,7 @@ public final class AotFiniteGenericClosure {
         private final Ast.Program program;
         private final BuildOptions options;
         private final Map<Symbol, Ast.FunctionDecl> functions = new LinkedHashMap<>();
+        private final Set<String> formalTypeNames = new HashSet<>();
         private final ArrayDeque<Work> queue = new ArrayDeque<>();
         private final LinkedHashSet<Instance> visited = new LinkedHashSet<>();
         private int nodes;
@@ -71,6 +72,7 @@ public final class AotFiniteGenericClosure {
                         throw fail("static subset admits only free functions; layouts, "
                                 + "actors, macros and traits require separate closure proofs");
                     }
+                    formalTypeNames.addAll(fn.genericParameters());
                     Symbol key = new Symbol(module.name(), fn.name(), fn.parameters().size());
                     if (functions.putIfAbsent(key, fn) != null) {
                         throw fail("ambiguous overload " + key.module() + "." + key.name()
@@ -89,7 +91,9 @@ public final class AotFiniteGenericClosure {
                     }
                 }
             }
-            for (String entry : options.entryPoints()) {
+            // Set.copyOf does not guarantee iteration order across JVMs; AOT
+            // manifests must be reproducible independent of hash seed.
+            for (String entry : options.entryPoints().stream().sorted().toList()) {
                 List<Symbol> choices = functions.keySet().stream()
                         .filter(key -> entry.equals(key.module() + "." + key.name())
                                 || (!entry.contains(".")
@@ -160,6 +164,9 @@ public final class AotFiniteGenericClosure {
                     throw fail("generic type parameter used as an unapplied constructor");
                 }
                 return resolveType(parameter, Map.of(), depth + 1);
+            }
+            if (formalTypeNames.contains(type.name())) {
+                throw fail("unbound generic formal type '" + type.name() + "' in AOT instance");
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             for (Ast.TypeRef arg : type.arguments()) {
