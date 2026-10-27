@@ -89,6 +89,42 @@ final class ActorPipeTransportTest {
     }
 
     @Test
+    void fatalLinkCloseStillFencesLaterLinksAndRetiresGroup() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var pipe = ActorPipeTransport.open(
+                    runtime, runtime.rootSupervisor(),
+                    stages(), List.of(String.class, String.class), 1);
+
+            var firstPending = pipe.reader(0, String.class).readAsync();
+            firstPending.whenCompleteRuntime((ignored, failure) -> {
+                throw new LinkageError("fatal first-link completion");
+            });
+
+            var secondPending = pipe.reader(1, String.class).readAsync();
+            secondPending.whenCompleteRuntime((ignored, failure) -> {
+                throw new AssertionError("secondary later-link completion");
+            });
+
+            LinkageError failure = assertThrows(LinkageError.class, pipe::close);
+            assertEquals("fatal first-link completion", failure.getMessage());
+            assertTrue(java.util.Arrays.stream(failure.getSuppressed())
+                            .anyMatch(suppressed ->
+                                    suppressed instanceof AssertionError
+                                            && "secondary later-link completion"
+                                                    .equals(suppressed.getMessage())),
+                    "later link completion failures must remain suppressed evidence");
+
+            assertThrows(ExecutionException.class,
+                    () -> secondPending.get(5, TimeUnit.SECONDS),
+                    "later links must still be structurally closed after a fatal sibling close");
+            assertTrue(pipe.closed());
+            assertEquals(0, runtime.actorGroupCount(),
+                    "fatal pipe close must still retire its ActorGroup publication");
+        }
+    }
+
+
+    @Test
     void rejectsWrongTypeAndForeignSupervisorBeforePublishingAnything() {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime foreign = new ActorRuntime()) {
