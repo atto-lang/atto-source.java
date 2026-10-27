@@ -298,6 +298,42 @@ final class InvertedArrayLanguageTest {
                 channel.getMessage().contains(
                         "cannot transport InvertedArray storage"),
                 channel::getMessage);
+
+        IllegalArgumentException channelRead = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+
+                        fnc bad(Channel<InvertedArray<Particle>> channel): void {
+                          val received = readch channel;
+                          return;
+                        }
+                        """));
+        assertTrue(
+                channelRead.getMessage().contains(
+                        "cannot transport InvertedArray storage"),
+                channelRead::getMessage);
+
+        IllegalArgumentException aliasedChannelRead = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        type HiddenStore = InvertedArray<Particle>;
+                        type HiddenChannel = Channel<HiddenStore>;
+
+                        fnc bad(HiddenChannel channel): void {
+                          val received = readch channel;
+                          return;
+                        }
+                        """));
+        assertTrue(
+                aliasedChannelRead.getMessage().contains(
+                        "cannot transport InvertedArray storage"),
+                aliasedChannelRead::getMessage);
     }
 
     @Test
