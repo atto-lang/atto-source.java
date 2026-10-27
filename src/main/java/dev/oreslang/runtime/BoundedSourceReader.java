@@ -148,9 +148,7 @@ public final class BoundedSourceReader {
             throw new IllegalArgumentException(
                     "Oreslang source must be a regular no-follow file: " + path);
         }
-        if (!Long.valueOf(attributes.size()).equals((long) attributes.size())
-                || attributes.size() < 0
-                || attributes.size() > MAX_BYTES) {
+        if (attributes.size() < 0 || attributes.size() > MAX_BYTES) {
             throw new IllegalArgumentException("Oreslang source exceeds 16 MiB source limit");
         }
     }
