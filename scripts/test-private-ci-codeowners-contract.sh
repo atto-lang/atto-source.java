@@ -29,10 +29,43 @@ expected_tail() {
 RULES
 }
 
+# Prove that exact-tree verifier code is independently owned; broad or later
+# matching patterns may not silently override either critical script.
+check_exact_tree_ownership() {
+  awk '
+    function matches(pattern, filename) {
+      return pattern == "*" || pattern == filename ||
+        (substr(pattern, length(pattern), 1) == "/" && index(filename, pattern) == 1)
+    }
+    BEGIN {
+      first = "/tools/verify-exact-source-tree.sh"
+      second = "/tools/test-verify-exact-source-tree.sh"
+      required = "@ORESoftware"
+    }
+    /^[[:space:]]*($|#)/ { next }
+    {
+      pattern = $1
+      if (NF != 2 ||
+          (pattern != "*" && pattern !~ /^\/[A-Za-z0-9._\/-]+$/) ||
+          pattern ~ /\/\// || pattern ~ /\/\.\.?($|\/)/ ||
+          $2 !~ /^@[A-Za-z0-9-]+$/) invalid = 1
+      if (pattern == first) have_first = 1
+      if (pattern == second) have_second = 1
+      if (matches(pattern, first)) first_owner = $2
+      if (matches(pattern, second)) second_owner = $2
+    }
+    END {
+      if (invalid || !have_first || !have_second ||
+          first_owner != required || second_owner != required) exit 1
+    }
+  ' "$1"
+}
+
 check() {
   local input="$1"
   [[ -f "$input" && ! -L "$input" ]] || return 1
-  cmp -s <(effective_rules "$input" | tail -n 7) <(expected_tail)
+  cmp -s <(effective_rules "$input" | tail -n 7) <(expected_tail) || return 1
+  check_exact_tree_ownership "$input"
 }
 
 if ! check "$policy"; then
@@ -83,4 +116,27 @@ reject "$work/reordered" 'reordered exact rules'
 ln -s "$work/good" "$work/link"
 reject "$work/link" 'symlinked CODEOWNERS'
 
-printf 'PASS: terminal private-export ownership and 11 adversarial cases\n'
+# Exact-tree tooling must be owned, even when last-seven exporter rules hold.
+for protected in verify-exact-source-tree.sh test-verify-exact-source-tree.sh; do
+  awk -v protected="/tools/$protected" '$1 != protected { print }' \
+    "$work/good" > "$work/tool-missing"
+  reject "$work/tool-missing" "missing $protected ownership"
+  awk -v protected="/tools/$protected" \
+    '{ if ($1 == protected) print protected " @unreviewed"; else print }' \
+    "$work/good" > "$work/tool-other"
+  reject "$work/tool-other" "unreviewed owner of $protected"
+  awk -v protected="/tools/$protected" \
+    '{ if ($1 == protected) print protected " @ORESoftware @unreviewed"; else print }' \
+    "$work/good" > "$work/tool-mixed"
+  reject "$work/tool-mixed" "mixed owners of $protected"
+done
+awk '/^# Must remain the final CODEOWNERS rules:/ {
+  print "/tools/ @unreviewed"
+} { print }' "$work/good" > "$work/tool-broad"
+reject "$work/tool-broad" 'later broad owner overrides verifier'
+awk '/^# Must remain the final CODEOWNERS rules:/ {
+  print "/tools/** @unreviewed"
+} { print }' "$work/good" > "$work/tool-glob"
+reject "$work/tool-glob" 'unmodeled tool glob'
+
+printf 'PASS: terminal private-export ownership and 19 adversarial cases\n'
