@@ -88,7 +88,7 @@ public final class Lexer {
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
             case '<' -> add(match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
             case '/' -> {
-                if (match('/')) while (peek() != '\n' && !isAtEnd()) advance();
+                if (match('/')) while (peek() != '\n' && peek() != '\r' && !isAtEnd()) advance();
                 else if (match('*')) blockComment();
                 else add(SLASH);
             }
