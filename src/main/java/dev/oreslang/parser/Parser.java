@@ -490,6 +490,12 @@ public final class Parser {
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
+        if (modifiers.generator) {
+            if (modifiers.shared || modifiers.untrusted) {
+                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            }
+            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
+        }
         if (match(CONTRACT)) {
             validateOnlyVisibilityModifiers(modifiers, "contracts");
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
@@ -540,8 +546,6 @@ public final class Parser {
             Ast.CallableKind kind,
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
-        if (modifiers.suspends && modifiers.generator)
-            throw error(previous(), "suspends generators need suspension-aware generator frames");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         if (modifiers.trapped && (modifiers.async || modifiers.suspends)) {
             throw error(previous(), "suspending trap fnc/routine is not enabled until trap spans every await suspension");
