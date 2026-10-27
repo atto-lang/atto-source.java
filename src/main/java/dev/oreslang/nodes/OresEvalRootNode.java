@@ -4274,6 +4274,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MemberExpr member) {
+                    if (isPkgRootMember(member)) {
+                        try {
+                            continuation.accept(task, pkgRootFunctionValue(member.member(), env), null);
+                        } catch (RuntimeException | Error failure) {
+                            continuation.accept(task, null, failure);
+                        }
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             member.receiver(),
@@ -5059,6 +5067,30 @@ public final class OresEvalRootNode extends RootNode {
             Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
             if (implicit != null) {
                 evalSuspendableCall(task, implicit, env, continuation);
+                return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
+                Ast.FunctionDecl direct;
+                try {
+                    direct = pkgRootCallable(pkg.member(), call.arguments().size(), env);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Invocation invocation = functionInvocation(direct, values);
+                                completeSourceInvocation(t, invocation,
+                                        invocationDeclaresAsync(invocation), env, continuation);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
                 return;
             }
             if (call.callee() instanceof Ast.NameExpr name
@@ -6938,6 +6970,34 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        private static boolean isPkgRootMember(Ast.MemberExpr member) {
+            return member.receiver() instanceof Ast.NameExpr name
+                    && name.name().equals(Parser.PKG_ROOT_NAMESPACE);
+        }
+
+        private Ast.FunctionDecl pkgRootCallable(String name, int arity, Env env) {
+            requireExplicitClassCallableImport(env, name);
+            Ast.FunctionDecl fn = findQualifiedFunction(Parser.ROOT_MODULE + "." + name, arity);
+            if (fn == null) {
+                throw new IllegalArgumentException(
+                        "pkg::" + name + " has no file-root function/routine at arity " + arity);
+            }
+            return fn;
+        }
+
+        private Object pkgRootFunctionValue(String name, Env env) {
+            requireExplicitClassCallableImport(env, name);
+            Ast.FunctionDecl fn = singleFunction(
+                    functions.get(Parser.ROOT_MODULE + "." + name), "pkg::" + name);
+            if (fn == null || fn.kind() != Ast.CallableKind.FNC
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || !fn.genericParameters().isEmpty() || fn.suspends()) {
+                throw new IllegalArgumentException(
+                        "pkg::" + name + " is not a reifiable file-root fnc value");
+            }
+            return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+        }
+
         // Reuse the explicit receiver invocation path. Only the invocation
         // itself introduces the receiver; a bare method value is still illegal.
         // Local callable bindings win over class members, and a class method
@@ -6959,6 +7019,10 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
             if (implicit != null) return prepareInvocation(implicit, env);
+            if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
+                Ast.FunctionDecl direct = pkgRootCallable(pkg.member(), call.arguments().size(), env);
+                return functionInvocation(direct, evaluateArguments(call.arguments(), env));
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -7564,7 +7628,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
+            if (expr instanceof Ast.MemberExpr member) {
+                if (isPkgRootMember(member)) return pkgRootFunctionValue(member.member(), env);
+                return member(eval(member.receiver(), env), member.member(), env);
+            }
             if (expr instanceof Ast.IndexExpr indexed) {
                 return indexValue(
                         eval(indexed.receiver(), env),
