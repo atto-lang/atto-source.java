@@ -19,7 +19,9 @@ if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
   printf 'unexpected-write\n' >> "$MOCK_EXEC_LOG"
   exit 98
 fi
-[[ "${3:-}" == --jq ]] || exit 2
+[[ "${3:-}" == --jq && "$#" -eq 4 ]] || exit 2
+expected_query='[.full_name, .visibility, (.private|tostring), (.id|tostring), (.archived|tostring), (.disabled|tostring), (.fork|tostring)] | @tsv'
+[[ "${4:-}" == "$expected_query" ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_ARCHIVED:-false}" "${MOCK_DISABLED:-false}" "${MOCK_FORK:-false}" "${MOCK_EXTRA_FIELD:-}" "${MOCK_EXTRA_LINE:-}"
 MOCK
