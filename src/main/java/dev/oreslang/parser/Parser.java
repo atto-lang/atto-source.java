@@ -41,6 +41,17 @@ public final class Parser {
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
+        // A public parser must not trust an externally supplied Token stream to
+        // have come from Lexer. In particular, a synthesized IDENT("unsafe")
+        // must not bypass the same G0 admission gate as ordinary source text.
+        // Literal strings, template text and #unsafe symbols are data, not
+        // executable identifier tokens.
+        for (Token token : this.tokens) {
+            if (token.type() == UNSAFE ||
+                    (token.type() == IDENT && "unsafe".equals(token.lexeme()))) {
+                throw error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
+            }
+        }
     }
 
     public static Ast.Program parse(String source) {
