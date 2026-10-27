@@ -8,9 +8,13 @@ import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -109,6 +113,47 @@ final class BoundedSourceReaderNoFollowTest {
         }
         assertThrows(IllegalArgumentException.class,
                 () -> BoundedSourceReader.readPhysicalWithByteCount(oversized.toRealPath()));
+    }
+
+
+    @Test
+    void resolverIdentityRejectsRegularFileReplacementBeforeSnapshot() throws Exception {
+        Path source = temp.resolve("identity-bound.ores");
+        Files.writeString(source, "old\n");
+        BasicFileAttributes approved = Files.readAttributes(
+                source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+
+        Path replacement = temp.resolve("identity-replacement.ores");
+        Files.writeString(replacement, "replacement bytes\n");
+        try {
+            Files.move(
+                    replacement,
+                    source,
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException unsupported) {
+            Files.move(replacement, source, StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> BoundedSourceReader.readPhysicalWithByteCount(
+                        source.toRealPath(), approved));
+        assertTrue(failure.getMessage().contains(
+                "identity changed between resolution and snapshot"), failure.getMessage());
+    }
+
+    @Test
+    void resolverIdentityAcceptsUnchangedPhysicalFile() throws Exception {
+        Path source = temp.resolve("identity-stable.ores");
+        Files.writeString(source, "stable\n");
+        Path physical = source.toRealPath();
+        BasicFileAttributes approved = Files.readAttributes(
+                physical, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+
+        BoundedSourceReader.ReadResult result =
+                BoundedSourceReader.readPhysicalWithByteCount(physical, approved);
+        assertEquals("stable\n", result.text());
     }
 
     private static void assertRejectedPhysical(Path path) {
