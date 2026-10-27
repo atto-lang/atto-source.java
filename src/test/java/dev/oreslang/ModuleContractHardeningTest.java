@@ -194,6 +194,29 @@ final class ModuleContractHardeningTest {
     }
 
     @Test
+    void explicitExportAliasIsTheLinkedContractInterfaceName() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+
+        sources.put("api.ores", """
+                export contract InternalApi as WorkerApi;
+                define contract InternalApi as
+                  fnc run(): int;
+                end
+                """);
+
+        sources.put("worker.ores", """
+                import contract WorkerApi as Api from "./api.ores";
+
+                define module Worker conforms Api as
+                  pub fnc run(): int { return 1; }
+                end
+                """);
+
+        assertDoesNotThrow(() -> compiler.compile(sources));
+    }
+
+    @Test
     void linkedContractStillRejectsBadImplementation() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> sources = new LinkedHashMap<>();

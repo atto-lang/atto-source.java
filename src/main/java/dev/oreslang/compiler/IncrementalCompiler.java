@@ -371,15 +371,27 @@ public final class IncrementalCompiler {
             if (targetId == null) continue; // external/package resolver owns it
             Ast.Program target = programs.get(targetId);
 
+            ExportResolver.Result targetExports = ExportResolver.resolve(target);
             for (String sourceName : imported.names()) {
                 Ast.InterfaceDecl match = null;
-                for (Ast.ModuleDecl module : target.modules()) {
-                    for (Ast.Decl declaration : module.declarations()) {
+                for (ExportResolver.ExportBinding binding : targetExports.bindings()) {
+                    if (binding.scope() != Ast.ExportScope.PUBLIC
+                            || binding.localKind() != Ast.ExportKind.CONTRACT
+                            || !binding.externalName().equals(sourceName)) {
+                        continue;
+                    }
+                    Ast.ModuleDecl owner = target.modules().stream()
+                            .filter(module -> module.name().equals(binding.ownerNamespaceId()))
+                            .findFirst()
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "export binding owner '" + binding.ownerNamespaceId()
+                                            + "' is missing in linked contract source '" + targetId + "'"));
+                    String localTargetName = exportLocalName(binding.localSymbolId());
+                    for (Ast.Decl declaration : owner.declarations()) {
                         if (declaration instanceof Ast.InterfaceDecl iface
                                 && iface.moduleContract()
-                                && iface.visibility() == Ast.Visibility.PUBLIC
-                                && iface.name().equals(sourceName)) {
-                            if (match != null) {
+                                && iface.name().equals(localTargetName)) {
+                            if (match != null && match != iface) {
                                 throw new IllegalArgumentException(
                                         "import contract '" + sourceName + "' from '" + imported.path()
                                                 + "' is ambiguous in '" + targetId + "'");
@@ -389,8 +401,6 @@ public final class IncrementalCompiler {
                     }
                 }
                 if (match == null) {
-                    // ImportGraph.validateLinkedImports should already diagnose
-                    // this, but keep this boundary independently fail-closed.
                     throw new IllegalArgumentException(
                             "import contract '" + sourceName + "' from '" + imported.path()
                                     + "' does not resolve to an exported module contract");
@@ -404,8 +414,16 @@ public final class IncrementalCompiler {
                 validatePortableImportedContract(match, targetId);
 
                 String localName = ImportRules.localName(imported, sourceName);
-                Ast.InterfaceDecl previous = result.putIfAbsent(localName, match);
-                if (previous != null && previous != match) {
+                Ast.InterfaceDecl linkedView = new Ast.InterfaceDecl(
+                        sourceName,
+                        Ast.Visibility.PUBLIC,
+                        match.genericParameters(),
+                        List.of(),
+                        match.members(),
+                        true,
+                        Ast.InterfaceFlavor.CONTRACT);
+                Ast.InterfaceDecl previous = result.putIfAbsent(localName, linkedView);
+                if (previous != null) {
                     throw new IllegalArgumentException(
                             "duplicate imported contract metadata for local name '" + localName + "'");
                 }
