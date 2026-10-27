@@ -50,6 +50,7 @@ public final class GeneratorRuntime {
 
     public static final class Generator<T> implements Iterable<T>, AutoCloseable {
         private final Engine<T> engine;
+        private final AtomicBoolean pullInFlight = new AtomicBoolean();
 
         private Generator(Engine<T> engine) {
             this.engine = engine;
@@ -61,7 +62,15 @@ public final class GeneratorRuntime {
                         "synchronous generator iteration cannot park an actor carrier; "
                                 + "use an async generator and 'for await'");
             }
-            return engine.next();
+            if (!pullInFlight.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "concurrent Iterator.next() is not permitted; finish the outstanding pull first");
+            }
+            try {
+                return engine.next();
+            } finally {
+                pullInFlight.set(false);
+            }
         }
 
         @Override
@@ -94,6 +103,11 @@ public final class GeneratorRuntime {
     public static final class AsyncGenerator<T> implements AutoCloseable {
         private final AsyncRuntime runtime;
         private final Engine<T> engine;
+        // Bound pull admission at one outstanding request. The Engine also
+        // serializes execution, but admitting an unbounded number of runtime
+        // tasks that merely wait on its monitor would turn concurrent next()
+        // calls into a resource-amplification path.
+        private final AtomicBoolean pullInFlight = new AtomicBoolean();
 
         private AsyncGenerator(AsyncRuntime runtime, Engine<T> engine) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -101,10 +115,16 @@ public final class GeneratorRuntime {
         }
 
         /**
-         * One asynchronous pull. Calls are serialized by the activation even
-         * if callers issue more than one pull before an earlier pull completes.
+         * One asynchronous pull. Exactly one pull may be outstanding for an
+         * activation. An overlapping pull returns a failed OresFuture instead
+         * of admitting another runtime task that would wait behind the first.
          */
         public OresFuture<Step<T>> nextStep() {
+            if (!pullInFlight.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "concurrent AsyncIterator.next() is not permitted; await the outstanding pull first"));
+            }
+
             // Only a *settled* terminal generator can return an immediate
             // Future. A terminal event can precede the physical guest exit;
             // never park the caller (possibly an actor carrier) in this API.
@@ -112,16 +132,24 @@ public final class GeneratorRuntime {
                 // A producer admission denial remains an exceptional async
                 // result across repeated pulls; never launder it into DONE.
                 Throwable rejected = engine.terminalFailure();
+                pullInFlight.set(false);
                 return rejected == null
                         ? OresFuture.completed(Step.doneStep())
                         : OresFuture.failed(rejected);
             }
+
             // An async pull always returns an OresFuture, including when
             // scheduler admission itself rejects before any guest work starts.
             try {
-                return runtime.submit(engine::next);
+                OresFuture<Step<T>> pull = runtime.submit(engine::next);
+                pull.whenCompleteRuntime((value, failure) -> pullInFlight.set(false));
+                return pull;
             } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                pullInFlight.set(false);
                 return OresFuture.failed(rejected);
+            } catch (RuntimeException | Error failure) {
+                pullInFlight.set(false);
+                throw failure;
             }
         }
 
@@ -146,6 +174,10 @@ public final class GeneratorRuntime {
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicReference<OresFuture<Void>> producerTask = new AtomicReference<>();
+        // A non-cancellation failure raised while unwinding an explicit close
+        // must not disappear merely because the backing task Future was
+        // already marked cancelled. Keep it as a sticky close result.
+        private final AtomicReference<Throwable> closeFailure = new AtomicReference<>();
         private final Object launchLock = new Object();
         private volatile boolean done;
         // True only after the producer's actual guest turn has exited and
@@ -223,6 +255,7 @@ public final class GeneratorRuntime {
                             if (!closed.get()) publish(new FailedEvent<>(cancelled));
                         } catch (Throwable failure) {
                             if (!closed.get()) publish(new FailedEvent<>(failure));
+                            else closeFailure.compareAndSet(null, failure);
                         }
                         return null;
                     });
@@ -329,6 +362,16 @@ public final class GeneratorRuntime {
             }
             awaitProducerExit();
             terminalReady = true;
+            Throwable cleanupFailure = closeFailure.get();
+            if (cleanupFailure instanceof RuntimeException runtimeFailure) {
+                throw runtimeFailure;
+            }
+            if (cleanupFailure instanceof Error error) {
+                throw error;
+            }
+            if (cleanupFailure != null) {
+                throw new RuntimeException(cleanupFailure);
+            }
         }
     }
 }
