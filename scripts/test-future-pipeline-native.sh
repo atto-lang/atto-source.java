@@ -14,7 +14,15 @@ for case in mixed consumed failure; do
     consumed) expected=22 ;;
     failure) expected=true ;;
   esac
-  timeout 120s "$@" "$root/examples/future-pipeline-$case.ores" > "$work/$case.out"
+  # A failed launcher should name the exact failing case; set -e alone
+  # silently exits without identifying a crash, timeout, or missing image.
+  if timeout 120s "$@" "$root/examples/future-pipeline-$case.ores" > "$work/$case.out"; then
+    :
+  else
+    status=$?
+    printf 'Future pipeline %s: launcher failed with exit status %s\n' "$case" "$status" >&2
+    exit "$status"
+  fi
   if [[ "$case" == mixed ]]; then
     printf '%s\n' "$expected" > "$work/expected"
   else
