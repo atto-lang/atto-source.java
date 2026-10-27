@@ -339,6 +339,36 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void asyncCloseFutureWaitsForPhysicalProducerExit() throws Exception {
+        CountDownLatch leaving = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try { turn.run(); }
+            finally {
+                leaving.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try { allowExit.await(); break; }
+                    catch (InterruptedException ignored) { interrupted = true; }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        }); var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(1))) {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            OresFuture<Void> closing = generator.closeAsync();
+            try {
+                assertTrue(leaving.await(2, TimeUnit.SECONDS));
+                assertFalse(closing.isDone(),
+                        "AsyncIterator.close completed before physical producer exit");
+            } finally {
+                allowExit.countDown();
+            }
+            closing.get(2, TimeUnit.SECONDS);
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        }
+    }
+
+    @Test
     void syncGeneratorReturnsOneStableIteratorView() {
         try (AsyncRuntime runtime = new AsyncRuntime();
              var generator = GeneratorRuntime.generator(runtime, emitter -> {
