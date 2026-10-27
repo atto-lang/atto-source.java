@@ -532,7 +532,8 @@ public final class IncrementalCompiler {
         Path parent = Path.of(unitId).getParent();
         for (Ast.ImportDecl imported : program.imports()) {
             String raw = imported.path().replace('\\', '/');
-            Path candidatePath = raw.startsWith(".")
+            boolean explicitRelative = ImportRules.isExplicitRelativePath(raw);
+            Path candidatePath = explicitRelative
                     ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                     : Path.of(raw).normalize();
             String candidate = normalizeUnitId(candidatePath.toString());
@@ -541,7 +542,7 @@ public final class IncrementalCompiler {
             }
             if (available.contains(candidate)) {
                 result.add(candidate);
-            } else if (raw.startsWith(".")) {
+            } else if (explicitRelative) {
                 throw new IllegalArgumentException("relative import '" + imported.path() + "' from '" + unitId
                         + "' does not resolve to a supplied Oreslang source unit");
             }
