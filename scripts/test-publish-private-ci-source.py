@@ -528,9 +528,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             codeowners=True, stale=True, admins=True,
                             approvals=1, force=False, deletions=False,
                             last_push=True, conversations=True,
-                            bypasses=None, strict_checks=True, contexts=None,
+                            bypasses=None, include_bypasses=True,
+                            strict_checks=True, contexts=None,
                             named_checks=None, source_id=None, codeowners_file=None):
         routes = []
+        if bypasses is None:
+            bypasses = {"users": [], "teams": [], "apps": []}
         if contexts is None:
             contexts = [pub.SOURCE_POLICY_CHECK]
         if named_checks is None:
@@ -561,7 +564,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                            "dismiss_stale_reviews": stale,
                            "require_last_push_approval": last_push,
                            "required_approving_review_count": approvals}
-                if bypasses is not None:
+                if include_bypasses:
                     reviews["bypass_pull_request_allowances"] = bypasses
                 return {"required_pull_request_reviews": reviews,
                         "required_status_checks": {
@@ -639,6 +642,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=api):
             with self.assertRaisesRegex(pub.Denied, "identity and privacy"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_requires_exact_review_bypass_policy(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        cases = (
+            {"include_bypasses": False},
+            {"bypasses": []},
+            {"bypasses": {"users": [], "teams": []}},
+            {"bypasses": {"users": [], "teams": [], "apps": [], "future": []}},
+            {"bypasses": {"users": None, "teams": [], "apps": []}},
+            {"bypasses": {"users": [{"login": "bypass"}], "teams": [], "apps": []}},
+        )
+        for options in cases:
+            with self.subTest(options=options):
+                api, _ = self.verified_origin_api(**options)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "bypass policy"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_requires_last_push_approval_and_conversation_resolution(self):
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
