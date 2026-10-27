@@ -5116,6 +5116,29 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            // Once the instance receiver is known, check the
+                            // actual nominal method before evaluating argument
+                            // expressions. The latter may have observable
+                            // side effects even though the call itself is
+                            // inadmissible inside a no-yield region.
+                            if (env.hasLiveMutexGuards()
+                                    && receiver instanceof OresObject object) {
+                                Ast.MethodDecl selected =
+                                        object.owner.findMethod(
+                                                object.klass,
+                                                CallableSelector.instance(
+                                                        member.member(),
+                                                        call.arguments().size()));
+                                if (selected != null
+                                        && (selected.async()
+                                                || object.owner.methodContainsPotentialSuspension(selected))) {
+                                    continuation.accept(
+                                            t, null,
+                                            new IllegalStateException(
+                                                    "cannot launch or suspend a source callable while holding a live MutexGuard"));
+                                    return;
+                                }
+                            }
                             evalSuspendableArguments(
                                     t,
                                     call.arguments(),
