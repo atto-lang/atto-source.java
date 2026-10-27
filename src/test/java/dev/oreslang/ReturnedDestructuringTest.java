@@ -662,30 +662,24 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
-    void borrowedHolderMemberKeepsStaticSequenceRestType() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Holder as
-                  pub val Array<int> values;
-                end
+    void borrowedHolderMemberCannotManufactureOwnedRestContainer() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Holder as
+                          pub val Array<int> values;
+                        end
 
-                fnc acceptsInts(Array<int> values): void {
-                  stdio.println(values[0]);
-                  return;
-                }
+                        fnc inspect(borrow Holder holder): void {
+                          const [first, ...rest] = holder.values;
+                          return;
+                        }
 
-                fnc inspect(&Holder holder): void {
-                  const [first, ...rest] = holder.values;
-                  acceptsInts(rest);
-                  stdio.println(first);
-                  return;
-                }
-
-                pub fnc main(): void {
-                  val Holder holder = new Holder([1, 2, 3]);
-                  inspect(&holder);
-                  return;
-                }
-                """)));
+                        pub fnc main(): void { return; }
+                        """)));
+        assertTrue(failure.getMessage().contains("move-only field")
+                || failure.getMessage().contains("borrowed receiver"),
+                failure::getMessage);
     }
 
     @Test
