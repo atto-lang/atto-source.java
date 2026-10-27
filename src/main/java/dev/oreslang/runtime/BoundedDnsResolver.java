@@ -28,6 +28,8 @@ import java.util.function.BooleanSupplier;
  */
 final class BoundedDnsResolver
         implements OutboundEgressPolicy.CancellableResolver, AutoCloseable {
+    private static final int SYSTEM_WORKERS = 8;
+    private static final int SYSTEM_QUEUE_CAPACITY = 32;
     private static final long POLL_NANOS =
             TimeUnit.MILLISECONDS.toNanos(10);
 
@@ -97,8 +99,8 @@ final class BoundedDnsResolver
                     nativeIo,
                     OutboundEgressPolicy.Resolver.system(),
                     timeout,
-                    1,
-                    1);
+                    SYSTEM_WORKERS,
+                    SYSTEM_QUEUE_CAPACITY);
         } catch (Exception failure) {
             throw new IllegalStateException(
                     "failed to register bounded DNS resolver",
