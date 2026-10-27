@@ -5724,16 +5724,17 @@ public final class OresEvalRootNode extends RootNode {
                             "actor callables cannot expose generator activations across mailbox turns");
                 }
 
-                List<?> captured = fn.async()
+                boolean asyncGeneratorProtocol = fn.async() || fn.suspends();
+                List<?> captured = asyncGeneratorProtocol
                         ? detachAsyncArguments(normalized, fn.parameters())
                         : List.copyOf(normalized);
                 GeneratorRuntime.Producer<Object> producer = emitter -> {
-                    GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
+                    GeneratorRuntime.Emitter<Object> boundaryEmitter = asyncGeneratorProtocol
                             ? value -> emitter.emit(detachAsyncValue(value, new IdentityHashMap<>()))
                             : emitter;
                     callGeneratorBodyRaw(fn, captured, boundaryEmitter);
                 };
-                return fn.async()
+                return asyncGeneratorProtocol
                         ? GeneratorRuntime.asyncGenerator(context.asyncRuntime(), producer)
                         : GeneratorRuntime.generator(context.asyncRuntime(), producer);
             }
@@ -6055,7 +6056,7 @@ public final class OresEvalRootNode extends RootNode {
             GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
             Boolean previousAsync = activeGeneratorAsync.get();
             activeGeneratorEmitter.set(emitter);
-            activeGeneratorAsync.set(fn.async());
+            activeGeneratorAsync.set(fn.async() || fn.suspends());
             try {
                 executeBlock(fn.body(), env);
             } catch (ReturnSignal signal) {
