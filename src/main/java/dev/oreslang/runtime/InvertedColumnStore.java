@@ -169,6 +169,24 @@ public final class InvertedColumnStore implements AutoCloseable {
         return length;
     }
 
+    /**
+     * Resolve a dense bracket index to the current opaque logical row handle.
+     * Dense row position is never row identity.
+     */
+    public synchronized Handle handleAt(int rowIndex) {
+        open();
+        if (rowIndex < 0 || rowIndex >= length) {
+            throw new IllegalArgumentException(
+                    "inverted row index " + rowIndex + " outside length " + length);
+        }
+        int slot = rowSlots[rowIndex];
+        if (slot < 0 || slot >= slotCount
+                || !live[slot] || slotRows[slot] != rowIndex) {
+            throw new IllegalStateException("corrupt inverted dense-row mapping");
+        }
+        return new Handle(capability, owner, slot, generations[slot]);
+    }
+
     public synchronized int capacity() {
         open();
         return capacity;
