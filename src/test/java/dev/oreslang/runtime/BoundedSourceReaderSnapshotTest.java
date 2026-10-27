@@ -47,6 +47,13 @@ final class BoundedSourceReaderSnapshotTest {
     }
 
     @Test
+    void directoryIsRejectedAsSourceBeforeDescriptorRead() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> BoundedSourceReader.readWithByteCount(temp));
+    }
+
+    @Test
     void descriptorPassDetectsSameSizeMutation() {
         byte[] first = "abcd".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         byte[] second = "wxyz".getBytes(java.nio.charset.StandardCharsets.UTF_8);
