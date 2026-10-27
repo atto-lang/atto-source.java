@@ -30,7 +30,8 @@ public final class EffectContracts {
     /** Pure is an observational guarantee, not a no-throw/no-panic guarantee. */
     public static Set<Effect> pureAllowance() {
         return Set.copyOf(EnumSet.of(Effect.THROW, Effect.RAISE,
-                Effect.PANIC, Effect.CANCELLATION));
+                Effect.PANIC, Effect.CANCELLATION,
+                Effect.ALLOC));
     }
 
     public record Call(String target) {
