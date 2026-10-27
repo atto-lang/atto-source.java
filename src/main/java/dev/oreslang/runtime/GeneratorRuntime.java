@@ -101,9 +101,6 @@ public final class GeneratorRuntime {
 
         @Override
         public Iterator<T> iterator() {
-            // A generator activation is single-pass. Returning one stable
-            // iterator view prevents separate wrappers from prefetching
-            // successive yields and observing them out of source order.
             return iteratorView;
         }
 
@@ -116,12 +113,12 @@ public final class GeneratorRuntime {
     public static final class AsyncGenerator<T> implements AutoCloseable {
         private final AsyncRuntime runtime;
         private final Engine<T> engine;
-        private OresFuture<Void> closeFuture;
         // Bound pull admission at one outstanding request. The Engine also
         // serializes execution, but admitting an unbounded number of runtime
         // tasks that merely wait on its monitor would turn concurrent next()
         // calls into a resource-amplification path.
         private final AtomicBoolean pullInFlight = new AtomicBoolean();
+        private OresFuture<Void> closeFuture;
 
         private AsyncGenerator(AsyncRuntime runtime, Engine<T> engine) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -168,26 +165,39 @@ public final class GeneratorRuntime {
         }
 
         /**
-         * Nonblocking source-level close. Physical producer retirement runs on
-         * a runtime-owned async carrier and repeated closes share one Future.
+         * Source-level async close. The physical producer-exit wait runs on a
+         * runtime-owned virtual carrier, never on the caller's actor carrier.
+         * Repeated closes share the same completion and cannot amplify tasks.
          */
         public synchronized OresFuture<Void> closeAsync() {
             if (closeFuture != null) return closeFuture;
+            if (engine.isTerminalReady()) {
+                try {
+                    engine.close();
+                    closeFuture = OresFuture.completed(null);
+                } catch (Throwable failure) {
+                    closeFuture = OresFuture.failed(failure);
+                }
+                return closeFuture;
+            }
             try {
                 closeFuture = runtime.submit(() -> {
                     engine.close();
                     return null;
                 });
-            } catch (java.util.concurrent.RejectedExecutionException rejected) {
-                closeFuture = OresFuture.failed(rejected);
+            } catch (RuntimeException | Error failure) {
+                closeFuture = OresFuture.failed(failure);
             }
             return closeFuture;
         }
 
         @Override
         public void close() {
-            // Host/AutoCloseable bridge. Guest AsyncIterator.close is wired to
-            // closeAsync() so actor/source carriers never park here.
+            if (ActorRuntime.inActorExecution() && !engine.isTerminalReady()) {
+                throw new IllegalStateException(
+                        "synchronous AsyncIterator.close() would park an actor carrier; "
+                                + "use/await the asynchronous close operation");
+            }
             engine.close();
         }
     }
