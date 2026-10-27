@@ -1524,6 +1524,11 @@ public final class OwnershipChecker {
             // to affine Future<T> MOVE and synchronized Channel<T> handles;
             // guards, Rc and foreign/scheduler authority remain non-Send.
             for (Capture capture : captured.values.values()) {
+                if (capture.source.type.name().equals("InvertedArray")) {
+                    throw error(
+                            "independent task cannot capture InvertedArray storage; "
+                                    + "perform bracket-field access in the owning lexical turn");
+                }
                 if (!capture.source.type.isBorrow()
                         && forbiddenTaskCapability(capture.source.type)) {
                     throw error("independent task capture '" + capture.name
@@ -3124,6 +3129,11 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(source.type)) {
                 throw error("closure cannot capture guard-bearing value '" + capture.name + "'; MutexGuard values are lexical");
             }
+            if (source.type.name().equals("InvertedArray")) {
+                throw error(
+                        "closure cannot capture InvertedArray storage; "
+                                + "perform bracket-field access in the owning lexical scope");
+            }
 
             if (capture.write) {
                 if (!source.mutable && !source.rebindable) throw error("closure cannot write read-only capture '" + capture.name + "'");
@@ -4607,6 +4617,11 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(source.type)) {
                 throw error("deferred task/continuation cannot capture guard-bearing value '"
                         + capture.name + "'");
+            }
+            if (source.type.name().equals("InvertedArray")) {
+                throw error(
+                        "deferred task/continuation cannot capture InvertedArray storage; "
+                                + "perform bracket-field access in the owning lexical turn");
             }
 
             if (capture.write) {
