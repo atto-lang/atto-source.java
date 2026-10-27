@@ -11143,85 +11143,9 @@ public final class OresEvalRootNode extends RootNode {
                 operation + " is unsupported on this backend until a strict nonblocking I/O provider is installed"));
     }
 
-    private static List<Object> immutableIoStrings(List<Object> args) {
-        // Only immutable host values may cross into an I/O worker.
-        return args.stream().map(value -> (Object) requireString(value, "I/O argument")).toList();
-    }
-
-    private record FileSystemFacade(OresContext context) {
-        private Object readText(List<Object> args) {
-            return NativeIo.readText(context, requireStringArg(args, "fs.read_text"));
-        }
-        private Object writeText(List<Object> args) {
-            requireTwo(args, "fs.write_text");
-            NativeIo.writeText(
-                    context,
-                    requireString(args.get(0), "fs.write_text path"),
-                    requireString(args.get(1), "fs.write_text value"));
-            return null;
-        }
-        private Object writeTextAtomic(List<Object> args) {
-            requireTwo(args, "fs.write_text_atomic");
-            NativeIo.writeTextAtomic(
-                    context,
-                    requireString(args.get(0), "fs.write_text_atomic path"),
-                    requireString(args.get(1), "fs.write_text_atomic value"));
-            return null;
-        }
-        private Object appendText(List<Object> args) {
-            requireTwo(args, "fs.append_text");
-            NativeIo.appendText(
-                    context,
-                    requireString(args.get(0), "fs.append_text path"),
-                    requireString(args.get(1), "fs.append_text value"));
-            return null;
-        }
-        private Object exists(List<Object> args) {
-            return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
-        }
-        private Object listDir(List<Object> args) {
-            return NativeIo.listDir(context, requireStringArg(args, "fs.list_dir"));
-        }
-        private Object isDir(List<Object> args) {
-            return NativeIo.isDir(context, requireStringArg(args, "fs.is_dir"));
-        }
-        private Object isSymlink(List<Object> args) {
-            return NativeIo.isSymlink(context, requireStringArg(args, "fs.is_symlink"));
-        }
-        private Object remove(List<Object> args) {
-            NativeIo.remove(context, requireStringArg(args, "fs.remove"));
-            return null;
-        }
-        private Object mkdirAll(List<Object> args) {
-            NativeIo.createDirectories(context, requireStringArg(args, "fs.mkdir_all"));
-            return null;
-        }
-    }
-
-    private record NetworkFacade(OresContext context) {
-        private Object connect(List<Object> args) {
-            requireTwo(args, "network.connect");
-            String host = requireString(args.get(0), "network.connect host");
-            Object portValue = args.get(1);
-            if (!(portValue instanceof Number number)) {
-                throw new IllegalArgumentException("network.connect port must be an integer");
-            }
-            return NativeIo.connect(context, host, number.intValue());
-        }
-    }
-
-    private record HttpFacade(OresContext context) {
-        private Object getText(List<Object> args) {
-            return NativeIo.httpGetText(context, requireStringArg(args, "http.get_text"));
-        }
-        private Object postText(List<Object> args) {
-            requireTwo(args, "http.post_text");
-            return NativeIo.httpPostText(
-                    context,
-                    requireString(args.get(0), "http.post_text url"),
-                    requireString(args.get(1), "http.post_text body"));
-        }
-    }
+    private record FileSystemFacade(OresContext context) { }
+    private record NetworkFacade(OresContext context) { }
+    private record HttpFacade(OresContext context) { }
 
     private record EnvFacade(OresContext context) {
         private Object get(List<Object> args) {
@@ -11233,80 +11157,9 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
-    private record StdioFacade(OresContext context) {
-        private Object print(List<Object> args) {
-            return emitConsole(context, args, "stdio.print", false);
-        }
-        private Object println(List<Object> args) {
-            return emitConsole(context, args, "stdio.println", true);
-        }
-    }
-    private static Object emitConsole(OresContext context, List<Object> args, String operation, boolean newline) {
-        context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
-        if (args.isEmpty() || args.size() > 32)
-            throw new IllegalArgumentException(operation + " requires 1 to 32 values");
-        // The evaluator has already evaluated every argument in source order.
-        // Render the complete record before publishing one output operation.
-        StringBuilder text = new StringBuilder();
-        for (Object argument : args) text.append(CycleSafeDisplay.render(argument));
-        long started = dev.oreslang.runtime.CorePerf.start();
-        try {
-            if (newline) context.output().println(text);
-            else { context.output().print(text); context.output().flush(); }
-        } finally {
-            dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
-        }
-        return null;
-    }
-    private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
-        context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
-        requireOne(args, operation);
-        String value = CycleSafeDisplay.render(args.getFirst());
-        long started = dev.oreslang.runtime.CorePerf.start();
-        try {
-            if (newline) {
-                context.output().println(value);
-            } else {
-                context.output().print(value);
-                context.output().flush();
-            }
-        } finally {
-            dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
-        }
-        return null;
-    }
-    private record StdoutFacade(OresContext context) {
-        private Object write(List<Object> args) {
-            return emitStdout(context, args, "stdio.stdout.write", false);
-        }
-        private Object println(List<Object> args) {
-            return emitStdout(context, args, "stdio.stdout.println", true);
-        }
-        private Object log(List<Object> args){
-            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(CycleSafeDisplay.render(arg));
-            context.output().println();
-            context.output().flush();
-            return null;
-        }
-        private Object logList(List<Object> args){
-            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.logList");
-            requireOne(args,"stdio.stdout.logList");
-            return log(expandArgumentSequence(args.getFirst(),"stdio.stdout.logList"));
-        }
-    }
-    private record StdinFacade(OresContext context) {
-        private Object readLine(List<Object> args) {
-            context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");
-            requireZero(args, "stdio.stdin.read_line");
-            try {
-                String value = context.input().readLine();
-                return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
-            } catch (java.io.IOException failure) {
-                throw new IllegalStateException("stdin read failed: " + failure.getMessage(), failure);
-            }
-        }
-    }
+    private record StdioFacade(OresContext context) { }
+    private record StdoutFacade(OresContext context) { }
+    private record StdinFacade(OresContext context) { }
     private record StdFacade(OresContext context) { }
     private record ProcessFacade(OresContext context) {
         private Object exit(List<Object> args) {
