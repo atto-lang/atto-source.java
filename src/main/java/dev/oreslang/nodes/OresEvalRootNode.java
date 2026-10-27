@@ -7916,18 +7916,6 @@ public final class OresEvalRootNode extends RootNode {
                         return HttpResponseDraft.text(body, (int) code,
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
-                    case "get_text" -> (Invokable) http::getText;
-                    case "get_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.get_text_async", () -> http.getText(values));
-                    };
-                    case "post_text" -> (Invokable) http::postText;
-                    case "post_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.post_text_async", () -> http.postText(values));
-                    };
                     case "get_text", "post_text" -> (Invokable) args ->
                             strictNonblockingIoFuture("http." + name);
                     default -> throw new IllegalArgumentException("unknown http member " + name);
