@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Read-only, fail-closed GitHub Actions evidence collector. Requires GITHUB_TOKEN.
-Usage: python3 tools/ci/runner_evidence.py --state state.json
-Only newly verified (repo, run_id, run_attempt) tuples are emitted.
+"""Read-only, fail-closed GitHub Actions evidence collector.
+
+Usage:
+  python3 tools/ci/runner_evidence.py --state state.json
+
+The state file contains only qualifying attempts already reported. Nonqualifying
+attempts are deliberately rechecked on later scans so delayed GitHub job
+metadata cannot cause a permanent false negative.
 """
 import argparse
 import json
 import os
 import re
 import sys
-import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -17,99 +20,196 @@ OWNER = "ores-truffle-oreslang"
 BACKENDS = ("java", "llvm", "net", "wasm", "forge")
 HOUSEKEEPING = {"set up job", "complete job"}
 API = "https://api.github.com"
+SHA40 = re.compile(r"[a-fA-F0-9]{40}")
 
 def meaningful(step):
     name = str(step.get("name") or "").strip()
     low = name.lower()
-    return bool(name and low not in HOUSEKEEPING and not low.startswith("post ") and step.get("status") == "completed" and step.get("conclusion") is not None)
+    return bool(
+        name
+        and low not in HOUSEKEEPING
+        and not low.startswith("post ")
+        and step.get("status") == "completed"
+        and step.get("conclusion") is not None
+    )
+
+def runner_allocated(job):
+    runner_id = job.get("runner_id")
+    return (
+        isinstance(runner_id, int)
+        and not isinstance(runner_id, bool)
+        and runner_id > 0
+        and bool(str(job.get("runner_name") or "").strip())
+    )
 
 def qualified(job):
-    return (isinstance(job.get("runner_id"), int) and not isinstance(job["runner_id"], bool)
-            and job["runner_id"] > 0 and bool(str(job.get("runner_name") or "").strip())
-            and any(meaningful(s) for s in (job.get("steps") or [])))
+    return runner_allocated(job) and any(meaningful(s) for s in (job.get("steps") or []))
+
+def classify(job):
+    """Conservative evidence classification; never implies backend parity."""
+    text = " ".join(
+        [str(job.get("name") or "")]
+        + [str(s.get("name") or "") for s in (job.get("steps") or []) if meaningful(s)]
+    ).lower()
+    labels = []
+    if any(x in text for x in ("native image", "native-image", "nativeaot", "native aot", " aot", "aot ")):
+        labels.append("aot")
+    if any(x in text for x in ("runtime", "execute", "execution", "run guest", "guest run")):
+        labels.append("runtime")
+    if any(x in text for x in ("compiler", "compile ores", "compile guest", "source compile")):
+        labels.append("compiler")
+    if any(x in text for x in ("contract", "lint", "format", "schema", "static check", "static-check")):
+        labels.append("contract/static")
+    if any(x in text for x in ("setup", "toolchain", "environment", "install dependencies", "bootstrap")):
+        labels.append("setup/toolchain")
+    return labels or ["unclassified"]
 
 def request(path, token):
-    req = urllib.request.Request(API + path, headers={
-        "Authorization": "Bearer " + token,
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "oreslang-runner-evidence/1"})
+    req = urllib.request.Request(
+        API + path,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "oreslang-runner-evidence/2",
+        },
+    )
     with urllib.request.urlopen(req, timeout=25) as response:
         return json.load(response)
 
 def pages(path, token, key):
     output = []
-    for page in range(1, 11):
+    page = 1
+    while True:
         sep = "&" if "?" in path else "?"
-        data = request(path + sep + "per_page=100&page=" + str(page), token)
+        data = request(path + sep + f"per_page=100&page={page}", token)
         batch = data.get(key)
         if not isinstance(batch, list):
             raise ValueError("missing " + key)
         output.extend(batch)
         if len(batch) < 100:
             return output
-    raise RuntimeError("pagination limit reached: " + path)
+        page += 1
+        if page > 10000:
+            raise RuntimeError("pagination safety limit reached: " + path)
 
-def inspect(repo, run, token):
-    attempt = run.get("run_attempt")
-    if not isinstance(attempt, int) or attempt < 1:
-        raise ValueError("missing run attempt")
-    jobs = pages(f"/repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs", token, "jobs")
+def attempt_key(repo, run_id, attempt):
+    return f"{repo}:{run_id}:{attempt}"
+
+def inspect_attempt(repo, run, attempt, token):
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+        raise ValueError("invalid run attempt")
+    jobs = pages(
+        f"/repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs",
+        token,
+        "jobs",
+    )
     good = []
     for job in jobs:
         if qualified(job):
-            good.append({"name": job.get("name"), "conclusion": job.get("conclusion"),
-                         "runner_id": job["runner_id"], "runner_name": job["runner_name"],
-                         "steps": [{"name": s["name"], "conclusion": s.get("conclusion")}
-                                   for s in job["steps"] if meaningful(s)]})
+            steps = [
+                {"name": s["name"], "conclusion": s.get("conclusion")}
+                for s in (job.get("steps") or [])
+                if meaningful(s)
+            ]
+            good.append(
+                {
+                    "name": job.get("name"),
+                    "conclusion": job.get("conclusion"),
+                    "runner_id": job["runner_id"],
+                    "runner_name": job["runner_name"],
+                    "classification": classify(job),
+                    "meaningful_steps": steps,
+                }
+            )
     if not good:
         return None
-    artifacts = pages(f"/repos/{repo}/actions/runs/{run['id']}/artifacts", token, "artifacts")
-    return {"backend": repo.rsplit(".", 1)[-1], "branch": run.get("head_branch"),
-            "sha": run.get("head_sha"), "run_id": run["id"], "attempt": attempt,
-            "url": run.get("html_url"), "jobs": good,
-            "artifacts": [{"name": a.get("name"), "url": a.get("archive_download_url")}
-                          for a in artifacts if not a.get("expired")]}
 
-def collect(token, seen):
+    sha = str(run.get("head_sha") or "")
+    branch = str(run.get("head_branch") or "").strip()
+    url = str(run.get("html_url") or "").strip()
+    if not SHA40.fullmatch(sha):
+        raise ValueError("invalid exact commit SHA")
+    if not branch or not url:
+        raise ValueError("missing provenance")
+
+    # GitHub exposes artifacts at run scope, not attempt scope. Report that
+    # explicitly rather than pretending an artifact belongs to this attempt.
+    artifacts = pages(f"/repos/{repo}/actions/runs/{run['id']}/artifacts", token, "artifacts")
+    return {
+        "backend": repo.rsplit(".", 1)[-1],
+        "branch": branch,
+        "sha": sha,
+        "workflow_name": run.get("name"),
+        "event": run.get("event"),
+        "run_id": run["id"],
+        "attempt": attempt,
+        "url": url,
+        "jobs": good,
+        "artifacts_scope": "workflow_run",
+        "artifacts": [
+            {
+                "name": a.get("name"),
+                "expired": bool(a.get("expired")),
+                "archive_download_url": a.get("archive_download_url"),
+            }
+            for a in artifacts
+        ],
+        "parity_claim": False,
+    }
+
+def collect(token, reported):
     reports = []
-    updated = set(seen)
+    newly_reported = set()
     for backend in BACKENDS:
         repo = f"{OWNER}/oreslang-source.{backend}"
         runs = pages(f"/repos/{repo}/actions/runs", token, "workflow_runs")
         for run in runs:
-            if run.get("status") != "completed":
-                continue
-            attempt = run.get("run_attempt")
-            if not isinstance(attempt, int) or attempt < 1:
-                continue
-            key = f"{repo}:{run['id']}:{attempt}"
-            if key in updated:
-                continue
-            evidence = inspect(repo, run, token)
-            if evidence:
-                if not re.fullmatch(r"[a-fA-F0-9]{40}", str(evidence["sha"] or "")):
-                    raise ValueError("invalid exact commit SHA")
-                if not evidence["branch"] or not evidence["url"]:
-                    raise ValueError("missing provenance")
-                reports.append(evidence)
-            # Mark inspected attempts, including nonqualifying ones; reruns use a new key.
-            updated.add(key)
-    return reports, updated
+            latest = run.get("run_attempt")
+            if not isinstance(latest, int) or isinstance(latest, bool) or latest < 1:
+                raise ValueError(f"missing/invalid run_attempt for {repo} run {run.get('id')}")
+            run_id = run.get("id")
+            if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+                raise ValueError(f"missing/invalid run id for {repo}")
+            # Enumerate every attempt up to the latest reported by GitHub.
+            # The attempt-specific jobs endpoint lets us recover reruns missed
+            # between monitor executions.
+            for attempt in range(1, latest + 1):
+                key = attempt_key(repo, run_id, attempt)
+                if key in reported or key in newly_reported:
+                    continue
+                evidence = inspect_attempt(repo, run, attempt, token)
+                if evidence:
+                    reports.append(evidence)
+                    newly_reported.add(key)
+    return reports, reported | newly_reported
+
+def load_state(path):
+    if not path.exists():
+        return set()
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ValueError("state must be a JSON array of reported attempt keys")
+    return set(raw)
+
+def save_state(path, state):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(sorted(state), indent=2) + "\n")
+    tmp.replace(path)
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--state", type=Path, required=True)
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--state", type=Path, required=True)
+    args = parser.parse_args()
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         sys.exit("GITHUB_TOKEN required; refusing unauthenticated or partial scan")
-    state = set(json.loads(args.state.read_text())) if args.state.exists() else set()
-    reports, updated = collect(token, state)
-    # Only commit state after every backend and every paginated request succeeds.
-    tmp = args.state.with_suffix(args.state.suffix + ".tmp")
-    tmp.write_text(json.dumps(sorted(updated), indent=2) + "\n")
-    tmp.replace(args.state)
+    reported = load_state(args.state)
+    reports, updated = collect(token, reported)
+    # State is committed only after every repository, run, attempt, job page,
+    # and artifact page completes successfully.
+    save_state(args.state, updated)
     print(json.dumps(reports, indent=2))
 
 if __name__ == "__main__":
