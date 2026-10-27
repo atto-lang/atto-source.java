@@ -1235,6 +1235,23 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr root
+                    && root.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE)) {
+                Map<Integer, Ast.FunctionDecl> family =
+                        functions.get(dev.oreslang.parser.Parser.ROOT_MODULE + "." + member.member());
+                if (family == null || family.size() != 1) {
+                    throw error("pkg::" + member.member()
+                            + " must identify exactly one file-root fnc value");
+                }
+                Ast.FunctionDecl target = family.values().iterator().next();
+                if (target.kind() != Ast.CallableKind.FNC
+                        || target.actorKind() != Ast.ActorKind.NONE
+                        || !target.genericParameters().isEmpty() || target.suspends()) {
+                    throw error("pkg::" + member.member()
+                            + " is direct-call-only and cannot be extracted as a value");
+                }
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1657,8 +1674,10 @@ public final class OwnershipChecker {
 
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
+            boolean pkgRoot = namespace.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE);
+            String moduleName = pkgRoot ? dev.oreslang.parser.Parser.ROOT_MODULE : namespace.name();
             Ast.FunctionDecl fn = findFunction(
-                    namespace.name() + "." + qualified.member(),
+                    moduleName + "." + qualified.member(),
                     syntacticCallArgumentTypes(call.arguments(), scope).size());
             if (fn != null) {
                 CallSignature signature = specializeCall(
@@ -1669,9 +1688,12 @@ public final class OwnershipChecker {
                         call.arguments(),
                         signature.parameters(),
                         scope,
-                        "function " + namespace.name() + "." + qualified.member());
+                        "function " + moduleName + "." + qualified.member());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
+            }
+            if (pkgRoot) {
+                throw error("pkg::" + qualified.member() + " has no file-root callable at this arity");
             }
         }
 
