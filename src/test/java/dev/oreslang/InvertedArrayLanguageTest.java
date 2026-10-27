@@ -352,6 +352,32 @@ final class InvertedArrayLanguageTest {
                         "closure cannot capture InvertedArray storage"),
                 wrapperAliasClosure::getMessage);
 
+        IllegalArgumentException genericWrapperAlias = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        type HiddenStore = InvertedArray<Particle>;
+                        type Wrapped<T> = Option<T>;
+
+                        fnc bad(): void {
+                          let mut HiddenStore particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          val Wrapped<HiddenStore> wrapped = Some(particles);
+                          val (() => int) capture = || -> {
+                            val hidden = wrapped;
+                            return 1;
+                          };
+                          return;
+                        }
+                        """));
+        assertTrue(
+                genericWrapperAlias.getMessage().contains(
+                        "closure cannot capture InvertedArray storage"),
+                genericWrapperAlias::getMessage);
+
         IllegalArgumentException aliasChannel = assertThrows(
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
