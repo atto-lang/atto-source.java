@@ -273,6 +273,57 @@ final class GeneratorRuntimeTest {
 
 
     @Test
+    void syncClosePreservesCleanupFailureAfterPhysicalExit() {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>generator(runtime, emitter -> {
+            try {
+                emitter.emit(1);
+            } finally {
+                throw new IllegalStateException("generator cleanup failed");
+            }
+        });
+        try {
+            assertEquals(1, generator.nextStep().value());
+            IllegalStateException first =
+                    assertThrows(IllegalStateException.class, generator::close);
+            assertEquals("generator cleanup failed", first.getMessage());
+
+            IllegalStateException repeated =
+                    assertThrows(IllegalStateException.class, generator::close);
+            assertEquals("generator cleanup failed", repeated.getMessage());
+            assertTrue(generator.nextStep().done());
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void asyncClosePreservesCleanupFailureAfterPhysicalExit() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            try {
+                emitter.emit(1);
+            } finally {
+                throw new IllegalStateException("async generator cleanup failed");
+            }
+        });
+        try {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            IllegalStateException first =
+                    assertThrows(IllegalStateException.class, generator::close);
+            assertEquals("async generator cleanup failed", first.getMessage());
+
+            IllegalStateException repeated =
+                    assertThrows(IllegalStateException.class, generator::close);
+            assertEquals("async generator cleanup failed", repeated.getMessage());
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            runtime.close();
+        }
+    }
+
+
+    @Test
     void closeAtYieldDoesNotResumeGuestBody() throws Exception {
         CountDownLatch resumed = new CountDownLatch(1);
         try (AsyncRuntime runtime = new AsyncRuntime();
