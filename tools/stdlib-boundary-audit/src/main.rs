@@ -416,6 +416,70 @@ fn reject_blocking_io_aliases(tokens: &[Token]) -> Result<(), String> {
     Ok(())
 }
 
+const FORBIDDEN_CORE_IO_ROOTS: &[&str] = &[
+    "stdio", "fs", "File", "network", "net", "http", "process", "env",
+];
+
+fn inspect_core(source: &str) -> Result<(), String> {
+    let tokens = lex(source)?;
+    reject_blocking_io_aliases(&tokens)?;
+
+    for index in 0..tokens.len() {
+        let token = &tokens[index];
+        if token.kind == Kind::Name
+                && FORBIDDEN_CORE_IO_ROOTS.iter().any(|root| token.name(root))
+                && tokens.get(index + 1).is_some_and(|next| next.symbol('.')) {
+            return Err(format!(
+                "line {}: ores.core may not reference hosted I/O namespace '{}'",
+                token.line, token.text
+            ));
+        }
+        if token.name("print")
+                && tokens.get(index + 1).is_some_and(|next| next.symbol('(')) {
+            return Err(format!(
+                "line {}: ores.core may not use ambient print I/O", token.line
+            ));
+        }
+        if token.name("java")
+                && tokens.get(index + 1)
+                        .is_some_and(|next| next.symbol('{') || next.symbol(':')) {
+            return Err(format!(
+                "line {}: Java host interop forbidden in ores.core", token.line
+            ));
+        }
+        if token.name("import") {
+            let rest = &tokens[index + 1..];
+            let size = rest.iter().position(|item| item.symbol(';'))
+                    .ok_or_else(|| format!("line {}: import without terminator", token.line))?;
+            if size > 128 {
+                return Err(format!("line {}: oversized import", token.line));
+            }
+            let statement = &rest[..size];
+            for (part_index, part) in statement.iter().enumerate() {
+                if !part.name("from") {
+                    continue;
+                }
+                let src = &statement[part_index + 1..];
+                if src.is_empty() {
+                    return Err(format!("line {}: missing import source", part.line));
+                }
+                let name = src.iter().map(|item| item.text.as_str()).collect::<String>();
+                if !name.starts_with("ores.core/")
+                        || name.contains("..")
+                        || name.starts_with('/')
+                        || name.contains(':')
+                        || name.contains('\\') {
+                    return Err(format!(
+                        "line {}: ores.core import escapes freestanding core: {}",
+                        part.line, name
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn inspect(source: &str) -> Result<(), String> {
     let tokens = lex(source)?;
     reject_blocking_io_aliases(&tokens)?;
@@ -473,7 +537,7 @@ fn inspect(source: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn scan(root: &Path) -> Result<usize, String> {
+fn scan_with(root: &Path, inspector: fn(&str) -> Result<(), String>) -> Result<usize, String> {
     if fs::symlink_metadata(root)
         .map_err(|e| e.to_string())?
         .file_type()
@@ -508,13 +572,21 @@ fn scan(root: &Path) -> Result<usize, String> {
                 return Err(format!("{}: resource budget exceeded", path.display()));
             }
             let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            inspect(&source).map_err(|e| format!("{}: {e}", path.display()))?;
+            inspector(&source).map_err(|e| format!("{}: {e}", path.display()))?;
         }
     }
     if count == 0 {
         return Err("stdlib contains no .ores files".into());
     }
     Ok(count)
+}
+
+fn scan(root: &Path) -> Result<usize, String> {
+    scan_with(root, inspect)
+}
+
+fn scan_core(root: &Path) -> Result<usize, String> {
+    scan_with(root, inspect_core)
 }
 
 fn main() {
@@ -525,13 +597,22 @@ fn main() {
     }
     let stdlib = args.first().map(String::as_str).unwrap_or("stdlib");
     let repo_root = args.get(1).map(String::as_str).unwrap_or(".");
-    let result = scan(Path::new(stdlib))
-        .and_then(|n| audit_strict_java_guest_boundary(Path::new(repo_root)).map(|_| n));
+    let core_root = Path::new(repo_root)
+            .join("src/main/resources/dev/oreslang/core");
+    let result = scan(Path::new(stdlib)).and_then(|stdlib_count| {
+        scan_core(&core_root).and_then(|core_count| {
+            audit_strict_java_guest_boundary(Path::new(repo_root))
+                    .map(|_| (stdlib_count, core_count))
+        })
+    });
     match result {
-        Ok(n) => {
-            println!("verified {n} native Oreslang stdlib source file(s)");
+        Ok((stdlib_count, core_count)) => {
+            println!("verified {stdlib_count} native Oreslang stdlib source file(s)");
+            println!("verified {core_count} canonical ores.core source file(s)");
             println!("STRICT_NONBLOCKING_STDLIB_IO=PASS");
+            println!("STRICT_FREESTANDING_CORE_IO=PASS");
             println!("blocking_stdlib_io_violations=0");
+            println!("host_core_io_violations=0");
         }
         Err(e) => {
             eprintln!("stdlib boundary audit failed: {e}");
@@ -645,6 +726,35 @@ mod tests {
         assert!(normalize_java(
             r#"String value = "\\u0066s.read_text";"#,
             true
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn core_rejects_host_io_even_when_async_named() {
+        assert!(inspect_core(
+            "fnc f(): void { network.connect_async(\"127.0.0.1\", 80); }"
+        )
+        .is_err());
+        assert!(inspect_core(
+            "fnc f(): void { stdio.stdout.write_async(\"x\"); }"
+        )
+        .is_err());
+        assert!(inspect_core("fnc f(): void { print(\"x\"); }").is_err());
+    }
+
+    #[test]
+    fn core_imports_are_downward_closed() {
+        assert!(inspect_core(
+            "import module numeric from 'ores.core/numeric'; fnc f(): void {}"
+        )
+        .is_ok());
+        assert!(inspect_core(
+            "import module net from 'ores.std/net'; fnc f(): void {}"
+        )
+        .is_err());
+        assert!(inspect_core(
+            "import module legacy from 'std/net'; fnc f(): void {}"
         )
         .is_err());
     }
