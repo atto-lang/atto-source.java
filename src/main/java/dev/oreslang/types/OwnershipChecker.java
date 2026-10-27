@@ -503,6 +503,16 @@ public final class OwnershipChecker {
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
+            // The pre-yield scope check above only sees borrows that already
+            // existed before evaluating the yield expression. The expression
+            // itself can create a fresh borrow (for example, yield &local) or
+            // delegate an Iterator<&T>. Neither may escape into the suspended
+            // activation/consumer boundary without explicit lifetime support.
+            if (isBorrowValue(value) || (exposed != null && exposed.isBorrow())) {
+                throw error(yielded.delegated()
+                        ? "borrowed iterables or borrowed yield* elements cannot cross a generator suspension boundary"
+                        : "borrowed references cannot be yielded from a generator; yield owned/shared data instead");
+            }
             if (containsMutexGuardType(exposed)) {
                 throw error(yielded.delegated()
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
