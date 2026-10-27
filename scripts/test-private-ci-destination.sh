@@ -60,11 +60,9 @@ printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
 expect_fail trusted/ci
-# A duplicate numeric identity is forbidden even if the other slug differs.
 printf 'trusted/ci 246810\nother/ci 246810\n' > "$policy"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
-# Malformed numeric-policy entries must never be normalized into approval.
 printf 'trusted/ci\t246810\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810 \n' > "$policy"
@@ -108,49 +106,11 @@ export MOCK_EXTRA_LINE=$'\nspoofed/repo\tprivate\ttrue'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_EXTRA_LINE
-export MOCK_EXTRA_LINE=
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-printf 'trusted/ci #bad-comment\n' > "$policy"
-expect_fail trusted/ci
-printf '# intentionally empty\n' > "$policy"
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-rm "$policy"
-expect_fail trusted/ci
-ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
-expect_fail trusted/ci
-rm "$policy"
-printf 'trusted/ci 246810\n' > "$policy"
-mv "$work/fixture/.github" "$work/approved-policy-directory"
-ln -s "$work/approved-policy-directory" "$work/fixture/.github"
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-printf 'PASS: diagnostic-only private identity, numeric-ID alias, inactive carrier, malformed metadata, no child execution\n'
-\textra'
+export MOCK_EXTRA_LINE=$'\textra'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_EXTRA_LINE
-export MOCK_EXTRA_LINE=
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-printf 'trusted/ci #bad-comment\n' > "$policy"
-expect_fail trusted/ci
-printf '# intentionally empty\n' > "$policy"
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-rm "$policy"
-expect_fail trusted/ci
-ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
-expect_fail trusted/ci
-rm "$policy"
-printf 'trusted/ci 246810\n' > "$policy"
-mv "$work/fixture/.github" "$work/approved-policy-directory"
-ln -s "$work/approved-policy-directory" "$work/fixture/.github"
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
-\r'
+export MOCK_EXTRA_LINE=$'\r'
 expect_fail trusted/ci
 unset MOCK_EXTRA_LINE
 printf 'other/repo 246810\n' > "$policy"
@@ -171,4 +131,4 @@ mv "$work/fixture/.github" "$work/approved-policy-directory"
 ln -s "$work/approved-policy-directory" "$work/fixture/.github"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
-printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
+printf 'PASS: diagnostic-only identity, duplicate IDs, inactive carriers and malformed metadata rejected\n'
