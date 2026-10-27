@@ -42,8 +42,10 @@ public final class AsyncNativeIo implements AutoCloseable {
     }
 
     private final ThreadPoolExecutor workers;
+    private final ThreadPoolExecutor orderedWorkers;
     private final ThreadPoolExecutor controlWorkers;
     private final Set<Operation<?>> pending = new HashSet<>();
+    private final Set<Operation<?>> ordered = new HashSet<>();
     private final Set<Operation<?>> controls = new HashSet<>();
     private final Set<AutoCloseable> resources =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -218,6 +220,12 @@ public final class AsyncNativeIo implements AutoCloseable {
                 TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(queueSize),
                 Thread.ofVirtual().name("ores-native-io-", 0).factory(),
                 new ThreadPoolExecutor.AbortPolicy());
+        // One FIFO lane for ordered streams such as stdout/stderr/stdin.
+        // It may block only this dedicated host-I/O worker, never a guest carrier.
+        orderedWorkers = new ThreadPoolExecutor(1, 1, 0L,
+                TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(queueSize),
+                Thread.ofVirtual().name("ores-native-io-ordered-", 0).factory(),
+                new ThreadPoolExecutor.AbortPolicy());
         controlWorkers = new ThreadPoolExecutor(CONTROL_CAPACITY, CONTROL_CAPACITY, 0L,
                 TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(CONTROL_CAPACITY),
                 Thread.ofVirtual().name("ores-native-io-control-", 0).factory(),
@@ -236,6 +244,12 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submit(operation, work);
     }
 
+    public <T> OresFuture<T> submitOrdered(OresContext context,
+            IsolatePolicy.Capability capability, String operation, Callable<T> work) {
+        context.requireCapability(capability, operation);
+        return submitOrdered(operation, work);
+    }
+
     public <T> OresFuture<T> submitClose(OresContext context, Callable<T> work) {
         context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close");
         return submitControl("socket.close", work);
@@ -247,6 +261,10 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
         return admit(operation, work, pending, capacity, workers);
+    }
+
+    synchronized <T> OresFuture<T> submitOrdered(String operation, Callable<T> work) {
+        return admit(operation, work, ordered, capacity, orderedWorkers);
     }
 
     private <T> OresFuture<T> admit(String operation, Callable<T> work,
@@ -387,7 +405,7 @@ public final class AsyncNativeIo implements AutoCloseable {
     private void retireDeferredUnregisterLocked() {
         // Existing socket close/unregister may race another active read.
         // Keep the resource strongly reachable until every context loan ends.
-        if (pending.isEmpty() && controls.isEmpty()) {
+        if (pending.isEmpty() && ordered.isEmpty() && controls.isEmpty()) {
             deferredUnregister.removeIf(resource -> {
                 ResourceLeaseState state = resourceLoans.get(resource);
                 return state == null || state.active == 0;
@@ -488,6 +506,7 @@ public final class AsyncNativeIo implements AutoCloseable {
             }
             if (!first) return;
             reportDiscarded(workers.shutdownNow());
+            reportDiscarded(orderedWorkers.shutdownNow());
             reportDiscarded(controlWorkers.shutdownNow());
             for (java.net.Socket socket : sockets) {
                 try {
@@ -525,21 +544,23 @@ public final class AsyncNativeIo implements AutoCloseable {
                 long wait = Math.max(0L, deadline - System.nanoTime());
                 boolean dataDone = workers.awaitTermination(wait, TimeUnit.NANOSECONDS);
                 wait = Math.max(0L, deadline - System.nanoTime());
+                boolean orderedDone = orderedWorkers.awaitTermination(wait, TimeUnit.NANOSECONDS);
+                wait = Math.max(0L, deadline - System.nanoTime());
                 boolean controlDone = controlWorkers.awaitTermination(wait, TimeUnit.NANOSECONDS);
-                if (dataDone && controlDone) {
+                if (dataDone && orderedDone && controlDone) {
                     synchronized (this) {
                         // shutdownNow() may have produced bounded independent
                         // never-started notification tasks. Those also own
                         // physical callback receipts until their last terminal
                         // subscriber has returned. Wait only to the deadline.
-                        while ((!pending.isEmpty() || !controls.isEmpty()
+                        while ((!pending.isEmpty() || !ordered.isEmpty() || !controls.isEmpty()
                                 || resourceLoans.values().stream().anyMatch(x -> x.active != 0))
                                 && incompleteReceipt == null) {
                             wait = deadline - System.nanoTime();
                             if (wait <= 0) break;
                             TimeUnit.NANOSECONDS.timedWait(this, wait);
                         }
-                        joined = pending.isEmpty() && controls.isEmpty()
+                        joined = pending.isEmpty() && ordered.isEmpty() && controls.isEmpty()
                                 && resourceLoans.values().stream().noneMatch(x -> x.active != 0)
                                 && incompleteReceipt == null;
                     }
