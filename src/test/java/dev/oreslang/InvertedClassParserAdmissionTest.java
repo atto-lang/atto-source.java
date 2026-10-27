@@ -172,6 +172,10 @@ final class InvertedClassParserAdmissionTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(original));
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.checkTypesWithDiagnostics(original));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypes(rewritten));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithDiagnostics(rewritten));
     }
 
     @Test
