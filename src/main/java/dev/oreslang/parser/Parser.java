@@ -26,6 +26,10 @@ public final class Parser {
     // Erased to structural TypeRefs during parsing: they never create runtime
     // declarations, imported names, or synthetic nominal type identities.
     private java.util.Map<String, Ast.TypeRef> callableRecordAliases;
+    // Local aliases are erased from callable ASTs. Keep names until the whole
+    // compilation unit has been parsed so later module/forward definitions and
+    // import aliases cannot silently change a public callable's type ABI.
+    private final java.util.Set<String> allCallableRecordAliasNames = new java.util.HashSet<>();
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -232,7 +236,47 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
+        validateLocalRecordAliasNameCollisions(imports, modules);
         return new Ast.Program(namespace, imports, modules);
+    }
+
+
+    /**
+     * A parser-level local alias is erased before TypeChecker sees any AST
+     * declaration. Fail closed against every source-visible type or namespace
+     * name, including declarations appearing after the callable and imported
+     * aliases. This is intentionally conservative across modules until scoped
+     * declaration provenance is represented in the checked AST.
+     */
+    private void validateLocalRecordAliasNameCollisions(
+            List<Ast.ImportDecl> imports, List<Ast.ModuleDecl> modules) {
+        if (allCallableRecordAliasNames.isEmpty()) return;
+        java.util.Set<String> externalNames = new java.util.HashSet<>();
+        for (Ast.ImportDecl imported : imports) {
+            if (imported.namespace() != null) {
+                externalNames.add(imported.namespace());
+            } else {
+                externalNames.addAll(imported.names());
+            }
+        }
+        for (Ast.ModuleDecl module : modules) {
+            externalNames.add(module.name());
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    externalNames.add(alias.name());
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    externalNames.add(klass.name());
+                } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    externalNames.add(iface.name());
+                }
+            }
+        }
+        for (String localName : allCallableRecordAliasNames) {
+            if (externalNames.contains(localName)) {
+                throw error(peek(), "local record alias '" + localName
+                        + "' conflicts with an existing imported, module, or nominal type name");
+            }
+        }
     }
 
     private Ast.ImportDecl parseImport() {
@@ -2228,6 +2272,7 @@ public final class Parser {
                                         + "' needs a separately checked recursive-type contract");
                     }
                     callableRecordAliases.put(aliasName, aliasTarget);
+                    allCallableRecordAliasNames.add(aliasName);
                 } else {
                     inTypePrologue = false;
                     body.add(parseStatement());
