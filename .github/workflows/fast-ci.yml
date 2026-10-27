@@ -30,8 +30,11 @@ jobs:
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code
           test -z "$(git ls-files --others --exclude-standard)"
           echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify fast-CI exact-head provenance regressions
+        run: python3 -m unittest discover -s tests -p 'test_fast_ci_exact_head.py' -v
       - name: Verify read-only Actions triage unit tests
         run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
       - name: Verify native image gate with source-free mock launchers
