@@ -59,6 +59,64 @@ final class OneShotObservableTest {
     }
 
     @Test
+    void rejectsNullFromNonVoidProducerRatherThanInventingEmptyStream() {
+        OresFuture<Integer> producer = OresFuture.completed(null);
+        OresFuture<Optional<Integer>> first =
+                OneShotObservable.fromFuture(producer).first();
+        assertInstanceOf(OneShotObservable.NullObservablePayloadError.class,
+                assertThrows(CompletionException.class, first::join).getCause());
+        OresFuture<Integer> single =
+                OneShotObservable.fromFuture(producer).single();
+        assertInstanceOf(OneShotObservable.NullObservablePayloadError.class,
+                assertThrows(CompletionException.class, single::join).getCause());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void rejectsValueProducedByVoidFuture() {
+        OresFuture<Void> broken = (OresFuture) OresFuture.completed("not void");
+        OresFuture<Optional<Void>> first =
+                OneShotObservable.fromVoidFuture(broken).first();
+        assertInstanceOf(OneShotObservable.InvalidVoidPayloadError.class,
+                assertThrows(CompletionException.class, first::join).getCause());
+        assertEquals(0, broken.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void waitsForEntireSourceNotificationDrainBeforePublishingValue()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> result = OneShotObservable.fromFuture(producer).single();
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var resume = new java.util.concurrent.CountDownLatch(1);
+        producer.whenCompleteRuntime((value, failure) -> {
+            entered.countDown();
+            try {
+                if (!resume.await(3, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("notification-drain test timeout");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+        try (var pool = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var settlement = pool.submit(() -> producer.completeFromRuntime(23));
+            try {
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertFalse(result.isDone(),
+                        "observable must not publish while sibling source callback is active");
+            } finally {
+                resume.countDown();
+            }
+            assertTrue(settlement.get(3, TimeUnit.SECONDS));
+            assertEquals(23, result.get(3, TimeUnit.SECONDS));
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
     void cancellationDetachesOneShotObserverWithoutCancellingProducer() {
         OresFuture<Integer> producer = new OresFuture<>();
         OresFuture<Integer> result = OneShotObservable.fromFuture(producer).single();
