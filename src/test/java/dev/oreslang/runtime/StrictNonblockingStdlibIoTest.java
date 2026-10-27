@@ -61,30 +61,32 @@ final class StrictNonblockingStdlibIoTest {
     }
 
     @Test
-    void bareSynchronousFilesystemNameIsCompilerRejected() {
+    void explicitBlockingAndLegacyAsyncSuffixesAreNotGuestApi() {
         assertCompilerRejected("""
                 pub routine main(): void {
-                  fs.read_text("definitely-not-read");
+                  fs.read_text_blocking("x");
+                  return;
+                }
+                """);
+        assertCompilerRejected("""
+                pub routine main(): void {
+                  fs.read_text_sync("x");
+                  return;
+                }
+                """);
+        assertCompilerRejected("""
+                pub async routine main(): void {
+                  await fs.read_text_async("x");
                   return;
                 }
                 """);
     }
 
     @Test
-    void blockingSuffixIsNotAdmittedUntilContinuationLoweringExists() {
-        assertCompilerRejected("""
-                pub routine main(): void {
-                  fs.read_text_blocking("definitely-not-read");
-                  return;
-                }
-                """);
-    }
-
-    @Test
-    void asynchronousFilesystemCannotFallBackToIoWorker() throws Exception {
+    void canonicalFilesystemCannotFallBackToIoWorker() throws Exception {
         assertStrictlyUnsupported("""
                 pub async routine main(): void {
-                  await fs.read_text_async("definitely-not-read");
+                  await fs.read_text("definitely-not-read");
                   return;
                 }
                 """);
@@ -94,7 +96,7 @@ final class StrictNonblockingStdlibIoTest {
     void tcpConnectCannotReachBlockingSocketOrWorkerFallback() throws Exception {
         assertStrictlyUnsupported("""
                 pub async routine main(): void {
-                  await network.connect_async("127.0.0.1", 9);
+                  await network.connect("127.0.0.1", 9);
                   return;
                 }
                 """);
@@ -104,7 +106,7 @@ final class StrictNonblockingStdlibIoTest {
     void httpClientCannotReachSynchronousHttpClient() throws Exception {
         assertStrictlyUnsupported("""
                 pub async routine main(): void {
-                  await http.get_text_async("http://127.0.0.1:9/");
+                  await http.get_text("http://127.0.0.1:9/");
                   return;
                 }
                 """);
@@ -114,33 +116,23 @@ final class StrictNonblockingStdlibIoTest {
     void httpListenerCannotReachLegacyJdkHttpServer() throws Exception {
         assertStrictlyUnsupported("""
                 pub async routine main(): void {
-                  await http.listen_async("127.0.0.1", 0, 1, 1024, 1000);
+                  await http.listen("127.0.0.1", 0, 1, 1024, 1000);
                   return;
                 }
                 """);
     }
 
     @Test
-    void bareStdoutAndStdinNamesAreCompilerRejected() {
-        assertCompilerRejected("""
-                pub routine main(): void {
-                  stdio.stdout.write("must-not-be-written");
-                  return;
-                }
-                """);
-        assertCompilerRejected("""
-                pub routine main(): void {
-                  stdio.stdin.read_line();
-                  return;
-                }
-                """);
-    }
-
-    @Test
-    void asynchronousStdoutCannotFallBackToPrintWriter() throws Exception {
+    void canonicalStdoutAndStdinCannotReachBlockingStreams() throws Exception {
         assertStrictlyUnsupported("""
                 pub async routine main(): void {
-                  await stdio.stdout.write_async("must-not-be-written");
+                  await stdio.stdout.write("must-not-be-written");
+                  return;
+                }
+                """);
+        assertStrictlyUnsupported("""
+                pub async routine main(): void {
+                  await stdio.stdin.read_line();
                   return;
                 }
                 """);
@@ -157,15 +149,20 @@ final class StrictNonblockingStdlibIoTest {
     }
 
     @Test
-    void asyncSurfaceTypechecksWithFutureResults() {
+    void canonicalSurfaceTypechecksWithFutureResults() {
         assertCompilerAccepts("""
                 pub async routine main(): void {
-                  val Future<String> read = fs.read_text_async("x");
-                  val Future<bool> exists = fs.exists_async("x");
-                  val Future<TcpConnection> connected = network.connect_async("127.0.0.1", 9);
-                  val Future<String> get = http.get_text_async("http://127.0.0.1:9/");
-                  val Future<void> out = stdio.stdout.write_async("x");
-                  val Future<Option<String>> input = stdio.stdin.read_line_async();
+                  val Future<String> read = fs.read_text("x");
+                  val Future<List<String>> listing = fs.list_dir("x");
+                  val Future<bool> dir = fs.is_dir("x");
+                  val Future<bool> link = fs.is_symlink("x");
+                  val Future<bool> exists = fs.exists("x");
+                  val Future<void> atomic = fs.write_text_atomic("x", "y");
+                  val Future<TcpConnection> connected = network.connect("127.0.0.1", 9);
+                  val Future<String> get = http.get_text("http://127.0.0.1:9/");
+                  val Future<HttpServer> listener = http.listen("127.0.0.1", 0, 1, 1024, 1000);
+                  val Future<void> out = stdio.stdout.write("x");
+                  val Future<Option<String>> input = stdio.stdin.read_line();
                   return;
                 }
                 """);
