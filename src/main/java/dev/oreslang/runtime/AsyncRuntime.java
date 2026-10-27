@@ -85,11 +85,25 @@ public final class AsyncRuntime implements AutoCloseable {
      * lowering is currently a runtime-owned virtual-thread producer.</p>
      */
     public static void cooperateCurrentCarrier() {
-        if (!isAsyncCarrierThread()) {
+        if (!isAsyncCarrierThread() || !Thread.currentThread().isVirtual()
+                || ActorRuntime.inActorExecution()) {
             throw new IllegalStateException(
-                    "rt cooperate requires a runtime-owned async/generator carrier");
+                    "rt cooperate requires an owned virtual generator carrier; "
+                            + "actor/source Task cooperation must use a resumable "
+                            + "OresScheduler.Cooperate continuation");
         }
+        if (Thread.currentThread().isInterrupted()) {
+            throw new CancellationException(
+                    "generator carrier cancelled before cooperation");
+        }
+        // Thread.yield on an owned virtual thread is a compatibility handoff:
+        // it lets the JDK virtual-thread scheduler run other carriers. It does
+        // NOT certify a compiler-lowered state-machine continuation or hard RT.
         Thread.yield();
+        if (Thread.currentThread().isInterrupted()) {
+            throw new CancellationException(
+                    "generator carrier cancelled during cooperation");
+        }
     }
 
     public boolean isClosed() {
