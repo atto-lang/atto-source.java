@@ -1,0 +1,38 @@
+name: Source-org isolated runner capability canary (no checkout)
+# MANUAL ONLY. Do not schedule self-hosted runners from PR-controlled
+# workflow definitions. Requires independently reviewed workflow on a
+# protected default branch and deliberate administrator dispatch.
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  source-free-runner-canary:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, oreslang-isolated-ephemeral]
+    timeout-minutes: 5
+    steps:
+      - name: Verify source-free tooling prerequisites only
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The workflow intentionally has no checkout and no access to
+          # private-source files; source validation uses a separate job.
+          test -z "${GITHUB_TOKEN:-}"
+          test -z "${GH_TOKEN:-}"
+          command -v java
+          command -v javac
+          command -v native-image
+          command -v mvn
+          command -v python3
+          java -version
+          javac -version
+          native-image --version
+          mvn --version
+          python3 --version
+          java -XshowSettings:properties -version 2>&1 |
+            grep -E 'java.specification.version[[:space:]]*=[[:space:]]*25$'
+          native-image --version 2>&1 | grep -qi 'graalvm'
+          echo "ASYNC_INTEROP_SOURCE_FREE_RUNNER_EXECUTED=true"
+          echo "ASYNC_INTEROP_PRIVATE_SOURCE_CHECKOUT=false"
+          echo "ASYNC_INTEROP_JVM_TESTS_EXECUTED=false"
+          echo "ASYNC_INTEROP_ISOLATION_REQUIRES_ADMIN_ATTESTATION=true"
