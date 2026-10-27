@@ -370,33 +370,41 @@ collapse to the same `Ast.TypeRef` marker.
 | `record{x:i64,y:f64}` | **One packed, copied record column** | Host codec; guest only with full type/ownership proof |
 | Direct alias to such a `record{...}` | Same single packed column | Host API requires explicit direct alias map |
 | `struct{x:i64,y:f64}` | Not silently reinterpreted as a record | Reject until value mutability/copy semantics are proven |
-| `record{child:record{...}}` or `record{child:struct{...}}` | No recursive AoS encoding/column flattening | Reject |
+| `record{child:record{...}}` | **One packed parent column**; child bytes inline, no child SoA columns | Host codec only, depth/member/byte capped; guest rejected |
+| `record{child:struct{...}}` | No implicit mutable struct serialization | Reject |
 | Nominal `Inner` inverted class, `InvertedArray<Inner>`, or `Array<Inner>` | No embedded nested owner/pointer graph | Reject |
 | `define inverted struct` / `define inverted record` | No V1 declaration or collection ABI | Parse-time rejection |
 
-A **one-level record** is a value, not a nested store. Its fields are
-canonicalized by name and packed little-endian into the *single* record
-column at a checked width (host limit 64 KiB). Encoding must reject missing,
-extra and wrongly typed members. The field-level `Map` input is copied to
-bytes, and decoding returns an independent, immutable map, not an alias of
-physical storage. Boolean bytes are strictly canonical (0/1).
-Swap-delete may move its physical record element while issued generational
-row handles retain logical identity.
+A **packed immutable record** is a value, not a nested store. Its immediate
+members and any nested readonly `record{...}` members are sorted canonically
+within their containing values, then packed little-endian into **one single
+physical parent column**. The Java host codec supports at most **8 nested
+record boundaries**, **1,024 members in aggregate across the record tree**,
+and **64 KiB total parent stride**; the limits are host denial-of-service
+budgets, not a standardized cross-backend ABI. Nested mutable `struct`, owned
+class, pointer and `InvertedArray<T>` members are still rejected. Both leaf
+and nested encoding reject missing/extra/wrongly typed members. Input maps
+are copied into independently owned bytes; decoded maps at **every depth**
+are immutable detached values. Boolean bytes are strictly canonical (0/1).
+Swap-delete may move the single physical record element while issued
+generational row handles retain logical identity.
 
 **Nested inverted classes** need an explicit lifetime model: either a
 separately owned `InvertedArray<Inner>` with a controlled owning/reference
 relationship, or an independently specified flattened multi-level SoA
 schema with offsets/cardinalities and migration/reclamation rules. Do not
 implicitly flatten `Outer.Inner` or grant a guest a pointer to an actor's
-nested store. Recursive records need independently verified bounded layouts
-and ownership/transport proofs. Mutable structs need a separate copy-in/
+nested store. Nested immutable *value* records now have a bounded host codec;
+source guest admission, recursive struct layouts, nested owner lifetimes, and
+cross-backend encoding compatibility remain unverified. Mutable structs need a separate copy-in/
 copy-out or borrowed-view contract to preserve mutability without exposing
 interior aliases. This is not automatic simply because a record codec exists.
 
 **Testing:** `InvertedNestedLayoutTest` checks real parsed `struct` versus
-`record` types, record column roundtrip and swap-delete, canonical
-little-endian encoding and invalid bool rejection, direct aliases, and
-fail-closed nested named/aggregate/inverted declarations. These are checked-in
+`record` types, nested packed value-record roundtrip and swap-delete,
+canonical little-endian encoding and nested-invalid-bool rejection, direct
+aliases and total depth/member bounds; nested named inverted owners and
+mutable structs continue to fail closed. These are checked-in
 JUnit fixtures, **not an executed source-runner pass** while CI remains
 zero-step. Require the same admission/negative matrices across Java/Graal
 (full native AOT) and LLVM (full AOT) before claiming backend parity.
