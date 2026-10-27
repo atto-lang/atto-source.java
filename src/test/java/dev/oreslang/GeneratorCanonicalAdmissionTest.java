@@ -16,6 +16,30 @@ final class GeneratorCanonicalAdmissionTest {
     }
 
     @Test
+    void bareGeneratorRequiresStarWhileLegacyGeneratorFncRemainsAccepted() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub generator values(): Iterator<int> {
+                  yield 1;
+                  return;
+                }
+                """));
+
+        OresCompiler.parseAndTypeCheck("""
+                pub generator* values(): Iterator<int> {
+                  yield 1;
+                  return;
+                }
+                """);
+
+        OresCompiler.parseAndTypeCheck("""
+                pub generator fnc legacy(): int {
+                  yield 1;
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void suspendGeneratorCannotExposeSyncIteratorProtocol() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
                 "pub suspend gen* values(): Iterator<int> { yield 1; return; }"));
