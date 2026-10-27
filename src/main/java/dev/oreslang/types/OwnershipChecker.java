@@ -434,12 +434,13 @@ public final class OwnershipChecker {
                 ValueKind bindingKind = bindingType.name().equals("$infer$")
                         ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
                         : kindOfType(bindingType);
-                scope.define(binding.name(), new VarState(
+                scope.define(binding.name(), derivedProjectionState(
                         bindingType,
                         binding.mutableReferent(),
                         binding.kind() == Ast.BindingKind.LET,
                         bindingKind,
-                        Origin.LOCAL));
+                        source,
+                        "destructure binding '" + binding.name() + "'"));
             }
             return;
         }
@@ -762,6 +763,10 @@ public final class OwnershipChecker {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
+            if (loop.asyncIteration() && isBorrowValue(iterable)) {
+                throw error("async iteration cannot consume a borrowed iterable; "
+                        + "materialize owned data before suspension");
+            }
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
@@ -769,12 +774,13 @@ public final class OwnershipChecker {
                 Ast.DestructureBinding binding = loop.bindings().get(i);
                 if (binding.isDiscard()) continue;
                 Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i, binding.rest());
-                loopScope.define(binding.name(), new VarState(
+                loopScope.define(binding.name(), derivedProjectionState(
                         bindingType,
                         binding.mutableReferent(),
                         binding.kind() == Ast.BindingKind.LET,
                         kindOfType(bindingType),
-                        Origin.LOCAL));
+                        iterable,
+                        "for-of destructure binding '" + binding.name() + "'"));
             }
             checkLoopBlock(loop.body(), loopScope, returnType);
             loopScope.close();
@@ -787,15 +793,20 @@ public final class OwnershipChecker {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
+            if (loop.asyncIteration() && isBorrowValue(iterable)) {
+                throw error("async iteration cannot consume a borrowed iterable; "
+                        + "materialize owned data before suspension");
+            }
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
-            loopScope.define(loop.bindingName(), new VarState(
+            loopScope.define(loop.bindingName(), derivedProjectionState(
                     elementType,
                     loop.mutableReferent(),
                     loop.bindingKind() == Ast.BindingKind.LET,
                     kindOfType(elementType),
-                    Origin.LOCAL));
+                    iterable,
+                    "for-of binding '" + loop.bindingName() + "'"));
             checkLoopBlock(loop.body(), loopScope, returnType);
             loopScope.close();
             rejectLoopMoves(before, scope);
@@ -2796,6 +2807,29 @@ public final class OwnershipChecker {
                     || state.kind == ValueKind.MUT_BORROW
                     || state.borrowSource != null
                     || (state.type != null && state.type.isBorrow()));
+    }
+
+    private VarState derivedProjectionState(
+            Ast.TypeRef type,
+            boolean mutableReferent,
+            boolean rebindable,
+            ValueKind kind,
+            ValueInfo source,
+            String context) {
+        VarState state = new VarState(
+                type, mutableReferent, rebindable, kind, Origin.LOCAL);
+        if (kind == ValueKind.COPY || !isBorrowValue(source)) return state;
+
+        if (mutableReferent || source.kind == ValueKind.MUT_BORROW) {
+            throw error(context
+                    + " cannot create a mutable/owned alias from borrowed aggregate state; "
+                    + "use an explicit lexical rt borrow projection");
+        }
+        ValueInfo retained = retainBorrowForBinding(
+                new ValueInfo(type, kind, source.borrowSource));
+        state.borrowSource = retained.borrowSource;
+        state.borrowLease = retained.borrowLease;
+        return state;
     }
 
     private boolean isIncomingBorrow(VarState state) {
