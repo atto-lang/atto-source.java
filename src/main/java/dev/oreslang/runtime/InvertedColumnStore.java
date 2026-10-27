@@ -536,6 +536,15 @@ public final class InvertedColumnStore implements AutoCloseable {
         @Override
         public void close() {
             synchronized (InvertedColumnStore.this) {
+                // A verified row/column transform must be effect-free while
+                // holding its transaction monitor. Closing an unrelated loan
+                // from a callback would otherwise mutate loan state without
+                // going through open() and could evade the reentrance fence.
+                if (transforming) {
+                    rejectedReentrantAccess = true;
+                    throw new IllegalStateException(
+                            "cannot release a column loan during a row transaction");
+                }
                 if (released) return;
                 released = true;
                 if (write) writers[field] = false;
