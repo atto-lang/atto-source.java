@@ -138,6 +138,21 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void borrowedValuesCannotEraseLifetimeThroughCheckedOrOptionalCast() {
+        for (String cast : new String[] {"as Box", "as? Box"}) {
+            rejectsWith("""
+                    pub fnc main(): void {
+                      let Box owner = new Box();
+                      val loan = rt borrow owner;
+                      val erased = loan %s;
+                      return;
+                    }
+                    """.formatted(cast),
+                    "borrowed references cannot cross", "cast", "lifetime");
+        }
+    }
+
+    @Test
     void ordinaryImmutableBorrowCannotEscapeIntoEagerTask() {
         rejectsWith("""
                 pub async fnc main(): void {
