@@ -54,8 +54,15 @@ public final class ExportResolver {
         }
 
         void validateFamilyVisibility() {
-            if ((kind != Ast.ExportKind.FUNCTION && kind != Ast.ExportKind.ROUTINE)
-                    || declarations.size() < 2) return;
+            if (kind != Ast.ExportKind.FUNCTION && kind != Ast.ExportKind.ROUTINE) {
+                if (declarations.size() > 1) {
+                    throw new IllegalArgumentException(
+                            "[DUPLICATE_LOCAL_SYMBOL] duplicate local " + kind.name().toLowerCase(java.util.Locale.ROOT)
+                                    + " declaration " + name);
+                }
+                return;
+            }
+            if (declarations.size() < 2) return;
             java.util.EnumSet<Ast.Visibility> explicit = java.util.EnumSet.noneOf(Ast.Visibility.class);
             for (Ast.Decl declaration : declarations) {
                 Ast.Visibility visibility = visibilityOf(declaration);
@@ -196,12 +203,6 @@ public final class ExportResolver {
 
         for (Ast.ExportDecl export : exports) {
             for (Ast.ExportItem item : export.items()) {
-                if (item.symbol()) {
-                    throw new IllegalArgumentException(
-                            "[EXPORT_SYMBOL_DECLARATION_UNAVAILABLE] Java current main has no declaration AST for "
-                                    + item.localName());
-                }
-
                 List<Candidate> named = byName.get(item.localName());
                 if (named == null || named.isEmpty()) {
                     if (importedNames.contains(item.localName())) {
@@ -435,6 +436,7 @@ public final class ExportResolver {
         if (decl instanceof Ast.ClassDecl cls) return cls.name();
         if (decl instanceof Ast.InterfaceDecl iface) return iface.name();
         if (decl instanceof Ast.TypeAliasDecl alias) return alias.name();
+        if (decl instanceof Ast.SymbolDecl symbol) return symbol.name();
         if (decl instanceof Ast.FieldDecl field) return field.name();
         throw new IllegalArgumentException("unsupported declaration in export resolver: " + decl.getClass().getName());
     }
@@ -456,6 +458,7 @@ public final class ExportResolver {
             };
         }
         if (decl instanceof Ast.TypeAliasDecl) return Ast.ExportKind.TYPE;
+        if (decl instanceof Ast.SymbolDecl) return Ast.ExportKind.SYMBOL;
         if (decl instanceof Ast.FieldDecl field) {
             return switch (field.bindingKind()) {
                 case CONST -> Ast.ExportKind.CONST;
@@ -511,6 +514,7 @@ public final class ExportResolver {
         if (decl instanceof Ast.ClassDecl cls) return cls.visibility();
         if (decl instanceof Ast.InterfaceDecl iface) return iface.visibility();
         if (decl instanceof Ast.TypeAliasDecl alias) return alias.visibility();
+        if (decl instanceof Ast.SymbolDecl symbol) return symbol.visibility();
         if (decl instanceof Ast.FieldDecl field) return field.visibility();
         throw new IllegalArgumentException("unsupported declaration in export resolver: " + decl.getClass().getName());
     }

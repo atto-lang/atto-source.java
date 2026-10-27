@@ -132,7 +132,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, SymbolDecl { }
 
     /**
      * PRIVATE is omitted/default visibility. EXPLICIT_PRIVATE preserves a written
@@ -758,6 +758,20 @@ public final class Ast {
         /** Existing AST producers without an explicit visibility are private by default. */
         public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
             this(name, Visibility.PRIVATE, genericParameters, target);
+        }
+    }
+
+    /**
+     * Declares a nominal Symbol identity for source-interface/export purposes.
+     * Symbol literals remain runtime values and do not require declaration lookup.
+     */
+    public record SymbolDecl(String name, Visibility visibility) implements Decl {
+        public SymbolDecl {
+            java.util.Objects.requireNonNull(name, "symbol name");
+            java.util.Objects.requireNonNull(visibility, "symbol visibility");
+            if (name.length() < 2 || name.charAt(0) != '#') {
+                throw new IllegalArgumentException("Symbol declaration name must retain its leading '#'");
+            }
         }
     }
 

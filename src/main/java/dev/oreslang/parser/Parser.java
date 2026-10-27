@@ -238,7 +238,16 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                if (isContextualIdentifier("symbol")) {
+                    advance();
+                    modifiers = mergeModifiers(modifiers, parseModifiers());
+                    validateOnlyVisibilityModifiers(modifiers, "symbol declarations");
+                    rejectCallableStructuralAnnotation(annotations, "symbol declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "symbol declarations");
+                    rootDeclarations.add(parseSymbolDecl(modifiers.visibility));
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, type, or symbol after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -598,7 +607,15 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            if (isContextualIdentifier("symbol")) {
+                advance();
+                modifiers = mergeModifiers(modifiers, parseModifiers());
+                validateOnlyVisibilityModifiers(modifiers, "symbol declarations");
+                rejectCallableStructuralAnnotation(annotations, "symbol declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "symbol declarations");
+                return parseSymbolDecl(modifiers.visibility);
+            }
+            throw error(previous(), "expected class, interface, trait, type, or symbol after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -687,11 +704,24 @@ public final class Parser {
             rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
             return parseTypeAlias(modifiers.visibility);
         }
+        if (isContextualIdentifier("symbol") && checkNext(SYMBOL_LITERAL)) {
+            advance();
+            validateOnlyVisibilityModifiers(modifiers, "symbol declarations");
+            rejectCallableStructuralAnnotation(annotations, "symbol declarations");
+            rejectDiscardedDeclarationAnnotations(annotations, "symbol declarations");
+            return parseSymbolDecl(modifiers.visibility);
+        }
         if (isBindingKind(peek().type())) {
             validateOnlyVisibilityModifiers(modifiers, "module bindings");
             return parseModuleBinding(annotations, modifiers.visibility);
         }
         return null;
+    }
+
+    private Ast.SymbolDecl parseSymbolDecl(Ast.Visibility visibility) {
+        Token identity = consume(SYMBOL_LITERAL, "expected Symbol literal after 'symbol'");
+        consume(SEMICOLON, "expected ';' after Symbol declaration");
+        return new Ast.SymbolDecl("#" + identity.lexeme(), visibility);
     }
 
     private Ast.ActorKind resolveActorKind(Token actorToken, boolean isolated, Modifiers modifiers) {
