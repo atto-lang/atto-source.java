@@ -714,16 +714,22 @@ class PrivateCiV3Test(unittest.TestCase):
                 with self.assertRaisesRegex(v3.Denied, "independent merged"):
                     v3.checked_carrier_main("trusted/ci", carrier)
 
-    def test_protected_carrier_still_requires_codeowner_admin_and_no_bypass(self):
+    def test_protected_carrier_uses_full_strict_protection_contract(self):
         carrier = contract()
         protection = {
             "required_pull_request_reviews": {
                 "require_code_owner_reviews": True,
                 "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
                 "required_approving_review_count": 1,
                 "bypass_pull_request_allowances": {
                     "users": [], "teams": [], "apps": [],
                 },
+            },
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["carrier-ci"],
+                "checks": [],
             },
             "enforce_admins": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
@@ -769,8 +775,32 @@ class PrivateCiV3Test(unittest.TestCase):
             raise AssertionError(route)
 
         with patch.object(v3.legacy, "gh_api", side_effect=weak_api):
-            with self.assertRaisesRegex(v3.Denied, "bypasses"):
+            with self.assertRaisesRegex(v3.Denied, "not strict enough"):
                 v3.checked_carrier_main("trusted/ci", carrier)
+
+        weak_last_push = json.loads(json.dumps(protection))
+        weak_last_push["required_pull_request_reviews"]["require_last_push_approval"] = False
+        weak_checks = json.loads(json.dumps(protection))
+        weak_checks["required_status_checks"]["strict"] = False
+        missing_checks = json.loads(json.dumps(protection))
+        missing_checks["required_status_checks"]["contexts"] = []
+        missing_checks["required_status_checks"]["checks"] = []
+
+        for weakened in (weak_last_push, weak_checks, missing_checks):
+            def weakened_api(route, method="GET", payload=None, current=weakened):
+                if route == "repos/trusted/ci/branches/main":
+                    return {
+                        "name": "main",
+                        "protected": True,
+                        "commit": {"sha": BASE},
+                    }
+                if route == "repos/trusted/ci/branches/main/protection":
+                    return current
+                raise AssertionError(route)
+
+            with patch.object(v3.legacy, "gh_api", side_effect=weakened_api):
+                with self.assertRaisesRegex(v3.Denied, "not strict enough"):
+                    v3.checked_carrier_main("trusted/ci", carrier)
 
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
