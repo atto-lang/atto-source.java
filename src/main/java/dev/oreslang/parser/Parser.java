@@ -491,6 +491,11 @@ public final class Parser {
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
         if (modifiers.generator) {
+            if (!modifiers.generatorStarred) {
+                throw error(peek(),
+                        "bare generator declarations require 'gen*' or 'generator*'; "
+                                + "legacy 'generator' must modify fnc/routine");
+            }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
@@ -1538,6 +1543,7 @@ public final class Parser {
         boolean async = false;
         boolean suspends = false;
         boolean generator = false;
+        boolean generatorStarred = false;
         boolean structural = false;
         boolean nonLexical = false;
         boolean trapped = false;
@@ -1591,14 +1597,17 @@ public final class Parser {
                 if (generatorSeen) throw error(previous(), "duplicate 'generator' modifier");
                 generatorSeen = true;
                 generator = true;
-                // generator* is declaration sugar; plain generator remains accepted.
-                match(STAR);
+                // Plain 'generator' remains a legacy modifier only when a
+                // callable kind follows. Bare declarations require a starred
+                // marker so 'generator values()' cannot become accidental syntax.
+                generatorStarred = match(STAR);
             } else if (check(IDENT) && peek().lexeme().equals("gen") && checkNext(STAR)) {
                 Token gen = advance();
                 advance(); // '*'
                 if (generatorSeen) throw error(gen, "duplicate generator modifier");
                 generatorSeen = true;
                 generator = true;
+                generatorStarred = true;
             } else if (matchContextualStructuralModifier()) {
                 if (structuralSeen) throw error(previous(), "duplicate 'structural' modifier");
                 structuralSeen = true;
@@ -1632,7 +1641,7 @@ public final class Parser {
             }
         }
         if (async && suspends) throw error(previous(), "'async suspends' is redundant; choose one");
-        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
+        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, generatorStarred, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
     }
 
     private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
@@ -1658,6 +1667,7 @@ public final class Parser {
                 before.async || after.async,
                 before.suspends || after.suspends,
                 before.generator || after.generator,
+                before.generatorStarred || after.generatorStarred,
                 before.structural || after.structural,
                 before.nonLexical || after.nonLexical,
                 before.trapped || after.trapped,
@@ -4851,6 +4861,6 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean generatorStarred, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
 }
 
