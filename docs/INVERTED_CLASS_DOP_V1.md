@@ -1,6 +1,6 @@
 # Inverted classes and columnar DOP — stage-one contract (2026-10-18)
 
-Status: **proposed language syntax; native reference storage implemented separately**. Neither Java/Truffle nor LLVM source compilers currently accept executable `define inverted class` programs. This is a normative staging contract and must not be cited as a complete compiler feature.
+Status: **narrow Java/Graal guest evaluator admission has been staged, with exact-site typed ownership proofs**. Flat validated inverted classes and admitted direct `rows[i].field` read/write are implemented in the Java reference path. General row methods, typed handle subscripts, compound guest updates and full LLVM/.NET/Wasm/Forge parity remain unverified or gated. Exact-head Java tests have not executed in the current source-org CI; do not report a completed compiler feature.
 
 Related: [Java DOP issue #211](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/211), existing native `DopLayout.hpp` (AoS/SoA/AoSoA) and `DopKernelIR.hpp` (typed CPU + generated GPU kernels).
 
@@ -54,8 +54,8 @@ Owner IDs saturate rather than wrap, and slot generations never revive a stale h
 The parser already represents `receiver[index]` as `Ast.IndexExpr`. **Do not
 implement inverted indexing as an untyped textual macro** or reinterpret it as
 an ordinary AoS array operation. Resolve `InvertedArray<Foo>` and the index
-type before code generation. Until verified borrow/escape admission is wired,
-guest inverted indexing remains **fail-closed**.
+type before code generation. Only the narrowly verified direct-field
+Java evaluator path is admitted; unsupported forms remain **fail-closed**.
 
 - `rows[i]` with `i32` or `i64` selects position `i` in the **current
   dense ordering**, zero-based. Reject negative, out-of-bounds and wide
@@ -79,10 +79,11 @@ guest inverted indexing remains **fail-closed**.
   their own indexed-access rules. Invalid index types, wrong generic row
   handles or unverified native/GPU targets fail closed.
 
-Java host reference now has `InvertedColumnStore.handleAt(long)` and
-`InvertedArray.at(long)` / `at(Handle)` as **potential generated lowering
-targets**. They are not proof of source `[]` code generation or Java/LLVM
-guest parity. Promotion requires executable source positive and compile-negative
+Java host reference includes `InvertedColumnStore.handleAt(long)`,
+`InvertedArray.index(long)`, and fused `ColumnAccess.getAt/setAt` targets.
+The Java type/ownership/evaluator path has a staged exact-site admission, but
+this is **not** evidence of executed CI or Java/LLVM guest parity.
+Promotion requires executable source positive and compile-negative
 fixtures on pinned backend heads (including malicious/overflow indices,
 swap-delete, reuse, loans, concurrent mutation and owner teardown).
 
@@ -129,7 +130,9 @@ This avoids a structural swap-delete between a separately selected numeric
 row and a subsequent field load/store. At the host facade,
 `Schema.FieldBinding` represents the private generated namespace, while
 `ColumnAccess.getAt/setAt` avoids per-access `RowView` or row-handle
-allocation. This is a lowering *target*, not actual enabled guest emission.
+allocation. The admitted Java direct-field evaluator now uses these fused
+positions; general methods, stable handle syntax and compound guest lowering
+require further proof.
 
 Stable `rows[h].x` still uses checked owner/slot/generation handles.
 Compound operations (`+=`, `++`, etc.) must use a verified atomic
@@ -187,7 +190,9 @@ swallowed), invalid field values/throws do not publish any write, and
 `finally` releases the transform guard after every thrown `Throwable`.
 This is **not** permission for arbitrary guest closures to run under the
 monitor, block scheduler threads, perform I/O or cross await/Task boundaries.
-Full guest code generation and ownership proofs remain disabled.
+Only the limited exact-site Java guest read/write path is admitted.
+This generic callback hook is not guest codegen authority, and broader guest
+lowering remains disabled until effects and ownership are proven.
 
 ### Closed primitive compound-lowering targets
 
@@ -220,10 +225,13 @@ sequence. Reused slot generations must not be reset after a failed
 admission, and a stale handle must never regain authority.
 
 The Java host reference enforces this *publication ordering* on
-`InvertedColumnStore.push` and adds negative width/type and reuse
-regressions. **No controlled OOME injection or actual Java/JUnit execution
-has been demonstrated for this change.** A source-order check is weaker
-than an executed failure-injection test and must not be reported as such.
+`InvertedColumnStore.push` and has regression fixtures for negative
+width/type/reuse and **one-shot injected OOME** at handle issuance and
+reserve-buffer publication. The test seam is package-private and one-shot,
+with no arbitrary guest callbacks; it clears the failpoint before throwing.
+**The checked-in JUnit injection tests have not executed on this head.**
+Source inspection and source-order assertions are weaker evidence than an
+executed Java failure-injection suite.
 
 ## Borrow and concurrency rules
 
