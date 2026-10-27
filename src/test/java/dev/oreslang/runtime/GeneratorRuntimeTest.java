@@ -372,6 +372,55 @@ final class GeneratorRuntimeTest {
 
 
     @Test
+    void asyncCloseRacingOutstandingPullWaitsForPhysicalProducerExit() throws Exception {
+        CountDownLatch producerEntered = new CountDownLatch(1);
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch allowCleanupExit = new CountDownLatch(1);
+        CountDownLatch blockProducer = new CountDownLatch(1);
+
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+                 producerEntered.countDown();
+                 try {
+                     blockProducer.await();
+                 } finally {
+                     cleanupStarted.countDown();
+                     boolean interrupted = false;
+                     for (;;) {
+                         try {
+                             allowCleanupExit.await();
+                             break;
+                         } catch (InterruptedException ignored) {
+                             interrupted = true;
+                         }
+                     }
+                     if (interrupted) Thread.currentThread().interrupt();
+                 }
+             })) {
+            OresFuture<GeneratorRuntime.Step<Integer>> pull = generator.nextStep();
+            assertTrue(producerEntered.await(2, TimeUnit.SECONDS));
+
+            OresFuture<Void> closing = generator.closeAsync();
+            assertTrue(cleanupStarted.await(2, TimeUnit.SECONDS));
+            assertFalse(closing.isDone(),
+                    "close receipt settled before producer cleanup physically exited");
+            assertFalse(pull.isDone(),
+                    "outstanding pull settled before close observed physical producer exit");
+            assertFalse(closing.cancel(true),
+                    "close receipt must not revoke cleanup during a pull/close race");
+
+            allowCleanupExit.countDown();
+            assertTrue(pull.get(2, TimeUnit.SECONDS).done());
+            assertNull(closing.get(2, TimeUnit.SECONDS));
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            blockProducer.countDown();
+            allowCleanupExit.countDown();
+        }
+    }
+
+
+    @Test
     void concurrentAsyncPullIsRejectedBeforeAnotherPullTaskIsAdmitted() throws Exception {
         CountDownLatch producerStarted = new CountDownLatch(1);
         CountDownLatch releaseProducer = new CountDownLatch(1);
