@@ -723,6 +723,10 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(payload.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
+                    if (containsInvertedArrayStorage(payload.type)) {
+                        throw error(
+                                "writech cannot transport InvertedArray storage across a channel boundary");
+                    }
                     if (isBorrowValue(payload)) {
                         throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
                     }
@@ -755,6 +759,10 @@ public final class OwnershipChecker {
                     ValueInfo outgoing = checkExpr(arm.value(), armScope, true);
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
+                    }
+                    if (containsInvertedArrayStorage(outgoing.type)) {
+                        throw error(
+                                "writech cannot transport InvertedArray storage across a channel boundary");
                     }
                 } else if ((arm.operation() == Ast.ChannelOperation.READ
                         || arm.operation() == Ast.ChannelOperation.AWAIT)
@@ -1476,7 +1484,7 @@ public final class OwnershipChecker {
             // to affine Future<T> MOVE and synchronized Channel<T> handles;
             // guards, Rc and foreign/scheduler authority remain non-Send.
             for (Capture capture : captured.values.values()) {
-                if (capture.source.type.name().equals("InvertedArray")) {
+                if (capture.containsInvertedArrayStorage(source.type)) {
                     throw error(
                             "independent task cannot capture InvertedArray storage; "
                                     + "perform bracket-field access in the owning lexical turn");
@@ -3070,7 +3078,7 @@ public final class OwnershipChecker {
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
-            if (source.type.name().equals("InvertedArray")) {
+            if (containsInvertedArrayStorage(source.type)) {
                 throw error(
                         "closure cannot capture InvertedArray storage; "
                                 + "perform bracket-field access in the owning lexical scope");
@@ -4560,7 +4568,7 @@ public final class OwnershipChecker {
             // Borrowed aliases of self follow ordinary lexical lifetime rules.
             if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) continue;
 
-            if (source.type.name().equals("InvertedArray")) {
+            if (containsInvertedArrayStorage(source.type)) {
                 throw error(
                         "deferred task/continuation cannot capture InvertedArray storage; "
                                 + "perform bracket-field access in the owning lexical turn");
@@ -4987,6 +4995,66 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(argument)) return true;
         }
         return false;
+    }
+
+    private boolean containsInvertedArrayStorage(Ast.TypeRef type) {
+        return containsInvertedArrayStorage(
+                type,
+                java.util.Collections.newSetFromMap(
+                        new IdentityHashMap<>()));
+    }
+
+    /**
+     * Detect inverted storage authority through wrappers and ordinary class
+     * fields, not only when InvertedArray<T> is the outermost nominal type.
+     * This closes capture/transport laundering through Option/List/tuple/struct
+     * and user-defined aggregate containers.
+     */
+    private boolean containsInvertedArrayStorage(
+            Ast.TypeRef type,
+            Set<Ast.ClassDecl> visitingClasses) {
+        if (type == null) return false;
+        if (type.isBorrow()) {
+            return containsInvertedArrayStorage(
+                    type.borrowedTarget(), visitingClasses);
+        }
+        if (type.name().equals("InvertedArray")) return true;
+
+        if (type.isClosedAggregateType()) {
+            for (Ast.TypeRef member : type.aggregateMembers().values()) {
+                if (containsInvertedArrayStorage(member, visitingClasses)) {
+                    return true;
+                }
+            }
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsInvertedArrayStorage(argument, visitingClasses)) {
+                return true;
+            }
+        }
+
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass == null || klass.inverted()
+                || !visitingClasses.add(klass)) {
+            return false;
+        }
+        try {
+            for (ResolvedField field : effectiveFieldTargets(
+                    klass, type, new LinkedHashSet<>())) {
+                Ast.TypeRef fieldType = substituteType(
+                        ownershipFieldType(field.field()),
+                        genericBindings(
+                                field.owner().genericParameters(),
+                                field.ownerType().arguments()));
+                if (containsInvertedArrayStorage(
+                        fieldType, visitingClasses)) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            visitingClasses.remove(klass);
+        }
     }
 
     private static boolean containsAcquiredMutexGuardType(Ast.TypeRef type) {
