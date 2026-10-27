@@ -2462,6 +2462,13 @@ public final class OwnershipChecker {
                     }
 
                     ValueInfo aggregate = checkExpr(spread.expression(), scope, true);
+                    // Fixed-tuple spread expands by-value slots. A borrowed
+                    // element cannot bypass ordinary argument ownership
+                    // simply by arriving inside the implicit arguments tuple.
+                    if (isBorrowValue(aggregate) || containsBorrowType(aggregate.type)) {
+                        throw error(callable + " spread cannot consume a borrowed tuple; "
+                                + "forward borrowed parameters explicitly with a lifetime proof");
+                    }
                     if (containsMutexGuardType(aggregate.type)) {
                         throw error(callable + " spread cannot consume a guard-bearing tuple");
                     }

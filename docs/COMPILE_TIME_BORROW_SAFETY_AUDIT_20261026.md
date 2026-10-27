@@ -73,3 +73,9 @@ is **not** authorization to export private Git objects.
   including chained aliases and substituted generic arguments, before an
   owned field/call/binding is admitted. Unresolved or cyclic aliases fail
   closed. Imported opaque aliases still require linked type evidence.
+
+- Fixed-arity argument spreading is an owned-value boundary: `...arguments`
+  and typed tuple spreads reject direct or transitive borrowed slots before
+  expansion as ordinary by-value parameters. Borrowed parameters must be
+  forwarded explicitly so lifetime and mutability can be checked. The
+  owned fixed-tuple positive control prevents blanket rejection.

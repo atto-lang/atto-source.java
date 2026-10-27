@@ -311,6 +311,43 @@ final class StaticBorrowEscapeBoundaryTest {
                 """)));
     }
 
+
+    @Test
+    void fixedTupleSpreadCannotLaunderBorrowedArgumentSlots() {
+        rejects("""
+                fnc consume(int first, int second): int {
+                  return first + second;
+                }
+                fnc bad(borrow int first, int second): int {
+                  return consume(...arguments);
+                }
+                """, "spread cannot consume a borrowed tuple");
+    }
+
+    @Test
+    void genericBorrowBearingTupleSpreadCannotBecomeOwnedArguments() {
+        rejects("""
+                fnc consume(Option<int> first, int second): int {
+                  return second;
+                }
+                fnc bad(Option<borrow int> first, int second): int {
+                  return consume(...arguments);
+                }
+                """, "spread cannot consume a borrowed tuple");
+    }
+
+    @Test
+    void ownedFixedTupleSpreadStillPassesOwnershipAdmission() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                fnc consume(int first, int second): int {
+                  return first + second;
+                }
+                fnc valid(int first, int second): int {
+                  return consume(...arguments);
+                }
+                """)));
+    }
+
     @Test
     void compilerEntrypointRejectsFreshLoanYieldBeforeExecution() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
