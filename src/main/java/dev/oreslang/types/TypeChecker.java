@@ -2616,27 +2616,27 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (isBuiltinStdoutCall(call, "log_async", env)) {
+            if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("stdio.stdout.log_async does not accept call-site type arguments");
+                    throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
                 for (Ast.Expr argument : call.arguments()) {
                     if (argument instanceof Ast.SpreadExpr spread) {
-                        requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log_async spread");
+                        requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
                     } else {
                         typeOf(argument, env, generics, self);
                     }
                 }
                 return new Named("Future", List.of(Primitive.VOID));
             }
-            if (isBuiltinStdoutCall(call, "log_list_async", env)) {
+            if (isBuiltinStdoutCall(call, "log_list", env)) {
                 if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("stdio.stdout.log_list_async does not accept call-site type arguments");
+                    throw new IllegalArgumentException("stdio.stdout.log_list does not accept call-site type arguments");
                 }
                 if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
-                    throw new IllegalArgumentException("stdio.stdout.log_list_async expects exactly one array/list/tuple argument");
+                    throw new IllegalArgumentException("stdio.stdout.log_list expects exactly one array/list/tuple argument");
                 }
-                requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.log_list_async");
+                requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.log_list");
                 return new Named("Future", List.of(Primitive.VOID));
             }
             if (call.callee() instanceof Ast.NameExpr name
@@ -3539,7 +3539,7 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
-                if (member.member().equals("print_async") || member.member().equals("println_async")) {
+                if (member.member().equals("print") || member.member().equals("println")) {
                     return new Function(
                             List.of(Unknown.INSTANCE),
                             new Named("Future", List.of(Primitive.VOID)));
@@ -3707,21 +3707,21 @@ public final class TypeChecker {
 
             receiver = receiverDispatchType(unwrapMutexGuard(deref(receiver)));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout")) {
-                if (member.member().equals("write_async")
-                        || member.member().equals("println_async")
-                        || member.member().equals("log_list_async")) {
+                if (member.member().equals("write")
+                        || member.member().equals("println")
+                        || member.member().equals("log_list")) {
                     return new Function(
                             List.of(Unknown.INSTANCE),
                             new Named("Future", List.of(Primitive.VOID)));
                 }
-                if (member.member().equals("log_async")) {
+                if (member.member().equals("log")) {
                     throw new IllegalArgumentException(
-                            "variadic stdio.stdout.log_async is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
+                            "variadic stdio.stdout.log is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
                 }
             }
             if (receiver instanceof Named named
                     && named.name().equals("stdio.stdin")
-                    && member.member().equals("read_line_async")) {
+                    && member.member().equals("read_line")) {
                 return new Function(
                         List.of(),
                         new Named("Future", List.of(
@@ -3737,7 +3737,7 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "unknown strict stdlib member '" + name.name() + "."
                                 + member.member()
-                                + "'; blocking I/O names are not admitted");
+                                + "'; only canonical async-default I/O names are admitted");
             }
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("process")
@@ -5127,30 +5127,30 @@ public final class TypeChecker {
         switch (named.name()) {
             case "fs", "File" -> {
                 switch (name) {
-                    case "read_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "exists_async" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
-                    case "write_text_async", "append_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
-                    case "remove_async", "mkdir_all_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    case "read_text" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
+                    case "exists" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
+                    case "write_text", "append_text" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "remove", "mkdir_all" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
                     default -> { return null; }
                 }
             }
             case "network", "net" -> {
-                if (!name.equals("connect_async")) return null;
+                if (!name.equals("connect")) return null;
                 result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
             }
             case "TcpConnection" -> {
                 switch (name) {
-                    case "read_line_async" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
-                    case "write_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
-                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
+                    case "read_line" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
+                    case "write_text" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    case "close" -> { result = Primitive.VOID; parameters = List.of(); }
                     default -> { return null; }
                 }
             }
             case "http" -> {
                 switch (name) {
-                    case "get_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "post_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
-                    case "listen_async" -> {
+                    case "get_text" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
+                    case "post_text" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "listen" -> {
                         result = new Named("HttpServer", List.of());
                         parameters = List.of(
                                 Primitive.STRING, Primitive.INT, Primitive.INT,
