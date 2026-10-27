@@ -2897,6 +2897,27 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && call.callee() instanceof Ast.MemberExpr ioWrite
+                    && ioWrite.member().equals("write")
+                    && ioWrite.receiver() instanceof Ast.MemberExpr ioOut
+                    && ioOut.member().equals("out")
+                    && ioOut.receiver() instanceof Ast.NameExpr ioName
+                    && ioName.name().equals("io")) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "io.out.write expects exactly one non-spread value and no type arguments");
+                }
+                Type payload = typeOf(
+                        call.arguments().getFirst(), env, generics, self);
+                validateActorCallableBoundaryType(
+                        payload,
+                        currentActorKind,
+                        false,
+                        "io.out.write payload");
+                return new Named("Future", List.of(Primitive.VOID));
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -5639,9 +5660,8 @@ public final class TypeChecker {
         }
         if (named.name().equals("$ActorIOOut")) {
             if (name.equals("write")) {
-                return new Function(
-                        List.of(Unknown.INSTANCE),
-                        new Named("Future", List.of(Primitive.VOID)));
+                throw new IllegalArgumentException(
+                        "io.out.write is an actor execution intrinsic; invoke it directly with one data value");
             }
             throw new IllegalArgumentException(
                     "unknown io.out member '" + name + "'");
