@@ -85,6 +85,13 @@ def canonical_digest(value):
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def new_handoff_nonce():
+    nonce = secrets.token_hex(16)
+    if not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{32}", nonce):
+        raise Denied("handoff nonce generation failed")
+    return nonce
+
+
 def git_blob_sha(data):
     return hashlib.sha1(
         b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
@@ -1165,9 +1172,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied(
             "carrier payload ref already exists; refusing overwrite or rollback"
         )
-    handoff_nonce = secrets.token_hex(16)
-    if not re.fullmatch(r"[0-9a-f]{32}", handoff_nonce):
-        raise Denied("handoff nonce generation failed")
+    handoff_nonce = new_handoff_nonce()
 
     def auth():
         authorize_write(
