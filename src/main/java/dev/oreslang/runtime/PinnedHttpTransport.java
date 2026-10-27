@@ -253,6 +253,10 @@ final class PinnedHttpTransport implements AutoCloseable {
             return headers;
         }
 
+        long deadlineNanos() {
+            return deadlineNanos;
+        }
+
         List<String> headerValues(String name) {
             Objects.requireNonNull(name, "name");
             ArrayList<String> values = new ArrayList<>();
