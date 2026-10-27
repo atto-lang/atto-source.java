@@ -1513,10 +1513,11 @@ public final class TreeShaker {
                         declarations.add(declaration);
                     }
                 }
-                if (!declarations.isEmpty()) {
+                List<Ast.ExportDecl> exports = retainedExports(module, declarations);
+                if (!declarations.isEmpty() || !exports.isEmpty()) {
                     modules.add(new Ast.ModuleDecl(
-                            module.name(), module.annotations(), module.contracts(), declarations,
-                            retainedExports(module, declarations), module.visibility()));
+                            module.name(), module.annotations(), module.contracts(),
+                            declarations, exports, module.visibility()));
                 }
             }
 
@@ -1541,7 +1542,7 @@ public final class TreeShaker {
             for (Ast.ExportDecl export : module.exports()) {
                 List<Ast.ExportItem> items = new ArrayList<>();
                 for (Ast.ExportItem item : export.items()) {
-                    if (item.symbol() || retainedNames.contains(item.localName())) {
+                    if (retainedNames.contains(item.localName())) {
                         items.add(item);
                         continue;
                     }

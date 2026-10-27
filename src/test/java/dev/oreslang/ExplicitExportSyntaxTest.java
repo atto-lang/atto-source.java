@@ -431,6 +431,46 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void nonPublicSymbolExportDoesNotSurviveWithoutItsPrunedDeclaration() {
+        var result = OresCompiler.compileForBuild("""
+                export[file] symbol #ready;
+                define symbol #ready;
+                pub fnc main(): int { return 0; }
+                """, BuildOptions.library(Map.of()));
+
+        assertFalse(result.retainedSymbols().contains(Parser.ROOT_MODULE + ".#ready"));
+        Ast.ModuleDecl root = root(result.program());
+        assertTrue(root.exports().stream()
+                .flatMap(export -> export.items().stream())
+                .noneMatch(item -> item.localName().equals("#ready")));
+    }
+
+    @Test
+    void metadataOnlyRootModuleExportSurvivesTreeShaking() {
+        var result = OresCompiler.compileForBuild("""
+                export module Api;
+                define module Api as
+                  pub fnc ping(): int { return 1; }
+                end
+                """, BuildOptions.library(Map.of()));
+
+        Ast.ModuleDecl root = root(result.program());
+        assertTrue(root.declarations().isEmpty());
+        assertEquals(1, root.exports().size());
+        assertEquals(Ast.ExportKind.MODULE, root.exports().getFirst().kind());
+        assertEquals("Api", root.exports().getFirst().items().getFirst().localName());
+        assertTrue(result.retainedSymbols().contains("Api.ping"));
+
+        ExportResolver.ExportBinding moduleBinding =
+                ExportResolver.resolve(result.program()).bindings().stream()
+                        .filter(binding -> binding.localKind() == Ast.ExportKind.MODULE)
+                        .findFirst()
+                        .orElseThrow();
+        assertEquals("Api", moduleBinding.externalName());
+        assertEquals(Ast.ExportScope.PUBLIC, moduleBinding.scope());
+    }
+
+    @Test
     void symbolExportRequiresALocalDeclaration() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
