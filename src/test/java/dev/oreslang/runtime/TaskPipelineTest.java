@@ -148,6 +148,53 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void graphAdmissionErrorRevokesOwnedChildWithoutCancellingBorrowedProducer()
+            throws Exception {
+        // The production graph uses an IdentityHashMap, so there is no safe
+        // natural Error trigger. Inject the fault through the exact production
+        // ownership-cleanup helper instead of manufacturing an OOM.
+        OresFuture<Integer> borrowed = new OresFuture<>();
+        OresFuture<Integer> ownedChild = new OresFuture<>();
+        OresFuture<Integer> exposed = new OresFuture<>();
+        AtomicReference<OresFuture<?>> currentOwned = new AtomicReference<>(ownedChild);
+        AssertionError fatal = new AssertionError("graph admission synthetic Error");
+
+        assertSame(fatal, assertThrows(AssertionError.class,
+                () -> TaskPipeline.armOwnedPipelineAwait(
+                        exposed, ownedChild, currentOwned,
+                        (owner, awaited) -> {
+                            assertSame(exposed, owner);
+                            assertSame(ownedChild, awaited);
+                            throw fatal;
+                        })));
+        assertNull(currentOwned.get(),
+                "an Error must release the transferred child ownership slot");
+        assertTrue(ownedChild.isCancelled(),
+                "an Error must revoke owned work before leaving admission");
+        assertEquals(0, ownedChild.pendingRuntimeWaiterCount());
+        assertFalse(borrowed.isDone(),
+                "graph admission failure cannot cancel an unrelated borrowed producer");
+        assertFalse(exposed.isDone(),
+                "the synthetic helper failure cannot publish a task result");
+        assertEquals(0, TaskPipeline.pendingPipelineAwaitCount(),
+                "failed graph admission must not publish a dependency edge");
+
+        // The same helper must preserve cleanup for ordinary graph rejection.
+        OresFuture<Integer> rejectedChild = new OresFuture<>();
+        AtomicReference<OresFuture<?>> rejectedSlot = new AtomicReference<>(rejectedChild);
+        IllegalStateException cycle = new IllegalStateException("cycle");
+        assertSame(cycle, assertThrows(IllegalStateException.class,
+                () -> TaskPipeline.armOwnedPipelineAwait(
+                        exposed, rejectedChild, rejectedSlot,
+                        (owner, awaited) -> { throw cycle; })));
+        assertNull(rejectedSlot.get());
+        assertTrue(rejectedChild.isCancelled());
+
+        assertTrue(borrowed.completeFromRuntime(41));
+        assertEquals(41, borrowed.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
     void admittedStageSnapshotIsIsolatedFromLaterCallerMutation() throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
         AtomicInteger maliciousInvocations = new AtomicInteger();
