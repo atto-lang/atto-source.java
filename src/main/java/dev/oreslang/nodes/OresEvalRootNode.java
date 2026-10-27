@@ -5180,11 +5180,12 @@ public final class OresEvalRootNode extends RootNode {
          * only the returned pending Future is too late: dispatch may have
          * already committed guest effects or captured guard-owned storage.
          *
-         * INVOKABLE is deliberately not guessed to be a source callable:
-         * extracted source methods are resolved to METHOD/STATIC_FUNCTION
-         * in invokableInvocation, and dedicated task { } admission checks
-         * live guards independently. Other host invokables retain their
-         * established runtime contracts.
+         * Extracted source methods are resolved to METHOD/STATIC_FUNCTION
+         * in invokableInvocation; direct dynamic INVOKABLE values have no
+         * checked source effect summary and must fail closed where the
+         * continuation would implicitly await. Native member builtins with
+         * a declared Future protocol and dedicated task { } admission
+         * remain on their separately checked paths.
          */
         private boolean invocationMayLaunchSourceTask(Invocation invocation) {
             Evaluator owner = invocation.owner();
@@ -5197,7 +5198,12 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.MethodDecl method = (Ast.MethodDecl) invocation.target();
                     yield method.async() || owner.methodContainsPotentialSuspension(method);
                 }
-                case INVOKABLE -> false;
+                // A dynamic source callable has no checked effect summary
+                // at this boundary. Do not assume it is synchronous when
+                // called as a value inside a live no-yield region. Named
+                // native/builtin member operations follow their existing
+                // declared-Future path, so guard.release() remains possible.
+                case INVOKABLE -> true;
             };
         }
 
@@ -5211,6 +5217,7 @@ public final class OresEvalRootNode extends RootNode {
                 // Admission must precede invoke(): a newly launched source
                 // child may execute before the parent sees its Future.
                 if (env.hasLiveMutexGuards()
+                        && !declaredFuture
                         && invocationMayLaunchSourceTask(invocation)) {
                     throw new IllegalStateException(
                             "cannot launch or suspend a source callable while holding a live MutexGuard");
