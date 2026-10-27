@@ -514,8 +514,16 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
     # Close the attestation-internal TOCTOU window: repository state, main,
     # or its enforcement may change while the pinned governance objects are read.
     final_origin = gh_api(f"repos/{SOURCE_REPO}")
-    if _source_origin_contract(final_origin) != origin_contract:
-        raise Denied("source repository identity/state changed during protected-origin attestation")
+    try:
+        final_origin_contract = _source_origin_contract(final_origin)
+    except Denied as exc:
+        raise Denied(
+            "source repository identity/state changed during protected-origin attestation"
+        ) from exc
+    if final_origin_contract != origin_contract:
+        raise Denied(
+            "source repository identity/state changed during protected-origin attestation"
+        )
     final_branch = gh_api(
         f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
     if (final_branch.get("name") != SOURCE_PROTECTED_BRANCH
