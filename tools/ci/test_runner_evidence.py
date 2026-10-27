@@ -1,3 +1,4 @@
+import io
 import unittest
 from unittest.mock import patch
 
@@ -76,6 +77,47 @@ class EvidenceTests(unittest.TestCase):
             p.write_text('{"not":"a list"}')
             with self.assertRaises(ValueError):
                 ev.load_state(p)
+
+    def test_skipped_neutral_and_cancelled_are_not_executed_step_proof(self):
+        for conclusion in (None, "skipped", "neutral", "cancelled", "action_required"):
+            self.assertFalse(ev.meaningful({"name": "Compile Ores", "status": "completed", "conclusion": conclusion}))
+        for conclusion in ("success", "failure", "timed_out"):
+            self.assertTrue(ev.meaningful({"name": "Compile Ores", "status": "completed", "conclusion": conclusion}))
+
+    def test_skipped_compiler_job_not_qualified(self):
+        job = {"name": "Native AOT compiler", "status": "completed", "conclusion": "failure",
+               "runner_id": 6, "runner_name": "hosted",
+               "steps": [{"name": "Compile guest", "status": "completed", "conclusion": "skipped"}]}
+        self.assertFalse(ev.qualified(job))
+
+    def test_job_title_does_not_promote_compiler_or_aot(self):
+        job = {"name": "Native AOT compiler and runtime", "steps": [
+            {"name": "Install dependencies", "status": "completed", "conclusion": "success"},
+            {"name": "Compile Ores", "status": "completed", "conclusion": "skipped"},
+        ]}
+        self.assertEqual(["setup/toolchain"], ev.classify(job))
+
+    def test_output_failure_never_advances_reported_state(self):
+        import tempfile
+        from pathlib import Path
+        class BrokenOutput(io.StringIO):
+            def flush(self):
+                raise BrokenPipeError("downstream gone")
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "state.json"
+            with self.assertRaises(BrokenPipeError):
+                ev.emit_then_commit([{"attempt": 3}], state, {"o/r:7:3"}, output=BrokenOutput())
+            self.assertFalse(state.exists())
+
+    def test_successful_output_commits_reported_state(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "state.json"
+            stream = io.StringIO()
+            ev.emit_then_commit([{"attempt": 3}], state, {"o/r:7:3"}, output=stream)
+            self.assertIn('"attempt": 3', stream.getvalue())
+            self.assertEqual({"o/r:7:3"}, ev.load_state(state))
 
 if __name__ == "__main__":
     unittest.main()
