@@ -8,7 +8,7 @@ This document defines the source/runtime split between process standard I/O and 
 available during actor execution. Actor code uses the implicit `io` capability instead:
 
 ```ores
-pub async actor fnc worker(string value) -> void {
+pub suspends actor fnc worker(string value) -> void {
   await io.out.write(value);
   return;
 }
@@ -44,7 +44,7 @@ an explicit bounded fan-out policy.
 
 ## V1 executable slice
 
-Java/Graal V1 exposes `io.out.write(value) -> Future<void>`. It is backed by the existing
+Java/Graal V1 exposes `io.out.write(value) -> Future<void>`. Actor callables remain non-`async`; callers that await this operation use the existing `suspends`/continuation-lowered actor path. It is backed by the existing
 generation-owned, bounded ActorRuntime output channel used by `self.send`. The returned
 Future currently completes when bounded logical transport admission succeeds. It does **not**
 mean a host descriptor has been flushed, and it does not grant a process `STDOUT` capability.
