@@ -112,6 +112,10 @@ public final class CoreLibrarySources {
     public static String source(String importPath) throws IOException {
         String relative = canonicalStdRelativePath(importPath);
         if (!STD_SOURCES.contains(relative)) {
+            if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
+                throw new IllegalArgumentException(
+                        "unknown Oreslang core-library module: " + importPath);
+            }
             throw new IllegalArgumentException(
                     "unknown compiler-owned ores.std module: " + importPath);
         }
