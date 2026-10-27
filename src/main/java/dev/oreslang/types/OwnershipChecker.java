@@ -1783,6 +1783,9 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(owned.type)) {
                 throw error(factory.name() + ".new cannot hide a guard-bearing value");
             }
+            if (containsInvertedArrayType(owned.type)) {
+                throw error(factory.name() + ".new cannot hide InvertedArray ownership in v1");
+            }
             Ast.TypeRef mutexType = new Ast.TypeRef(factory.name(), List.of(owned.type), false);
             return new ValueInfo(mutexType, factory.name().equals("SharedMutex") ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
@@ -1796,6 +1799,10 @@ public final class OwnershipChecker {
             if (isBorrowValue(payload)) {
                 throw error(name.name()
                         + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
+            }
+            if (containsInvertedArrayType(payload.type)) {
+                throw error(name.name()
+                        + " cannot store InvertedArray ownership in an owned sum value in v1");
             }
             if (name.name().equals("Some")) {
                 Ast.TypeRef type = new Ast.TypeRef("Option", List.of(payload.type), false);
@@ -1844,6 +1851,30 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            Ast.TypeRef invertedReceiverType = receiverType(member.receiver(), scope);
+            if (invertedReceiverType != null) {
+                Ast.TypeRef concrete = invertedReceiverType.isBorrow()
+                        ? invertedReceiverType.borrowedTarget()
+                        : invertedReceiverType;
+                if (concrete.name().equals("InvertedArray")) {
+                    if (!member.member().equals("push")) {
+                        throw error(
+                                "InvertedArray exposes only push(...) and immediate [i].field access in v1");
+                    }
+                    ensureMutableReceiver(
+                            member.receiver(), scope, "InvertedArray.push");
+                    for (Ast.Expr argument : call.arguments()) {
+                        ValueInfo value = checkExpr(argument, scope, true);
+                        if (isBorrowValue(value) || containsMutexGuardType(value.type)) {
+                            throw error(
+                                    "InvertedArray.push requires owned/copy field values; "
+                                            + "borrows and guards cannot become column storage");
+                        }
+                    }
+                    return new ValueInfo(
+                            Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
+            }
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
