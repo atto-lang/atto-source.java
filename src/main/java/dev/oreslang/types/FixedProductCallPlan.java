@@ -114,6 +114,7 @@ public record FixedProductCallPlan(
         Boolean provenanceMode = null;
         int previousCallItemIndex = -1;
         int previousProjectionIndex = -1;
+        boolean previousProjectionWasNamed = false;
         for (int i = 0; i < arity; i++) {
             BoundSlot slot = Objects.requireNonNull(sourceOrder.get(i), "bound slot");
             int source = slot.sourceIndex();
@@ -161,6 +162,12 @@ public record FixedProductCallPlan(
                             "product call provenance reorders source call items");
                 }
                 if (slot.callItemIndex() == previousCallItemIndex) {
+                    // One raw call item cannot simultaneously be a tuple
+                    // (unlabeled) and a record (labeled) spread.
+                    if ((slot.label() != null) != previousProjectionWasNamed) {
+                        throw new IllegalArgumentException(
+                                "one call item cannot mix tuple and record projections");
+                    }
                     // A single source spread cannot be tuple and record
                     // projections simultaneously, even in legacy plan views.
                     if ((slot.label() == null)
@@ -180,6 +187,7 @@ public record FixedProductCallPlan(
                 }
                 previousCallItemIndex = slot.callItemIndex();
                 previousProjectionIndex = slot.projectionIndex();
+                previousProjectionWasNamed = slot.label() != null;
             }
 
             claimedSources[source] = true;
