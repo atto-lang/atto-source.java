@@ -114,4 +114,32 @@ final class InvertedArrayFailClosedTest {
         }
     }
 
+
+    @Test
+    void alternateHostColumnAndRowOperationsStayGuestInaccessible() {
+        for (String member : new String[] {
+                "eraseSwap", "swap", "row", "snapshot", "borrowRead",
+                "borrowWrite", "bindField", "index", "invoke",
+                "updateRow", "pushValues"
+        }) {
+            String source = """
+                    define inverted class Particle as
+                      val f64 x;
+                    end
+                    fnc bad(): void {
+                      let mut InvertedArray<Particle> particles =
+                          new InvertedArray<Particle>();
+                      particles.%s(0);
+                      return;
+                    }
+                    """.formatted(member);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source),
+                    member);
+            assertTrue(failure.getMessage().contains("v1 exposes only push"),
+                    () -> member + ": " + failure.getMessage());
+        }
+    }
+
 }
