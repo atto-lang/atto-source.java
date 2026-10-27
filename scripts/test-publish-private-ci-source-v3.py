@@ -575,6 +575,93 @@ class PrivateCiV3Test(unittest.TestCase):
                 raw, "trusted/ci", 1483, "ci/test-plans/java-pr1482.json"
             )
 
+    def test_contract_rejects_poisoned_nonselected_registry_rows(self):
+        def carrier(repo_id):
+            return {
+                "repository_id": repo_id,
+                "base_sha": BASE,
+                "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+                "workflow_blob_sha": WORKFLOW,
+                "test_plans": {
+                    "ci/test-plans/java-pr1482.json": {
+                        "blob_sha": PLAN_BLOB,
+                        "allowed_prs": [1482],
+                    }
+                },
+            }
+
+        cases = (
+            (
+                {
+                    "trusted/ci": carrier(42),
+                    "TRUSTED/CI": carrier(43),
+                },
+                "duplicate repository identities",
+            ),
+            (
+                {
+                    "trusted/ci": carrier(42),
+                    "other/ci": carrier(42),
+                },
+                "duplicate repository IDs",
+            ),
+            (
+                {
+                    "trusted/ci": carrier(42),
+                    "zed-pkg-test/java-app": carrier(999999999),
+                },
+                "quarantined destination",
+            ),
+            (
+                {
+                    "trusted/ci": carrier(42),
+                    "renamed/incident": carrier(1323598260),
+                },
+                "quarantined repository ID",
+            ),
+        )
+        for carriers, message in cases:
+            with self.subTest(message=message):
+                raw = json.dumps(
+                    {"schema": 1, "carriers": carriers}
+                ).encode()
+                with self.assertRaisesRegex(v3.Denied, message):
+                    v3.parse_contract(
+                        raw,
+                        "trusted/ci",
+                        1482,
+                        "ci/test-plans/java-pr1482.json",
+                    )
+
+    def test_contract_rejects_unreviewed_top_level_extension(self):
+        raw = json.dumps(
+            {
+                "schema": 1,
+                "carriers": {
+                    "trusted/ci": {
+                        "repository_id": 42,
+                        "base_sha": BASE,
+                        "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+                        "workflow_blob_sha": WORKFLOW,
+                        "test_plans": {
+                            "ci/test-plans/java-pr1482.json": {
+                                "blob_sha": PLAN_BLOB,
+                                "allowed_prs": [1482],
+                            }
+                        },
+                    }
+                },
+                "future_override": True,
+            }
+        ).encode()
+        with self.assertRaisesRegex(v3.Denied, "non-exact"):
+            v3.parse_contract(
+                raw,
+                "trusted/ci",
+                1482,
+                "ci/test-plans/java-pr1482.json",
+            )
+
     def test_contract_rejects_invalid_carrier_review_pr(self):
         raw = {
             "schema": 1,
