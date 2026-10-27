@@ -1619,7 +1619,7 @@ public final class OwnershipChecker {
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
             Ast.TypeRef element = channelElementType(channel.type);
             if (containsInvertedArrayStorage(element)) {
-                throw error("channel cannot carry InvertedArray storage across a transport boundary");
+                throw error("channel cannot transport InvertedArray storage across a transport boundary");
             }
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
