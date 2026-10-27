@@ -984,13 +984,19 @@ public final class NioReadinessGroup implements AutoCloseable {
             }
             if (target.stopping.get())
                 return OresFuture.failed(new RejectedExecutionException("NIO reactor stopped"));
-            Watch watch = new Watch(channel, interestOps, target);
+            ChannelRegistration registration =
+                    new ChannelRegistration(channel, target);
+            Watch watch = new Watch(channel, interestOps, registration);
+            registration.claimedInterests = interestOps;
+            registration.watches.put(watch, Boolean.TRUE);
             ownership.put(channel, watch);
             pending.incrementAndGet();
             notificationReservations.incrementAndGet();
             target.admitted.put(watch, Boolean.TRUE);
             if (!target.commands.offer(watch)) {
                 target.admitted.remove(watch);
+                registration.watches.remove(watch);
+                registration.claimedInterests = 0;
                 pending.decrementAndGet();
                 notificationReservations.decrementAndGet();
                 ownership.remove(channel);
@@ -1046,13 +1052,15 @@ public final class NioReadinessGroup implements AutoCloseable {
         final SelectableChannel channel;
         final int interests;
         final Reactor reactor;
+        final ChannelRegistration registration;
         final AtomicBoolean retired = new AtomicBoolean();
         final OresFuture<Integer> future;
-        SelectionKey key; // reactor-thread only
-        Watch(SelectableChannel channel, int interests, Reactor reactor) {
+        SelectionKey key; // transitional reactor-thread field until attachment migration
+        Watch(SelectableChannel channel, int interests, ChannelRegistration registration) {
             this.channel = channel;
             this.interests = interests;
-            this.reactor = reactor;
+            this.registration = registration;
+            this.reactor = registration.reactor;
             // Only cancelled watches need rechecking. Outstanding Future
             // admission bounds this queue: each Future cancels at most once.
             this.future = new OresFuture<>(() -> true, () -> {
@@ -1105,7 +1113,9 @@ public final class NioReadinessGroup implements AutoCloseable {
             if (!watch.retired.compareAndSet(false, true)) return;
             if (watch.key != null) watch.key.cancel();
             admitted.remove(watch);
+            watch.registration.watches.remove(watch);
             synchronized (lifecycle) {
+                watch.registration.claimedInterests &= ~watch.interests;
                 if (ownership.get(watch.channel) == watch) ownership.remove(watch.channel);
                 pending.decrementAndGet();
             }
