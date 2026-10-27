@@ -125,4 +125,28 @@ final class AssociatedTypeWitnessesTest {
         assertThrows(IllegalArgumentException.class, () -> registry.resolve(protocol,
                 List.of(named("core", "int"), named("core", "bool"))));
     }
+    @Test void delimiterCollisionDoesNotMergeUnrelatedProtocols() {
+        var a = new TypeclassRegistry.Typeclass("a.b", "c", 1);
+        var b = new TypeclassRegistry.Typeclass("a", "b.c", 1);
+        assertEquals(a.qualifiedName(), b.qualifiedName(),
+                "display strings are intentionally ambiguous and must never be registry keys");
+        var registry = new AssociatedTypeWitnesses();
+        registry.define(a, Set.of("item"));
+        registry.define(b, Set.of("item"));
+        registry.register(new TypeclassRegistry.Instance(a, "a.b",
+                List.of(named("core", "int")), "a_b_c_int"),
+                Map.of("item", named("core", "int")));
+        registry.register(new TypeclassRegistry.Instance(b, "a",
+                List.of(named("core", "bool")), "a_bc_bool"),
+                Map.of("item", named("core", "bool")));
+        assertEquals(named("core", "int"),
+                registry.resolve(a, List.of(named("core", "int"))).type("item"));
+        assertEquals(named("core", "bool"),
+                registry.resolve(b, List.of(named("core", "bool"))).type("item"));
+        assertThrows(IllegalArgumentException.class, () ->
+                registry.resolve(a, List.of(named("core", "bool"))));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeclassRegistry.TypeRef.named("", "unqualified"));
+    }
+
 }
