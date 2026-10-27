@@ -243,6 +243,95 @@ final class GeneratorRuntimeTest {
 
 
     @Test
+    void cancelledAsyncPullBeforeEngineAdmissionReleasesGateImmediately() throws Exception {
+        CountDownLatch firstTurnEntered = new CountDownLatch(1);
+        CountDownLatch releaseCancelledCarrier = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean blockFirstTurn =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+
+        AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            if (blockFirstTurn.compareAndSet(true, false)) {
+                firstTurnEntered.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        releaseCancelledCarrier.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+            turn.run();
+        });
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> emitter.emit(42));
+        try {
+            OresFuture<GeneratorRuntime.Step<Integer>> cancelled = generator.nextStep();
+            assertTrue(firstTurnEntered.await(2, TimeUnit.SECONDS));
+            assertTrue(cancelled.cancel(true));
+
+            // The cancelled task has not entered engine.next(), so it owns no
+            // generator activation state. A replacement pull may proceed even
+            // while that cancelled carrier is still leaving TurnExecutor.
+            OresFuture<GeneratorRuntime.Step<Integer>> replacement = generator.nextStep();
+            assertEquals(42, replacement.get(2, TimeUnit.SECONDS).value());
+        } finally {
+            releaseCancelledCarrier.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
+
+
+    @Test
+    void cancelledAsyncPullKeepsSingleFlightGateUntilEnginePullUnwinds() throws Exception {
+        CountDownLatch producerLeaving = new CountDownLatch(1);
+        CountDownLatch allowProducerExit = new CountDownLatch(1);
+        var producerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+
+        AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try {
+                turn.run();
+            } finally {
+                if (Thread.currentThread() == producerThread.get()) {
+                    producerLeaving.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try {
+                            allowProducerExit.await();
+                            break;
+                        } catch (InterruptedException ignored) {
+                            interrupted = true;
+                        }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+            }
+        });
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter ->
+                producerThread.set(Thread.currentThread()));
+        try {
+            OresFuture<GeneratorRuntime.Step<Integer>> first = generator.nextStep();
+            assertTrue(producerLeaving.await(2, TimeUnit.SECONDS));
+            assertTrue(first.cancel(true));
+
+            OresFuture<GeneratorRuntime.Step<Integer>> overlapping = generator.nextStep();
+            java.util.concurrent.ExecutionException rejected = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> overlapping.get(2, TimeUnit.SECONDS));
+            IllegalStateException concurrent =
+                    assertInstanceOf(IllegalStateException.class, rejected.getCause());
+            assertTrue(concurrent.getMessage().contains("concurrent AsyncIterator.next()"));
+        } finally {
+            allowProducerExit.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
+
+
+    @Test
     void asyncCloseIsMemoizedAndWaitsOffCallerForCleanup() throws Exception {
         CountDownLatch cleanupStarted = new CountDownLatch(1);
         CountDownLatch releaseCleanup = new CountDownLatch(1);
