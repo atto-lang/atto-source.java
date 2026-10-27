@@ -50,10 +50,12 @@ Outbound connect uses a nonblocking `SocketChannel`:
    `NioTcpConnection`;
 7. refusal/error closes the descriptor and fails the Future.
 
-There is currently one conservative active kernel-operation lease per TCP
-channel. A second same-channel read/write operation is rejected until the first
-operation physically drains. Full duplex read/write admission is a later
-hardening slice.
+Each TCP channel owns one selector registration pinned to one reactor. The
+registration may carry one OP_READ and one OP_WRITE one-shot watch concurrently,
+which permits full-duplex traffic without duplicate SelectionKeys. A second read
+while a read is live, or a second write while a write is live, is rejected until
+that direction physically drains. Connect/accept are never multiplexed with
+read/write.
 
 ## Cancellation and physical retirement
 
