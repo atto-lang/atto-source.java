@@ -342,6 +342,22 @@ public final class OwnershipChecker {
         }
     }
 
+    private VarState stateForLambdaParam(Ast.Param param) {
+        VarState ordinary = stateForParam(param);
+        if (param.type().isBorrow() || param.structural() || isCopyType(param.type())) {
+            return ordinary;
+        }
+        if (param.mutable()) {
+            throw error("first-class Fnc non-copy parameters are temporary read borrows; "
+                    + "mutable/owning lambda parameters require an explicit consuming callable contract");
+        }
+        return new VarState(
+                param.type(),
+                false,
+                ValueKind.IMM_BORROW,
+                Origin.PARAM);
+    }
+
     private void defineImplicitArguments(Scope scope, List<Ast.Param> parameters) {
         List<Ast.TypeRef> elementTypes = parameters.stream().map(Ast.Param::type).toList();
         Ast.TypeRef tupleType = Ast.TypeRef.tupleType(elementTypes);
@@ -2975,7 +2991,9 @@ public final class OwnershipChecker {
             }
         }
 
-        for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
+        for (Ast.Param param : lambda.parameters()) {
+            closure.define(param.name(), stateForLambdaParam(param));
+        }
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
