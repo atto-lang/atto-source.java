@@ -76,9 +76,10 @@ public final class ExportMetadataCollector {
                         binding.localKind(),
                         binding.externalName(),
                         binding.scope(),
-                        binding.localKind() == Ast.ExportKind.CONST && completeSource != null
-                                ? sha256("conservative-incremental-const-source-v1\\n" + completeSource)
-                                : digestFamily(program, modules, binding),
+                        completeSource == null
+                                ? digestFamily(program, modules, binding)
+                                : digestFamilyForIncrementalAbi(
+                                        program, modules, binding, completeSource),
                         binding.origin()));
             }
         }
@@ -89,6 +90,28 @@ public final class ExportMetadataCollector {
                 .thenComparing(e -> e.localKind().name())
                 .thenComparing(Entry::localSymbolId, ExportMetadataCollector::compareUtf8));
         return List.copyOf(result);
+    }
+
+    private static String digestFamilyForIncrementalAbi(
+            Ast.Program program,
+            Map<String, Ast.ModuleDecl> modules,
+            ExportResolver.ExportBinding binding,
+            String completeSource) {
+        try {
+            return digestFamily(program, modules, binding);
+        } catch (IllegalArgumentException unencoded) {
+            String message = unencoded.getMessage();
+            if (message == null
+                    || !message.contains("[EXPORT_CONST_ABI_VALUE_UNENCODED]")) {
+                throw unencoded;
+            }
+            // A const can appear as the exported binding itself or nested
+            // inside another exported signature (for example, a public const
+            // class field). Until canonical compile-time values exist, use
+            // the complete source unit as a conservative incremental ABI
+            // fingerprint. Strict emitted export metadata still fails closed.
+            return sha256("conservative-incremental-const-source-v1\\n" + completeSource);
+        }
     }
 
     private static String digestFamily(
