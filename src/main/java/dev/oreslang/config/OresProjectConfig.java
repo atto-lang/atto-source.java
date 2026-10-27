@@ -378,18 +378,44 @@ public final class OresProjectConfig {
 
     private static Optional<Path> existingSource(Path candidate) {
         Path normalized = candidate.toAbsolutePath().normalize();
-        if (Files.isRegularFile(normalized)) return Optional.of(normalized);
+        Optional<Path> exact = canonicalRegularSource(normalized);
+        if (exact.isPresent()) return exact;
 
         String text = normalized.toString().toLowerCase();
         if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
 
-        Path ores = Path.of(normalized.toString() + ".ores");
-        if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
+        Optional<Path> ores = canonicalRegularSource(
+                Path.of(normalized.toString() + ".ores"));
+        if (ores.isPresent()) return ores;
 
-        Path java = Path.of(normalized.toString() + ".java");
-        if (Files.isRegularFile(java)) return Optional.of(java.toAbsolutePath().normalize());
+        return canonicalRegularSource(Path.of(normalized.toString() + ".java"));
+    }
 
-        return Optional.empty();
+    private static Optional<Path> canonicalRegularSource(Path candidate) {
+        try {
+            BasicFileAttributes lexical = Files.readAttributes(
+                    candidate, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (lexical.isDirectory()) return Optional.empty();
+            if (!lexical.isRegularFile() && !lexical.isSymbolicLink()) {
+                throw new IllegalArgumentException(
+                        "filesystem import resolves through a non-regular source node: "
+                                + candidate);
+            }
+
+            Path physical = candidate.toRealPath();
+            if (!Files.isRegularFile(physical, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "filesystem import does not resolve to a regular physical source: "
+                                + candidate);
+            }
+            return Optional.of(physical);
+        } catch (NoSuchFileException missing) {
+            return Optional.empty();
+        } catch (IOException failure) {
+            throw new IllegalArgumentException(
+                    "cannot establish canonical physical source identity: " + candidate,
+                    failure);
+        }
     }
 
     private static Path directoryFor(Path start) {
