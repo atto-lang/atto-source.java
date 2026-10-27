@@ -13,7 +13,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Actual Oreslang source declarations feed the host lowering target.
- * Source execution remains fail-closed until Java/LLVM guest IR is wired.
+ * Flat fixed-layout declarations are now admitted as metadata; executable
+ * access remains restricted to ownership-proven InvertedArray<T>[i].field.
  */
 final class InvertedArrayTest {
     private static Ast.ClassDecl declaration(String source) {
@@ -293,10 +294,10 @@ final class InvertedArrayTest {
 
         Ast.Program guest = Parser.parse("""
                 define inverted class Position as
-                    x: f64;
+                    val f64 x;
                 end
                 """);
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(guest),
-                "no direct guest AoS lowering may occur before true compiler integration");
+        assertDoesNotThrow(() -> TypeChecker.check(guest),
+                "flat fixed-layout inverted declarations are metadata-only unless used through InvertedArray<T>");
     }
 }
