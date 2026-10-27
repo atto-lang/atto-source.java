@@ -241,4 +241,132 @@ final class InvertedArrayLanguageTest {
         Ast.ReturnStmt returned = (Ast.ReturnStmt) function.body().getLast();
         return (Ast.MemberExpr) returned.value();
     }
+
+    @Test
+    void invertedStorageCannotBeHiddenInAggregatesOrGlobalState() {
+        for (String body : new String[] {
+                """
+                fnc bad(): void {
+                  let mut InvertedArray<Particle> particles = new InvertedArray<Particle>();
+                  val hidden = [particles];
+                  return;
+                }
+                """,
+                """
+                fnc bad(): void {
+                  let mut InvertedArray<Particle> particles = new InvertedArray<Particle>();
+                  val hidden = (particles, 1);
+                  return;
+                }
+                """,
+                """
+                fnc bad(): void {
+                  let mut InvertedArray<Particle> particles = new InvertedArray<Particle>();
+                  val hidden = infer struct { storage: particles };
+                  return;
+                }
+                """,
+                """
+                fnc bad(): void {
+                  let mut InvertedArray<Particle> particles = new InvertedArray<Particle>();
+                  val hidden = Some(particles);
+                  return;
+                }
+                """
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck("""
+                            define inverted class Particle as
+                              val f64 x;
+                            end
+                            %s
+                            """.formatted(body)));
+            assertTrue(
+                    failure.getMessage().contains("InvertedArray"),
+                    failure::getMessage);
+        }
+
+        IllegalArgumentException classField = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        define class Holder as
+                          let InvertedArray<Particle> storage;
+                        end
+                        """));
+        assertTrue(classField.getMessage().contains("InvertedArray"),
+                classField::getMessage);
+
+        IllegalArgumentException global = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        define module Store as
+                          let InvertedArray<Particle> storage =
+                              new InvertedArray<Particle>();
+                        end
+                        """));
+        assertTrue(global.getMessage().contains("module/global")
+                        || global.getMessage().contains("InvertedArray"),
+                global::getMessage);
+    }
+
+    @Test
+    void invertedStorageCannotEnterChannelOrSharedMutexState() {
+        IllegalArgumentException channel = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        fnc bad(): void {
+                          val Channel<InvertedArray<Particle>> ch =
+                              Channel.new<InvertedArray<Particle>>(1);
+                          return;
+                        }
+                        """));
+        assertTrue(channel.getMessage().contains("InvertedArray"),
+                channel::getMessage);
+
+        IllegalArgumentException mutex = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        fnc bad(): void {
+                          let mut InvertedArray<Particle> particles =
+                              new InvertedArray<Particle>();
+                          val guarded = SharedMutex.new(particles);
+                          return;
+                        }
+                        """));
+        assertTrue(mutex.getMessage().contains("InvertedArray"),
+                mutex::getMessage);
+    }
+
+    @Test
+    void actorCallableCannotTransportInvertedStorage() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+
+                        pub shared actor fnc bad(
+                            InvertedArray<Particle> values): void {
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("InvertedArray")
+                        || failure.getMessage().contains("actor boundary"),
+                failure::getMessage);
+    }
+
 }
