@@ -174,6 +174,10 @@ public final class GeneratorRuntime {
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicReference<OresFuture<Void>> producerTask = new AtomicReference<>();
+        // A non-cancellation failure raised while unwinding an explicit close
+        // must not disappear merely because the backing task Future was
+        // already marked cancelled. Keep it as a sticky close result.
+        private final AtomicReference<Throwable> closeFailure = new AtomicReference<>();
         private final Object launchLock = new Object();
         private volatile boolean done;
         // True only after the producer's actual guest turn has exited and
@@ -251,6 +255,7 @@ public final class GeneratorRuntime {
                             if (!closed.get()) publish(new FailedEvent<>(cancelled));
                         } catch (Throwable failure) {
                             if (!closed.get()) publish(new FailedEvent<>(failure));
+                            else closeFailure.compareAndSet(null, failure);
                         }
                         return null;
                     });
@@ -357,6 +362,16 @@ public final class GeneratorRuntime {
             }
             awaitProducerExit();
             terminalReady = true;
+            Throwable cleanupFailure = closeFailure.get();
+            if (cleanupFailure instanceof RuntimeException runtimeFailure) {
+                throw runtimeFailure;
+            }
+            if (cleanupFailure instanceof Error error) {
+                throw error;
+            }
+            if (cleanupFailure != null) {
+                throw new RuntimeException(cleanupFailure);
+            }
         }
     }
 }
