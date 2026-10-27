@@ -293,6 +293,27 @@ with no arbitrary guest callbacks; it clears the failpoint before throwing.
 Source inspection and source-order assertions are weaker evidence than an
 executed Java failure-injection suite.
 
+### Allocation-free, all-column teardown
+
+`InvertedColumnStore.close()` must revoke access and scrub **all** original
+physical column bytes even when the process is under allocation pressure.
+The previous per-column ordering (`fill(old)`, allocate `new byte[0]`,
+allocate `ByteBuffer.wrap`, advance) could throw `OutOfMemoryError`
+halfway through and leave later columns unsanitized. The hardened path
+publishes `closed = true`, fills **every** existing column with zeros,
+then drops column/buffer references using one preallocated zero-length
+sentinel and `null` buffer entries. It performs **no heap allocations
+during teardown** and remains idempotent. Previously issued row handles,
+row views, and active column loans remain revoked.
+
+A reflection-based regression retains references to all former backing
+arrays and ByteBuffers, verifies their bytes are scrubbed after close,
+checks that every released column references an empty sentinel with no
+replacement buffers, and exercises stale handle/loan rejection plus
+second-close idempotence. This is checked-in Java/JUnit regression
+coverage, **not a passing JUnit receipt** until the source CI runner
+actually executes it.
+
 ### Exception-safe column loan issuance across store and facade
 
 Borrow acquisition also has an allocation-publication boundary. A low-level
