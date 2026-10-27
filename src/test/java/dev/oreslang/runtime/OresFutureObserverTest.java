@@ -76,6 +76,27 @@ public class OresFutureObserverTest {
     }
 
     @Test
+    void producerCancelledBeforeObserveDoesNotRetainLateWaiter() {
+        OresFuture<Integer> source = new OresFuture<>();
+        assertTrue(source.cancel(false));
+        OresFuture<Integer> observer = OresFuture.observe(source);
+        assertTrue(observer.isCancelled());
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void cancellationNamedFailureBeforeObserveStaysFailure() {
+        OresFuture<Integer> source = new OresFuture<>();
+        CancellationException ordinary = new CancellationException("user exception");
+        assertTrue(source.failFromRuntime(ordinary));
+        OresFuture<Integer> observer = OresFuture.observe(source);
+        assertFalse(observer.isCancelled());
+        assertSame(ordinary,
+                assertThrows(CompletionException.class, observer::join).getCause());
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void independentCancellationAndProducerSettlementRaceCannotRetainWaiter()
             throws Exception {
         try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
