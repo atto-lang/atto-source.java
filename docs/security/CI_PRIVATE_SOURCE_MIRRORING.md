@@ -18,6 +18,19 @@ carrier workflow blob, and exact test-plan blob/PR sets. Carrier `main`
 advance, repository delete/recreate, workflow change, or test-plan change
 fails closed until the source policy is reviewed again.
 
+Blocking private-source incidents have a separate protected authority file:
+`.github/private-ci-incident-dispositions.json`. Closing a GitHub issue, even
+with `state_reason=completed`, is not sufficient to resume export. Every
+blocking incident must also be marked `resolved` in that protected-main file,
+and the entry must pin an exact `@ORESoftware` issue-comment ID, immutable
+reviewer identity, comment `updated_at`, and SHA-256 of the complete comment
+body. The live comment must contain the exact
+`PRIVATE_CI_INCIDENT_DISPOSITION_RESOLVED issue=#N` marker. V3 revalidates
+the registry and live pinned comments before source read/export admission and
+again through the per-write governance recheck. Reopening an incident, editing
+or deleting a disposition comment, changing its author/body/timestamp, or
+changing the protected registry therefore revokes further writes.
+
 V3 requires **protected source `main` for every private-source export**.
 If GitHub reports source `main protected: true`, V3 delegates to the legacy
 protected-origin verifier. It requires CODEOWNER review, stale-review dismissal,
