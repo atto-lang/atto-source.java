@@ -571,9 +571,11 @@ public final class Parser {
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
             Ast.EffectSpec effects = parseCheckedEffects();
-            LocalRecordBody localBody = parseLocalRecordBody(returnType, generics);
+            LocalRecordBody localBody = actorKind == Ast.ActorKind.NONE
+                    ? parseLocalRecordBody(returnType, params, specs, effects)
+                    : new LocalRecordBody(parseBlock(), returnType, params);
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, localBody.returnType(), annotations, localBody.body(), specs, effects);
+                    generics, localBody.parameters(), localBody.returnType(), annotations, localBody.body(), specs, effects);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -582,8 +584,10 @@ public final class Parser {
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        LocalRecordBody localBody = parseLocalRecordBody(returnType, generics);
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
+        LocalRecordBody localBody = actorKind == Ast.ActorKind.NONE
+                ? parseLocalRecordBody(returnType, params, specs, effects)
+                : new LocalRecordBody(parseBlock(), returnType, params);
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, localBody.parameters(),
                 localBody.returnType(), annotations, localBody.body(), specs, effects);
     }
 
@@ -2169,9 +2173,12 @@ public final class Parser {
     }
 
     /** A function-local record alias is type-only, never a runtime statement. */
-    private record LocalRecordBody(List<Ast.Stmt> body, Ast.TypeRef returnType) { }
+    private record LocalRecordBody(
+            List<Ast.Stmt> body, Ast.TypeRef returnType, List<Ast.Param> parameters) { }
 
-    private LocalRecordBody parseLocalRecordBody(Ast.TypeRef declaredReturn, List<String> generics) {
+    private LocalRecordBody parseLocalRecordBody(
+            Ast.TypeRef declaredReturn, List<Ast.Param> params,
+            List<Ast.GenericParameter> specs, Ast.EffectSpec effects) {
         consume(LBRACE, "expected '{' after callable signature");
         java.util.Map<String, Ast.TypeRef> previousAliases = callableRecordAliases;
         callableRecordAliases = new java.util.LinkedHashMap<>();
@@ -2194,10 +2201,11 @@ public final class Parser {
                         throw error(previous(),
                                 "local type declarations currently require a record { ... } type");
                     }
-                    if (generics.contains(alias.name())
+                    if (specs.stream().anyMatch(spec -> spec.name().equals(alias.name()))
                             || java.util.Set.of("int", "string", "String", "float", "bool",
                                     "any", "unknown", "void", "self", "Object", "Error",
-                                    "Symbol", "T" + "ype").contains(alias.name())) {
+                                    "Symbol", "Type", "Option", "Result", "Array",
+                                    "List", "Map", "Ref", "WeakRef", "Future").contains(alias.name())) {
                         throw error(previous(), "local record alias conflicts with reserved or generic type '"
                                 + alias.name() + "'");
                     }
@@ -2217,10 +2225,43 @@ public final class Parser {
                 }
             }
             consume(RBRACE, "expected '}' after callable body");
+            for (Ast.GenericParameter spec : specs) {
+                if (spec.defaultType() != null) {
+                    for (String name : callableRecordAliases.keySet()) {
+                        if (containsNamedType(spec.defaultType(), name)) {
+                            throw error(previous(),
+                                    "local record alias '" + name
+                                            + "' cannot appear in generic parameter defaults");
+                        }
+                    }
+                }
+            }
+            for (Ast.TypeRef effect : effects.throwsTypes()) {
+                rejectLocalRecordEffectAlias(effect);
+            }
+            for (Ast.TypeRef effect : effects.raisesTypes()) {
+                rejectLocalRecordEffectAlias(effect);
+            }
+            for (Ast.TypeRef effect : effects.panicsTypes()) {
+                rejectLocalRecordEffectAlias(effect);
+            }
+            List<Ast.Param> resolvedParams = params.stream().map(param ->
+                    new Ast.Param(expandLocalRecordReturn(param.type()), param.name(),
+                            param.structural(), param.mutable())).toList();
             return new LocalRecordBody(
-                    List.copyOf(body), expandLocalRecordReturn(declaredReturn));
+                    List.copyOf(body), expandLocalRecordReturn(declaredReturn), resolvedParams);
         } finally {
             callableRecordAliases = previousAliases;
+        }
+    }
+
+    private void rejectLocalRecordEffectAlias(Ast.TypeRef effect) {
+        for (String name : callableRecordAliases.keySet()) {
+            if (containsNamedType(effect, name)) {
+                throw error(previous(),
+                        "local record alias '" + name
+                                + "' cannot appear in declared effect signatures");
+            }
         }
     }
 
