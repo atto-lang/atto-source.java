@@ -609,6 +609,43 @@ final class GeneratorLanguageTest {
     }
 
     @Test
+    void suspendGeneratorCanCallSuspendingFunctionWithoutFutureWrapping() throws Exception {
+        assertEquals("42", run("""
+                suspend fnc later(int value): int {
+                  rt cooperate;
+                  return value;
+                }
+                pub suspend gen* values(): AsyncIterator<int> {
+                  yield later(20);
+                  yield later(22);
+                  return;
+                }
+                pub async routine main(): void {
+                  let int total = 0;
+                  for await const value of values() {
+                    total = total + value;
+                  }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void structuralParameterCannotSurvivePlainSuspendCallable() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                  pub val int value = 1;
+                end
+                suspend fnc bad(structural Box box): int {
+                  rt cooperate;
+                  return box.value;
+                }
+                """));
+    }
+
+
+    @Test
     void canonicalGeneratorProtocolMismatchesStillFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 pub gen* values(): AsyncIterator<int> {
