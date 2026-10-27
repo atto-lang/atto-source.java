@@ -94,6 +94,11 @@ public final class GeneratorRuntime {
     public static final class AsyncGenerator<T> implements AutoCloseable {
         private final AsyncRuntime runtime;
         private final Engine<T> engine;
+        // Bound pull admission at one outstanding request. The Engine also
+        // serializes execution, but admitting an unbounded number of runtime
+        // tasks that merely wait on its monitor would turn concurrent next()
+        // calls into a resource-amplification path.
+        private final AtomicBoolean pullInFlight = new AtomicBoolean();
 
         private AsyncGenerator(AsyncRuntime runtime, Engine<T> engine) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -105,6 +110,11 @@ public final class GeneratorRuntime {
          * if callers issue more than one pull before an earlier pull completes.
          */
         public OresFuture<Step<T>> nextStep() {
+            if (!pullInFlight.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "concurrent AsyncIterator.next() is not permitted; await the outstanding pull first"));
+            }
+
             // Only a *settled* terminal generator can return an immediate
             // Future. A terminal event can precede the physical guest exit;
             // never park the caller (possibly an actor carrier) in this API.
@@ -112,16 +122,24 @@ public final class GeneratorRuntime {
                 // A producer admission denial remains an exceptional async
                 // result across repeated pulls; never launder it into DONE.
                 Throwable rejected = engine.terminalFailure();
+                pullInFlight.set(false);
                 return rejected == null
                         ? OresFuture.completed(Step.doneStep())
                         : OresFuture.failed(rejected);
             }
+
             // An async pull always returns an OresFuture, including when
             // scheduler admission itself rejects before any guest work starts.
             try {
-                return runtime.submit(engine::next);
+                OresFuture<Step<T>> pull = runtime.submit(engine::next);
+                pull.whenCompleteRuntime((value, failure) -> pullInFlight.set(false));
+                return pull;
             } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                pullInFlight.set(false);
                 return OresFuture.failed(rejected);
+            } catch (RuntimeException | Error failure) {
+                pullInFlight.set(false);
+                throw failure;
             }
         }
 
