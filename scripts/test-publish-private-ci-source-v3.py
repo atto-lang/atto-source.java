@@ -1439,6 +1439,147 @@ class PrivateCiV3Test(unittest.TestCase):
             ],
         )
 
+    def test_publish_rejects_preexisting_payload_ref_before_carrier_write(self):
+        carrier = contract()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3, "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {
+                            "id": carrier["repository_id"],
+                            "private": True,
+                            "visibility": "private",
+                        },
+                        "3" * 40,
+                        PLAN,
+                    ),
+                ),
+                patch.object(
+                    v3.legacy, "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")],
+                ),
+                patch.object(
+                    v3.legacy, "verified_exact_source_tree",
+                    return_value=SOURCE_TREE,
+                ),
+                patch.object(v3, "live_ref_sha", return_value=COMMIT),
+                patch.object(v3, "authorize_write") as authorize_write,
+                patch.object(v3.legacy, "gh_api") as gh_api,
+                patch.object(v3, "delete_exact_ref") as delete_ref,
+            ):
+                with self.assertRaisesRegex(
+                    v3.Denied, "payload ref already exists"
+                ):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                        now=dt.datetime(
+                            2026, 10, 20, tzinfo=dt.timezone.utc
+                        ),
+                    )
+        authorize_write.assert_not_called()
+        gh_api.assert_not_called()
+        delete_ref.assert_not_called()
+
+    def test_publish_rejects_preexisting_authorization_ref_without_rollback(self):
+        carrier = contract()
+        ref_posts = []
+
+        def api(route, method="GET", payload=None):
+            if method == "POST" and route.endswith("/git/blobs"):
+                data = base64.b64decode(payload["content"], validate=True)
+                return {"sha": v3.git_blob_sha(data)}
+            if method == "POST" and route.endswith("/git/trees"):
+                return {
+                    "sha": SOURCE_TREE
+                    if payload.get("base_tree") is None else ROOT_TREE
+                }
+            if method == "POST" and route.endswith("/git/commits"):
+                return {"sha": COMMIT}
+            if method == "POST" and route.endswith("/git/refs"):
+                ref_posts.append(payload["ref"])
+                return {
+                    "ref": payload["ref"],
+                    "object": {"sha": payload["sha"]},
+                }
+            raise AssertionError((method, route))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3, "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {
+                            "id": carrier["repository_id"],
+                            "private": True,
+                            "visibility": "private",
+                        },
+                        "3" * 40,
+                        PLAN,
+                    ),
+                ),
+                patch.object(
+                    v3.legacy, "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")],
+                ),
+                patch.object(
+                    v3.legacy, "verified_exact_source_tree",
+                    return_value=SOURCE_TREE,
+                ),
+                patch.object(
+                    v3, "live_ref_sha",
+                    side_effect=[None, None, COMMIT],
+                ),
+                patch.object(v3, "authorize_write"),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+                patch.object(v3, "delete_exact_ref") as delete_ref,
+            ):
+                with self.assertRaisesRegex(
+                    v3.Denied, "authorization ref already exists"
+                ):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                        now=dt.datetime(
+                            2026, 10, 20, tzinfo=dt.timezone.utc
+                        ),
+                    )
+        self.assertEqual(ref_posts, [])
+        delete_ref.assert_not_called()
+
     def test_publish_rolls_back_payload_if_protection_changes_before_authorization(self):
         carrier = contract()
 
