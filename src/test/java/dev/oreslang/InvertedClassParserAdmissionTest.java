@@ -57,7 +57,7 @@ final class InvertedClassParserAdmissionTest {
     }
 
     @Test
-    void chainedBracketReadsWritesAndHandleSubscriptsStayUnloweredGuestSyntax() {
+    void unsupportedI32BracketSitesCannotEvadeLayoutTypeAdmission() {
         Ast.Program parsed = Parser.parse("""
                 define inverted class Particle as
                     x: i32;
@@ -73,7 +73,25 @@ final class InvertedClassParserAdmissionTest {
     }
 
     @Test
-    void executableInvertedClassesFailClosedUntilSoaLowering() {
+    void v1AdmitsFlatFixedLayoutMetadataButRejectsUnsupportedScalarLayouts() {
+        for (String source : new String[] {
+                """
+                define inverted class Particle as
+                    val f64 x;
+                    val bool ready;
+                end
+                """,
+                """
+                define module M as
+                    define inverted class Particle as
+                        val i64 id;
+                    end
+                end
+                """
+        }) {
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), source);
+        }
+
         for (String source : new String[] {
                 """
                 define inverted class Particle as
@@ -81,18 +99,17 @@ final class InvertedClassParserAdmissionTest {
                 end
                 """,
                 """
-                define module M as
-                    define inverted class Particle as
-                        x: float;
-                    end
+                define inverted class Particle as
+                    x: i32;
                 end
                 """
         }) {
-            Ast.Program program = Parser.parse(source);
-            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(program));
-            assertTrue(ex.getMessage().contains("requires typed InvertedArray ownership"),
-                    ex.getMessage());
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)),
+                    source);
+            assertTrue(failure.getMessage().contains("fixed i64/f64/bool"),
+                    failure::getMessage);
         }
     }
 
@@ -175,23 +192,21 @@ final class InvertedClassParserAdmissionTest {
     }
 
     @Test
-    void annotationExpansionCannotEraseInvertedLayoutAndCheckerEntrypointsRejectIt() {
+    void annotationExpansionPreservesAdmittedInvertedLayoutMetadata() {
         Ast.Program original = Parser.parse("""
                 define inverted class Particle as
-                    x: float;
+                    val f64 x;
+                    val bool ready;
                 end
                 """);
         Ast.Program rewritten = dev.oreslang.ast.AnnotationExpander.expand(original);
         Ast.ClassDecl after = (Ast.ClassDecl) rewritten.modules().getFirst()
                 .declarations().getFirst();
         assertTrue(after.inverted(), "AST rewrite must preserve physical layout intent");
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(original));
-        assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.checkTypesWithDiagnostics(original));
-        assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.checkTypes(rewritten));
-        assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.checkTypesWithDiagnostics(rewritten));
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(original));
+        assertDoesNotThrow(() -> TypeChecker.checkTypesWithDiagnostics(original));
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(rewritten));
+        assertDoesNotThrow(() -> TypeChecker.checkTypesWithDiagnostics(rewritten));
     }
 
     @Test

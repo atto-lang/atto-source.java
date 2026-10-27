@@ -200,6 +200,11 @@ public final class InvertedColumnStore implements AutoCloseable {
         return new Handle(capability, owner, slot, generations[slot]);
     }
 
+    /** Int compiler compatibility shim; delegates to the checked wide-index path. */
+    public synchronized Handle handleAt(int rowIndex) {
+        return handleAt((long) rowIndex);
+    }
+
     /** All allocations complete before publishing any new backing columns. */
     public synchronized void reserve(int required) {
         open();
