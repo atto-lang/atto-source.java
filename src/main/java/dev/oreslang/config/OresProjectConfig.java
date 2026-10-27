@@ -225,7 +225,29 @@ public final class OresProjectConfig {
      *   <li>bare imports search source.roots, source.import_paths, then ORESLANG_PATH.</li>
      * </ul>
      */
+    /** Physical source identity captured at the resolver boundary. */
+    public record ResolvedSource(Path path, BasicFileAttributes attributes) {
+        public ResolvedSource {
+            if (path == null || attributes == null) {
+                throw new IllegalArgumentException("resolved source identity cannot be null");
+            }
+            path = path.toAbsolutePath().normalize();
+            if (!attributes.isRegularFile()) {
+                throw new IllegalArgumentException(
+                        "resolved source identity must describe a regular file: " + path);
+            }
+        }
+    }
+
     public Optional<Path> resolveImport(Path importer, String importPath) {
+        return resolveImportSource(importer, importPath).map(ResolvedSource::path);
+    }
+
+    /**
+     * Internal resolver used by the compiler when the exact physical file
+     * identity must remain bound through the later byte snapshot.
+     */
+    public Optional<ResolvedSource> resolveImportSource(Path importer, String importPath) {
         if (importer == null) throw new IllegalArgumentException("importer path cannot be null");
         if (importPath == null || importPath.isBlank()) {
             throw new IllegalArgumentException("import path cannot be blank");
@@ -249,7 +271,8 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException(
                         "bare import '" + importPath + "' escapes configured search root '" + normalizedRoot + "'");
             }
-            Optional<Path> resolved = existingSourceWithinRoot(candidate, normalizedRoot, importPath);
+            Optional<ResolvedSource> resolved =
+                    existingSourceWithinRoot(candidate, normalizedRoot, importPath);
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
@@ -262,7 +285,7 @@ public final class OresProjectConfig {
      * of becoming an artificial miss that falls through to a lower ambient
      * root.
      */
-    private static Optional<Path> existingSourceWithinRoot(
+    private static Optional<ResolvedSource> existingSourceWithinRoot(
             Path candidate,
             Path configuredRoot,
             String importPath) {
@@ -311,14 +334,14 @@ public final class OresProjectConfig {
                 }
             }
 
-            Optional<Path> exact = regularSourceWithinRoot(
+            Optional<ResolvedSource> exact = regularSourceWithinRoot(
                     normalizedCandidate, physicalRoot, importPath);
             if (exact.isPresent()) return exact;
 
             String text = normalizedCandidate.toString().toLowerCase();
             if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
 
-            Optional<Path> ores = regularSourceWithinRoot(
+            Optional<ResolvedSource> ores = regularSourceWithinRoot(
                     Path.of(normalizedCandidate.toString() + ".ores"),
                     physicalRoot,
                     importPath);
@@ -334,7 +357,7 @@ public final class OresProjectConfig {
         }
     }
 
-    private static Optional<Path> regularSourceWithinRoot(
+    private static Optional<ResolvedSource> regularSourceWithinRoot(
             Path candidate,
             Path physicalRoot,
             String importPath) throws IOException {
@@ -355,14 +378,9 @@ public final class OresProjectConfig {
 
         Path physicalSource = candidate.toRealPath();
         requirePhysicalContainment(physicalRoot, physicalSource, importPath);
-        if (!Files.isRegularFile(physicalSource, LinkOption.NOFOLLOW_LINKS)) {
-            if (Files.isDirectory(physicalSource, LinkOption.NOFOLLOW_LINKS)) {
-                return Optional.empty();
-            }
-            throw new IllegalArgumentException(
-                    "bare import '" + importPath + "' does not resolve to a regular source file");
-        }
-        return Optional.of(physicalSource);
+        return Optional.of(captureResolvedSource(
+                physicalSource,
+                "bare import '" + importPath + "' does not resolve to a regular source file"));
     }
 
     private static void requirePhysicalContainment(
@@ -376,22 +394,22 @@ public final class OresProjectConfig {
         }
     }
 
-    private static Optional<Path> existingSource(Path candidate) {
+    private static Optional<ResolvedSource> existingSource(Path candidate) {
         Path normalized = candidate.toAbsolutePath().normalize();
-        Optional<Path> exact = canonicalRegularSource(normalized);
+        Optional<ResolvedSource> exact = canonicalRegularSource(normalized);
         if (exact.isPresent()) return exact;
 
         String text = normalized.toString().toLowerCase();
         if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
 
-        Optional<Path> ores = canonicalRegularSource(
+        Optional<ResolvedSource> ores = canonicalRegularSource(
                 Path.of(normalized.toString() + ".ores"));
         if (ores.isPresent()) return ores;
 
         return canonicalRegularSource(Path.of(normalized.toString() + ".java"));
     }
 
-    private static Optional<Path> canonicalRegularSource(Path candidate) {
+    private static Optional<ResolvedSource> canonicalRegularSource(Path candidate) {
         BasicFileAttributes lexical;
         try {
             lexical = Files.readAttributes(
@@ -413,17 +431,26 @@ public final class OresProjectConfig {
 
         try {
             Path physical = candidate.toRealPath();
-            if (!Files.isRegularFile(physical, LinkOption.NOFOLLOW_LINKS)) {
-                throw new IllegalArgumentException(
-                        "filesystem import does not resolve to a regular physical source: "
-                                + candidate);
-            }
-            return Optional.of(physical);
+            return Optional.of(captureResolvedSource(
+                    physical,
+                    "filesystem import does not resolve to a regular physical source: "
+                            + candidate));
         } catch (IOException failure) {
             throw new IllegalArgumentException(
                     "cannot establish canonical physical source identity: " + candidate,
                     failure);
         }
+    }
+
+    private static ResolvedSource captureResolvedSource(
+            Path physical,
+            String nonRegularMessage) throws IOException {
+        BasicFileAttributes attributes = Files.readAttributes(
+                physical, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!attributes.isRegularFile()) {
+            throw new IllegalArgumentException(nonRegularMessage);
+        }
+        return new ResolvedSource(physical, attributes);
     }
 
     private static Path directoryFor(Path start) {
