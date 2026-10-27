@@ -243,6 +243,42 @@ final class GeneratorRuntimeTest {
 
 
     @Test
+    void asyncCloseIsMemoizedAndWaitsOffCallerForCleanup() throws Exception {
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+                 try {
+                     emitter.emit(1);
+                 } finally {
+                     cleanupStarted.countDown();
+                     boolean interrupted = false;
+                     for (;;) {
+                         try { releaseCleanup.await(); break; }
+                         catch (InterruptedException ignored) { interrupted = true; }
+                     }
+                     if (interrupted) Thread.currentThread().interrupt();
+                 }
+             })) {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+
+            OresFuture<Void> firstClose = generator.closeAsync();
+            assertTrue(cleanupStarted.await(2, TimeUnit.SECONDS));
+            OresFuture<Void> repeatedClose = generator.closeAsync();
+            assertSame(firstClose, repeatedClose);
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> firstClose.get(100, TimeUnit.MILLISECONDS));
+
+            releaseCleanup.countDown();
+            assertNull(firstClose.get(2, TimeUnit.SECONDS));
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            releaseCleanup.countDown();
+        }
+    }
+
+
+    @Test
     void concurrentAsyncPullIsRejectedBeforeAnotherPullTaskIsAdmitted() throws Exception {
         CountDownLatch producerStarted = new CountDownLatch(1);
         CountDownLatch releaseProducer = new CountDownLatch(1);
