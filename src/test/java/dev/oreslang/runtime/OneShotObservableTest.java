@@ -1,0 +1,115 @@
+package dev.oreslang.runtime;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+/** Host one-shot Observable proof targets, not general guest Observable. */
+@Timeout(15)
+final class OneShotObservableTest {
+    @Test
+    void futureSingleSeesOneValueAndDoesNotRerunSource() throws Exception {
+        OresFuture<String> producer = new OresFuture<>();
+        OneShotObservable<String> events = OneShotObservable.fromFuture(producer);
+        OresFuture<String> result = events.single();
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(producer.completeFromRuntime("value"));
+        assertEquals("value", result.get(2, TimeUnit.SECONDS));
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void firstIsTypedOptionAndEmptyVoidIsNotInventedPayload() {
+        OresFuture<Integer> producer = OresFuture.completed(17);
+        OneShotObservable<Integer> events = OneShotObservable.fromFuture(producer);
+        assertEquals(Optional.of(17), events.first().join());
+        OresFuture<Void> emptySource = OresFuture.completed(null);
+        assertEquals(Optional.empty(),
+                OneShotObservable.fromVoidFuture(emptySource).first().join());
+        var single = OneShotObservable.fromVoidFuture(emptySource).single();
+        assertInstanceOf(OneShotObservable.EmptyObservableError.class,
+                assertThrows(CompletionException.class, single::join).getCause());
+    }
+
+    @Test
+    void cancellationDetachesOneShotObserverWithoutCancellingProducer() {
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> result = OneShotObservable.fromFuture(producer).single();
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(result.cancel(false));
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isCancelled());
+        assertTrue(producer.completeFromRuntime(9));
+        assertEquals(9, producer.join());
+    }
+
+    @Test
+    void moveOnlyUnprovenSecondSubscriberIsDeniedEvenIfFirstSettled() {
+        OneShotObservable<Integer> observable =
+                OneShotObservable.fromFuture(OresFuture.completed(13));
+        assertEquals(13, observable.single().join());
+        assertThrows(IllegalStateException.class, observable::single);
+        assertThrows(IllegalStateException.class, observable::first);
+    }
+
+    @Test
+    void cancellationIdentityAndOrdinaryThrownCancellationStayDifferent() {
+        OresFuture<Integer> cancelledProducer = new OresFuture<>();
+        OresFuture<Integer> cancelledView =
+                OneShotObservable.fromFuture(cancelledProducer).single();
+        assertTrue(cancelledProducer.cancel(false));
+        assertTrue(cancelledView.isCancelled());
+
+        OresFuture<Integer> failedProducer = new OresFuture<>();
+        CancellationException guest = new CancellationException("user failure");
+        OresFuture<Integer> failedView =
+                OneShotObservable.fromFuture(failedProducer).single();
+        assertTrue(failedProducer.failFromRuntime(guest));
+        assertFalse(failedView.isCancelled());
+        assertSame(guest, assertThrows(CompletionException.class,
+                failedView::join).getCause());
+    }
+
+    @Test
+    void firstAndSingleTaskConversionsOwnAdapterNotTheProducer() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            var fromOne = OneShotObservable.fromFuture(source).toTaskFirst(scheduler);
+            assertFalse(source.isDone());
+            assertTrue(source.completeFromRuntime(18));
+            assertEquals(Optional.of(18), fromOne.result().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Success.class,
+                    fromOne.getDone().get(3, TimeUnit.SECONDS));
+
+            OresFuture<Integer> independent = new OresFuture<>();
+            var fromSingle = OneShotObservable.fromFuture(independent).toTaskSingle(scheduler);
+            assertTrue(fromSingle.cancel("stop my observation"));
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    fromSingle.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(0, independent.pendingRuntimeWaiterCount());
+            assertFalse(independent.isDone());
+            assertTrue(independent.completeFromRuntime(7));
+        }
+    }
+
+    @Test
+    void taskOriginCannotBeCancelledBySubscriber() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> upstream = new OresFuture<>();
+            TaskHandle<Integer> producing = TaskFutureAdapters.fromFuture(scheduler, upstream);
+            OresFuture<Integer> reduced = OneShotObservable.fromTask(producing).single();
+            assertEquals(1, producing.result().pendingRuntimeWaiterCount());
+            assertTrue(reduced.cancel(false));
+            assertFalse(producing.result().isCancelled());
+            assertEquals(0, producing.result().pendingRuntimeWaiterCount());
+            assertTrue(upstream.completeFromRuntime(123));
+            assertEquals(123, producing.result().get(3, TimeUnit.SECONDS));
+            producing.getDone().get(3, TimeUnit.SECONDS);
+        }
+    }
+}
