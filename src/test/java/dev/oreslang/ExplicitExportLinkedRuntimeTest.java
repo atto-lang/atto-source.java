@@ -206,6 +206,45 @@ final class ExplicitExportLinkedRuntimeTest {
 
 
     @Test
+    void exportedModuleRoutineAliasRemainsDirectCallable() throws Exception {
+        Path lib = temp.resolve("service-routine.ores");
+        Path main = temp.resolve("service-routine-main.ores");
+
+        Files.writeString(lib, """
+                export module Service;
+
+                define module Service as
+                  export routine hidden_value as value;
+
+                  routine hidden_value(): int {
+                    return 11;
+                  }
+                end
+                """);
+
+        Files.writeString(main, """
+                import module Service from "./service-routine.ores";
+
+                pub fnc main(): void {
+                  stdio.stdout.write(Service.value());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("11", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void exportedClassDoesNotPublishPrivateConstructor() throws Exception {
         Path lib = temp.resolve("private-constructor.ores");
         Path main = temp.resolve("private-constructor-main.ores");
