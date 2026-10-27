@@ -264,11 +264,13 @@ final class NativeNetStdlibTest {
             Files.writeString(entry, ("""
                 import module net_core from "std/net";
                 pub async routine main(): void {
-                  val NioTcpConnection peer =
-                    await net_core.connect_ipv4("127.0.0.1", %d);
+                  val Future<NioTcpConnection> pending_connect =
+                    net_core.connect_ipv4("127.0.0.1", %d);
+                  val NioTcpConnection peer = await pending_connect;
 
-                  val Array<int> ping =
-                    await net_core.read(rt borrow peer, 4);
+                  val Future<Array<int>> initial_read =
+                    net_core.read(rt borrow peer, 4);
+                  val Array<int> ping = await initial_read;
 
                   // Deliberately arm the next read before starting the write.
                   // Both Futures must coexist on one physical selector key.
@@ -283,7 +285,9 @@ final class NativeNetStdlibTest {
                   val Future<int> final_write =
                     net_core.write(rt borrow peer, pong);
                   val int echoed = await final_write;
-                  await net_core.close_connection(peer);
+                  val Future<void> pending_close =
+                    net_core.close_connection(peer);
+                  await pending_close;
                   return;
                 }
                 """).formatted(port));
