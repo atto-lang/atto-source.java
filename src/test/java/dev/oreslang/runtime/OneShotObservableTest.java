@@ -37,6 +37,28 @@ final class OneShotObservableTest {
     }
 
     @Test
+    void producerCancelledBeforeSubscriptionRemainsAuthenticatedCancellation() {
+        OresFuture<Integer> source = new OresFuture<>();
+        assertTrue(source.cancel(false));
+        OresFuture<Integer> observed =
+                OneShotObservable.fromFuture(source).single();
+        assertTrue(observed.isCancelled());
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void producerFailedBeforeSubscriptionDoesNotFabricateOptionalEmpty() {
+        OresFuture<Integer> source = new OresFuture<>();
+        IllegalArgumentException failure = new IllegalArgumentException("before attach");
+        assertTrue(source.failFromRuntime(failure));
+        OresFuture<Optional<Integer>> observed =
+                OneShotObservable.fromFuture(source).first();
+        assertSame(failure,
+                assertThrows(CompletionException.class, observed::join).getCause());
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void cancellationDetachesOneShotObserverWithoutCancellingProducer() {
         OresFuture<Integer> producer = new OresFuture<>();
         OresFuture<Integer> result = OneShotObservable.fromFuture(producer).single();
