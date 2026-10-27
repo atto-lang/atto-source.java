@@ -205,6 +205,37 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void guardedStaticSourceHelperRejectsBeforeEffectfulArguments()
+            throws Exception {
+        assertGuardedCallRejectedWithoutOutput("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                define class Calculator as
+                  static fnc count_in_helper(n: int): int {
+                    let count = 0;
+                    for (let i = 0; i < n; i = i + 1) do
+                      count = count + 1;
+                    done
+                    return count;
+                  }
+                end
+                fnc effectful_argument(): int {
+                  stdio.stdout.write("ILLEGAL_STATIC_ARGUMENT_COMMITTED");
+                  return 4096;
+                }
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  val int answer = Calculator.count_in_helper(effectful_argument());
+                  guard.release();
+                  stdio.stdout.write(answer);
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void dynamicCallbackInNestedExpressionCannotRunUnderLiveMutexGuard()
             throws Exception {
         // This must be caught by the synchronous eval(CallExpr) path too:
