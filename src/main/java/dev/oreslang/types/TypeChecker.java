@@ -132,6 +132,30 @@ public final class TypeChecker {
                 new java.lang.ref.ReferenceQueue<>();
         private static final java.util.Map<IdentityKey, PipelinePlan> CHECKED =
                 new java.util.HashMap<>();
+        private static final java.lang.ref.ReferenceQueue<Ast.Program> PROGRAM_QUEUE =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<ProgramKey, List<IdentityKey>> PROGRAM_STAGES =
+                new java.util.HashMap<>();
+
+        private static final class ProgramKey
+                extends java.lang.ref.WeakReference<Ast.Program> {
+            private final int hash;
+
+            private ProgramKey(Ast.Program program,
+                    java.lang.ref.ReferenceQueue<Ast.Program> queue) {
+                super(program, queue);
+                hash = System.identityHashCode(program);
+            }
+
+            @Override public int hashCode() { return hash; }
+
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof ProgramKey key)) return false;
+                Ast.Program program = get();
+                return program != null && program == key.get();
+            }
+        }
 
         private static final class IdentityKey
                 extends java.lang.ref.WeakReference<Ast.CallExpr> {
@@ -157,6 +181,23 @@ public final class TypeChecker {
         private static void expunge() {
             java.lang.ref.Reference<? extends Ast.CallExpr> cleared;
             while ((cleared = CLEARED.poll()) != null) CHECKED.remove(cleared);
+            java.lang.ref.Reference<? extends Ast.Program> oldProgram;
+            while ((oldProgram = PROGRAM_QUEUE.poll()) != null) {
+                PROGRAM_STAGES.remove(oldProgram);
+            }
+        }
+
+        /**
+         * Recheck revokes prior lowering authority before type analysis can
+         * fail. Weak identity keys avoid retaining or conflating AST programs.
+         */
+        private static synchronized void invalidateProgram(Ast.Program program) {
+            java.util.Objects.requireNonNull(program, "Future pipeline program");
+            expunge();
+            List<IdentityKey> stages = PROGRAM_STAGES.remove(new ProgramKey(program, null));
+            if (stages != null) {
+                for (IdentityKey stage : stages) CHECKED.remove(stage);
+            }
         }
 
         private static void requireShape(Ast.CallExpr call, PipelinePlan plan) {
@@ -204,7 +245,10 @@ public final class TypeChecker {
          * for an earlier pipeline prefix.
          */
         private static synchronized void publish(
+                Ast.Program sourceProgram, Ast.Program checkedProgram,
                 Map<Ast.CallExpr, PipelinePlan> staged) {
+            java.util.Objects.requireNonNull(sourceProgram, "source Future pipeline program");
+            java.util.Objects.requireNonNull(checkedProgram, "checked Future pipeline program");
             java.util.Objects.requireNonNull(staged, "staged Future pipeline plans");
             expunge();
             for (Map.Entry<Ast.CallExpr, PipelinePlan> entry : staged.entrySet()) {
@@ -220,6 +264,17 @@ public final class TypeChecker {
             }
             for (Map.Entry<Ast.CallExpr, PipelinePlan> entry : staged.entrySet()) {
                 record(entry.getKey(), entry.getValue());
+            }
+            if (!staged.isEmpty()) {
+                List<IdentityKey> keys = new java.util.ArrayList<>(staged.size());
+                for (Ast.CallExpr call : staged.keySet()) {
+                    keys.add(new IdentityKey(call, null));
+                }
+                List<IdentityKey> snapshot = List.copyOf(keys);
+                PROGRAM_STAGES.put(new ProgramKey(sourceProgram, PROGRAM_QUEUE), snapshot);
+                if (checkedProgram != sourceProgram) {
+                    PROGRAM_STAGES.put(new ProgramKey(checkedProgram, PROGRAM_QUEUE), snapshot);
+                }
             }
         }
 
@@ -379,16 +434,18 @@ public final class TypeChecker {
      * compilation therefore cannot mint runtime lowering authority.
      */
     public static TypeCheckResult checkWithDiagnostics(Ast.Program program) {
-        return publishAfterOwnership(checkTypesWithDiagnostics(program));
+        return publishAfterOwnership(program, checkTypesWithDiagnostics(program));
     }
 
-    private static TypeCheckResult publishAfterOwnership(TypeCheckResult checked) {
+    private static TypeCheckResult publishAfterOwnership(
+            Ast.Program sourceProgram, TypeCheckResult checked) {
         CheckedFuturePipe.invalidate(checked.pendingFutureStages());
         OwnershipChecker.check(
                 checked.program(),
                 checked.shortInferredAliases(),
                 checked.pendingFutureStages());
-        CheckedFuturePipe.publish(checked.pendingFutureStages());
+        CheckedFuturePipe.publish(
+                sourceProgram, checked.program(), checked.pendingFutureStages());
         return checked;
     }
 
@@ -444,6 +501,7 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        CheckedFuturePipe.invalidateProgram(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -490,6 +548,7 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        Ast.Program sourceProgram = program;
         TypeCheckResult checked = checkTypesWithLinkedMetadataWithDiagnostics(
                 program, linkedClasses, linkedAliases, linkedContracts);
         CheckedFuturePipe.invalidate(checked.pendingFutureStages());
@@ -498,7 +557,8 @@ public final class TypeChecker {
                 linkedClasses,
                 checked.shortInferredAliases(),
                 checked.pendingFutureStages());
-        CheckedFuturePipe.publish(checked.pendingFutureStages());
+        CheckedFuturePipe.publish(
+                sourceProgram, checked.program(), checked.pendingFutureStages());
         return checked;
     }
 
@@ -507,6 +567,7 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        CheckedFuturePipe.invalidateProgram(program);
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }

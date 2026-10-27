@@ -87,6 +87,60 @@ public final class FuturePipelineTypingCheck {
                     "full ownership admission did not publish the staged pipeline plan");
         }
 
+        // Rechecking an admitted AST must revoke its previous executable
+        // lowering proof *before* linked-metadata validation can fail.
+        // An independent program's plan must remain valid: the ledger is
+        // identity-based, not a global proof cache reset.
+        Ast.Program independentProgram = TypeChecker.check(Parser.parse("""
+                async fnc source(): int { return 9; }
+                fnc keep(int value): int { return value; }
+                fnc main(): void {
+                  val Future<int> pending = source() |> keep();
+                  return;
+                }
+                """));
+        Ast.FunctionDecl independentMain = (Ast.FunctionDecl)
+                independentProgram.modules().getFirst().declarations().get(2);
+        Ast.CallExpr independentPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) independentMain.body().getFirst()).initializer();
+        if (!TypeChecker.CheckedFuturePipe.lookup(independentPipe)) {
+            throw new AssertionError("independent admitted Future proof missing");
+        }
+        try {
+            TypeChecker.checkWithLinkedMetadataWithDiagnostics(
+                    fullyAdmitted, null, java.util.Map.of(), java.util.Map.of());
+            throw new AssertionError("invalid linked metadata unexpectedly passed");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("linked public classes/aliases")) {
+                throw new AssertionError(
+                        "wrong linked recheck rejection: " + expected.getMessage(), expected);
+            }
+        }
+        if (TypeChecker.CheckedFuturePipe.lookup(fullyAdmittedPipe)) {
+            throw new AssertionError(
+                    "failed recheck retained previously published Future authority");
+        }
+        if (!TypeChecker.CheckedFuturePipe.lookup(independentPipe)) {
+            throw new AssertionError(
+                    "failed recheck revoked an unrelated program's Future proof");
+        }
+        Ast.Program readmitted = TypeChecker.check(fullyAdmitted);
+        Ast.FunctionDecl readmittedMain = (Ast.FunctionDecl)
+                readmitted.modules().getFirst().declarations().get(2);
+        Ast.CallExpr readmittedPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) readmittedMain.body().getFirst()).initializer();
+        if (!TypeChecker.CheckedFuturePipe.lookup(readmittedPipe)) {
+            throw new AssertionError("successful recheck did not republish Future authority");
+        }
+        // A type-only pass does not keep the earlier full-admission proof.
+        TypeChecker.checkTypesWithDiagnostics(readmitted);
+        if (TypeChecker.CheckedFuturePipe.lookup(readmittedPipe)) {
+            throw new AssertionError("type-only recheck retained executable Future authority");
+        }
+        if (!TypeChecker.CheckedFuturePipe.lookup(independentPipe)) {
+            throw new AssertionError("type-only recheck revoked an independent proof");
+        }
+
         // Ownership rejection after successful typing must also leave the
         // staged pipeline unpublished.
         TypeChecker.TypeCheckResult ownershipPending =
