@@ -148,13 +148,6 @@ final class CheckedCallPlanTest {
                 CheckedCallPlan.lookup(structurallyEqual),
                 "structurally equal ASTs must not share checked authority");
 
-        CheckedCallPlan conflicting = CheckedCallPlan.required(
-                List.of("other"),
-                List.of(positional(0)));
-        assertThrows(
-                IllegalStateException.class,
-                () -> CheckedCallPlan.record(source, conflicting));
-
         Ast.CallExpr rewritten = source.rewrite(
                 source.callee(),
                 source.typeArguments(),
@@ -162,6 +155,29 @@ final class CheckedCallPlanTest {
                 source.arguments());
         Ast.copyCheckedMetadata(source, rewritten);
         assertEquals(plan, CheckedCallPlan.require(rewritten));
+
+        CheckedCallPlan conflicting = CheckedCallPlan.required(
+                List.of("other"),
+                List.of(positional(0)));
+        assertThrows(
+                IllegalStateException.class,
+                () -> CheckedCallPlan.record(source, conflicting));
+        assertNull(
+                CheckedCallPlan.lookup(source),
+                "conflicting republication must revoke stale checked authority");
+        assertThrows(
+                IllegalStateException.class,
+                () -> CheckedCallPlan.require(source));
+        assertNull(CheckedCallPlan.lookup(structurallyEqual));
+        assertEquals(
+                plan,
+                CheckedCallPlan.require(rewritten),
+                "an independent AST retains its own admitted plan");
+
+        // The rejected site is not permanently poisoned: a complete,
+        // successful recheck may publish a fresh proof after revocation.
+        CheckedCallPlan.record(source, conflicting);
+        assertSame(conflicting, CheckedCallPlan.require(source));
     }
 
     @Test
