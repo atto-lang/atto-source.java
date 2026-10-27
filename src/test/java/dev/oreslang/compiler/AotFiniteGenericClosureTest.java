@@ -190,6 +190,28 @@ final class AotFiniteGenericClosureTest {
     }
 
     @Test
+    void sourceUnitIdentityFollowsTheSpecializationManifest() {
+        Ast.FunctionDecl main = fn("main", List.of(), null,
+                type("int"), new Ast.LiteralExpr(42L));
+        Ast.Program source = MacroSourceUnitIdentity.attach(
+                program(main), "pkg/units/../entry.ores");
+        AotFiniteGenericClosure.Plan plan =
+                AotFiniteGenericClosure.plan(source, BuildOptions.executable());
+        assertEquals("pkg/entry.ores", plan.sourceUnitId());
+    }
+
+    @Test
+    void functionValueRequiresAStaticWitnessRatherThanDynamicCodegen() {
+        Ast.FunctionDecl main = fn("main", List.of(), null,
+                Ast.TypeRef.functionType(List.of(type("int")), type("int")),
+                new Ast.LiteralExpr(7L));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> AotFiniteGenericClosure.plan(
+                        program(main), BuildOptions.executable()))
+                .getMessage().contains("static witness/closure-layout proof"));
+    }
+
+    @Test
     void uncheckedMacroDeclarationsNeverAppearAsExecutableClosure() {
         Ast.Program source = Parser.parse("""
                 define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
