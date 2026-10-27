@@ -5599,20 +5599,19 @@ public final class TypeChecker {
                         result = new ListType(Primitive.STRING);
                         parameters = List.of(Primitive.STRING);
                     }
-                    case "is_dir", "is_symlink", "exists", "exists_async" -> {
+                    case "is_dir", "is_symlink", "exists" -> {
                         result = Primitive.BOOL;
                         parameters = List.of(Primitive.STRING);
                     }
-                    case "read_text", "read_text_async" -> {
+                    case "read_text" -> {
                         result = Primitive.STRING;
                         parameters = List.of(Primitive.STRING);
                     }
-                    case "write_text", "write_text_async",
-                            "write_text_atomic", "append_text", "append_text_async" -> {
+                    case "write_text", "write_text_atomic", "append_text" -> {
                         result = Primitive.VOID;
                         parameters = List.of(Primitive.STRING, Primitive.STRING);
                     }
-                    case "remove", "remove_async", "mkdir_all", "mkdir_all_async" -> {
+                    case "remove", "mkdir_all" -> {
                         result = Primitive.VOID;
                         parameters = List.of(Primitive.STRING);
                     }
@@ -5620,21 +5619,21 @@ public final class TypeChecker {
                 }
             }
             case "network", "net" -> {
-                if (!name.equals("connect") && !name.equals("connect_async")) return null;
+                if (!name.equals("connect")) return null;
                 result = new Named("TcpConnection", List.of());
                 parameters = List.of(Primitive.STRING, Primitive.INT);
             }
             case "TcpConnection" -> {
                 switch (name) {
-                    case "read_line", "read_line_async" -> {
+                    case "read_line" -> {
                         result = new Named("Option", List.of(Primitive.STRING));
                         parameters = List.of();
                     }
-                    case "write_text", "write_text_async" -> {
+                    case "write_text" -> {
                         result = Primitive.VOID;
                         parameters = List.of(Primitive.STRING);
                     }
-                    case "close", "close_async" -> {
+                    case "close" -> {
                         result = Primitive.VOID;
                         parameters = List.of();
                     }
@@ -5643,11 +5642,11 @@ public final class TypeChecker {
             }
             case "http" -> {
                 switch (name) {
-                    case "get_text", "get_text_async" -> {
+                    case "get_text" -> {
                         result = Primitive.STRING;
                         parameters = List.of(Primitive.STRING);
                     }
-                    case "post_text", "post_text_async" -> {
+                    case "post_text" -> {
                         result = Primitive.STRING;
                         parameters = List.of(Primitive.STRING, Primitive.STRING);
                     }
