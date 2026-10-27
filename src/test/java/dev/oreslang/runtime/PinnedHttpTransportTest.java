@@ -782,6 +782,88 @@ final class PinnedHttpTransportTest {
         }
     }
 
+    @Test
+    void transportCloseRevokesDnsButKeepsLateResolverReceiptPinned()
+            throws Exception {
+        AsyncNativeIo nativeIo = new AsyncNativeIo(4, 1, 4);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        OutboundEgressPolicy.Resolver delegate = host -> {
+            entered.countDown();
+            boolean interrupted = false;
+            while (true) {
+                try {
+                    release.await();
+                    break;
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+            return List.of(InetAddress.getByName("127.0.0.1"));
+        };
+        BoundedDnsResolver resolver = new BoundedDnsResolver(
+                nativeIo,
+                delegate,
+                Duration.ofSeconds(5),
+                1,
+                1);
+
+        PinnedHttpTransport transport = new PinnedHttpTransport(
+                OutboundEgressPolicy.Purpose.GENERAL_HTTP,
+                OutboundEgressPolicy.Policy.loopbackOnly(),
+                resolver,
+                SSLContext.getDefault(),
+                1024,
+                null,
+                resolver);
+
+        AtomicReference<Throwable> requestFailure =
+                new AtomicReference<>();
+        Thread request = Thread.ofVirtual().start(() -> {
+            try {
+                transport.request(
+                        URI.create("http://origin.example:80/"),
+                        "GET",
+                        List.of());
+            } catch (Throwable failure) {
+                requestFailure.set(failure);
+            }
+        });
+
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        assertEquals(
+                PinnedHttpTransport.PhysicalPhase.RESOLVING,
+                transport.phase());
+
+        transport.close();
+        request.join();
+
+        assertNotNull(
+                requestFailure.get(),
+                "cancelling during DNS must revoke request authorization");
+        assertEquals(
+                PinnedHttpTransport.PhysicalPhase.RETIRED,
+                transport.phase());
+        assertEquals(0, transport.activeSockets());
+        assertEquals(0, transport.activeOrigins());
+        assertEquals(
+                1,
+                resolver.activeResolutions(),
+                "late system resolver remains a physical native-I/O receipt until its worker exits");
+
+        release.countDown();
+        long deadline =
+                System.nanoTime()
+                        + TimeUnit.SECONDS.toNanos(2);
+        while (resolver.activeResolutions() != 0
+                && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(0, resolver.activeResolutions());
+        nativeIo.close();
+    }
+
     private static ServerSocket listen() throws IOException {
         ServerSocket server = new ServerSocket();
         server.bind(new InetSocketAddress("127.0.0.1", 0));
