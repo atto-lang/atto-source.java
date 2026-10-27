@@ -21,7 +21,7 @@ if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
 fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
-printf '%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_EXTRA_LINE:-}"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_ARCHIVED:-false}" "${MOCK_DISABLED:-false}" "${MOCK_FORK:-false}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 mkdir -p "$work/fixture/source"
 printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
@@ -50,9 +50,24 @@ expect_wrapper_reject trusted/ci
 export MOCK_REPOSITORY_ID=invalid
 expect_fail trusted/ci
 unset MOCK_REPOSITORY_ID
+for state in MOCK_ARCHIVED MOCK_DISABLED MOCK_FORK; do
+  export "$state"=true
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  unset "$state"
+done
 printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
+expect_fail trusted/ci
+# A duplicate numeric identity is forbidden even if the other slug differs.
+printf 'trusted/ci 246810\nother/ci 246810\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+# Malformed numeric-policy entries must never be normalized into approval.
+printf 'trusted/ci\t246810\n' > "$policy"
+expect_fail trusted/ci
+printf 'trusted/ci 246810 \n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
@@ -92,6 +107,51 @@ unset MOCK_API_FAILURE
 export MOCK_EXTRA_LINE=$'\nspoofed/repo\tprivate\ttrue'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
+unset MOCK_EXTRA_LINE
+export MOCK_EXTRA_LINE=
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+printf 'trusted/ci #bad-comment\n' > "$policy"
+expect_fail trusted/ci
+printf '# intentionally empty\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+rm "$policy"
+expect_fail trusted/ci
+ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
+expect_fail trusted/ci
+rm "$policy"
+printf 'trusted/ci 246810\n' > "$policy"
+mv "$work/fixture/.github" "$work/approved-policy-directory"
+ln -s "$work/approved-policy-directory" "$work/fixture/.github"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+printf 'PASS: diagnostic-only private identity, numeric-ID alias, inactive carrier, malformed metadata, no child execution\n'
+\textra'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_EXTRA_LINE
+export MOCK_EXTRA_LINE=
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+printf 'trusted/ci #bad-comment\n' > "$policy"
+expect_fail trusted/ci
+printf '# intentionally empty\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+rm "$policy"
+expect_fail trusted/ci
+ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
+expect_fail trusted/ci
+rm "$policy"
+printf 'trusted/ci 246810\n' > "$policy"
+mv "$work/fixture/.github" "$work/approved-policy-directory"
+ln -s "$work/approved-policy-directory" "$work/fixture/.github"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
+\r'
+expect_fail trusted/ci
 unset MOCK_EXTRA_LINE
 printf 'other/repo 246810\n' > "$policy"
 expect_fail trusted/ci
