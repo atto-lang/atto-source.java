@@ -3091,6 +3091,29 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr futureCall
                     && futureCall.receiver() instanceof Ast.NameExpr futureFactory
                     && futureFactory.name().equals("Future")
+                    && futureCall.member().equals("from_task")) {
+                // First, intentionally narrow source slice: the current main
+                // frontend still lowers a task{} block to Future<T>. Do not
+                // accept arbitrary Future<T> as a Task<T> capability or imply
+                // that first-class Task<T> values are already implemented.
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "Future.from_task does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 1
+                        || !(call.arguments().getFirst() instanceof Ast.TaskExpr)) {
+                    throw new IllegalArgumentException(
+                            "Future.from_task currently requires exactly one inline task { } block; "
+                                    + "first-class Task<T> conversion awaits separate ownership lowering");
+                }
+                // Without a contextual Future<T>, a value-producing Task body
+                // must not be guessed as Unknown or have its payload erased.
+                Type result = typeOf(call.arguments().getFirst(), env, generics, self);
+                return result;
+            }
+            if (call.callee() instanceof Ast.MemberExpr futureCall
+                    && futureCall.receiver() instanceof Ast.NameExpr futureFactory
+                    && futureFactory.name().equals("Future")
                     && (futureCall.member().equals("all") || futureCall.member().equals("race"))) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
@@ -4900,6 +4923,30 @@ public final class TypeChecker {
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr futureCall
+                && futureCall.receiver() instanceof Ast.NameExpr futureFactory
+                && futureFactory.name().equals("Future")
+                && futureCall.member().equals("from_task")) {
+            if (call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException(
+                        "Future.from_task does not accept call-site type arguments");
+            }
+            if (call.arguments().size() != 1
+                    || !(call.arguments().getFirst() instanceof Ast.TaskExpr)) {
+                throw new IllegalArgumentException(
+                        "Future.from_task currently requires exactly one inline task { } block; "
+                                + "first-class Task<T> conversion awaits separate ownership lowering");
+            }
+            if (!(expected instanceof Named future)
+                    || !future.name().equals("Future")
+                    || future.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "Future.from_task(task { }) requires an explicit Future<T> target type");
+            }
+            return typeOfAgainstExpected(
+                    call.arguments().getFirst(), future, env, generics, self);
+        }
         if (expr instanceof Ast.TaskExpr task
                 && expected instanceof Named future
                 && future.name().equals("Future")
