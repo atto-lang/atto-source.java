@@ -1218,6 +1218,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
             "repo_id": contract["repository_id"],
             "base_sha": contract["base_sha"],
         },
+        "handoff": {
+            "nonce": handoff_nonce,
+        },
         "mirror": {
             "root_tree_sha": source_tree,
         },
