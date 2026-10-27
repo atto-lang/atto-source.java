@@ -21,11 +21,14 @@ expected="$1"
 [[ -f pom.xml ]] || die 'not the Java backend checkout'
 
 # Refuse common credential injection into the untrusted build process.
-for key in GITHUB_TOKEN GH_TOKEN ORES_SOURCE_READ_TOKEN ORES_DEST_READ_TOKEN            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+for key in GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GIT_ASKPASS SSH_ASKPASS SSH_AUTH_SOCK \
+           ORES_SOURCE_READ_TOKEN ORES_DEST_READ_TOKEN AWS_ACCESS_KEY_ID \
+           AWS_SECRET_ACCESS_KEY AZURE_CLIENT_SECRET GOOGLE_APPLICATION_CREDENTIALS; do
   [[ -z "${!key:-}" ]] || die "credential-bearing environment variable present: $key"
 done
 command -v java >/dev/null 2>&1 || die 'Java missing'
 command -v mvn >/dev/null 2>&1 || die 'Maven missing'
+command -v python3 >/dev/null 2>&1 || die 'Python 3 missing'
 java_major="$(java -XshowSettings:properties -version 2>&1 |
   sed -n 's/.*java.specification.version = \([0-9][0-9]*\).*/\1/p' |
   head -n 1)"
@@ -37,11 +40,22 @@ echo 'ASYNC_INTEROP_EXPECTED_RUNNER_ISOLATION=preverified_external_control'
 
 # Offline Maven still runs checked-out build scripts; admins MUST enforce
 # egress denial and no-secret execution OUTSIDE this shell script.
+# First verify the independent fail-closed JUnit receipt validator itself.
+python3 -m unittest -v tests/test_verify_async_interop_junit.py
+
+# Clean rebuild prevents stale class and JUnit artifacts from faking proof.
+# Maven and its plugins/dependencies must already exist in an offline cache.
 mvn -B -o -ntp \
   -Dores.runtime.carriers=native \
   -Dtest=OresFutureObserverTest,TaskFutureAdaptersTest,OneShotObservableTest,FutureFromInlineTaskLanguageTest \
   -DfailIfNoTests=true \
-  test
+  -Dsurefire.failIfNoSpecifiedTests=true \
+  -DskipTests=false -Dmaven.test.skip=false \
+  clean test
+
+# Never emit a proof marker merely because a Maven command returned zero.
+# Require 42 distinct, actually-recorded non-skipped JUnit method results.
+python3 tools/verify_async_interop_junit.py target/surefire-reports
 
 echo "ASYNC_INTEROP_JVM_PROOF_COMPLETE_HEAD=$expected"
 echo 'ASYNC_INTEROP_JVM_PROOF_ONLY=true'
