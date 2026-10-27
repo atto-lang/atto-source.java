@@ -181,6 +181,58 @@ final class CheckedCallPlanTest {
     }
 
     @Test
+    void failedRevalidationRevokesPreviouslyPublishedCallProofs() {
+        Ast.CallExpr source = new Ast.CallExpr(
+                new Ast.NameExpr("f"),
+                List.of(new Ast.LiteralExpr(1L)));
+        Ast.CallExpr independent = new Ast.CallExpr(
+                new Ast.NameExpr("f"),
+                List.of(new Ast.LiteralExpr(2L)));
+        CheckedCallPlan proof = CheckedCallPlan.required(
+                List.of("value"),
+                List.of(positional(0)));
+        CheckedCallPlan.record(source, proof);
+        CheckedCallPlan.record(independent, proof);
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            try (CheckedCallPlan.ValidationScope attempt =
+                    CheckedCallPlan.beginValidation()) {
+                CheckedCallPlan.beginRecheck(source);
+                // Simulates a type/arity failure before a new plan can be
+                // published for this exact AST identity.
+                throw new IllegalArgumentException("missing required parameter");
+            }
+        });
+        assertNull(CheckedCallPlan.lookup(source));
+        assertEquals(proof, CheckedCallPlan.require(independent));
+
+        // A later successful complete recheck may re-admit the same identity.
+        try (CheckedCallPlan.ValidationScope attempt =
+                CheckedCallPlan.beginValidation()) {
+            CheckedCallPlan.beginRecheck(source);
+            CheckedCallPlan.record(source, proof);
+            attempt.commit();
+        }
+        assertEquals(proof, CheckedCallPlan.require(source));
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            try (CheckedCallPlan.ValidationScope outer =
+                    CheckedCallPlan.beginValidation()) {
+                try (CheckedCallPlan.ValidationScope typePass =
+                        CheckedCallPlan.beginValidation()) {
+                    CheckedCallPlan.beginRecheck(source);
+                    CheckedCallPlan.record(source, proof);
+                    typePass.commit();
+                }
+                // Ownership failure invalidates a successful earlier type pass.
+                throw new IllegalArgumentException("ownership failure");
+            }
+        });
+        assertNull(CheckedCallPlan.lookup(source));
+        assertEquals(proof, CheckedCallPlan.require(independent));
+    }
+
+    @Test
     void checkedPlanMetadataDoesNotCrossBindingShapeChanges() {
         Ast.CallExpr namedSource = new Ast.CallExpr(
                 new Ast.NameExpr("f"),
