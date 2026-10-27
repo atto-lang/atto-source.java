@@ -46,6 +46,14 @@ final class UnsafeReservedKeywordTest {
     }
 
     @Test
+    void templateInterpolationsStillRejectReservedUnsafe() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc f(): string { return `value ${unsafe}`; }"));
+        assertTrue(failure.getMessage().contains("unsafe is reserved until checked unsafe effects"),
+                failure::getMessage);
+    }
+
+    @Test
     void doesNotFlagOrdinaryTextCommentsOrSymbolLiterals() {
         assertDoesNotThrow(() -> Parser.parse(
                 "fnc safe(): string { /* unsafe */ return \"unsafe\"; }"));
