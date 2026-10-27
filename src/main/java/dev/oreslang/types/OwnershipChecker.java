@@ -584,6 +584,10 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
+                if (containsInvertedArrayStorage(returned.type)) {
+                    throw error("InvertedArray storage is lexical in v1 and cannot be returned "
+                            + "from a function/routine or task result");
+                }
                 validateReturnedBorrow(ret.value(), returned, returnType);
             }
             return;
@@ -608,6 +612,11 @@ public final class OwnershipChecker {
                 throw error(yielded.delegated()
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
                         : "MutexGuard values cannot be yielded from a generator");
+            }
+            if (containsInvertedArrayStorage(exposed)) {
+                throw error(yielded.delegated()
+                        ? "InvertedArray storage cannot cross a yield* delegation boundary"
+                        : "InvertedArray storage cannot be yielded from a suspended generator frame");
             }
             return;
         }
@@ -2196,6 +2205,10 @@ public final class OwnershipChecker {
             ValueInfo argument = checkExpr(arg, scope, true);
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
+            }
+            if (containsInvertedArrayStorage(argument.type)) {
+                throw error("InvertedArray storage cannot cross an arbitrary or actor-capability "
+                        + "call boundary; use bracket-field access in the owning lexical scope");
             }
             if (isBorrowValue(argument)) {
                 throw error("borrowed/provenance-tracked values cannot cross an arbitrary "
