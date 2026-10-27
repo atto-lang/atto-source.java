@@ -1458,6 +1458,7 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(receipt["source"]["head_sha"], "4" * 40)
         self.assertEqual(receipt["source"]["root_tree_sha"], SOURCE_TREE)
         self.assertEqual(receipt["mirror"]["root_tree_sha"], SOURCE_TREE)
+        self.assertEqual(receipt["handoff"], {"nonce": "ab" * 16})
         self.assertEqual(receipt["destination"]["repo_id"], 1323598177)
         self.assertEqual(receipt["test_plan"]["path"], carrier["test_plan_path"])
         self.assertEqual(
