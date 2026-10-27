@@ -231,4 +231,78 @@ final class NativeNetStdlibTest {
         }
     }
 
+    @Test void realGuestDuplexReadAndWriteOverlapOnOneConnection()
+            throws Exception {
+        Path entry = Files.createTempFile("ores-net-duplex-guest-", ".ores");
+        ExecutorService host = Executors.newSingleThreadExecutor();
+        try (ServerSocket listener = new ServerSocket(
+                0, 1, InetAddress.getByAddress(new byte[] {127, 0, 0, 1}))) {
+            int port = listener.getLocalPort();
+            Future<String> transcript = host.submit(() -> {
+                try (Socket accepted = listener.accept()) {
+                    accepted.setSoTimeout(5000);
+                    accepted.getOutputStream().write(
+                            "PING".getBytes(StandardCharsets.US_ASCII));
+
+                    String first = new String(
+                            accepted.getInputStream().readNBytes(4),
+                            StandardCharsets.US_ASCII);
+                    if (!first.equals("PING")) return "bad-first:" + first;
+
+                    // This write makes the guest's already-pending read ready
+                    // only after its sibling write has completed.
+                    accepted.getOutputStream().write(
+                            "PONG".getBytes(StandardCharsets.US_ASCII));
+
+                    String second = new String(
+                            accepted.getInputStream().readNBytes(4),
+                            StandardCharsets.US_ASCII);
+                    return first + ":" + second;
+                }
+            });
+
+            Files.writeString(entry, ("""
+                import module net_core from "std/net";
+                pub async routine main(): void {
+                  val NioTcpConnection peer =
+                    await net_core.connect_ipv4("127.0.0.1", %d);
+
+                  val Array<int> ping =
+                    await net_core.read(rt borrow peer, 4);
+
+                  // Deliberately arm the next read before starting the write.
+                  // Both Futures must coexist on one physical selector key.
+                  val Future<Array<int>> pending_read =
+                    net_core.read(rt borrow peer, 4);
+                  val Future<int> pending_write =
+                    net_core.write(rt borrow peer, ping);
+
+                  val int sent = await pending_write;
+                  val Array<int> pong = await pending_read;
+
+                  val Future<int> final_write =
+                    net_core.write(rt borrow peer, pong);
+                  val int echoed = await final_write;
+                  await net_core.close_connection(peer);
+                  return;
+                }
+                """).formatted(port));
+
+            LinkedProgramRunner.run(
+                    entry,
+                    IsolatePolicy.developer().withCapabilities(
+                            IsolatePolicy.Capability.NETWORK),
+                    ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(),
+                    new ByteArrayOutputStream());
+
+            assertEquals("PING:PONG", transcript.get(5, TimeUnit.SECONDS),
+                    "guest must overlap one pending read with one write on the same connection");
+        } finally {
+            host.shutdownNow();
+            assertTrue(host.awaitTermination(3, TimeUnit.SECONDS));
+            Files.deleteIfExists(entry);
+        }
+    }
+
 }
