@@ -22,6 +22,10 @@ jobs:
           persist-credentials: false
       - name: Verify read-only Actions triage unit tests
         run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
+      - name: Verify native image gate with source-free mock launchers
+        run: |
+          bash -n scripts/test-future-pipeline-native.sh scripts/test-future-pipeline-native-gate.sh
+          bash scripts/test-future-pipeline-native-gate.sh
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
