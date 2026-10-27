@@ -35,6 +35,11 @@ memory reclamation and actor runtime synchronization remain distinct.
   the explicit-return provenance check to direct borrowed results and reject
   borrowed wrappers. The `rt take`, `rt copy`, and `rt share` primitives
   cannot conceal loans inside owned-looking generic carriers.
+- Independently scheduled task captures and deferred callbacks reject nested
+  borrowed carriers before execution. Generic destructuring fails closed on
+  borrowed aggregate sources instead of manufacturing untracked lexical
+  aliases; direct immediate tuple destructuring retains its scoped binder
+  checks. Value-match arms cannot export nested borrowed branch-local values.
 
 All decisions are made over the AST's `TypeRef` tree by `OwnershipChecker`.
 No borrow state or counter is introduced in the guest runtime.

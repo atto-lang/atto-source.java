@@ -435,6 +435,14 @@ public final class OwnershipChecker {
                 return;
             }
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            // Generic destructuring creates independent bindings without a
+            // provenance-carrying scoped loan. The immediate tuple fast path
+            // above individually checks lexical borrow bindings, but a
+            // borrowed aggregate/loan-bearing wrapper cannot be unpacked
+            // through this generic path until container lifetimes are modeled.
+            if (isBorrowValue(source) || containsBorrowType(source.type)) {
+                throw error("cannot destructure a borrowed aggregate without explicit lifetime provenance");
+            }
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
@@ -1012,8 +1020,9 @@ public final class OwnershipChecker {
                     ValueInfo value = checkExpr(arm.value(), armScope, consuming);
                     // Do not let branch-scoped loans become expression values:
                     // a returned borrow could outlive its pattern bindings.
-                    if (isBorrowValue(value) || value.borrowSource != null) {
-                        throw error("value match cannot return a borrowed branch-local value");
+                    if (isBorrowValue(value) || value.borrowSource != null
+                            || containsBorrowType(value.type)) {
+                        throw error("value match cannot return a borrowed branch-local value (including nested borrows)");
                     }
                     if (result == null) result = value;
                 } finally {
@@ -1389,6 +1398,11 @@ public final class OwnershipChecker {
             // to affine Future<T> MOVE and synchronized Channel<T> handles;
             // guards, Rc and foreign/scheduler authority remain non-Send.
             for (Capture capture : captured.values.values()) {
+                if (!capture.source.type.isBorrow()
+                        && containsBorrowType(capture.source.type)) {
+                    throw error("independent task capture '" + capture.name
+                            + "' cannot retain nested borrowed references without scoped lifetime proof");
+                }
                 if (!capture.source.type.isBorrow()
                         && forbiddenTaskCapability(capture.source.type)) {
                     throw error("independent task capture '" + capture.name
@@ -4365,7 +4379,7 @@ public final class OwnershipChecker {
 
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
-                    || source.type.isBorrow()) {
+                    || containsBorrowType(source.type)) {
                 throw error("deferred task/continuation cannot capture borrowed value '"
                         + capture.name
                         + "'; capture owned data or actor self instead");

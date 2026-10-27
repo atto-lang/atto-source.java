@@ -236,6 +236,44 @@ final class StaticBorrowEscapeBoundaryTest {
                 """)));
     }
 
+
+    @Test
+    void deferredTaskCannotCaptureBorrowedWrapper() {
+        rejects("""
+                pub async fnc bad(Option<borrow int> wrapped): void {
+                  let Future<int> child = task {
+                    return wrapped;
+                  };
+                  await child;
+                  return;
+                }
+                """, "cannot retain nested borrowed references");
+    }
+
+    @Test
+    void genericDestructuringCannotLaunderBorrowedAggregate() {
+        rejects("""
+                fnc bad(Option<borrow int> wrapped): void {
+                  const {value} = wrapped;
+                  return;
+                }
+                """, "cannot destructure a borrowed aggregate");
+    }
+
+    @Test
+    void OwnedScalarTaskCaptureStillAdmitted() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                pub async fnc valid(): void {
+                  const int value = 41;
+                  let Future<int> child = task {
+                    return value + 1;
+                  };
+                  await child;
+                  return;
+                }
+                """)));
+    }
+
     @Test
     void compilerEntrypointRejectsFreshLoanYieldBeforeExecution() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
