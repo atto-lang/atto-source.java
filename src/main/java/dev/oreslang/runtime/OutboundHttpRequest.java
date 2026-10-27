@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -152,7 +153,12 @@ public final class OutboundHttpRequest {
      * block when the fixed byte budget is full; actor/root carriers never do.
      */
     private static final class BodyPipe {
+        private final long deadlineNanos;
         private final ArrayDeque<byte[]> queued = new ArrayDeque<>();
+
+        private BodyPipe(long deadlineNanos) {
+            this.deadlineNanos = deadlineNanos;
+        }
         private int firstOffset;
         private int bufferedBytes;
         private boolean eof;
@@ -224,8 +230,16 @@ public final class OutboundHttpRequest {
                     } else {
                         while (failure == null && !eof
                                 && bufferedBytes + remaining > PIPE_BYTES) {
+                            long waitNanos =
+                                    deadlineNanos - System.nanoTime();
+                            if (waitNanos <= 0) {
+                                throw new IOException(
+                                        "HTTP response body backpressure exceeded overall deadline");
+                            }
                             try {
-                                wait();
+                                TimeUnit.NANOSECONDS.timedWait(
+                                        this,
+                                        waitNanos);
                             } catch (InterruptedException interrupted) {
                                 Thread.currentThread().interrupt();
                                 throw new IOException(
@@ -557,7 +571,8 @@ public final class OutboundHttpRequest {
                         OutboundEgressPolicy.Purpose.GENERAL_HTTP,
                         context.outboundHttpPolicy(),
                         64L * 1024 * 1024,
-                        context.outboundHttpBudget());
+                        context.outboundHttpBudget(),
+                        context.nativeIo());
         revocation.trackTransport(transport);
         BodyPipe pipe = null;
         try (transport) {
@@ -569,7 +584,7 @@ public final class OutboundHttpRequest {
                             "http.request revoked after headers");
                 }
 
-                pipe = new BodyPipe();
+                pipe = new BodyPipe(upstream.deadlineNanos());
                 revocation.bind(pipe);
                 Body body = new Body(owner, pipe, revocation, lifetime);
                 Response response = new Response(
