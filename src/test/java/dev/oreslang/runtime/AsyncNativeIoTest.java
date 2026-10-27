@@ -28,17 +28,17 @@ class AsyncNativeIoTest {
         String path = root.resolve("item.txt").toString();
         String output = run("""
             pub async routine main(): void {
-              await fs.mkdir_all_async("%s/sub");
-              await fs.write_text_async("%s", "hello");
-              await fs.append_text_async("%s", " world");
-              stdio.println(await fs.exists_async("%s"));
-              stdio.println(await fs.read_text_async("%s"));
-              await fs.remove_async("%s");
-              stdio.println(await fs.exists_async("%s"));
-              try { await fs.read_text_async("%s"); }
-              catch (failure) { stdio.println("missing-caught"); }
-              try { await fs.write_text_async("/tmp/ores-async-denied.txt", "blocked"); }
-              catch (failure) { stdio.println("denied-caught"); }
+              await fs.mkdir_all("%s/sub");
+              await fs.write_text("%s", "hello");
+              await fs.append_text("%s", " world");
+              await stdio.println(await fs.exists("%s"));
+              await stdio.println(await fs.read_text("%s"));
+              await fs.remove("%s");
+              stdio.println(await fs.exists("%s"));
+              try { await fs.read_text("%s"); }
+              catch (failure) { await stdio.println("missing-caught"); }
+              try { await fs.write_text("/tmp/ores-async-denied.txt", "blocked"); }
+              catch (failure) { await stdio.println("denied-caught"); }
               return;
             }
             """.formatted(root, path, path, path, path, path, path, path),
