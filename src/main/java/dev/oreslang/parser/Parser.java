@@ -22,6 +22,10 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // Transparent record types local to the current function/routine prologue.
+    // Erased to structural TypeRefs during parsing: they never create runtime
+    // declarations, imported names, or synthetic nominal type identities.
+    private java.util.Map<String, Ast.TypeRef> callableRecordAliases;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -567,9 +571,9 @@ public final class Parser {
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
             Ast.EffectSpec effects = parseCheckedEffects();
-            List<Ast.Stmt> body = parseBlock();
+            LocalRecordBody localBody = parseLocalRecordBody(returnType, generics);
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, returnType, annotations, body, specs, effects);
+                    generics, params, localBody.returnType(), annotations, localBody.body(), specs, effects);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -578,9 +582,9 @@ public final class Parser {
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        List<Ast.Stmt> body = parseBlock();
+        LocalRecordBody localBody = parseLocalRecordBody(returnType, generics);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body, specs, effects);
+                localBody.returnType(), annotations, localBody.body(), specs, effects);
     }
 
     private Ast.ClassDecl parseClass(
@@ -2063,6 +2067,12 @@ public final class Parser {
             args.add(parseSequenceShapeDimension());
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
+        if (callableRecordAliases != null && callableRecordAliases.containsKey(name)) {
+            if (infer || !args.isEmpty()) {
+                throw error(previous(), "local record alias '" + name + "' is not generic");
+            }
+            return callableRecordAliases.get(name);
+        }
         return new Ast.TypeRef(name, args, infer);
     }
 
@@ -2156,6 +2166,85 @@ public final class Parser {
         StringBuilder name = new StringBuilder(consume(IDENT, "expected name").lexeme());
         while (match(DOT)) name.append('.').append(consume(IDENT, "expected name after '.'").lexeme());
         return name.toString();
+    }
+
+    /** A function-local record alias is type-only, never a runtime statement. */
+    private record LocalRecordBody(List<Ast.Stmt> body, Ast.TypeRef returnType) { }
+
+    private LocalRecordBody parseLocalRecordBody(Ast.TypeRef declaredReturn, List<String> generics) {
+        consume(LBRACE, "expected '{' after callable signature");
+        java.util.Map<String, Ast.TypeRef> previousAliases = callableRecordAliases;
+        callableRecordAliases = new java.util.LinkedHashMap<>();
+        try {
+            List<Ast.Stmt> body = new ArrayList<>();
+            boolean inTypePrologue = true;
+            while (!check(RBRACE) && !check(EOF)) {
+                if (check(TYPE)) {
+                    if (!inTypePrologue) {
+                        throw error(peek(),
+                                "local type declarations must precede executable statements in fnc/routine");
+                    }
+                    advance();
+                    Ast.TypeAliasDecl alias = parseTypeAlias(Ast.Visibility.PRIVATE);
+                    if (!alias.genericParameters().isEmpty()) {
+                        throw error(previous(),
+                                "generic local record aliases require specialized signature lowering");
+                    }
+                    if (!alias.target().isRecordType()) {
+                        throw error(previous(),
+                                "local type declarations currently require a record { ... } type");
+                    }
+                    if (generics.contains(alias.name())
+                            || java.util.Set.of("int", "string", "String", "float", "bool",
+                                    "any", "unknown", "void", "self", "Object", "Error",
+                                    "Symbol", "T" + "ype").contains(alias.name())) {
+                        throw error(previous(), "local record alias conflicts with reserved or generic type '"
+                                + alias.name() + "'");
+                    }
+                    if (callableRecordAliases.containsKey(alias.name())) {
+                        throw error(previous(),
+                                "duplicate local record type alias '" + alias.name() + "'");
+                    }
+                    if (containsNamedType(alias.target(), alias.name())) {
+                        throw error(previous(),
+                                "recursive local record alias '" + alias.name()
+                                        + "' needs a separately checked recursive-type contract");
+                    }
+                    callableRecordAliases.put(alias.name(), alias.target());
+                } else {
+                    inTypePrologue = false;
+                    body.add(parseStatement());
+                }
+            }
+            consume(RBRACE, "expected '}' after callable body");
+            return new LocalRecordBody(
+                    List.copyOf(body), expandLocalRecordReturn(declaredReturn));
+        } finally {
+            callableRecordAliases = previousAliases;
+        }
+    }
+
+    private boolean containsNamedType(Ast.TypeRef ref, String name) {
+        if (ref.name().equals(name)) return true;
+        return ref.arguments().stream().anyMatch(argument -> containsNamedType(argument, name));
+    }
+
+    private Ast.TypeRef expandLocalRecordReturn(Ast.TypeRef type) {
+        if (type == null || callableRecordAliases == null || callableRecordAliases.isEmpty()) {
+            return type;
+        }
+        Ast.TypeRef alias = callableRecordAliases.get(type.name());
+        if (alias != null) {
+            if (!type.arguments().isEmpty() || type.inferArguments()) {
+                throw error(previous(),
+                        "local record return alias '" + type.name() + "' does not accept type arguments");
+            }
+            return alias;
+        }
+        if (type.arguments().isEmpty()) return type;
+        List<Ast.TypeRef> args = type.arguments().stream()
+                .map(this::expandLocalRecordReturn).toList();
+        return new Ast.TypeRef(type.name(), args, type.inferArguments());
     }
 
     private List<Ast.Stmt> parseBlock() {
