@@ -43,7 +43,7 @@ final class PointerlessFncOwnershipTest {
                         end
 
                         fnc bad(): void {
-                          val Fnc<Box, Box> steal = |Box value| -> {
+                          val Fnc<Box, Box> steal = |value| -> {
                             return value;
                           };
                           let Box owner = new Box();
@@ -74,6 +74,16 @@ final class PointerlessFncOwnershipTest {
         assertTrue(mutated.getMessage().contains("temporary read borrows")
                 || mutated.getMessage().contains("mutable"),
                 mutated::getMessage);
+    }
+
+    @Test
+    void contextualFncKeepsCopyIdentityLambdaCopySafe() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): int {
+                  val Fnc<int, int> identity = |value| -> value;
+                  return identity(42);
+                }
+                """)));
     }
 
     @Test

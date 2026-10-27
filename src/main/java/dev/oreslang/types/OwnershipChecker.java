@@ -342,9 +342,32 @@ public final class OwnershipChecker {
         }
     }
 
-    private VarState stateForLambdaParam(Ast.Param param) {
-        VarState ordinary = stateForParam(param);
-        if (param.type().isBorrow() || param.structural() || isCopyType(param.type())) {
+    private VarState stateForLambdaParam(
+            Ast.Param param,
+            Ast.TypeRef contextualType) {
+        Ast.TypeRef effectiveType = param.type();
+        if (effectiveType.name().equals("$infer$")
+                && contextualType != null
+                && !contextualType.name().equals("$infer$")) {
+            effectiveType = contextualType;
+        }
+        Ast.Param effectiveParam = effectiveType.equals(param.type())
+                ? param
+                : new Ast.Param(
+                        effectiveType,
+                        param.name(),
+                        param.structural(),
+                        param.mutable());
+        VarState ordinary = stateForParam(effectiveParam);
+
+        // Without a contextual callable signature, preserve the established
+        // inferred-parameter behavior rather than guessing whether $infer$
+        // is Copy or move-only. A concrete Fnc<T,...> binding supplies the
+        // missing ownership type below.
+        if (effectiveType.name().equals("$infer$")
+                || effectiveType.isBorrow()
+                || param.structural()
+                || isCopyType(effectiveType)) {
             return ordinary;
         }
         if (param.mutable()) {
@@ -352,10 +375,24 @@ public final class OwnershipChecker {
                     + "mutable/owning lambda parameters require an explicit consuming callable contract");
         }
         return new VarState(
-                param.type(),
+                effectiveType,
                 false,
                 ValueKind.IMM_BORROW,
                 Origin.PARAM);
+    }
+
+    private Ast.TypeRef contextualLambdaParameterType(
+            Ast.TypeRef callableType,
+            int index,
+            int parameterCount) {
+        if (callableType == null
+                || callableType.isBorrow()
+                || !(callableType.name().equals("Fnc")
+                    || callableType.name().equals("Function"))
+                || callableType.arguments().size() != parameterCount + 1) {
+            return null;
+        }
+        return callableType.arguments().get(index);
     }
 
     private void defineImplicitArguments(Scope scope, List<Ast.Param> parameters) {
@@ -867,7 +904,7 @@ public final class OwnershipChecker {
         // still cannot cross suspension.
         if (scope.visibleStates().stream().anyMatch(state -> !state.moved
                 && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
-                && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                && (isBorrowState(state)
                     || state.immutableBorrows > 0 || state.mutableBorrowed))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
         }
@@ -913,7 +950,8 @@ public final class OwnershipChecker {
                     ownershipRoot(place.owner()),
                     true);
         } else if (binding.initializer() instanceof Ast.LambdaExpr lambda) {
-            value = checkLambda(lambda, scope, binding.name());
+            value = checkLambda(
+                    lambda, scope, binding.name(), false, false, binding.declaredType());
         } else {
             value = checkExpr(binding.initializer(), scope, true);
         }
@@ -2702,7 +2740,12 @@ public final class OwnershipChecker {
                 throw error("cannot mutate readonly structural record '" + name.name() + "'");
             }
             if (isMutexGuardType(state.type)) return;
-            boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW || (state.type.isBorrow() && state.type.mutableBorrow());
+            boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW
+                    || (state.type.isBorrow() && state.type.mutableBorrow());
+            if (isBorrowState(state) && !mutableBorrow) {
+                throw error("cannot mutate " + what + " through immutable/provenance-tracked borrow '"
+                        + name.name() + "'");
+            }
             if (!state.mutable && !mutableBorrow) {
                 throw error("cannot mutate " + what + " through read-only binding '" + name.name() + "'; use val, const mut, or let mut with valid ownership");
             }
@@ -2821,8 +2864,9 @@ public final class OwnershipChecker {
             if (owner.type.isReadonlyRecordType()) {
                 throw error("cannot mutably borrow readonly structural record '" + owner.debugName + "'");
             }
-            if (owner.kind == ValueKind.IMM_BORROW)
-                throw error("cannot mutably reborrow a shared borrow '" + owner.debugName + "'");
+            if (isBorrowState(owner) && owner.kind != ValueKind.MUT_BORROW)
+                throw error("cannot mutably reborrow a shared/provenance-tracked borrow '"
+                        + owner.debugName + "'");
             // An incoming exclusive loan may be reborrowed for a call, even
             // though its parameter binding itself cannot be reassigned.
             // This does not grant mutability to an owned immutable binding
@@ -2952,6 +2996,18 @@ public final class OwnershipChecker {
             String recursiveBinding,
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
+        return checkLambda(
+                lambda, outer, recursiveBinding,
+                allowActorSelfCapture, deferredCleanup, null);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean deferredCleanup,
+            Ast.TypeRef callableContext) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -2999,8 +3055,16 @@ public final class OwnershipChecker {
             }
         }
 
-        for (Ast.Param param : lambda.parameters()) {
-            closure.define(param.name(), stateForLambdaParam(param));
+        for (int i = 0; i < lambda.parameters().size(); i++) {
+            Ast.Param param = lambda.parameters().get(i);
+            closure.define(
+                    param.name(),
+                    stateForLambdaParam(
+                            param,
+                            contextualLambdaParameterType(
+                                    callableContext,
+                                    i,
+                                    lambda.parameters().size())));
         }
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
@@ -5055,8 +5119,14 @@ public final class OwnershipChecker {
             closed = true;
             for (VarState state : locals.values()) {
                 if (state.borrowSource != null && state.borrowLease) {
-                    if (state.kind == ValueKind.MUT_BORROW) state.borrowSource.mutableBorrowed = false;
-                    else if (state.kind == ValueKind.IMM_BORROW) {
+                    if (state.kind == ValueKind.MUT_BORROW) {
+                        state.borrowSource.mutableBorrowed = false;
+                    } else {
+                        // Provenance-marked owned-looking projections are
+                        // immutable lexical loans too. Their ValueKind may be
+                        // MOVE_ONLY to preserve the projected nominal type,
+                        // but the retained lease still increments the source's
+                        // shared-borrow count and must be released here.
                         state.borrowSource.immutableBorrows--;
                         if (state.borrowSource.immutableBorrows < 0) {
                             throw new IllegalStateException("Oreslang ownership invariant violated: negative immutable borrow count");

@@ -284,6 +284,29 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void provenanceMarkedOwnedLookingAliasCannotCrossAwait() {
+        rejectsWith("""
+                define class FluentBox as
+                  pub val int value = 7;
+
+                  pub same(): self {
+                    return self;
+                  }
+                end
+
+                async fnc later(): int {
+                  return 42;
+                }
+
+                async fnc bad(borrow FluentBox box): int {
+                  val FluentBox alias = box.same();
+                  val int answer = await later();
+                  return alias.value + answer;
+                }
+                """, "borrow", "suspension", "await");
+    }
+
+    @Test
     void localBorrowCannotEscapeItsOwnerByReturn() {
         rejectsWith("""
                 pub fnc leak(): borrow Box {
