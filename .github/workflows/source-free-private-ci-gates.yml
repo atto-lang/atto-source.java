@@ -39,6 +39,8 @@ jobs:
           PY
       - name: Reject unauthorized destinations without publishing
         run: bash scripts/test-private-ci-destination.sh
+      - name: Verify terminal private-export CODEOWNERS contract
+        run: bash scripts/test-private-ci-codeowners-contract.sh
       - name: Verify source-free publisher regression fixtures
         run: |
           python3 scripts/test-publish-private-ci-source.py
