@@ -667,6 +667,38 @@ final class SourceLoopSoftPreemptionTest {
                         + "a generator's automatic suspension authority");
     }
 
+    @Test
+    void generatorForOfCooperatesOnlyAfterProcessingEachPulledItem()
+            throws Exception {
+        String output = run("""
+                generator fnc values(): int {
+                  let total = 0;
+                  for (let i = 0; i < 750; i = i + 1) do
+                    for const value of arr[1, 2, 3, 4] do
+                      if value == 2; do
+                        continue;
+                      fi
+                      total = total + value;
+                    done
+                  done
+                  yield total;
+                  return;
+                }
+                pub async routine main(): void {
+                  for const value of values() do
+                    stdio.stdout.write(value);
+                  done
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("6000|"), output);
+        assertTrue(Long.parseLong(output.substring("6000|".length())) > 0,
+                "post-commit for-of handoffs must preserve exactly-once "
+                        + "iterator consumption and continue semantics");
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
