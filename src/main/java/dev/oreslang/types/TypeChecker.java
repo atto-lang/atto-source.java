@@ -7492,7 +7492,7 @@ public final class TypeChecker {
             };
             case "AsyncIterator" -> switch (member) {
                 case "next" -> new Function(List.of(), new Named("Future", List.of(new Named("IteratorResult", List.of(element)))));
-                case "close" -> new Function(List.of(), Primitive.VOID);
+                case "close" -> new Function(List.of(), new Named("Future", List.of(Primitive.VOID)));
                 default -> null;
             };
             case "IteratorResult" -> switch (member) {
