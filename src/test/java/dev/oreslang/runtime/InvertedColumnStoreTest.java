@@ -11,6 +11,70 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class InvertedColumnStoreTest {
     @Test
+    void injectedHandleAllocationFailureCannotPublishReusedRow() {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
+            var deleted = store.push(11);
+            var survivor = store.push(22);
+            store.eraseSwap(deleted);
+            store.armAllocationFailureForTest(
+                    InvertedColumnStore.AllocationFailurePoint.BEFORE_HANDLE_ISSUE);
+            assertThrows(OutOfMemoryError.class, () -> store.push(33));
+            assertEquals(1, store.size());
+            assertEquals(22, store.get(survivor, 0));
+            assertThrows(IllegalArgumentException.class, () -> store.get(deleted, 0));
+            var next = store.push(33);
+            assertEquals(2, store.size());
+            assertEquals(deleted.slot(), next.slot(),
+                    "failed push must not consume the recyclable slot");
+            assertEquals(deleted.generation() + 1, next.generation(),
+                    "failed push must not advance or reset the generation");
+            assertEquals(33, store.get(next, 0));
+            assertEquals(22, store.get(survivor, 0));
+        }
+    }
+
+    @Test
+    void injectedReserveCommitFailureLeavesAllPublishedColumnsAndHandlesUntouched() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I64, InvertedColumnStore.Kind.BOOL)) {
+            var row = store.push(101L, true);
+            int capacity = store.capacity();
+            store.armAllocationFailureForTest(
+                    InvertedColumnStore.AllocationFailurePoint.BEFORE_RESERVE_COMMIT);
+            assertThrows(OutOfMemoryError.class, () -> store.reserve(capacity + 3));
+            assertEquals(capacity, store.capacity());
+            assertEquals(1, store.size());
+            assertEquals(101L, store.get(row, 0));
+            assertEquals(true, store.get(row, 1));
+            store.reserve(capacity + 3);
+            assertEquals(capacity + 3, store.capacity(),
+                    "injected failure must be one-shot");
+            var second = store.push(202L, false);
+            assertEquals(2, store.size());
+            assertEquals(101L, store.get(row, 0));
+            assertEquals(202L, store.get(second, 0));
+        }
+    }
+
+    @Test
+    void allocationFailureInjectionIsBoundToExpectedPhaseAndSingleUse() {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
+            store.armAllocationFailureForTest(
+                    InvertedColumnStore.AllocationFailurePoint.BEFORE_HANDLE_ISSUE);
+            assertThrows(IllegalStateException.class,
+                    () -> store.armAllocationFailureForTest(
+                            InvertedColumnStore.AllocationFailurePoint.BEFORE_RESERVE_COMMIT));
+            // The reserve phase is distinct; it cannot consume a handle
+            // issuance failure that was armed for a later phase.
+            store.reserve(2);
+            assertEquals(0, store.size());
+            assertThrows(OutOfMemoryError.class, () -> store.push(1));
+            assertEquals(0, store.size());
+            assertEquals(2, store.get(store.push(2), 0));
+        }
+    }
+
+    @Test
     void failedRowAdmissionCannotConsumeReusableSlotOrPublishPartialColumns() {
         try (var store = new InvertedColumnStore(
                 InvertedColumnStore.Kind.I32,
