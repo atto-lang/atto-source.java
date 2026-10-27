@@ -41,7 +41,7 @@ jobs:
     name: exact-head export parser and resolver
     # Never run fork PR code on the organization's trusted self-hosted runner.
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, x64, oreslang-jdk25]
     timeout-minutes: 20
     steps:
       - name: Checkout exact revision
