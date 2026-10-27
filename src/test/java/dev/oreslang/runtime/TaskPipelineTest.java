@@ -517,6 +517,63 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void scopeCancellationDuringStageFutureCreationRevokesOnlyNewOwnedWork()
+            throws Exception {
+        // Cancellation must not let an async child escape the interval
+        // between a synchronous stage returning Owned(child) and ownership
+        // registration. The same race must preserve borrowed stage Futures.
+        for (boolean ownsStageFuture : new boolean[] {true, false}) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger laterStageCalls = new AtomicInteger();
+            OresFuture<Integer> borrowedInput = OresFuture.completed(20);
+            OresFuture<Integer> stageFuture = new OresFuture<>();
+            try (OresScheduler scheduler = new OresScheduler(1)) {
+                TaskScope scope = scheduler.newTaskScope();
+                TaskPipeline.PipelineHandle<Integer> pipeline = TaskPipeline.startInScope(
+                        scope, borrowedInput, List.of(
+                                value -> {
+                                    entered.countDown();
+                                    if (!release.await(5, TimeUnit.SECONDS)) {
+                                        throw new IllegalStateException("stage creation gate timed out");
+                                    }
+                                    return ownsStageFuture
+                                            ? TaskPipeline.owned(stageFuture) : stageFuture;
+                                },
+                                value -> {
+                                    laterStageCalls.incrementAndGet();
+                                    return value;
+                                }));
+                try {
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+                    assertTrue(scope.cancel("parent revoked during stage future creation"));
+                    assertFalse(pipeline.getDone().isDone(),
+                            "the active synchronous stage must physically retire first");
+                } finally {
+                    release.countDown();
+                }
+                assertInstanceOf(TaskHandle.Cancelled.class,
+                        pipeline.getDone().get(5, TimeUnit.SECONDS));
+                assertNull(scope.getDone().get(5, TimeUnit.SECONDS));
+                assertTrue(pipeline.result().isCancelled());
+                assertEquals(ownsStageFuture, stageFuture.isCancelled(),
+                        "cancel freshly owned, but never a borrowed stage Future");
+                assertEquals(0, laterStageCalls.get(),
+                        "parent cancellation must prevent the next pipeline stage");
+                assertFalse(borrowedInput.isCancelled(),
+                        "a borrowed pipeline root must survive parent cancellation");
+                assertEquals(20, borrowedInput.get(5, TimeUnit.SECONDS));
+                assertEquals(0, stageFuture.pendingRuntimeWaiterCount(),
+                        "no await listener may escape a cancelled stage turn");
+                if (!ownsStageFuture) {
+                    assertTrue(stageFuture.completeFromRuntime(21),
+                            "external stage Future remains independently usable");
+                }
+            }
+        }
+    }
+
+    @Test
     void cancellingOwningTaskScopeCancelsPipelineButNotBorrowedInput()
             throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
