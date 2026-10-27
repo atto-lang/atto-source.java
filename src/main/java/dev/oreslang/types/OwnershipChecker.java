@@ -90,10 +90,13 @@ public final class OwnershipChecker {
     /** Called only after TypeChecker has proved which short forms create aliases. */
     public static Ast.Program check(
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
-        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
-        checker.validate(program);
-        checker.publishTaskAdmissions();
-        return program;
+        try (CheckedCallPlan.ValidationScope proof = CheckedCallPlan.beginValidation()) {
+            OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+            checker.validate(program);
+            checker.publishTaskAdmissions();
+            proof.commit();
+            return program;
+        }
     }
 
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
@@ -136,9 +139,12 @@ public final class OwnershipChecker {
             }
             checker.classes.put(name, declaration);
         }
-        checker.validate(program);
-        checker.publishTaskAdmissions();
-        return program;
+        try (CheckedCallPlan.ValidationScope proof = CheckedCallPlan.beginValidation()) {
+            checker.validate(program);
+            checker.publishTaskAdmissions();
+            proof.commit();
+            return program;
+        }
     }
 
     private void publishTaskAdmissions() {
@@ -2617,6 +2623,7 @@ public final class OwnershipChecker {
                 inputs);
         CheckedCallPlan plan = reconstructed;
         if (callSite != null) {
+            CheckedCallPlan.trackValidationSite(callSite);
             CheckedCallPlan published =
                     CheckedCallPlan.lookup(callSite);
             if (published == null) {
