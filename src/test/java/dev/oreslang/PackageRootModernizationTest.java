@@ -367,6 +367,45 @@ final class PackageRootModernizationTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void danglingNestedLegacyMarkerBlocksParentProjectRootAuthority() throws Exception {
+        Path root = modernPackage("parent-modern-dangling-legacy");
+        Path nested = Files.createDirectories(root.resolve("nested"));
+        requireSymlink(
+                nested.resolve(OresProjectConfig.MANIFEST_NAME),
+                nested.resolve("missing-legacy.toml"));
+        Path importer = nested.resolve("main.ores");
+        Files.writeString(importer, "pub routine main(): void { return; }\n");
+
+        OresProjectConfig parentConfig =
+                OresProjectConfig.discover(root.resolve("entry.ores"), Map.of());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> parentConfig.resolveImport(importer, "+lib/helper"));
+        assertTrue(failure.getMessage().contains("blocked by nearer legacy package authority"),
+                failure.getMessage());
+    }
+
+    @Test
+    void modernConfiguredMissingPathRejectsNonDirectoryAncestor() throws Exception {
+        Path root = Files.createDirectories(temp.resolve("modern-file-ancestor"));
+        Path source = root.resolve("main.ores");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+        Files.writeString(root.resolve("blocked"), "not a directory\n");
+        Files.writeString(root.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["blocked/generated"]
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(source, Map.of()));
+        assertTrue(failure.getMessage().contains("non-directory ancestor"),
+                failure.getMessage());
+    }
+
     @Test
     void linkedRunnerResolvesCanonicalProjectRootImport() throws Exception {
         Path root = modernPackage("linked-plus");
