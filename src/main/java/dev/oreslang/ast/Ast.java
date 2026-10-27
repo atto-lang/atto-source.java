@@ -1517,6 +1517,10 @@ public final class Ast {
                 new java.util.HashMap<>();
         private static final java.util.Map<ProgramIdentityKey, Long> PROGRAM_EPOCHS =
                 new java.util.HashMap<>();
+        // Weak identity keys: rechecking an admitted program must prevent
+        // direct OwnershipChecker invocation from reusing stale type evidence.
+        private static final java.util.Set<ProgramIdentityKey> TYPE_RECHECK_PENDING =
+                new java.util.HashSet<>();
 
         private static final class PairIdentityKey
                 extends java.lang.ref.WeakReference<MemberExpr> {
@@ -1573,7 +1577,10 @@ public final class Ast {
             java.lang.ref.Reference<? extends MemberExpr> site;
             while ((site = CLEARED_SITES.poll()) != null) ADMISSIONS.remove(site);
             java.lang.ref.Reference<? extends Program> program;
-            while ((program = CLEARED_PROGRAMS.poll()) != null) PROGRAM_EPOCHS.remove(program);
+            while ((program = CLEARED_PROGRAMS.poll()) != null) {
+                PROGRAM_EPOCHS.remove(program);
+                TYPE_RECHECK_PENDING.remove(program);
+            }
             ADMISSIONS.keySet().removeIf(key ->
                     key.program() == null || key.get() == null);
         }
@@ -1591,6 +1598,8 @@ public final class Ast {
             ProgramIdentityKey lookup = new ProgramIdentityKey(program, null);
             Long prior = PROGRAM_EPOCHS.get(lookup);
             if (prior == null) return;
+            TYPE_RECHECK_PENDING.add(
+                    new ProgramIdentityKey(program, CLEARED_PROGRAMS));
             ADMISSIONS.keySet().removeIf(key -> key.program() == program);
             if (prior > 0) {
                 PROGRAM_EPOCHS.put(
@@ -1598,7 +1607,21 @@ public final class Ast {
             }
         }
 
+        /** A successful recheck may lift the barrier only for the exact AST
+         * program whose type validation completed. */
+        public static synchronized void typeRecheckSucceeded(Program program) {
+            java.util.Objects.requireNonNull(program, "rechecked inverted program");
+            expunge();
+            TYPE_RECHECK_PENDING.remove(new ProgramIdentityKey(program, null));
+        }
+
         public static synchronized void beginCheck(Program program, long checkEpoch) {
+            java.util.Objects.requireNonNull(program, "checked inverted program");
+            expunge();
+            if (TYPE_RECHECK_PENDING.contains(new ProgramIdentityKey(program, null))) {
+                throw new IllegalStateException(
+                        "inverted indexing requires a successful type recheck before ownership");
+            }
             if (checkEpoch <= 0) {
                 throw new IllegalArgumentException(
                         "inverted index ownership epoch must be positive");
