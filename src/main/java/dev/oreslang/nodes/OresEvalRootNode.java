@@ -7819,7 +7819,9 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "out" -> new ActorIoOutFacade(io.context());
                     case "in", "err", "events", "meta" ->
-                            new ReservedActorIoChannel(name);
+                            throw new IllegalStateException(
+                                    "actor-local io." + name
+                                            + " is reserved but not implemented on this backend yet");
                     default -> throw new IllegalArgumentException(
                             "unknown actor io member " + name);
                 };
@@ -7831,11 +7833,6 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException(
                         "unknown io.out member " + name);
-            }
-            if (receiver instanceof ReservedActorIoChannel reserved) {
-                throw new IllegalStateException(
-                        "actor-local io." + reserved.name()
-                                + " is reserved but not implemented on this backend yet");
             }
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
@@ -11366,12 +11363,6 @@ public final class OresEvalRootNode extends RootNode {
                 // than unexpectedly throwing before the caller can await it.
                 return OresFuture.failed(failure);
             }
-        }
-    }
-
-    private record ReservedActorIoChannel(String name) {
-        private ReservedActorIoChannel {
-            Objects.requireNonNull(name, "actor io channel");
         }
     }
 
