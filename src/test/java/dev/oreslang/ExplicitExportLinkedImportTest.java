@@ -121,6 +121,38 @@ final class ExplicitExportLinkedImportTest {
     }
 
     @Test
+    void synthesizedConstructorFieldTypeIsPartOfExplicitExportAbi() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "lib.ores", """
+                        export class Internal as PublicBox;
+                        define class Internal as
+                          val int value;
+                        end
+                        """,
+                "main.ores", """
+                        import class PublicBox from "./lib.ores";
+                        pub fnc main(): void { return; }
+                        """);
+
+        compiler.compile(initial);
+
+        Map<String, String> changed = Map.of(
+                "lib.ores", """
+                        export class Internal as PublicBox;
+                        define class Internal as
+                          val String value;
+                        end
+                        """,
+                "main.ores", initial.get("main.ores"));
+
+        var result = compiler.compile(changed);
+        assertTrue(result.rebuilt("lib.ores"));
+        assertTrue(result.rebuilt("main.ores"),
+                "synthesized constructor parameter types are part of the exported class ABI");
+    }
+
+    @Test
     void explicitExportAliasRenameInvalidatesWildcardImporter() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> initial = Map.of(

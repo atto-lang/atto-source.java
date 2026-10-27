@@ -388,7 +388,15 @@ public final class ExportResolver {
             for (Ast.FieldDecl field : cls.fields()) {
                 if (field.visibility() == Ast.Visibility.PUBLIC) collectType(field.type(), out, classGenerics);
             }
-            if (cls.constructor() != null && cls.constructor().visibility() == Ast.Visibility.PUBLIC) {
+            if (cls.constructor() == null) {
+                // The legacy synthesized constructor is externally callable for
+                // an exported class and accepts every instance field in storage
+                // order, regardless of the field's own visibility. Its parameter
+                // types are therefore part of the exported API surface.
+                for (Ast.FieldDecl field : cls.fields()) {
+                    collectType(field.type(), out, classGenerics);
+                }
+            } else if (cls.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 for (Ast.Param p : cls.constructor().parameters()) collectType(p.type(), out, classGenerics);
             }
             for (Ast.MethodDecl method : cls.methods()) {

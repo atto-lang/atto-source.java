@@ -145,7 +145,13 @@ public final class ExportAbiMetadata {
             strings(out, cls.genericParameters());
             types(out, cls.parents());
             types(out, cls.interfaces());
-            if (cls.constructor() != null && cls.constructor().visibility() == Ast.Visibility.PUBLIC) {
+            if (cls.constructor() == null) {
+                field(out, "synthesized-constructor");
+                field(out, Integer.toString(cls.fields().size()));
+                for (Ast.FieldDecl constructorField : cls.fields()) {
+                    type(out, constructorField.type());
+                }
+            } else if (cls.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 field(out, "public-constructor");
                 params(out, cls.constructor().parameters());
             }

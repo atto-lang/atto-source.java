@@ -415,6 +415,21 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void synthesizedConstructorCannotLeakNarrowPrivateFieldType() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ExportResolver.resolve(Parser.parse("""
+                        private define type InternalId = int;
+                        define class PublicApi as
+                          val InternalId id;
+                        end
+                        export class PublicApi;
+                        """)));
+
+        assertTrue(failure.getMessage().contains("EXPORT_API_LEAK"), failure.getMessage());
+    }
+
+    @Test
     void publicExplicitExportIsATreeShakerLibraryRoot() {
         var result = OresCompiler.compileForBuild("""
                 export class Box;
