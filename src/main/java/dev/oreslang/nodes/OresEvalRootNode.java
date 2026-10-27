@@ -1885,7 +1885,11 @@ public final class OresEvalRootNode extends RootNode {
                 Set<Object> seen) {
             if (!seen.add(function)) return false;
             for (Ast.Stmt stmt : function.body()) {
-                if (statementContainsPotentialSuspension(stmt, seen)) {
+                // An ordinary synchronous CPU loop is also a safe-point
+                // boundary once enclosed in a heap-owned SourceTask. Do not
+                // let a transitive helper monopolize an actor's carrier.
+                if (containsSourceLoop(stmt)
+                        || statementContainsPotentialSuspension(stmt, seen)) {
                     return true;
                 }
             }
@@ -2074,7 +2078,8 @@ public final class OresEvalRootNode extends RootNode {
                                     && seen.add(method)) {
                                 if (method.async() || method.suspends()) return true;
                                 for (Ast.Stmt statement : method.body()) {
-                                    if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    if (containsSourceLoop(statement)
+                                            || statementContainsPotentialSuspension(statement, seen)) return true;
                                 }
                             }
                         }
@@ -6035,10 +6040,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method) {
             if (method.suspends()) return true;
             for (Ast.Stmt stmt : method.body()) {
-                if (statementContainsPotentialSuspension(
-                        stmt,
-                        java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
+                if (containsSourceLoop(stmt)
+                        || statementContainsPotentialSuspension(
+                                stmt,
+                                java.util.Collections.newSetFromMap(
+                                        new IdentityHashMap<>()))) {
                     return true;
                 }
             }
