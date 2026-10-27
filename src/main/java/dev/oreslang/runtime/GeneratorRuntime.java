@@ -50,6 +50,7 @@ public final class GeneratorRuntime {
 
     public static final class Generator<T> implements Iterable<T>, AutoCloseable {
         private final Engine<T> engine;
+        private final AtomicBoolean pullInFlight = new AtomicBoolean();
 
         private Generator(Engine<T> engine) {
             this.engine = engine;
@@ -61,7 +62,15 @@ public final class GeneratorRuntime {
                         "synchronous generator iteration cannot park an actor carrier; "
                                 + "use an async generator and 'for await'");
             }
-            return engine.next();
+            if (!pullInFlight.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "concurrent Iterator.next() is not permitted; finish the outstanding pull first");
+            }
+            try {
+                return engine.next();
+            } finally {
+                pullInFlight.set(false);
+            }
         }
 
         @Override
