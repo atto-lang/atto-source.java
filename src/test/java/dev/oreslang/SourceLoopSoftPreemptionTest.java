@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.OresCompiler;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import org.graalvm.polyglot.Context;
@@ -614,6 +615,27 @@ final class SourceLoopSoftPreemptionTest {
                 "automatic generator preemption must not cross an active MutexGuard");
         assertTrue(Long.parseLong(values[1]) > 0,
                 "released MutexGuard should restore generator scheduler cooperation");
+    }
+
+    @Test
+    void implicitGeneratorCooperationRejectsLiveBorrowAtLoopBackedge() {
+        String source = """
+                generator fnc values(): int {
+                  let int number = 7;
+                  val borrowed = rt borrow number;
+                  let i = 0;
+                  while i < 1024 do
+                    i = i + 1;
+                  done
+                  yield number;
+                  return;
+                }
+                pub routine main(): void { return; }
+                """;
+        RuntimeException rejected = assertThrows(RuntimeException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(rejected.toString().contains("generator cooperative loop"),
+                "implicit generator scheduling must obey borrow admission: " + rejected);
     }
 
     private static String run(String sourceText) throws Exception {
