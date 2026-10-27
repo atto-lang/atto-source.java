@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.types.CheckedCallItem;
+import dev.oreslang.types.CheckedCallPlan;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -42,6 +43,44 @@ final class CheckedCallItemTest {
                 item.projectionKind());
         assertEquals(-1, item.projectionIndex());
         assertEquals("value", item.inputSlot().label());
+    }
+
+    @Test
+    void sourceIdentityAndCanonicalInputSlotSurviveIndexMatrix() {
+        // Validate the complete identity/projection conversion contract
+        // across a broad range of raw call-item and projection indices.
+        Ast.Expr source = new Ast.NameExpr("one-evaluation");
+        for (int rawIndex = 0; rawIndex < 1024; rawIndex++) {
+            CheckedCallItem positional =
+                    CheckedCallItem.positional(source, rawIndex);
+            CheckedCallItem named =
+                    CheckedCallItem.named(source, "value", rawIndex);
+            CheckedCallItem tuple =
+                    CheckedCallItem.tupleProjection(
+                            source, rawIndex, rawIndex);
+            CheckedCallItem record =
+                    CheckedCallItem.recordProjection(
+                            source, "field", rawIndex, rawIndex);
+
+            assertSame(source, positional.sourceExpression());
+            assertSame(source, named.sourceExpression());
+            assertSame(source, tuple.sourceExpression());
+            assertSame(source, record.sourceExpression());
+            assertEquals(
+                    CheckedCallPlan.InputSlot.positional(rawIndex),
+                    positional.inputSlot());
+            assertEquals(
+                    CheckedCallPlan.InputSlot.named("value", rawIndex),
+                    named.inputSlot());
+            assertEquals(
+                    CheckedCallPlan.InputSlot.positionalProjection(
+                            rawIndex, rawIndex),
+                    tuple.inputSlot());
+            assertEquals(
+                    CheckedCallPlan.InputSlot.namedProjection(
+                            "field", rawIndex, rawIndex),
+                    record.inputSlot());
+        }
     }
 
     @Test
