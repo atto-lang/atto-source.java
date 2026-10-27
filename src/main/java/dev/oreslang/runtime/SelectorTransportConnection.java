@@ -544,6 +544,12 @@ final class SelectorTransportConnection implements AutoCloseable {
             throws IOException {
         while (true) {
             requireOpen();
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IOException(
+                        "pinned HTTP "
+                                + what
+                                + " interrupted");
+            }
             long remaining =
                     deadlineNanos - System.nanoTime();
             if (remaining <= 0) {
@@ -561,6 +567,12 @@ final class SelectorTransportConnection implements AutoCloseable {
                             (remaining + 999_999L)
                                     / 1_000_000L));
             int ready = selector.select(millis);
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IOException(
+                        "pinned HTTP "
+                                + what
+                                + " interrupted");
+            }
             if (ready == 0) continue;
 
             boolean matched = false;
