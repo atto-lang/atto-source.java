@@ -41,7 +41,7 @@ echo 'ASYNC_INTEROP_EXPECTED_RUNNER_ISOLATION=preverified_external_control'
 # Offline Maven still runs checked-out build scripts; admins MUST enforce
 # egress denial and no-secret execution OUTSIDE this shell script.
 # First verify the independent fail-closed JUnit receipt validator itself.
-python3 -m unittest -v tests/test_verify_async_interop_junit.py
+python3 -m unittest discover -s tests -p 'test_verify_async_interop_junit.py' -v
 
 # Clean rebuild prevents stale class and JUnit artifacts from faking proof.
 # Maven and its plugins/dependencies must already exist in an offline cache.
