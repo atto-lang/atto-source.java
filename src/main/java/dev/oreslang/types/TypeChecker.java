@@ -2276,6 +2276,10 @@ public final class TypeChecker {
 
             env.restoreInitialization(before);
             Env caught = new Env(env);
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        attempted.errorName(), "actor catch binding");
+            }
             caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
             checkBlock(attempted.catchBody(), caught, generics, expectedReturn, self);
             Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
@@ -2335,6 +2339,10 @@ public final class TypeChecker {
                         requireMutableReferentCompatible(
                                 bound, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
+                        if (currentActorKind != Ast.ActorKind.NONE) {
+                            rejectActorExecutionIntrinsicBinding(
+                                    arm.bindingName(), "actor select binding");
+                        }
                         armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
@@ -2395,6 +2403,10 @@ public final class TypeChecker {
             requireMutableReferentCompatible(
                     element, loop.mutableReferent(),
                     "for-of binding '" + loop.bindingName() + "'");
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        loop.bindingName(), "actor for-of binding");
+            }
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             env.restoreInitialization(afterIterable);
@@ -4612,6 +4624,10 @@ public final class TypeChecker {
             for (Ast.Param param : lambda.parameters()) {
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    rejectActorExecutionIntrinsicBinding(
+                            param.name(), "actor lambda parameter");
+                }
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             defineImplicitArguments(lambdaEnv, parameters);
@@ -5234,6 +5250,10 @@ public final class TypeChecker {
         requireMutableReferentCompatible(
                 type, binding.mutableReferent(),
                 "destructure binding '" + binding.name() + "'");
+        if (currentActorKind != Ast.ActorKind.NONE) {
+            rejectActorExecutionIntrinsicBinding(
+                    binding.name(), "actor destructure binding");
+        }
         env.define(binding.name(), type, binding.kind());
     }
 
@@ -5389,6 +5409,10 @@ public final class TypeChecker {
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        if (currentActorKind != Ast.ActorKind.NONE) {
+            rejectActorExecutionIntrinsicBinding(
+                    param.name(), "actor lambda parameter");
+        }
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
@@ -5435,6 +5459,10 @@ public final class TypeChecker {
             lambdaArgumentTypes.add(declared);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        param.name(), "actor lambda parameter");
+            }
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
@@ -6327,6 +6355,10 @@ public final class TypeChecker {
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type refinement: " + source + " cannot be " + target);
             }
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        test.binding(), "actor type-test binding");
+            }
             destination.define(
                     test.binding(),
                     overlayReadonlyCapabilities(source, target),
@@ -6401,6 +6433,10 @@ public final class TypeChecker {
             Ast.Pattern pattern, Type subject, Env bindings, Set<String> generics, Type self) {
         if (pattern instanceof Ast.WildcardPattern) return;
         if (pattern instanceof Ast.BindingPattern binding) {
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        binding.name(), "actor pattern binding");
+            }
             bindings.define(binding.name(), subject, Ast.BindingKind.VAL);
             return;
         }
@@ -6423,6 +6459,10 @@ public final class TypeChecker {
                 if (typed.binding() != null) {
                     // A negative test does not prove a concrete positive
                     // nominal type; retain the subject's static capabilities.
+                    if (currentActorKind != Ast.ActorKind.NONE) {
+                        rejectActorExecutionIntrinsicBinding(
+                                typed.binding(), "actor type-pattern binding");
+                    }
                     bindings.define(typed.binding(), subject, Ast.BindingKind.VAL);
                 }
                 return;
@@ -6432,6 +6472,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
             if (typed.binding() != null) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    rejectActorExecutionIntrinsicBinding(
+                            typed.binding(), "actor type-pattern binding");
+                }
                 bindings.define(
                         typed.binding(),
                         overlayReadonlyCapabilities(subject, target),
@@ -6449,6 +6493,10 @@ public final class TypeChecker {
                                 + " cannot satisfy " + structural.target());
             }
             if (structural.binding() != null) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    rejectActorExecutionIntrinsicBinding(
+                            structural.binding(), "actor structural-pattern binding");
+                }
                 // Structural pattern matching proves shape only, NEVER
                 // mutable field authority. Keep the current-main structural
                 // CONTRACT kind, including public method slots, rather than
