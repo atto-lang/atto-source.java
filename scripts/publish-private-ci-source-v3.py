@@ -54,6 +54,7 @@ MAX_SOURCE_PR_REVIEWS = 100
 MAX_GOVERNANCE_FILE = 1024 * 1024
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
+CARRIER_REQUIRED_STATUS_CONTEXTS = frozenset({"verifier-tests"})
 CONTRACT_SCHEMA = 1
 INCIDENT_DISPOSITION_SCHEMA = 1
 MAX_CONTRACT = 64 * 1024
@@ -625,6 +626,14 @@ def checked_carrier_main(repository, contract):
             or conversation.get("enabled") is not True):
         raise Denied(
             "carrier main must enforce strict required CI and conversation resolution"
+        )
+    required_contexts = set(contexts)
+    required_contexts.update(item["context"] for item in named_checks)
+    missing_required = CARRIER_REQUIRED_STATUS_CONTEXTS - required_contexts
+    if missing_required:
+        raise Denied(
+            "carrier main required CI is missing private-carrier verifier checks: "
+            + ",".join(sorted(missing_required))
         )
     admins = protection.get("enforce_admins")
     force = protection.get("allow_force_pushes")
