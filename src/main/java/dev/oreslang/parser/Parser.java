@@ -308,6 +308,9 @@ public final class Parser {
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected flat module name").lexeme();
+        if (name.equals(ROOT_MODULE)) {
+            throw error(previous(), "module name '" + ROOT_MODULE + "' is reserved for file-root declarations");
+        }
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
         // Canonical module syntax is "define module Name as ... end".
