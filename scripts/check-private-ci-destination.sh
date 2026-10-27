@@ -9,6 +9,11 @@ fail() {
 target="$1"
 slug_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$'
 [[ "$target" =~ $slug_pattern ]] || fail 'destination must be an owner/repo slug'
+case "${target,,}" in
+  zed-pkg-test/java-app|scintilla-run-test/gleam-runner-conformance|ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra|agent-pontifex-test/agent-pontifex-e2e-tests|led-dynamo/leddy-e2e)
+    fail 'destination slug is quarantined by private-source incident policy'
+    ;;
+esac
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 policy_dir="$script_dir/../.github"
 [[ -d "$policy_dir" && ! -L "$policy_dir" ]] ||
@@ -18,6 +23,7 @@ policy="$policy_dir/private-ci-approved-repositories.txt"
   fail 'reviewed policy file is missing, unreadable or symlinked'
 entry_pattern='^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$'
 declare -A seen=()
+declare -A seen_ids=()
 approved_id=''
 while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   [[ -z "$candidate" || "$candidate" =~ ^# ]] && continue
@@ -27,12 +33,17 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   numeric_id="${BASH_REMATCH[2]}"
   key="${approved_name,,}"
   [[ ! -v seen["$key"] ]] || fail 'duplicate repository identity in approval policy'
+  [[ ! -v seen_ids["$numeric_id"] ]] || fail 'duplicate numeric repository ID in approval policy'
   seen["$key"]=1
+  seen_ids["$numeric_id"]=1
   if [[ "$key" == "${target,,}" ]]; then approved_id="$numeric_id"; fi
 done < "$policy"
 [[ -n "$approved_id" ]] || fail 'destination is absent from reviewed repository policy'
-[[ "$approved_id" != 1323575966 ]] ||
-  fail 'destination repository ID is quarantined by private-source incident policy'
+case "$approved_id" in
+  1323575966|1323598260|1412142815|1370782550|1324139596)
+    fail 'destination repository ID is quarantined by private-source incident policy'
+    ;;
+esac
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
 metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
