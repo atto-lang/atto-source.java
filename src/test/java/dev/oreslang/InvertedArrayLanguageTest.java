@@ -424,6 +424,53 @@ final class InvertedArrayLanguageTest {
     }
 
     @Test
+    void failingLinkedTypeRecheckRevokesOnlyTheAffectedProgramsIndexProof() {
+        Ast.Program affected = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.Program independent = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.MemberExpr affectedRead = returnedMember(affected);
+        Ast.MemberExpr independentRead = returnedMember(independent);
+        long oldEpoch = Ast.CheckedInvertedIndexes.requireProgramEpoch(affected);
+        long independentEpoch =
+                Ast.CheckedInvertedIndexes.requireProgramEpoch(independent);
+
+        assertDoesNotThrow(() -> Ast.CheckedInvertedIndexes.require(
+                affected, affectedRead, oldEpoch, Ast.InvertedIndexAccess.READ));
+        assertDoesNotThrow(() -> Ast.CheckedInvertedIndexes.require(
+                independent, independentRead, independentEpoch, Ast.InvertedIndexAccess.READ));
+
+        // Fail at the earliest linked-metadata check, before annotation
+        // expansion and before a new OwnershipChecker can revoke authority.
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        affected, java.util.Map.of(), java.util.Map.of(), null));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedInvertedIndexes.requireProgramEpoch(affected));
+        assertThrows(IllegalStateException.class, () ->
+                Ast.CheckedInvertedIndexes.require(
+                        affected, affectedRead, oldEpoch, Ast.InvertedIndexAccess.READ));
+
+        // A direct ownership call cannot launder stale type evidence into a
+        // fresh epoch after failed linked validation.
+        assertThrows(IllegalStateException.class,
+                () -> OwnershipChecker.check(affected));
+
+        // Identity isolation: an unrelated AST keeps its independently
+        // admitted proof, despite equal source and structurally equal nodes.
+        assertDoesNotThrow(() -> Ast.CheckedInvertedIndexes.require(
+                independent, independentRead, independentEpoch, Ast.InvertedIndexAccess.READ));
+
+        // A new successful complete type+ownership pass may publish a fresh
+        // Program with its own proof; it must not resurrect the old AST epoch.
+        Ast.Program rechecked = TypeChecker.check(affected);
+        long freshEpoch = Ast.CheckedInvertedIndexes.requireProgramEpoch(rechecked);
+        assertDoesNotThrow(() -> Ast.CheckedInvertedIndexes.require(
+                rechecked, returnedMember(rechecked), freshEpoch, Ast.InvertedIndexAccess.READ));
+        assertThrows(IllegalStateException.class, () ->
+                Ast.CheckedInvertedIndexes.require(
+                        affected, affectedRead, oldEpoch, Ast.InvertedIndexAccess.READ));
+    }
+
+    @Test
     void ownershipRecheckRevokesOlderInvertedExecutionEpoch() {
         Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
         Ast.MemberExpr member = returnedMember(typed);
