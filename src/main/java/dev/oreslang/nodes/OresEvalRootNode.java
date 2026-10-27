@@ -7586,7 +7586,31 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.CallExpr call) {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
-                return invoke(prepareInvocation(call, env));
+                // Even an apparently non-suspending expression can hide a
+                // source loop in a transitive callee. This synchronous eval()
+                // fallback also runs in nested arithmetic/conditions, outside
+                // evalSuspendableCall's continuation gate. Refuse a nested
+                // SourceTask BEFORE invoke() while a no-yield loan is held.
+                //
+                // Direct dynamically-bound callable values have no verified
+                // effects at this boundary. Ordinary member builtins have
+                // separate admission protocols (e.g. MutexGuard.release);
+                // unproven dynamic member callbacks remain a P0 review gate.
+                if (env.hasLiveMutexGuards()
+                        && call.callee() instanceof Ast.NameExpr name
+                        && env.lookup(name.name()) != Env.MISSING
+                        && env.lookup(name.name()) instanceof Invokable) {
+                    throw new IllegalStateException(
+                            "cannot call an unproven dynamic source callable while holding a live MutexGuard");
+                }
+                Invocation invocation = prepareInvocation(call, env);
+                if (env.hasLiveMutexGuards()
+                        && invocation.kind() != InvocationKind.INVOKABLE
+                        && invocationMayLaunchSourceTask(invocation)) {
+                    throw new IllegalStateException(
+                            "cannot launch or suspend a source callable while holding a live MutexGuard");
+                }
+                return invoke(invocation);
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
