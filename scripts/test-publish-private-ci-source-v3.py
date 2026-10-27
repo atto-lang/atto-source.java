@@ -1432,6 +1432,77 @@ class PrivateCiV3Test(unittest.TestCase):
                     )
                 verify_source_pr.assert_not_called()
 
+    def test_publish_failure_after_source_blob_is_retention_event(self):
+        carrier = contract()
+
+        def api(route, method="GET", payload=None):
+            if method == "POST" and route.endswith("/git/blobs"):
+                data = base64.b64decode(payload["content"], validate=True)
+                return {"sha": v3.git_blob_sha(data)}
+            if method == "POST" and route.endswith("/git/trees"):
+                return {"sha": "9" * 40}
+            raise AssertionError((method, route))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(
+                    v3, "authorized_main_sha", return_value=PROTECTED
+                ),
+                patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3, "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
+                patch.object(
+                    v3,
+                    "checked_destination",
+                    return_value=(
+                        {
+                            "id": carrier["repository_id"],
+                            "private": True,
+                            "visibility": "private",
+                        },
+                        "3" * 40,
+                        PLAN,
+                    ),
+                ),
+                patch.object(
+                    v3.legacy,
+                    "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")],
+                ),
+                patch.object(
+                    v3.legacy,
+                    "verified_exact_source_tree",
+                    return_value=SOURCE_TREE,
+                ),
+                patch.object(v3, "authorize_write"),
+                patch.object(v3, "live_ref_sha", return_value=None),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+            ):
+                with self.assertRaisesRegex(
+                    v3.Denied,
+                    "dangling private-source objects may remain retained",
+                ):
+                    v3.publish(
+                        "trusted/ci",
+                        source,
+                        "4" * 40,
+                        1482,
+                        "ci/test-plans/java-pr1482.json",
+                        root,
+                    )
+
     def test_publish_binds_receipt_branch_and_authorization_ref(self):
         carrier = contract()
         writes = []
