@@ -78,6 +78,34 @@ final class InvertedColumnStoreTest {
     }
 
     @Test
+    void closingColumnLoanFromNestedTransformMustTaintAndAbort() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I32, InvertedColumnStore.Kind.BOOL)) {
+            var row = store.push(5, false);
+            var disjointLoan = store.borrowRead(1);
+            try {
+                assertThrows(IllegalStateException.class,
+                        () -> store.transformAt(0, 0, old -> {
+                            try {
+                                disjointLoan.close();
+                            } catch (IllegalStateException ignored) {
+                                // Even swallowing the exception cannot authorize
+                                // the transform to publish an update.
+                            }
+                            return 99;
+                        }));
+                assertEquals(5, store.get(row, 0));
+                assertThrows(IllegalStateException.class, () -> store.eraseSwap(row),
+                        "rejected callback must not silently retire the loan");
+            } finally {
+                disjointLoan.close();
+            }
+            store.transformAt(0, 0, value -> (Integer) value + 1);
+            assertEquals(6, store.get(row, 0));
+        }
+    }
+
+    @Test
     void rejectedIndexedRecordTransformCannotMutateStoredBytes() {
         try (var store = new InvertedColumnStore(
                 InvertedColumnStore.ColumnSpec.record(4))) {
