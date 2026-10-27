@@ -370,27 +370,14 @@ public final class OresProjectConfig {
         String unix = importPath.replace('\\', '/');
         if (ImportRules.isProjectRootPath(importPath)) {
             String local = ImportRules.projectRootRelativePath(importPath);
-            if (manifestPath == null || !isPackageManifest(manifestPath)) {
-                throw new IllegalArgumentException(
-                        "project-root import requires " + PACKAGE_MANIFEST_NAME + ": " + importPath);
-            }
-
-            Path root = projectRoot.toAbsolutePath().normalize();
+            PackageAuthority authority = packageAuthorityForImporter(importer, importPath);
+            Path root = authority.root();
             Path candidate = root.resolve(local).normalize();
             Optional<ResolvedSource> resolved =
                     existingSourceWithinRoot(candidate, root, importPath);
             if (resolved.isEmpty()) return Optional.empty();
 
-            Path physicalRoot;
-            try {
-                physicalRoot = root.toRealPath();
-            } catch (IOException failure) {
-                throw new IllegalArgumentException(
-                        "cannot establish physical package root for project-root import '"
-                                + importPath + "'",
-                        failure);
-            }
-            rejectNestedPackageBoundary(physicalRoot, resolved.get().path(), importPath);
+            rejectNestedPackageBoundary(root, resolved.get().path(), importPath);
             return resolved;
         }
 
@@ -445,6 +432,53 @@ public final class OresProjectConfig {
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
+    }
+
+    private record PackageAuthority(Path manifest, Path root) { }
+
+    private PackageAuthority packageAuthorityForImporter(
+            Path importer,
+            String importPath) {
+        ResolvedSource physicalImporter = existingSource(importer)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "project-root import importer does not resolve to a regular source: "
+                                + importer));
+
+        if (manifestPath != null && isPackageManifest(manifestPath)) {
+            Path currentRoot = projectRoot.toAbsolutePath().normalize();
+            if (physicalImporter.path().startsWith(currentRoot)) {
+                return new PackageAuthority(manifestPath, currentRoot);
+            }
+        }
+
+        for (Path cursor = physicalImporter.path().getParent();
+                cursor != null;
+                cursor = cursor.getParent()) {
+            Path modern = cursor.resolve(PACKAGE_MANIFEST_NAME);
+            if (Files.exists(modern, LinkOption.NOFOLLOW_LINKS)) {
+                try {
+                    OresProjectConfig owner = load(modern, Map.of());
+                    return new PackageAuthority(
+                            owner.manifestPath().orElseThrow(),
+                            owner.projectRoot().toAbsolutePath().normalize());
+                } catch (IOException failure) {
+                    throw new IllegalArgumentException(
+                            "cannot load package authority for project-root import '"
+                                    + importPath + "'",
+                            failure);
+                }
+            }
+
+            Path legacy = cursor.resolve(MANIFEST_NAME);
+            if (Files.isRegularFile(legacy)) {
+                throw new IllegalArgumentException(
+                        "project-root import requires nearest package authority to use "
+                                + PACKAGE_MANIFEST_NAME + ": " + importPath);
+            }
+        }
+
+        throw new IllegalArgumentException(
+                "project-root import requires " + PACKAGE_MANIFEST_NAME + ": " + importPath);
     }
 
     private static void rejectNestedPackageBoundary(
