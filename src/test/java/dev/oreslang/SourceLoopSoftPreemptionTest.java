@@ -144,6 +144,67 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void dynamicCallbackInNestedExpressionCannotRunUnderLiveMutexGuard()
+            throws Exception {
+        // This must be caught by the synchronous eval(CallExpr) path too:
+        // a lexical Fnc value has no proven non-suspending effect summary,
+        // and the enclosing arithmetic expression may take the hot path.
+        String code = """
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val Fnc<int> callback = || -> {
+                    stdio.stdout.write("ILLEGAL_CALLBACK_STARTED");
+                    return 41;
+                  };
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  val int answer = 1 + callback();
+                  guard.release();
+                  stdio.stdout.write(answer);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, code, "nested-dynamic-call-under-guard.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        RuntimeException rejected;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            rejected = assertThrows(RuntimeException.class, () -> context.eval(source));
+        }
+        assertTrue(rejected.getMessage().contains("MutexGuard"),
+                "unproven dynamic Fnc must fail before invocation: " + rejected);
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "a rejected Fnc callback committed guest effects");
+    }
+
+    @Test
+    void dynamicCallbackCanRunOnceMutexGuardHasBeenReleased()
+            throws Exception {
+        assertEquals("42", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val Fnc<int> callback = || -> {
+                    return 41;
+                  };
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  guard.release();
+                  stdio.stdout.write(1 + callback());
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void nestedCpuHelperCannotStartUnderLiveMutexGuard() throws Exception {
         // A synchronous helper can contain an implicit safepoint. Refuse
         // its Task admission BEFORE invoking the source body, so an invalid
