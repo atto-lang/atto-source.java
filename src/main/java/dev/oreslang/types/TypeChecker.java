@@ -9548,8 +9548,16 @@ public final class TypeChecker {
                         && ref.arguments().stream().noneMatch(argument ->
                                 argument.isSequenceShape() || argument.isNamedParameter())) {
                     validateGenericArity(ref, declared.genericParameters(), "class " + declared.name());
-                    yield new Named(qualifiedClassName(declared),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                    List<Type> resolvedArgs = ref.arguments().stream()
+                            .map(arg -> resolve(arg, generics, self)).toList();
+                    if (resolvedArgs.stream().anyMatch(arg ->
+                            containsChannelBorrow(arg, new LinkedHashSet<>(), Map.of()))) {
+                        throw new IllegalArgumentException(
+                                "class " + declared.name()
+                                        + " generic arguments cannot contain lexical borrows "
+                                        + "until nominal lifetime parameters are supported");
+                    }
+                    yield new Named(qualifiedClassName(declared), resolvedArgs);
                 }
                 Type collection = resolveCollectionType(ref, generics, self, allowNullMarker);
                 if (Set.of("Array", "List", "Vector", "Slice").contains(ref.name())
