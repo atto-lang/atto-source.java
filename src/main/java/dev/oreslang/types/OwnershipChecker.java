@@ -2740,7 +2740,12 @@ public final class OwnershipChecker {
                 throw error("cannot mutate readonly structural record '" + name.name() + "'");
             }
             if (isMutexGuardType(state.type)) return;
-            boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW || (state.type.isBorrow() && state.type.mutableBorrow());
+            boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW
+                    || (state.type.isBorrow() && state.type.mutableBorrow());
+            if (isBorrowState(state) && !mutableBorrow) {
+                throw error("cannot mutate " + what + " through immutable/provenance-tracked borrow '"
+                        + name.name() + "'");
+            }
             if (!state.mutable && !mutableBorrow) {
                 throw error("cannot mutate " + what + " through read-only binding '" + name.name() + "'; use val, const mut, or let mut with valid ownership");
             }
@@ -2859,8 +2864,9 @@ public final class OwnershipChecker {
             if (owner.type.isReadonlyRecordType()) {
                 throw error("cannot mutably borrow readonly structural record '" + owner.debugName + "'");
             }
-            if (owner.kind == ValueKind.IMM_BORROW)
-                throw error("cannot mutably reborrow a shared borrow '" + owner.debugName + "'");
+            if (isBorrowState(owner) && owner.kind != ValueKind.MUT_BORROW)
+                throw error("cannot mutably reborrow a shared/provenance-tracked borrow '"
+                        + owner.debugName + "'");
             // An incoming exclusive loan may be reborrowed for a call, even
             // though its parameter binding itself cannot be reassigned.
             // This does not grant mutability to an owned immutable binding
@@ -5113,8 +5119,14 @@ public final class OwnershipChecker {
             closed = true;
             for (VarState state : locals.values()) {
                 if (state.borrowSource != null && state.borrowLease) {
-                    if (state.kind == ValueKind.MUT_BORROW) state.borrowSource.mutableBorrowed = false;
-                    else if (state.kind == ValueKind.IMM_BORROW) {
+                    if (state.kind == ValueKind.MUT_BORROW) {
+                        state.borrowSource.mutableBorrowed = false;
+                    } else {
+                        // Provenance-marked owned-looking projections are
+                        // immutable lexical loans too. Their ValueKind may be
+                        // MOVE_ONLY to preserve the projected nominal type,
+                        // but the retained lease still increments the source's
+                        // shared-borrow count and must be released here.
                         state.borrowSource.immutableBorrows--;
                         if (state.borrowSource.immutableBorrows < 0) {
                             throw new IllegalStateException("Oreslang ownership invariant violated: negative immutable borrow count");
