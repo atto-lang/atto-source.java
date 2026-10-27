@@ -585,12 +585,44 @@ Type declarations are immutable by definition. `const type T = ...` is invalid;
 `type T = ...` defines a type, whereas `const type T x = ...` may use
 `type T` as an explicit named-type marker in a value binding.
 
-Function-/routine-local standalone declarations such as
-`fnc make(): T { type T = record { foo: string }; ... }` remain **proposed**,
-not executable in this compiler revision. Supporting them requires
-compile-time lexical type registration, return-signature dependency resolution,
-public ABI serialization, and ownership/backend conformance. Do not treat a
-local `type` statement as a runtime value or silently export its name.
+### Function/routine-local transparent record aliases (first bounded slice)
+
+Ordinary `fnc` and `routine` bodies may start with compile-time-only,
+non-generic `type` declarations for structural `record` shapes:
+
+```ores
+pub fnc make(): T {
+    type T = record { foo: string };
+    const T x = record { foo: "foo" };
+    return x;
+}
+```
+
+The parser substitutes the closed structural type throughout later
+type positions in the callable and the callable's return signature, so public
+callers see the underlying record shape, not a private importable type named
+`T`. Local type aliases produce no runtime statement, runtime type object,
+nominal identity, allocator, or constructor. Separate callables may reuse the
+same local alias spelling without sharing a nominal type identity.
+
+The intentionally narrow admission rules are:
+
+- Declarations occur only in the **function/routine prologue**, before any
+  executable statement. Nested blocks and late local declarations fail closed.
+- They must use `type Name = record { field: Type, ... };`.
+  Non-record, generic and directly recursive local aliases are not enabled.
+- Local type uses inside the later callable body are compiled to structural
+  `TypeRef` objects. The public return type is resolved after reading the
+  prologue; `fnc foo(): T` may therefore name a local `T` declared in the
+  prologue without making `T` visible outside the callable.
+- `const type` never introduces a type; `const T x` is an ordinary value
+  binding with independent readonly rules.
+- This slice does not implement **named local structs**, nominal local type
+  identity, recursive/generic local aliases, or full cross-backend certification.
+  These require independent parser, typechecker, constructor and LLVM gates.
+
+Do not silently promote a local alias to a module-scope export or allow a record
+value expression to create one.
 
 ## Inline values
 
