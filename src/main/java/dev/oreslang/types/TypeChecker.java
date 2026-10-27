@@ -739,6 +739,16 @@ public final class TypeChecker {
         }
     }
 
+    private static boolean isActorIoOutWriteCall(Ast.Expr expression) {
+        return expression instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr ioWrite
+                && ioWrite.member().equals("write")
+                && ioWrite.receiver() instanceof Ast.MemberExpr ioOut
+                && ioOut.member().equals("out")
+                && ioOut.receiver() instanceof Ast.NameExpr ioName
+                && ioName.name().equals("io");
+    }
+
     private void requireSuspendableCall(boolean suspends, String label) {
         if (suspends && !currentMaySuspend)
             throw new IllegalArgumentException(
@@ -2177,7 +2187,15 @@ public final class TypeChecker {
             }
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            Type expressionType = typeOf(expression.expression(), env, generics, self);
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && isActorIoOutWriteCall(expression.expression())) {
+                throw new IllegalArgumentException(
+                        "io.out.write returns Future<void>; await it or explicitly retain the Future");
+            }
+            return;
+        }
         if (stmt instanceof Ast.DeferStmt defer) {
             if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -2898,12 +2916,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.CallExpr call) {
             if (currentActorKind != Ast.ActorKind.NONE
-                    && call.callee() instanceof Ast.MemberExpr ioWrite
-                    && ioWrite.member().equals("write")
-                    && ioWrite.receiver() instanceof Ast.MemberExpr ioOut
-                    && ioOut.member().equals("out")
-                    && ioOut.receiver() instanceof Ast.NameExpr ioName
-                    && ioName.name().equals("io")) {
+                    && isActorIoOutWriteCall(call)) {
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1
                         || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
                     throw new IllegalArgumentException(
