@@ -48,6 +48,11 @@ Java/Graal V1 exposes `io.out.write(value) -> Future<void>`. Actor callables rem
 generation-owned, bounded ActorRuntime output channel used by `self.send`. The returned
 Future currently completes when bounded logical transport admission succeeds. It does **not**
 mean a host descriptor has been flushed, and it does not grant a process `STDOUT` capability.
+`io.out.write` is a direct-call actor intrinsic: its callable capability cannot be captured, and
+its Future must be awaited or explicitly retained rather than silently discarded. The output
+payload is data-only; live capabilities such as `ActorRef`, mutex/shared handles, channels,
+Futures, and `io.*` handles are rejected before runtime transport. The legacy `self.send(...)`
+output path follows the same data-only rule.
 
 `io.in`, `io.err`, `io.events`, and `io.meta` are reserved by the type checker/runtime but
 fail closed until their actor-local routers, quotas, and lifecycle semantics are implemented.
