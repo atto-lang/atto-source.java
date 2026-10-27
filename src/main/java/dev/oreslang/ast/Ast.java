@@ -1607,14 +1607,6 @@ public final class Ast {
             }
         }
 
-        /** A successful recheck may lift the barrier only for the exact AST
-         * program whose type validation completed. */
-        public static synchronized void typeRecheckSucceeded(Program program) {
-            java.util.Objects.requireNonNull(program, "rechecked inverted program");
-            expunge();
-            TYPE_RECHECK_PENDING.remove(new ProgramIdentityKey(program, null));
-        }
-
         public static synchronized void beginCheck(Program program, long checkEpoch) {
             java.util.Objects.requireNonNull(program, "checked inverted program");
             expunge();
