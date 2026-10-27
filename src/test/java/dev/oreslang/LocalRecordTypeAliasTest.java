@@ -100,6 +100,18 @@ final class LocalRecordTypeAliasTest {
     }
 
     @Test
+    void explicitTypeMarkerStillWorksForLocalTransparentAlias() {
+        String source = """
+                fnc foo(): T {
+                    type T = record { foo: string };
+                    const type T value = record { foo: "yes" };
+                    return value;
+                }
+                """;
+        accepted(source);
+    }
+
+    @Test
     void localAliasCanUseEarlierLocalRecordAlias() {
         String source = """
                 fnc foo(): B {
@@ -180,6 +192,18 @@ final class LocalRecordTypeAliasTest {
         parseRejected("""
                 fnc f(): void {
                     type T = int;
+                    return;
+                }
+                """, "require a record");
+        parseRejected("""
+                fnc f(): void {
+                    type T = struct { foo: string };
+                    return;
+                }
+                """, "require a record");
+        parseRejected("""
+                fnc f(): void {
+                    type T = { foo: string };
                     return;
                 }
                 """, "require a record");
