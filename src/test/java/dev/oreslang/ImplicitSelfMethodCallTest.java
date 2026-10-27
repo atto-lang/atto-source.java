@@ -112,6 +112,39 @@ final class ImplicitSelfMethodCallTest {
     }
 
     @Test
+    void bareMethodNameDoesNotMaterializeAReceiver() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Foo as
+                          pub roodles(): int { return 7; }
+                          pub park_it(): void {
+                            val r = roodles;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("unknown name"), failure.getMessage());
+    }
+
+    @Test
+    void implicitCallCannotUpgradeAnImmutableSelfLoan() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub let int count = 0;
+                          pub bump(mut self Counter)(): void {
+                            self.count = self.count + 1;
+                          }
+                          pub read_only(): void {
+                            bump();
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("mutable")
+                || failure.getMessage().contains("read-only"), failure.getMessage());
+    }
+
+    @Test
     void unqualifiedMethodInConstructorIsStillForbidden() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
