@@ -115,29 +115,29 @@ fnc selected(String full_name, String only): bool {
   return full_name == only;
 }
 
-fnc emit_status(String status, String full_name, String detail, bool machine): void {
+async fnc emit_status(String status, String full_name, String detail, bool machine): void {
   if machine; do
-    stdio.stdout.write("ORES_TEST|");
-    stdio.stdout.write(status);
-    stdio.stdout.write("|");
-    stdio.stdout.write(full_name);
-    stdio.stdout.write("|");
-    stdio.stdout.println(detail);
+    await stdio.stdout.write("ORES_TEST|");
+    await stdio.stdout.write(status);
+    await stdio.stdout.write("|");
+    await stdio.stdout.write(full_name);
+    await stdio.stdout.write("|");
+    await stdio.stdout.println(detail);
     return;
   fi
 
-  stdio.stdout.write(status);
-  stdio.stdout.write(" ");
-  stdio.stdout.write(full_name);
+  await stdio.stdout.write(status);
+  await stdio.stdout.write(" ");
+  await stdio.stdout.write(full_name);
   if detail != ""; do
-    stdio.stdout.write(" -- ");
-    stdio.stdout.write(detail);
+    await stdio.stdout.write(" -- ");
+    await stdio.stdout.write(detail);
   fi
-  stdio.stdout.println("");
+  await stdio.stdout.println("");
   return;
 }
 
-fnc emit_summary(&RunSummary summary, bool machine): void {
+async fnc emit_summary(&RunSummary summary, bool machine): void {
   let int total = summary.total;
   let int passed_count = summary.passed;
   let int failed_count = summary.failed;
@@ -145,38 +145,38 @@ fnc emit_summary(&RunSummary summary, bool machine): void {
   let int filtered_count = summary.filtered;
 
   if machine; do
-    stdio.stdout.write("ORES_TEST|SUMMARY|total=");
-    stdio.stdout.write(total);
-    stdio.stdout.write("|passed=");
-    stdio.stdout.write(passed_count);
-    stdio.stdout.write("|failed=");
-    stdio.stdout.write(failed_count);
-    stdio.stdout.write("|skipped=");
-    stdio.stdout.write(skipped_count);
-    stdio.stdout.write("|filtered=");
-    stdio.stdout.println(filtered_count);
+    await stdio.stdout.write("ORES_TEST|SUMMARY|total=");
+    await stdio.stdout.write(total);
+    await stdio.stdout.write("|passed=");
+    await stdio.stdout.write(passed_count);
+    await stdio.stdout.write("|failed=");
+    await stdio.stdout.write(failed_count);
+    await stdio.stdout.write("|skipped=");
+    await stdio.stdout.write(skipped_count);
+    await stdio.stdout.write("|filtered=");
+    await stdio.stdout.println(filtered_count);
     return;
   fi
 
-  stdio.stdout.write("test result: ");
+  await stdio.stdout.write("test result: ");
   if failed_count == 0; do
-    stdio.stdout.write("ok");
+    await stdio.stdout.write("ok");
   else
-    stdio.stdout.write("FAILED");
+    await stdio.stdout.write("FAILED");
   fi
-  stdio.stdout.write(". ");
-  stdio.stdout.write(passed_count);
-  stdio.stdout.write(" passed; ");
-  stdio.stdout.write(failed_count);
-  stdio.stdout.write(" failed; ");
-  stdio.stdout.write(skipped_count);
-  stdio.stdout.write(" skipped; ");
-  stdio.stdout.write(filtered_count);
-  stdio.stdout.println(" filtered");
+  await stdio.stdout.write(". ");
+  await stdio.stdout.write(passed_count);
+  await stdio.stdout.write(" passed; ");
+  await stdio.stdout.write(failed_count);
+  await stdio.stdout.write(" failed; ");
+  await stdio.stdout.write(skipped_count);
+  await stdio.stdout.write(" skipped; ");
+  await stdio.stdout.write(filtered_count);
+  await stdio.stdout.println(" filtered");
   return;
 }
 
-pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
+pub async fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
   let int total = 0;
   let int passed_count = 0;
   let int failed_count = 0;
@@ -201,7 +201,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
 
     if test_case.skipped; do
       skipped_count = skipped_count + 1;
-      emit_status("SKIP", full_name, test_case.skip_reason, machine);
+      await emit_status("SKIP", full_name, test_case.skip_reason, machine);
       continue;
     fi
 
@@ -209,10 +209,10 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
 
     if outcome.passed; do
       passed_count = passed_count + 1;
-      emit_status("PASS", full_name, "", machine);
+      await emit_status("PASS", full_name, "", machine);
     else
       failed_count = failed_count + 1;
-      emit_status("FAIL", full_name, outcome.message, machine);
+      await emit_status("FAIL", full_name, outcome.message, machine);
 
       if fail_fast; do
         let RunSummary early = new RunSummary(
@@ -222,7 +222,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
           skipped_count,
           filtered_count
         );
-        emit_summary(&early, machine);
+        await emit_summary(&early, machine);
         return early;
       fi
     fi
@@ -235,7 +235,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
     skipped_count,
     filtered_count
   );
-  emit_summary(&summary, machine);
+  await emit_summary(&summary, machine);
   return summary;
 }
 
