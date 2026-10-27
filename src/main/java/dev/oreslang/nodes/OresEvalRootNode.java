@@ -7309,6 +7309,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.ClassDecl rowClass = findClass(admission.className());
             if (rowClass == null || !rowClass.inverted()
+                    || !array.schema().representsDeclaration(rowClass)
                     || !array.schema().className().equals(rowClass.name())) {
                 throw new IllegalStateException(
                         "checked inverted bracket runtime schema does not match its nominal class");
