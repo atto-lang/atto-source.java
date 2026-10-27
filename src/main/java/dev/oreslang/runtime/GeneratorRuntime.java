@@ -190,45 +190,14 @@ public final class GeneratorRuntime {
         }
 
         /**
-         * Source-level async close. The physical producer-exit wait runs on a
-         * runtime-owned virtual carrier, never on the caller's actor carrier.
-         * Repeated closes share the same completion and cannot amplify tasks.
+         * Source-level async close. Close is signalled synchronously without
+         * parking the caller, then the returned receipt settles only after the
+         * producer's physical guest turn has retired. No second runtime task is
+         * needed, so runtime shutdown cannot cancel the only cleanup waiter.
          */
         public synchronized OresFuture<Void> closeAsync() {
-            if (closeFuture != null) return closeFuture;
-            if (engine.isTerminalReady()) {
-                try {
-                    engine.close();
-                    closeFuture = OresFuture.completed(null);
-                } catch (Throwable failure) {
-                    closeFuture = OresFuture.failed(failure);
-                }
-                return closeFuture;
-            }
-            // Closing is a one-way cleanup operation, not cancellable work.
-            // Exposing runtime.submit() directly would let a caller cancel the
-            // Future before its carrier enters engine.close(), permanently
-            // memoizing a cancelled receipt while leaving the activation open.
-            // Keep the cleanup task private and expose an uncancellable receipt
-            // that settles only from that task's terminal result.
-            OresFuture<Void> receipt = new OresFuture<>(() -> false, () -> { });
-            closeFuture = receipt;
-            try {
-                OresFuture<Void> cleanup = runtime.submit(() -> {
-                    engine.close();
-                    return null;
-                });
-                cleanup.whenCompleteRuntime((value, failure) -> {
-                    if (failure == null) {
-                        receipt.completeFromRuntime(null);
-                    } else {
-                        receipt.failFromRuntime(OresFuture.unwrap(failure));
-                    }
-                });
-            } catch (RuntimeException | Error failure) {
-                receipt.failFromRuntime(failure);
-            }
-            return receipt;
+            if (closeFuture == null) closeFuture = engine.closeAsyncReceipt();
+            return closeFuture;
         }
 
         @Override
@@ -435,19 +404,19 @@ public final class GeneratorRuntime {
             }
         }
 
-        @Override
-        public void close() {
+        private void requestClose() {
             boolean first = closed.compareAndSet(false, true);
-            if (first) {
-                done = true;
-                synchronized (launchLock) {
-                    OresFuture<Void> task = producerTask.get();
-                    if (task != null) task.cancel(true);
-                }
-                resumes.offer(RESUME);
-                events.offer(new DoneEvent<>());
+            if (!first) return;
+            done = true;
+            synchronized (launchLock) {
+                OresFuture<Void> task = producerTask.get();
+                if (task != null) task.cancel(true);
             }
-            awaitProducerExit();
+            resumes.offer(RESUME);
+            events.offer(new DoneEvent<>());
+        }
+
+        private void finishCloseAfterExit() {
             terminalReady = true;
             Throwable cleanupFailure = closeFailure.get();
             if (cleanupFailure instanceof RuntimeException runtimeFailure) {
@@ -459,6 +428,44 @@ public final class GeneratorRuntime {
             if (cleanupFailure != null) {
                 throw new RuntimeException(cleanupFailure);
             }
+        }
+
+        private OresFuture<Void> closeAsyncReceipt() {
+            requestClose();
+            OresFuture<Void> task;
+            synchronized (launchLock) { task = producerTask.get(); }
+
+            OresFuture<Void> receipt = new OresFuture<>(() -> false, () -> { });
+            if (task == null) {
+                try {
+                    finishCloseAfterExit();
+                    receipt.completeFromRuntime(null);
+                } catch (Throwable failure) {
+                    receipt.failFromRuntime(failure);
+                }
+                return receipt;
+            }
+
+            runtime.taskExitReceipt(task).whenCompleteRuntime((value, failure) -> {
+                if (failure != null) {
+                    receipt.failFromRuntime(OresFuture.unwrap(failure));
+                    return;
+                }
+                try {
+                    finishCloseAfterExit();
+                    receipt.completeFromRuntime(null);
+                } catch (Throwable cleanupFailure) {
+                    receipt.failFromRuntime(cleanupFailure);
+                }
+            });
+            return receipt;
+        }
+
+        @Override
+        public void close() {
+            requestClose();
+            awaitProducerExit();
+            finishCloseAfterExit();
         }
     }
 }
