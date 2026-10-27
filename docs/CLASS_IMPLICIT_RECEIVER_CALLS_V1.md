@@ -38,6 +38,48 @@ extension, actor-state access or callback escape. An ordinary lambda has no
 implicit `self` capture. Actor `self` remains a non-escaping mailbox
 capability. Nested critical state loans must never be retained by a closure.
 
+## Explicit file-root qualifier: `pkg::name`
+
+The canonical shadowing escape hatch is `pkg::roodles(...)`. It selects a
+callable declared at the current source file's root, even if a local callable
+or instance method has the same name. It does **not** search the project,
+other files, imported symbols, named modules, or the runtime class hierarchy.
+
+```ores
+fnc roodles(): int { return 99; }
+define module helpers as
+  pub fnc roodles(): int { return 33; }
+end
+define class Foo as
+  pub roodles(): int { return 7; }
+  pub run(): int {
+    val pkg = 5;            // unrelated lexical name
+    return roodles() + pkg::roodles() + helpers::roodles();
+  }
+end
+```
+
+* `roodles()` resolves the class method (7), `pkg::roodles()` the current
+  file's top-level function (99), and `helpers::roodles()` the module (33).
+* `pkg.roodles()` remains normal member access, including when the user
+  defines a module named `pkg`. Only `pkg::` is compiler syntax.
+* `pkg::` is not a runtime object, and the parser emits an unforgeable
+  identifier marker which cannot be spelled by source identifiers.
+* Explicit lookup is exact: absent name, arity mismatch, unsupported member
+  kind and ambiguous function values are hard errors, never fallback.
+* `pkg::fnc_name` is a callable value only when the file-root function is
+  legitimately reifiable. Routines, generic/overloaded and suspending
+  callables remain direct-call-only as appropriate.
+* Private file-root functions are accessible to code in the same file.
+  Actor code MUST NOT use `pkg::` to escape the existing same-file
+  dependency isolation rule: compiler and runtime independently reject that.
+* `pkg::` never implicitly binds `self`, moves class fields, grants
+  import/export privileges, or creates a cross-file/package namespace.
+
+This feature currently has Java source changes and test cases, but **not**
+exact-head JVM or Native Image execution proof. Compiler-generic AST
+transformations and all other backends still require verification.
+
 ## Receiver binding and performance
 
 Each class/actor code image holds shared method implementations and immutable
