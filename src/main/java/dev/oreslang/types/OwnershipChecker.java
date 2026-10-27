@@ -1149,6 +1149,9 @@ public final class OwnershipChecker {
                                         + ownerClass.name() + "." + member.member() + "'");
                             }
                         }
+                        throw error("rt take cannot move a member projection until projection-level "
+                                + "move tracking can invalidate exactly that field slot; move the containing "
+                                + "owner or replace the field explicitly");
                     }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (isBorrowValue(taken)) {
