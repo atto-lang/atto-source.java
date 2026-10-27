@@ -9,6 +9,7 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -72,6 +73,10 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final IdentityHashMap<SocketChannel, OresFuture<byte[]>> readLeases =
             new IdentityHashMap<>();
     private final IdentityHashMap<SocketChannel, OresFuture<Integer>> writeLeases =
+            new IdentityHashMap<>();
+    // Outbound connect owns the descriptor until terminal notification drain.
+    // The caller receives ownership only after finishConnect() succeeds.
+    private final IdentityHashMap<SocketChannel, OresFuture<SocketChannel>> connectLeases =
             new IdentityHashMap<>();
     private final AtomicInteger pending = new AtomicInteger();
     // Includes selector watches that have retired but whose terminal Future
@@ -208,6 +213,9 @@ public final class NioReadinessGroup implements AutoCloseable {
     int activeWriteLeases() {
         synchronized (lifecycle) { return writeLeases.size(); }
     }
+    int activeConnectLeases() {
+        synchronized (lifecycle) { return connectLeases.size(); }
+    }
     boolean usesVmCompletionCarriers() {
         return boundCompletionExecutor != null || ownedCompletionExecutor == null;
     }
@@ -236,7 +244,7 @@ public final class NioReadinessGroup implements AutoCloseable {
             if (closed || boundCompletionExecutor != null || !reactors.isEmpty()
                     || pending.get() != 0 || notificationReservations.get() != 0
                     || !acceptLeases.isEmpty() || !readLeases.isEmpty()
-                    || !writeLeases.isEmpty())
+                    || !writeLeases.isEmpty() || !connectLeases.isEmpty())
                 throw new IllegalStateException(
                         "NIO completion scheduler must be bound before first I/O admission");
             boundCompletionExecutor = executor;
@@ -417,6 +425,153 @@ public final class NioReadinessGroup implements AutoCloseable {
             // the lease was released. Reacquire or leave it to the new owner.
             if (!notificationDispatching.compareAndSet(false, true)) return;
         }
+    }
+
+    /**
+     * Establish one outbound TCP connection without blocking a carrier.
+     *
+     * The address MUST already be resolved. Hostname/DNS lookup is deliberately
+     * outside this method because InetAddress/InetSocketAddress name resolution
+     * can block. A future async DNS provider may feed resolved addresses here.
+     *
+     * Cancellation may win only before finishConnect() claims the kernel
+     * completion. Winning cancellation closes the descriptor and revokes the
+     * one-shot OP_CONNECT watch. Once finishConnect() is claimed, cancellation
+     * must fail rather than report a clean revocation after a connection may
+     * already have been established.
+     */
+    public OresFuture<SocketChannel> connectAsync(InetSocketAddress remote) {
+        Objects.requireNonNull(remote, "remote");
+        if (remote.isUnresolved())
+            return OresFuture.failed(new IllegalArgumentException(
+                    "TCP connect requires a pre-resolved address; async DNS is not installed"));
+        if (remote.getPort() < 1 || remote.getPort() > 65535)
+            return OresFuture.failed(new IllegalArgumentException("invalid TCP connect port"));
+        if (ownedCompletionExecutor == null)
+            return OresFuture.failed(new IllegalStateException(
+                    "TCP connect requires dedicated NIO completion workers"));
+
+        final SocketChannel channel;
+        try {
+            channel = SocketChannel.open();
+            channel.configureBlocking(false);
+        } catch (IOException failure) {
+            return OresFuture.failed(failure);
+        }
+
+        AtomicReference<OresFuture<Integer>> pendingWatch = new AtomicReference<>();
+        // 0 = revocable before finishConnect claim, 1 = kernel completion
+        // claimed/connected, 2 = cancellation won before that claim.
+        AtomicInteger kernelPhase = new AtomicInteger();
+        OresFuture<SocketChannel> connected = new OresFuture<>(
+                () -> kernelPhase.compareAndSet(0, 2),
+                () -> {
+                    OresFuture<Integer> pending = pendingWatch.getAndSet(null);
+                    if (pending != null) pending.cancel(false);
+                    try { channel.close(); } catch (IOException ignored) { }
+                });
+
+        synchronized (lifecycle) {
+            if (closed) {
+                try { channel.close(); } catch (IOException ignored) { }
+                return OresFuture.failed(new IOException("NIO manager closed"));
+            }
+            connectLeases.put(channel, connected);
+        }
+
+        final class ConnectPump {
+            final AtomicInteger inFlight = new AtomicInteger();
+
+            void releaseIfTerminal() {
+                if (!connected.isDone() || inFlight.get() != 0) return;
+                synchronized (lifecycle) {
+                    if (inFlight.get() == 0 && connectLeases.get(channel) == connected)
+                        connectLeases.remove(channel);
+                }
+            }
+
+            void failAndClose(Throwable problem) {
+                try { channel.close(); }
+                catch (IOException closeFailure) { problem.addSuppressed(closeFailure); }
+                connected.failFromRuntime(problem);
+            }
+
+            void arm() {
+                inFlight.incrementAndGet();
+                if (connected.isDone()) {
+                    inFlight.decrementAndGet();
+                    releaseIfTerminal();
+                    return;
+                }
+                final OresFuture<Integer> readiness;
+                try {
+                    readiness = NioReadinessGroup.this.watch(channel, SelectionKey.OP_CONNECT);
+                } catch (RuntimeException | Error problem) {
+                    failAndClose(problem);
+                    inFlight.decrementAndGet();
+                    releaseIfTerminal();
+                    if (problem instanceof VirtualMachineError fatal) throw fatal;
+                    if (problem instanceof ThreadDeath fatal) throw fatal;
+                    return;
+                }
+                pendingWatch.set(readiness);
+                readiness.whenCompleteRuntime((events, failure) -> {
+                    pendingWatch.compareAndSet(readiness, null);
+                    try {
+                        if (connected.isDone()) return;
+                        if (failure != null) {
+                            failAndClose(failure);
+                            return;
+                        }
+                        if (!kernelPhase.compareAndSet(0, 1)) return;
+                        try {
+                            if (channel.isBlocking())
+                                throw new IllegalStateException("TCP connect channel became blocking");
+                            if (!channel.finishConnect()) {
+                                // No terminal connection was established. Make
+                                // cancellation admissible again before re-arm.
+                                kernelPhase.compareAndSet(1, 0);
+                                arm();
+                                return;
+                            }
+                            if (!connected.completeFromRuntime(channel)) {
+                                // Defensive: a terminal winner appeared despite
+                                // the kernel claim. Never leak the descriptor.
+                                channel.close();
+                            }
+                        } catch (IOException | RuntimeException | Error problem) {
+                            failAndClose(problem);
+                            if (problem instanceof VirtualMachineError fatal) throw fatal;
+                            if (problem instanceof ThreadDeath fatal) throw fatal;
+                        }
+                    } finally {
+                        inFlight.decrementAndGet();
+                        releaseIfTerminal();
+                    }
+                });
+                if (connected.isDone()) {
+                    pendingWatch.compareAndSet(readiness, null);
+                    readiness.cancel(false);
+                }
+            }
+        }
+
+        ConnectPump pump = new ConnectPump();
+        try {
+            if (channel.connect(remote)) {
+                kernelPhase.set(1);
+                connected.completeFromRuntime(channel);
+                pump.releaseIfTerminal();
+            } else {
+                pump.arm();
+            }
+        } catch (IOException | RuntimeException | Error problem) {
+            pump.failAndClose(problem);
+            pump.releaseIfTerminal();
+            if (problem instanceof VirtualMachineError fatal) throw fatal;
+            if (problem instanceof ThreadDeath fatal) throw fatal;
+        }
+        return connected;
     }
 
     /**
