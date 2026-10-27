@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 /**
  * Fail-closed outbound authority and address policy.
@@ -176,6 +177,28 @@ final class OutboundEgressPolicy {
         }
     }
 
+    /**
+     * Resolver variant that can revoke one in-flight authorization without
+     * treating a late system-resolver completion as a usable DNS result.
+     */
+    @FunctionalInterface
+    interface CancellableResolver extends Resolver {
+        List<InetAddress> resolve(
+                String asciiHost,
+                long deadlineNanos,
+                BooleanSupplier cancelled)
+                throws UnknownHostException;
+
+        @Override
+        default List<InetAddress> resolve(String asciiHost)
+                throws UnknownHostException {
+            return resolve(
+                    asciiHost,
+                    Long.MAX_VALUE,
+                    () -> false);
+        }
+    }
+
     record ResolvedTarget(
             URI uri,
             String scheme,
@@ -250,18 +273,54 @@ final class OutboundEgressPolicy {
             Purpose purpose,
             Policy policy,
             Resolver resolver) {
+        return resolveForConnection(
+                raw,
+                purpose,
+                policy,
+                resolver,
+                Long.MAX_VALUE,
+                () -> false);
+    }
+
+    static ResolvedTarget resolveForConnection(
+            URI raw,
+            Purpose purpose,
+            Policy policy,
+            Resolver resolver,
+            long deadlineNanos,
+            BooleanSupplier cancelled) {
         Objects.requireNonNull(purpose, "purpose");
         Objects.requireNonNull(policy, "policy");
         Objects.requireNonNull(resolver, "resolver");
+        Objects.requireNonNull(cancelled, "cancelled");
 
         CanonicalTarget canonical = canonicalize(raw);
         List<InetAddress> addresses;
         if (canonical.literalAddress() != null) {
+            if (cancelled.getAsBoolean()) {
+                throw new IllegalArgumentException(
+                        "outbound resolution cancelled before literal authorization");
+            }
             addresses = List.of(canonical.literalAddress());
         } else {
             List<InetAddress> resolved;
             try {
-                resolved = resolver.resolve(canonical.host());
+                if (resolver instanceof CancellableResolver cancellable) {
+                    resolved = cancellable.resolve(
+                            canonical.host(),
+                            deadlineNanos,
+                            cancelled);
+                } else {
+                    if (cancelled.getAsBoolean()) {
+                        throw new UnknownHostException(
+                                "outbound DNS resolution cancelled");
+                    }
+                    resolved = resolver.resolve(canonical.host());
+                    if (cancelled.getAsBoolean()) {
+                        throw new UnknownHostException(
+                                "outbound DNS resolution completed after cancellation");
+                    }
+                }
             } catch (UnknownHostException failure) {
                 throw new IllegalArgumentException(
                         "outbound DNS resolution failed for "
