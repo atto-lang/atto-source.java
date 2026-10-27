@@ -11,6 +11,54 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class InvertedColumnStoreTest {
     @Test
+    void closeScrubsEveryColumnAndReleasesStorageWithoutNewBuffers()
+            throws Exception {
+        var store = new InvertedColumnStore(
+                InvertedColumnStore.ColumnSpec.scalar(InvertedColumnStore.Kind.I32),
+                InvertedColumnStore.ColumnSpec.record(4),
+                InvertedColumnStore.ColumnSpec.scalar(InvertedColumnStore.Kind.BOOL));
+        var row = store.push(0x12345678, new byte[]{11, 22, 33, 44}, true);
+        store.reserve(8);
+        var columnsField = InvertedColumnStore.class.getDeclaredField("columns");
+        var buffersField = InvertedColumnStore.class.getDeclaredField("buffers");
+        columnsField.setAccessible(true);
+        buffersField.setAccessible(true);
+        byte[][] oldColumns = ((byte[][]) columnsField.get(store)).clone();
+        java.nio.ByteBuffer[] oldBuffers =
+                ((java.nio.ByteBuffer[]) buffersField.get(store)).clone();
+        for (int i = 0; i < oldColumns.length; i++) {
+            assertSame(oldColumns[i], oldBuffers[i].array());
+            assertTrue(oldColumns[i].length > 0);
+        }
+        var oldLoan = store.borrowRead(0);
+        store.close();
+
+        // Observers retaining an old backing reference must still see zero
+        // after close; the final column must be scrubbed, not only the first.
+        for (int i = 0; i < oldColumns.length; i++) {
+            for (byte value : oldColumns[i]) assertEquals((byte) 0, value);
+            for (byte value : oldBuffers[i].array()) assertEquals((byte) 0, value);
+        }
+        byte[][] released = (byte[][]) columnsField.get(store);
+        java.nio.ByteBuffer[] releasedBuffers =
+                (java.nio.ByteBuffer[]) buffersField.get(store);
+        for (int i = 0; i < released.length; i++) {
+            assertEquals(0, released[i].length);
+            assertNull(releasedBuffers[i],
+                    "close must not allocate replacement ByteBuffers");
+        }
+        assertSame(released[0], released[1]);
+        assertSame(released[1], released[2]);
+        assertThrows(IllegalStateException.class, () -> store.snapshot(row));
+        assertThrows(IllegalStateException.class, () -> oldLoan.get(0));
+        assertThrows(IllegalStateException.class,
+                () -> store.push(4, new byte[]{1, 2, 3, 4}, false));
+        oldLoan.close();
+        assertDoesNotThrow(store::close);
+        assertSame(released[0], ((byte[][]) columnsField.get(store))[0]);
+    }
+
+    @Test
     void injectedReadLoanAllocationFailureDoesNotLeakReaderHold() {
         try (var store = new InvertedColumnStore(
                 InvertedColumnStore.Kind.I32,
