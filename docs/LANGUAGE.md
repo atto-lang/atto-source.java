@@ -490,11 +490,17 @@ Thus `T? name`, `T name?`, and `T? name?` are three distinct forms.
 Omission never means “invent a zero value.” An omittable non-`Option` scalar
 must have a closed `@DefaultArgVals(name: literal)` declaration default.
 This first lowering admits only int, bool, string, and `None` literals.
-An omittable `Option<T>` with no explicit default receives `None`.
-For generic declarations, `None` is also a valid explicit default for
-`Option<T>`; a scalar literal may not default a generic-dependent type
-such as `T` because it must be valid for every specialization. Missing
-slots never contribute evidence to generic type inference.
+An omittable directly declared `Option<T>` (including `T? name?`
+sugar) with no explicit default receives `None`. If the parameter's source
+type is an alias that resolves to `Option<T>`, use an explicit
+`@DefaultArgVals(name: None)` for now: runtime omission materialization
+consumes checked declaration metadata but does not re-run type-alias
+resolution. This keeps static admission and execution identical instead of
+silently treating aliases differently at runtime. For generic declarations,
+`None` is also a valid explicit default for `Option<T>`; a scalar literal
+may not default a generic-dependent type such as `T` because it must be
+valid for every specialization. Missing slots never contribute evidence to
+generic type inference.
 
 Defaults are inserted **after** all supplied source expressions have evaluated
 once in lexical order. Missing slots therefore have no hidden guest expression,
