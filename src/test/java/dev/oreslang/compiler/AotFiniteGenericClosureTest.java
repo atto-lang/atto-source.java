@@ -212,6 +212,33 @@ final class AotFiniteGenericClosureTest {
     }
 
     @Test
+    void checkedSourceGenericCallsProduceTheSameFiniteManifest() {
+        AotFiniteGenericClosure.Plan plan =
+                OresCompiler.planFiniteAotGenerics("""
+                        fnc identity<T>(T value): T { return value; }
+                        fnc wrapper<T>(T value): T {
+                            return identity<T>(value);
+                        }
+                        fnc main(): int { return wrapper<int>(42); }
+                        """, BuildOptions.executable());
+        assertEquals(3, plan.reachable().size());
+        assertTrue(plan.reachable().stream().anyMatch(instance ->
+                instance.name().equals("identity")
+                        && instance.typeArguments().equals(List.of(type("int")))));
+    }
+
+    @Test
+    void checkedButInferredGenericsRequireExplicitAotLoweringProof() {
+        IllegalArgumentException err = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.planFiniteAotGenerics("""
+                        fnc identity<T>(T value): T { return value; }
+                        fnc main(): int { return identity(42); }
+                        """, BuildOptions.executable()));
+        assertTrue(err.getMessage().contains("inferred generic"),
+                err::toString);
+    }
+
+    @Test
     void uncheckedMacroDeclarationsNeverAppearAsExecutableClosure() {
         Ast.Program source = Parser.parse("""
                 define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
