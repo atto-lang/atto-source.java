@@ -17,6 +17,49 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class InvertedArrayTest {
     @Test
+    void indexedFieldAstPlanRetainsExactExpressionsAndNominalBindings() {
+        var schema = InvertedArray.Schema.fromClass(particle());
+        var differentSchema = InvertedArray.Schema.fromClass(particle());
+        Ast.Expr receiver = new Ast.NameExpr("rows");
+        Ast.Expr index = new Ast.CallExpr(new Ast.NameExpr("nextIndex"),
+                java.util.List.of());
+        Ast.Expr rhs = new Ast.CallExpr(new Ast.NameExpr("nextValue"),
+                java.util.List.of());
+        var selected = new Ast.IndexExpr(receiver, index);
+        var field = new Ast.MemberExpr(selected, "x");
+        var write = new Ast.AssignExpr(field, rhs);
+
+        var readPlan = InvertedIndexedFieldPlan.bindRead(field, schema);
+        assertEquals(InvertedIndexedFieldPlan.Operation.READ, readPlan.operation());
+        assertSame(receiver, readPlan.receiver());
+        assertSame(index, readPlan.index());
+        assertNull(readPlan.value());
+        assertSame(schema.bindField("x"), readPlan.field());
+
+        var writePlan = InvertedIndexedFieldPlan.bindWrite(write, schema);
+        assertEquals(InvertedIndexedFieldPlan.Operation.WRITE, writePlan.operation());
+        assertSame(receiver, writePlan.receiver());
+        assertSame(index, writePlan.index());
+        assertSame(rhs, writePlan.value());
+        assertSame(schema.bindField("x"), writePlan.field());
+        assertNotSame(differentSchema.bindField("x"), writePlan.field());
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedIndexedFieldPlan.bindRead(
+                        new Ast.MemberExpr(selected, "no_such_field"), schema));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedIndexedFieldPlan.bindWrite(field, schema));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedIndexedFieldPlan.bindRead(selected, schema));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedIndexedFieldPlan.bindWrite(
+                        new Ast.AssignExpr(new Ast.NameExpr("x"), rhs), schema));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedIndexedFieldPlan.bindRead(
+                        new Ast.MemberExpr(
+                                new Ast.IndexExpr(receiver, null), "x"), schema));
+    }
+
+    @Test
     void boundColumnCompoundUpdateIsAtomicAndDoesNotRebindByGuestName()
             throws InterruptedException {
         var schema = InvertedArray.Schema.fromClass(declaration("""
