@@ -259,9 +259,11 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        Ast.CheckedInvertedIndexes.revokeProgram(program);
         rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
+        Ast.CheckedInvertedIndexes.revokeProgram(program);
         // Expansion can rewrite/synthesize declarations. Re-run every
         // executable-layout/effect admission gate on the rewritten AST so a
         // future annotation transform cannot manufacture an unlowered SoA
@@ -302,6 +304,7 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        Ast.CheckedInvertedIndexes.revokeProgram(program);
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -321,6 +324,7 @@ public final class TypeChecker {
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
         program = AnnotationExpander.expand(program);
+        Ast.CheckedInvertedIndexes.revokeProgram(program);
         // Expansion can rewrite/synthesize declarations. Re-run every
         // executable-layout/effect admission gate on the rewritten AST so a
         // future annotation transform cannot manufacture an unlowered SoA
