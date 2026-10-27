@@ -7,8 +7,8 @@ by this document or by an approval of the proposal alone.
 
 - Source repository: ores-truffle-oreslang/oreslang-source.java (1400792274).
 - Source PR: #2048.
-- Source head: 0563afc3190d4b5ca532c4a54ede36d87acce544.
-- Source tree: 9126ffc3c1990026457f95d09c5982735499ca91.
+- Source head: 6af37f70a42d70d16996174317b5bdd8bda07c7c.
+- Source tree: 6e94c49cff4fedf80335ce5cbfa13ac174c07411.
 - Proposed destination: beamscale/bmscl-compiler (1383937120).
 - Destination observed private, not archived, writable.
 - Source-free canary commit: 55379aa2e43a27e68557a359aff3bac42e525359.
@@ -17,7 +17,7 @@ by this document or by an approval of the proposal alone.
 - Canary has no checkout, no source payload, no secrets, and permissions: {}.
 
 The source includes the scope-cancellation checkpoint/regression and both native
-smoke diagnostic and harness-regression follow-ups. Any subsequent source head
+smoke diagnostic, harness-regression and CI-integration follow-ups. Any subsequent source head
 change requires refreshed pins and independent exact-head review.
 
 ## Mandatory admission gates
