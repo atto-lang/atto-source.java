@@ -165,6 +165,39 @@ final class OutboundEgressPolicyTest {
     }
 
     @Test
+    void externallyResolvedAnswersUseTheSameFailClosedPolicy()
+            throws Exception {
+        var policy =
+                OutboundEgressPolicy.Policy.generalHttpDefault();
+
+        SecurityException denied =
+                assertThrows(
+                        SecurityException.class,
+                        () -> OutboundEgressPolicy.authorizeResolved(
+                                java.net.URI.create(
+                                        "https://origin.example/"),
+                                OutboundEgressPolicy.Purpose.GENERAL_HTTP,
+                                policy,
+                                List.of(
+                                        v4(8, 8, 8, 8),
+                                        v4(10, 0, 0, 7))));
+        assertTrue(
+                denied.getMessage().contains("PRIVATE"),
+                denied.getMessage());
+
+        var allowed =
+                OutboundEgressPolicy.authorizeResolved(
+                        java.net.URI.create(
+                                "https://origin.example/"),
+                        OutboundEgressPolicy.Purpose.GENERAL_HTTP,
+                        policy,
+                        List.of(v4(8, 8, 8, 8)));
+        assertEquals(
+                v4(8, 8, 8, 8),
+                allowed.addresses().getFirst());
+    }
+
+    @Test
     void everyNewConnectionGetsAFreshResolutionGeneration() {
         AtomicInteger calls = new AtomicInteger();
         OutboundEgressPolicy.Resolver changing = host -> switch (
