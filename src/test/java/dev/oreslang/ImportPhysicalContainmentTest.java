@@ -95,6 +95,79 @@ final class ImportPhysicalContainmentTest {
         assertEquals(shared.toRealPath(), config.resolveImport(main, "shared").orElseThrow());
     }
 
+
+    @Test
+    void danglingHigherPriorityNodeCannotFallThroughToAmbientRoot() throws Exception {
+        Path app = temp.resolve("app-dangling-shadow");
+        Files.createDirectories(app);
+        Path main = app.resolve("main.ores");
+        Files.writeString(main, "pub fnc main(): void { return; }\n");
+
+        Path ambient = temp.resolve("ambient-dangling-shadow");
+        Files.createDirectories(ambient);
+        Files.writeString(
+                ambient.resolve("priority.ores"),
+                "pub fnc priority(): int { return 42; }\n");
+        requireSymlink(app.resolve("priority.ores"), app.resolve("missing-target.ores"));
+
+        OresProjectConfig config = OresProjectConfig.discover(
+                main,
+                Map.of(OresProjectConfig.ENV_ORESLANG_PATH, ambient.toString()));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(main, "priority"));
+        assertTrue(failure.getMessage().contains("cannot verify physical source path"),
+                failure.getMessage());
+    }
+
+    @Test
+    void brokenIntermediateAliasCannotFallThroughToAmbientRoot() throws Exception {
+        Path app = temp.resolve("app-broken-prefix");
+        Files.createDirectories(app);
+        Path main = app.resolve("main.ores");
+        Files.writeString(main, "pub fnc main(): void { return; }\n");
+
+        Path ambient = temp.resolve("ambient-broken-prefix");
+        Files.createDirectories(ambient.resolve("alias"));
+        Files.writeString(
+                ambient.resolve("alias/priority.ores"),
+                "pub fnc priority(): int { return 42; }\n");
+        requireSymlink(app.resolve("alias"), app.resolve("missing-directory"));
+
+        OresProjectConfig config = OresProjectConfig.discover(
+                main,
+                Map.of(OresProjectConfig.ENV_ORESLANG_PATH, ambient.toString()));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(main, "alias/priority"));
+        assertTrue(failure.getMessage().contains("cannot verify physical source path"),
+                failure.getMessage());
+    }
+
+    @Test
+    void nonDirectoryHigherPriorityPrefixCannotFallThroughToAmbientRoot() throws Exception {
+        Path app = temp.resolve("app-prefix-shadow");
+        Files.createDirectories(app);
+        Path main = app.resolve("main.ores");
+        Files.writeString(main, "pub fnc main(): void { return; }\n");
+        Files.writeString(app.resolve("alias"), "not a directory\n");
+
+        Path ambient = temp.resolve("ambient-prefix-shadow");
+        Files.createDirectories(ambient.resolve("alias"));
+        Files.writeString(
+                ambient.resolve("alias/priority.ores"),
+                "pub fnc priority(): int { return 42; }\n");
+
+        OresProjectConfig config = OresProjectConfig.discover(
+                main,
+                Map.of(OresProjectConfig.ENV_ORESLANG_PATH, ambient.toString()));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(main, "alias/priority"));
+        assertTrue(failure.getMessage().contains("blocked by a non-directory"),
+                failure.getMessage());
+    }
+
     private static void requireSymlink(Path link, Path target) throws IOException {
         try {
             Files.createSymbolicLink(link, target);
