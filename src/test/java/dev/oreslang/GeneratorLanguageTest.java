@@ -516,6 +516,87 @@ final class GeneratorLanguageTest {
         assertTrue(error.getMessage().contains("cannot suspend for async iteration"), error::getMessage);
     }
 
+    @Test
+    void canonicalBareGenStarExecutesWithoutFncKeyword() throws Exception {
+        assertEquals("42", run("""
+                pub gen* values(): Iterator<int> {
+                  yield 20;
+                  yield 22;
+                  return;
+                }
+                pub routine main(): void {
+                  let int total = 0;
+                  for const value of values() {
+                    total = total + value;
+                  }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void canonicalAsyncGenStarExecutesAsAsyncIterator() throws Exception {
+        assertEquals("42", run("""
+                pub async gen* values(): AsyncIterator<int> {
+                  yield 20;
+                  yield 22;
+                  return;
+                }
+                pub async routine main(): void {
+                  let int total = 0;
+                  for await const value of values() {
+                    total = total + value;
+                  }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void canonicalSuspendGenStarUsesAsyncIteratorAndCanCooperate() throws Exception {
+        assertEquals("42", run("""
+                pub suspend gen* values(): AsyncIterator<int> {
+                  rt cooperate;
+                  yield 20;
+                  rt cooperate;
+                  yield 22;
+                  return;
+                }
+                pub async routine main(): void {
+                  let int total = 0;
+                  for await const value of values() {
+                    total = total + value;
+                  }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void canonicalGeneratorProtocolMismatchesStillFailClosed() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub gen* values(): AsyncIterator<int> {
+                  yield 1;
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async gen* values(): Iterator<int> {
+                  yield 1;
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub suspend gen* values(): Iterator<int> {
+                  yield 1;
+                  return;
+                }
+                """));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "generators.ores")
