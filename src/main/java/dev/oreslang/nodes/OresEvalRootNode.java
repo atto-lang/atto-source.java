@@ -7124,8 +7124,6 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
                     case "print", "println" -> (Invokable) args ->
-                            strictNonblockingIoRejected("stdio." + name);
-                    case "print_async", "println_async" -> (Invokable) args ->
                             strictNonblockingIoFuture("stdio." + name);
                     case "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin" -> new StdinFacade(stdio.context());
@@ -7134,9 +7132,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdoutFacade stdout) {
                 return switch (name) {
-                    case "write", "println", "log", "logList" -> (Invokable) args ->
-                            strictNonblockingIoRejected("stdio.stdout." + name);
-                    case "write_async", "println_async", "log_async", "log_list_async" ->
+                    case "write", "println", "log", "logList", "log_list" ->
                             (Invokable) args -> strictNonblockingIoFuture("stdio.stdout." + name);
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
@@ -7144,9 +7140,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof StdinFacade stdin) {
                 return switch (name) {
                     case "read_line" -> (Invokable) args ->
-                            strictNonblockingIoRejected("stdio.stdin.read_line");
-                    case "read_line_async" -> (Invokable) args ->
-                            strictNonblockingIoFuture("stdio.stdin.read_line_async");
+                            strictNonblockingIoFuture("stdio.stdin.read_line");
                     default -> throw new IllegalArgumentException("unknown stdin member " + name);
                 };
             }
@@ -7154,9 +7148,6 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "read_text", "write_text", "write_text_atomic", "append_text",
                             "list_dir", "is_dir", "is_symlink", "exists", "remove", "mkdir_all" ->
-                            (Invokable) args -> strictNonblockingIoRejected("fs." + name);
-                    case "read_text_async", "write_text_async", "append_text_async",
-                            "exists_async", "remove_async", "mkdir_all_async" ->
                             (Invokable) args -> strictNonblockingIoFuture("fs." + name);
                     default -> throw new IllegalArgumentException("unknown filesystem member " + name);
                 };
@@ -7164,17 +7155,13 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
                     case "connect" -> (Invokable) args ->
-                            strictNonblockingIoRejected("network.connect");
-                    case "connect_async" -> (Invokable) args ->
-                            strictNonblockingIoFuture("network.connect_async");
+                            strictNonblockingIoFuture("network.connect");
                     default -> throw new IllegalArgumentException("unknown network member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
                 return switch (name) {
-                    case "read_line", "write_text", "close" -> (Invokable) args ->
-                            strictNonblockingIoRejected("network.socket." + name);
-                    case "read_line_async", "write_text_async", "close_async" ->
+                    case "read_line", "write_text", "close" ->
                             (Invokable) args -> strictNonblockingIoFuture("network.socket." + name);
                     default -> throw new IllegalArgumentException("unknown network socket member " + name);
                 };
@@ -7265,9 +7252,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "handler" -> (Invokable) args ->
                             strictNonblockingIoRejected("http.handler");
                     case "listen" -> (Invokable) args ->
-                            strictNonblockingIoRejected("http.listen");
-                    case "listen_async" -> (Invokable) args ->
-                            strictNonblockingIoFuture("http.listen_async");
+                            strictNonblockingIoFuture("http.listen");
                     case "claim" -> (Invokable) args ->
                             strictNonblockingIoRejected("http.claim");
                     case "response_empty" -> (Invokable) args -> {
@@ -7290,8 +7275,6 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
                     case "get_text", "post_text" -> (Invokable) args ->
-                            strictNonblockingIoRejected("http." + name);
-                    case "get_text_async", "post_text_async" -> (Invokable) args ->
                             strictNonblockingIoFuture("http." + name);
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
