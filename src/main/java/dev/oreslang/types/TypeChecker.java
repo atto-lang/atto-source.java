@@ -644,6 +644,10 @@ public final class TypeChecker {
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
+                // Function values/contracts do not yet encode the suspends effect.
+                // Keep suspending callables out of structural module shapes rather
+                // than silently presenting them as ordinary synchronous slots.
+                if (fn.suspends()) continue;
                 Type signature = callableContractType(
                         fn.genericParameters(), fn.parameters(), fn.returnType(),
                         fn.async(), fn.suspends(), fn.generator(), Set.of(), null);
@@ -3785,6 +3789,12 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("routine '" + namespace.name() + "." + member.member()
                                 + "' is direct-call-only and cannot be used as a first-class callable value; "
                                 + "invoke it directly or wrap the call in an explicit lambda");
+                    }
+                    if (moduleFunction.suspends()) {
+                        throw new IllegalArgumentException(
+                                "suspends function '" + namespace.name() + "." + member.member()
+                                        + "' cannot be used as a first-class callable until Fnc types encode suspension; "
+                                        + "invoke it directly from an async or suspends callable");
                     }
                     if (!moduleFunction.genericParameters().isEmpty()) {
                         throw new IllegalArgumentException(
