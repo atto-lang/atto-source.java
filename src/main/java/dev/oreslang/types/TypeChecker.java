@@ -42,7 +42,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Array", "InvertedArray", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
@@ -173,13 +173,67 @@ public final class TypeChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ClassDecl klass && klass.inverted()) {
-                    throw new IllegalArgumentException(
-                            "inverted class '" + klass.name()
-                                    + "' requires typed InvertedArray ownership, columnar field lowering "
-                                    + "and checked borrow effects; executable SoA classes are not yet enabled");
+                    validateInvertedDeclarationV1(klass);
                 }
             }
         }
+    }
+
+    /**
+     * V1 admits inverted declarations as layout metadata only. Execution is
+     * available solely through checked InvertedArray<T> bracket-field sites.
+     */
+    private static void validateInvertedDeclarationV1(Ast.ClassDecl klass) {
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                || klass.isAbstract()
+                || !klass.parents().isEmpty()
+                || !klass.interfaces().isEmpty()
+                || klass.constructor() != null
+                || !klass.genericParameters().isEmpty()
+                || !klass.methods().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "inverted class '" + klass.name()
+                            + "' v1 must be a flat, non-actor, non-generic data declaration "
+                            + "with no inheritance, interfaces, constructor, or methods");
+        }
+        if (klass.fields().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "inverted class '" + klass.name() + "' requires at least one field");
+        }
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.type() == null
+                    || field.type().inferArguments()
+                    || field.initializer() != null
+                    || !field.annotations().isEmpty()
+                    || field.bindingKind() == Ast.BindingKind.CONST
+                    || !guestInvertedFieldTypeV1(field.type())) {
+                throw new IllegalArgumentException(
+                        "inverted field '" + klass.name() + "." + field.name()
+                                + "' requires a fixed i64/f64/bool or one-level fixed record type "
+                                + "with no initializer/annotation");
+            }
+        }
+    }
+
+    private static boolean guestInvertedFieldTypeV1(Ast.TypeRef type) {
+        if (type == null || type.inferArguments()) return false;
+        if (type.isRecordType()) {
+            if (type.recordMembers().isEmpty()) return false;
+            for (Ast.TypeRef member : type.recordMembers().values()) {
+                if (member == null || member.inferArguments()
+                        || !member.arguments().isEmpty()
+                        || !(member.name().equals("i64")
+                            || member.name().equals("f64")
+                            || member.name().equals("bool"))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return type.arguments().isEmpty()
+                && (type.name().equals("i64")
+                    || type.name().equals("f64")
+                    || type.name().equals("bool"));
     }
 
     private static void rejectUnloweredCheckedClassEffects(Ast.ClassDecl klass) {
@@ -352,7 +406,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
-                "Object", "List", "Option", "Result", "Future",
+                "Object", "List", "InvertedArray", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -1151,10 +1205,8 @@ public final class TypeChecker {
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
         if (klass.inverted()) {
-            throw new IllegalArgumentException(
-                    "inverted class '" + klass.name()
-                            + "' requires typed InvertedArray ownership, columnar field lowering "
-                            + "and checked borrow effects; executable SoA classes are not yet enabled");
+            validateInvertedDeclarationV1(klass);
+            return;
         }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
@@ -2035,7 +2087,7 @@ public final class TypeChecker {
                                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                                 "complex64", "complex128", "complex", "bool", "Bool",
                                 "boolean", "string", "String", "void", "null", "self",
-                                "Tuple", "Array", "List", "Vector", "Slice",
+                                "Tuple", "Array", "InvertedArray", "List", "Vector", "Slice",
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
@@ -4231,6 +4283,13 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("InvertedArray")) {
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "new InvertedArray<T>() takes no positional arguments in v1");
+                }
+                return resolve(created.type(), generics, self);
+            }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty()
                         || created.arguments().size() > 1) {
@@ -4259,6 +4318,12 @@ public final class TypeChecker {
             rejectUnimportedClassNamespace(klass);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
+            }
+            if (klass.inverted()) {
+                throw new IllegalArgumentException(
+                        "inverted row '" + klass.name()
+                                + "' cannot be constructed directly; construct InvertedArray<"
+                                + klass.name() + "> instead");
             }
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException("actor '" + klass.name()
@@ -9589,6 +9654,27 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of(payload));
             }
+            case "InvertedArray" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "InvertedArray<T> requires exactly one explicit inverted class type");
+                }
+                Ast.TypeRef rowRef = ref.arguments().getFirst();
+                if (rowRef.inferArguments() || !rowRef.arguments().isEmpty()
+                        || rowRef.isBorrow() || rowRef.isRecordType()) {
+                    throw new IllegalArgumentException(
+                            "InvertedArray<T> requires a direct nominal inverted class type");
+                }
+                Ast.ClassDecl row = findClass(rowRef.name());
+                if (row == null || !row.inverted()) {
+                    throw new IllegalArgumentException(
+                            "InvertedArray<T> requires T to name a local inverted class");
+                }
+                validateInvertedDeclarationV1(row);
+                yield new Named(
+                        "InvertedArray",
+                        List.of(new Named(qualifiedClassName(row), List.of())));
+            }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
@@ -9692,6 +9778,12 @@ public final class TypeChecker {
             default -> {
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
+                    if (knownClass.inverted()) {
+                        throw new IllegalArgumentException(
+                                "inverted row type '" + knownClass.name()
+                                        + "' is not a standalone value type; use InvertedArray<"
+                                        + knownClass.name() + ">");
+                    }
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
                     yield new Named(qualifiedClassName(knownClass),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
