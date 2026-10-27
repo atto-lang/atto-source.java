@@ -71,6 +71,35 @@ final class LocalRecordTypeAliasTest {
     }
 
     @Test
+    void publicParameterAndReturnSignaturesBothEraseTheLocalTypeName() {
+        String source = """
+                pub fnc identity(T input): T {
+                    type T = record { foo: string };
+                    return input;
+                }
+                fnc client(): string {
+                    const x = identity(record { foo: "works" });
+                    return x.foo;
+                }
+                """;
+        Ast.FunctionDecl fn = function(source);
+        assertTrue(fn.parameters().getFirst().type().isRecordType());
+        assertTrue(fn.returnType().isRecordType());
+        accepted(source);
+    }
+
+    @Test
+    void recordAliasInsideActorCallableIsNotSilentlyReinterpreted() {
+        String source = """
+                actor fnc wire(): void {
+                    type T = record { foo: string };
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+    }
+
+    @Test
     void localAliasCanUseEarlierLocalRecordAlias() {
         String source = """
                 fnc foo(): B {
