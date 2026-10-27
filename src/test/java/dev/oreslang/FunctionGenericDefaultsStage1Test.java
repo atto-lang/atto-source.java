@@ -115,6 +115,38 @@ final class FunctionGenericDefaultsStage1Test {
     }
 
     @Test
+    void genericDefaultsCannotDefaultToLexicalBorrowTypes() {
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class LoanBox as
+                          pub val int value = 7;
+                        end
+
+                        fnc bad<T=borrow LoanBox>(): int {
+                          return 1;
+                        }
+                        """)));
+        assertTrue(direct.getMessage().contains("cannot default to a lexical borrow"),
+                direct::getMessage);
+
+        IllegalArgumentException nested = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class LoanBox as
+                          pub val int value = 7;
+                        end
+
+                        fnc bad<T=Option<borrow LoanBox>>(): int {
+                          return 1;
+                        }
+                        """)));
+        assertTrue(nested.getMessage().contains("borrow")
+                || nested.getMessage().contains("owned payload"),
+                nested::getMessage);
+    }
+
+    @Test
     void preexistingFunctionDeclConstructorProducesNoDefaults() {
         Ast.FunctionDecl fn = new Ast.FunctionDecl(
                 "foo", Ast.CallableKind.FNC, Ast.Visibility.PRIVATE,

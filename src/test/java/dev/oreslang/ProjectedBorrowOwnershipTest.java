@@ -82,7 +82,7 @@ final class ProjectedBorrowOwnershipTest {
                         end
 
                         fnc bad(borrow [Item, int] pair): void {
-                          val [item, number] = pair;
+                          const [item, number] = pair;
                           val moved = rt take item;
                           return;
                         }
@@ -99,7 +99,7 @@ final class ProjectedBorrowOwnershipTest {
                         end
 
                         fnc bad(borrow List<Item> items): void {
-                          for val item of items do
+                          for const item of items do
                             val moved = rt take item;
                           done
                           return;
@@ -129,7 +129,7 @@ final class ProjectedBorrowOwnershipTest {
                   items.add(new Item(1));
                   if true; do
                     val borrow List<Item> view = rt borrow items;
-                    for val item of view do
+                    for const item of view do
                       stdio.stdout.write(item.number);
                     done
                   fi

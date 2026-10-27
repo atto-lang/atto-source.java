@@ -197,6 +197,13 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        for (Ast.GenericParameter spec : fn.genericSpecs()) {
+            if (spec.defaultType() != null && containsBorrowType(spec.defaultType())) {
+                throw error("function '" + fn.name()
+                        + "' generic defaults cannot contain lexical borrows; "
+                        + "default the owned target type and put borrow on the parameter");
+            }
+        }
         Scope scope = new Scope(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -221,9 +228,10 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
-            if (fieldType != null && fieldType.isBorrow()) {
+            if (fieldType != null && containsBorrowType(fieldType)) {
                 throw error("field '" + klass.name() + "." + field.name()
-                        + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
+                        + "' cannot store a borrowed reference, including inside nested owned wrappers; "
+                        + "class/actor fields must own, copy, share, or proxy their state");
             }
         }
 
@@ -1019,7 +1027,11 @@ public final class OwnershipChecker {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
 
-        ValueKind storedKind = binding.declaredType() == null ? value.kind : kindOfType(storedType);
+        ValueKind storedKind = isBorrowValue(value)
+                ? (value.kind == ValueKind.MUT_BORROW
+                    ? ValueKind.MUT_BORROW
+                    : ValueKind.IMM_BORROW)
+                : binding.declaredType() == null ? value.kind : kindOfType(storedType);
         VarState state = new VarState(
                 storedType,
                 binding.mutableReferent(),
@@ -1310,9 +1322,11 @@ public final class OwnershipChecker {
                 if (leftSource == null || rightSource == null || leftSource != rightSource) {
                     throw error("conditional expression cannot merge borrowed values with ambiguous lifetime provenance");
                 }
-                ValueKind joinedKind = joinedType.isBorrow()
-                        ? kindOfType(joinedType)
-                        : ValueKind.MOVE_ONLY;
+                ValueKind joinedKind =
+                        left.kind == ValueKind.MUT_BORROW
+                                && right.kind == ValueKind.MUT_BORROW
+                                ? ValueKind.MUT_BORROW
+                                : ValueKind.IMM_BORROW;
                 return new ValueInfo(joinedType, joinedKind, leftSource);
             }
             return new ValueInfo(
@@ -2043,9 +2057,14 @@ public final class OwnershipChecker {
                     }
                     resultProvenance = ownershipRoot(receiverValue.borrowSource);
                 }
+                ValueKind resultKind = resultProvenance == null
+                        ? kindOfType(callResult)
+                        : receiverValue.kind == ValueKind.MUT_BORROW
+                                ? ValueKind.MUT_BORROW
+                                : ValueKind.IMM_BORROW;
                 return new ValueInfo(
                         callResult,
-                        kindOfType(callResult),
+                        resultKind,
                         method.async() ? null : resultProvenance);
             }
         }
@@ -2073,10 +2092,17 @@ public final class OwnershipChecker {
         }
 
         // Unknown host/dynamic callables remain conservative and consuming.
+        // A lexical loan cannot become owned merely because the callee lacks
+        // a statically resolved signature; this path also covers capability
+        // surfaces such as ActorRef.send that are not ordinary class methods.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
+            }
+            if (isBorrowValue(argument)) {
+                throw error("borrowed/provenance-tracked values cannot cross an arbitrary "
+                        + "or actor-capability call boundary; pass owned/copy/shared data");
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
@@ -2534,6 +2560,12 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(aggregate.type)) {
                         throw error(callable + " spread cannot consume a guard-bearing tuple");
                     }
+                    if (isBorrowValue(aggregate)
+                            && spreadType.arguments().stream().anyMatch(type -> !isCopyType(type))) {
+                        throw error(callable
+                                + " spread cannot expand affine values from a borrowed tuple; "
+                                + "only all-Copy tuple views may be spread into by-value parameters");
+                    }
                     parameterIndex += width;
                     continue;
                 }
@@ -2923,7 +2955,8 @@ public final class OwnershipChecker {
                     + "use an explicit lexical rt borrow projection");
         }
         ValueInfo retained = retainBorrowForBinding(
-                new ValueInfo(type, kind, source.borrowSource));
+                new ValueInfo(type, ValueKind.IMM_BORROW, source.borrowSource));
+        state.kind = ValueKind.IMM_BORROW;
         state.borrowSource = retained.borrowSource;
         state.borrowLease = retained.borrowLease;
         return state;
@@ -3874,7 +3907,15 @@ public final class OwnershipChecker {
             Set<String> fixed) {
         if (pattern == null || actual == null || actual.name().equals("$infer$")) return;
         if (genericNames.contains(pattern.name()) && pattern.arguments().isEmpty() && !pattern.inferArguments()) {
-            if (!fixed.contains(pattern.name())) bindings.putIfAbsent(pattern.name(), actual);
+            if (!fixed.contains(pattern.name())) {
+                if (containsBorrowType(actual)) {
+                    throw error("generic '" + pattern.name()
+                            + "' cannot infer a lexical borrow or borrow-bearing aggregate; "
+                            + "declare borrow " + pattern.name()
+                            + " and bind the generic to the owned target type");
+                }
+                bindings.putIfAbsent(pattern.name(), actual);
+            }
             return;
         }
         if (pattern.isBorrow() && actual.isBorrow()) {
@@ -3933,8 +3974,20 @@ public final class OwnershipChecker {
         Set<String> fixed = new HashSet<>(initialBindings.keySet());
         GenericCallArguments.Bound bound =
                 GenericCallArguments.bind(explicitGenericNames, call.typeArguments(), "generic call");
+        for (Map.Entry<String, Ast.TypeRef> entry : bound.explicitTypes().entrySet()) {
+            if (containsBorrowType(entry.getValue())) {
+                throw error("generic '" + entry.getKey()
+                        + "' must bind an owned type; lexical borrows belong in an explicit borrow parameter");
+            }
+        }
         bindings.putAll(bound.explicitTypes());
         fixed.addAll(bound.explicitTypes().keySet());
+        for (Map.Entry<String, Ast.TypeRef> entry : initialBindings.entrySet()) {
+            if (containsBorrowType(entry.getValue())) {
+                throw error("generic '" + entry.getKey()
+                        + "' cannot inherit borrow-bearing nominal bindings");
+            }
+        }
         List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(call.arguments(), scope);
         for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
             inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
@@ -3948,6 +4001,12 @@ public final class OwnershipChecker {
                         ref, Set.copyOf(allGenericNames)),
                 "generic call");
         GenericCallArguments.requireBound(explicitGenericNames, bindings, "generic call");
+        for (Map.Entry<String, Ast.TypeRef> entry : bindings.entrySet()) {
+            if (containsBorrowType(entry.getValue())) {
+                throw error("generic '" + entry.getKey()
+                        + "' resolved to borrow-bearing data; bare generics are owned types");
+            }
+        }
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
                         substituteType(param.type(), bindings),
@@ -4924,6 +4983,15 @@ public final class OwnershipChecker {
 
     private static boolean isMutexGuardType(Ast.TypeRef type) {
         return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
+    }
+
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowType(argument)) return true;
+        }
+        return false;
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {

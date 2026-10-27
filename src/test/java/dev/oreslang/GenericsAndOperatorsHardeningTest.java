@@ -38,6 +38,103 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void ownedStorageAndNominalGenericsRejectNestedBorrowPayloads() {
+        String box = """
+                define class LoanBox as
+                  pub val int value = 7;
+                end
+                """;
+
+        for (String declaration : java.util.List.of(
+                "fnc bad(Option<borrow LoanBox> value): void { return; }",
+                "fnc bad(Result<int, Option<borrow LoanBox>> value): void { return; }",
+                "fnc bad(Mutex<Option<borrow LoanBox>> value): void { return; }",
+                "fnc bad(Box<Option<borrow LoanBox>> value): void { return; }",
+                "fnc bad(List<Option<borrow LoanBox>> value): void { return; }",
+                """
+                define class Holder<T> as
+                  pub val T value;
+                end
+                fnc bad(Holder<borrow LoanBox> value): void { return; }
+                """,
+                """
+                define class Vector<T> as
+                  pub val T value;
+                end
+                fnc bad(Vector<borrow LoanBox> value): void { return; }
+                """)) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(box + declaration)));
+            assertTrue(error.getMessage().contains("borrow")
+                    || error.getMessage().contains("owned"),
+                    error::getMessage);
+        }
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(box + """
+                fnc inspect<T>(borrow T value): int {
+                  return 1;
+                }
+
+                fnc ok(borrow LoanBox value): int {
+                  return inspect<LoanBox>(value);
+                }
+                """)));
+    }
+
+    @Test
+    void bareGenericCannotBindLexicalBorrowByInferenceOrExplicitArgument() {
+        String source = """
+                define class LoanBox as
+                  pub val int value = 7;
+                end
+
+                fnc identity<T>(T value): T {
+                  return value;
+                }
+                """;
+
+        IllegalArgumentException inferred = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source + """
+                        fnc bad(borrow LoanBox value): void {
+                          val escaped = identity(value);
+                          return;
+                        }
+                        """)));
+        assertTrue(inferred.getMessage().contains("generic 'T'")
+                && inferred.getMessage().contains("borrow"),
+                inferred::getMessage);
+
+        IllegalArgumentException explicit = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source + """
+                        fnc bad(borrow LoanBox value): void {
+                          val escaped = identity<borrow LoanBox>(value);
+                          return;
+                        }
+                        """)));
+        assertTrue(explicit.getMessage().contains("generic 'T'")
+                && (explicit.getMessage().contains("owned type")
+                    || explicit.getMessage().contains("borrow")),
+                explicit::getMessage);
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class LoanBox as
+                  pub val int value = 7;
+                end
+
+                fnc inspect<T>(borrow T value): int {
+                  return 1;
+                }
+
+                fnc ok(borrow LoanBox value): int {
+                  return inspect<LoanBox>(value);
+                }
+                """)));
+    }
+
+    @Test
     void enforcesKnownGenericArityAndSubstitutesClassMembers() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app

@@ -8765,7 +8765,14 @@ public final class TypeChecker {
                 GenericCallArguments.bind(genericNames, typeArguments, label);
         Map<String, Type> resolved = new HashMap<>();
         for (Map.Entry<String, Ast.TypeRef> entry : bound.explicitTypes().entrySet()) {
-            resolved.put(entry.getKey(), resolve(entry.getValue(), callerGenerics, callerSelf));
+            Type concrete = resolve(entry.getValue(), callerGenerics, callerSelf);
+            if (containsChannelBorrow(concrete, new LinkedHashSet<>(), Map.of())) {
+                throw new IllegalArgumentException(
+                        label + " generic '" + entry.getKey()
+                                + "' must bind an owned type; lexical borrows belong in "
+                                + "an explicit borrow " + entry.getKey() + " parameter");
+            }
+            resolved.put(entry.getKey(), concrete);
         }
         return resolved;
     }
@@ -8796,6 +8803,11 @@ public final class TypeChecker {
         if (ref.name().equals("Unknown") || ref.name().equals("Any")) {
             throw new IllegalArgumentException(label
                     + " cannot default to Any/Unknown until safe opaque/dynamic semantics are integrated");
+        }
+        if (ref.isBorrow()) {
+            throw new IllegalArgumentException(
+                    label + " cannot default to a lexical borrow; default the generic "
+                            + "to the owned target type and put borrow on the callable parameter");
         }
         if (declared.contains(ref.name()) && !previous.contains(ref.name())) {
             throw new IllegalArgumentException(label
@@ -8983,6 +8995,13 @@ public final class TypeChecker {
         if (containsUnknown(actual)) return;
         if (pattern instanceof Generic generic) {
             if (fixedBindings.contains(generic.name())) return;
+            if (containsChannelBorrow(actual, new LinkedHashSet<>(), Map.of())) {
+                throw new IllegalArgumentException(
+                        label + " cannot infer generic '" + generic.name()
+                                + "' as a lexical borrow or borrow-bearing aggregate; "
+                                + "declare the parameter as borrow " + generic.name()
+                                + " and bind the generic to its owned target type");
+            }
             Type previous = bindings.putIfAbsent(generic.name(), actual);
             if (previous != null) {
                 Type joined = commonType(previous, actual);
@@ -9548,10 +9567,25 @@ public final class TypeChecker {
                         && ref.arguments().stream().noneMatch(argument ->
                                 argument.isSequenceShape() || argument.isNamedParameter())) {
                     validateGenericArity(ref, declared.genericParameters(), "class " + declared.name());
-                    yield new Named(qualifiedClassName(declared),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                    List<Type> resolvedArgs = ref.arguments().stream()
+                            .map(arg -> resolve(arg, generics, self)).toList();
+                    if (resolvedArgs.stream().anyMatch(arg ->
+                            containsChannelBorrow(arg, new LinkedHashSet<>(), Map.of()))) {
+                        throw new IllegalArgumentException(
+                                "class " + declared.name()
+                                        + " generic arguments cannot contain lexical borrows "
+                                        + "until nominal lifetime parameters are supported");
+                    }
+                    yield new Named(qualifiedClassName(declared), resolvedArgs);
                 }
-                yield resolveCollectionType(ref, generics, self, allowNullMarker);
+                Type collection = resolveCollectionType(ref, generics, self, allowNullMarker);
+                if (Set.of("Array", "List", "Vector", "Slice").contains(ref.name())
+                        && containsChannelBorrow(collection, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            ref.name() + "<T> requires owned element data; borrowed values cannot "
+                                    + "inhabit heap-backed collection storage without explicit lifetimes");
+                }
+                yield collection;
             }
             case "DynamicStruct" -> throw new IllegalArgumentException(
                     "DynamicStruct has been removed for AOT-safe static shape semantics; "
@@ -9592,15 +9626,24 @@ public final class TypeChecker {
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
+                if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            "Option<T> requires owned payload data until explicit sum lifetimes are supported");
+                }
                 yield new Named("Option", List.of(element));
             }
             case "Result" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2) {
                     throw new IllegalArgumentException("Result requires exactly two explicit type arguments");
                 }
-                yield new Named("Result", List.of(
-                        resolve(ref.arguments().get(0), generics, self),
-                        resolve(ref.arguments().get(1), generics, self)));
+                Type ok = resolve(ref.arguments().get(0), generics, self);
+                Type err = resolve(ref.arguments().get(1), generics, self);
+                if (containsChannelBorrow(ok, new LinkedHashSet<>(), Map.of())
+                        || containsChannelBorrow(err, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            "Result<T,E> requires owned payload/error data until explicit sum lifetimes are supported");
+                }
+                yield new Named("Result", List.of(ok, err));
             }
             case "MutexGuard" -> throw new IllegalArgumentException(
                     "MutexGuard<T> is compiler-managed and cannot be named in source declarations; acquire it from lock()/try_lock()/lock_async()");
@@ -9608,8 +9651,9 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Mutex requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Mutex<void> is invalid");
-                if (element instanceof Borrow) {
-                    throw new IllegalArgumentException("Mutex<T> requires an owned value type; borrowed payload types are invalid");
+                if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            "Mutex<T> requires recursively owned payload data; borrowed payload types are invalid");
                 }
                 yield new Named("Mutex", List.of(element));
             }
@@ -9620,11 +9664,17 @@ public final class TypeChecker {
                             ref,
                             declared.genericParameters(),
                             "class " + declared.name());
-                    yield new Named(
-                            qualifiedClassName(declared),
-                            ref.arguments().stream()
-                                    .map(arg -> resolve(arg, generics, self))
-                                    .toList());
+                    List<Type> resolvedArgs = ref.arguments().stream()
+                            .map(arg -> resolve(arg, generics, self))
+                            .toList();
+                    if (resolvedArgs.stream().anyMatch(arg ->
+                            containsChannelBorrow(arg, new LinkedHashSet<>(), Map.of()))) {
+                        throw new IllegalArgumentException(
+                                "class " + declared.name()
+                                        + " generic arguments cannot contain lexical borrows "
+                                        + "until nominal lifetime parameters are supported");
+                    }
+                    yield new Named(qualifiedClassName(declared), resolvedArgs);
                 }
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(
@@ -9634,9 +9684,9 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) {
                     throw new IllegalArgumentException(ref.name() + "<void> is invalid");
                 }
-                if (element instanceof Borrow) {
+                if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
-                            ref.name() + "<T> requires an owned value type until explicit lifetime parameters are supported");
+                            ref.name() + "<T> requires recursively owned value data until explicit lifetime parameters are supported");
                 }
                 yield new Named(ref.name(), List.of(element));
             }
@@ -9670,6 +9720,11 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) {
                     throw new IllegalArgumentException(ref.name() + "<void> is invalid");
                 }
+                if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            ref.name() + "<T> requires owned element data until iterator-bound "
+                                    + "lifetimes are explicit; borrowed values cannot survive iterator storage/pulls");
+                }
                 yield new Named(ref.name().equals("Generator") ? "Iterator" : ref.name().equals("AsyncGenerator") ? "AsyncIterator" : ref.name(), List.of(element));
             }
             case "SharedMutex" -> {
@@ -9693,15 +9748,31 @@ public final class TypeChecker {
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
-                    yield new Named(qualifiedClassName(knownClass),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                    List<Type> resolvedArgs = ref.arguments().stream()
+                            .map(arg -> resolve(arg, generics, self)).toList();
+                    if (resolvedArgs.stream().anyMatch(arg ->
+                            containsChannelBorrow(arg, new LinkedHashSet<>(), Map.of()))) {
+                        throw new IllegalArgumentException(
+                                "class " + knownClass.name()
+                                        + " generic arguments cannot contain lexical borrows "
+                                        + "until nominal lifetime parameters are supported");
+                    }
+                    yield new Named(qualifiedClassName(knownClass), resolvedArgs);
                 }
                 Ast.InterfaceDecl knownInterface = findInterface(ref.name());
                 if (knownInterface != null) {
                     if (knownInterface.moduleContract()) throw new IllegalArgumentException("module contract '" + knownInterface.name() + "' is only valid in module 'conforms' clauses");
                     validateGenericArity(ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
-                    yield new Named(qualifiedInterfaceName(knownInterface),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                    List<Type> resolvedArgs = ref.arguments().stream()
+                            .map(arg -> resolve(arg, generics, self)).toList();
+                    if (resolvedArgs.stream().anyMatch(arg ->
+                            containsChannelBorrow(arg, new LinkedHashSet<>(), Map.of()))) {
+                        throw new IllegalArgumentException(
+                                "interface " + knownInterface.name()
+                                        + " generic arguments cannot contain lexical borrows "
+                                        + "until nominal lifetime parameters are supported");
+                    }
+                    yield new Named(qualifiedInterfaceName(knownInterface), resolvedArgs);
                 }
                 if (ref.inferArguments()) {
                     throw new IllegalArgumentException("cannot infer type arguments for unknown type '" + ref.name() + "<>'");

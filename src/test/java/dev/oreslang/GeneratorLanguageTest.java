@@ -486,6 +486,28 @@ final class GeneratorLanguageTest {
     }
 
     @Test
+    void iteratorProtocolsRejectBorrowedElementStorageTypes() {
+        for (String wrapper : new String[] {
+                "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define class Box as
+                              pub val int value = 1;
+                            end
+
+                            fnc bad(%s<borrow Box> values): void {
+                              return;
+                            }
+                            """.formatted(wrapper))));
+            assertTrue(error.getMessage().contains("owned element data")
+                    || error.getMessage().contains("borrowed values"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
     void yieldCannotSuspendWithLiveBorrow() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define class Box as

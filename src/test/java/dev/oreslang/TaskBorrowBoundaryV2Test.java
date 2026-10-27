@@ -367,6 +367,87 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void actorSendCannotLaunderProvenanceWhenTypePassIsBypassed() {
+        var program = Parser.parse("""
+                define class Payload as
+                  pub val int value = 7;
+
+                  pub same(): self {
+                    return self;
+                  }
+                end
+
+                define actor Worker as
+                  receive(ActorMail<Payload> mail): void {
+                    return;
+                  }
+                end
+
+                fnc bad(borrow Payload payload): void {
+                  val worker = spawn Worker();
+                  worker.send(payload.same());
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program));
+        assertTrue(failure.getMessage().contains("actor-capability")
+                || failure.getMessage().contains("provenance-tracked"),
+                failure::getMessage);
+    }
+
+    @Test
+    void ownershipPassAloneRejectsBorrowBearingGenericSpecialization() {
+        var inferred = Parser.parse(BOX + """
+                fnc identity<T>(T value): T {
+                  return value;
+                }
+
+                fnc bad(borrow Box value): void {
+                  val escaped = identity(value);
+                  return;
+                }
+                """);
+        IllegalArgumentException inferredFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(inferred));
+        assertTrue(inferredFailure.getMessage().contains("generic 'T'")
+                && inferredFailure.getMessage().contains("borrow"),
+                inferredFailure::getMessage);
+
+        var explicit = Parser.parse(BOX + """
+                fnc identity<T>(T value): T {
+                  return value;
+                }
+
+                fnc bad(borrow Box value): void {
+                  val escaped = identity<borrow Box>(value);
+                  return;
+                }
+                """);
+        IllegalArgumentException explicitFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(explicit));
+        assertTrue(explicitFailure.getMessage().contains("generic 'T'")
+                && explicitFailure.getMessage().contains("owned"),
+                explicitFailure::getMessage);
+
+        var nestedField = Parser.parse(BOX + """
+                define class BadHolder as
+                  pub val Option<borrow Box> value;
+                end
+                """);
+        IllegalArgumentException fieldFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(nestedField));
+        assertTrue(fieldFailure.getMessage().contains("field 'BadHolder.value'")
+                && fieldFailure.getMessage().contains("borrow"),
+                fieldFailure::getMessage);
+    }
+
+    @Test
     void independentTaskCannotInheritMailboxSelfEvenIfTypePassIsBypassed() {
         var program = Parser.parse("""
                 define actor Worker as

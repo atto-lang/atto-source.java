@@ -148,6 +148,40 @@ final class ArgumentsTupleSpreadTest {
     }
 
     @Test
+    void borrowedTupleSpreadAllowsOnlyCopySlots() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc add(int left, int right): int {
+                  return left + right;
+                }
+
+                fnc ok(borrow [int, int] pair): int {
+                  return add(...pair);
+                }
+                """)));
+
+        IllegalArgumentException affine = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 7;
+                        end
+
+                        fnc consume(Box box, int marker): void {
+                          return;
+                        }
+
+                        fnc bad(borrow [Box, int] pair): void {
+                          consume(...pair);
+                          return;
+                        }
+                        """)));
+        assertTrue(affine.getMessage().contains("spread")
+                && (affine.getMessage().contains("borrowed tuple")
+                    || affine.getMessage().contains("affine")),
+                affine::getMessage);
+    }
+
+    @Test
     void argumentsCannotBeShadowedByAParameter() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
