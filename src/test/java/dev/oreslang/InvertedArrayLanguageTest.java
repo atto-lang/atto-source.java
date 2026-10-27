@@ -215,6 +215,55 @@ final class InvertedArrayLanguageTest {
     }
 
     @Test
+    void wrappedInvertedStorageCannotBypassCaptureOrChannelBoundaries() {
+        IllegalArgumentException wrappedClosure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+
+                        fnc bad(): void {
+                          let mut InvertedArray<Particle> particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          val wrapped = Some(particles);
+                          val (() => int) read = || -> {
+                            val hidden = wrapped;
+                            return 1;
+                          };
+                          return;
+                        }
+                        """));
+        assertTrue(
+                wrappedClosure.getMessage().contains(
+                        "closure cannot capture InvertedArray storage"),
+                wrappedClosure::getMessage);
+
+        IllegalArgumentException channel = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+
+                        fnc bad(): void {
+                          let mut InvertedArray<Particle> particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          val channel =
+                              Channel.new<InvertedArray<Particle>>(1);
+                          val pending = nb writech channel, particles;
+                          return;
+                        }
+                        """));
+        assertTrue(
+                channel.getMessage().contains(
+                        "cannot transport InvertedArray storage"),
+                channel::getMessage);
+    }
+
+    @Test
     void bracketIndexCannotCallOrSuspendInV1() {
         for (String index : new String[] {"next()", "await nextAsync()"}) {
             String functions = index.startsWith("await")
