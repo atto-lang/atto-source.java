@@ -22,7 +22,8 @@ Current source-level constraints are deliberately conservative:
 - outbound connect accepts canonical numeric IPv4 only; hostname/DNS resolution
   fails closed until a separate async DNS provider exists;
 - accepted/outbound connections are not transferable into actor state yet;
-- one kernel operation owns a channel lease at a time;
+- one read lease and one write lease may coexist on a TCP channel while sharing
+  one selector registration; duplicate same-direction operations are rejected;
 - connect/accept/read/write/close settle through `OresFuture`;
 - connect uses nonblocking `SocketChannel.connect` + `OP_CONNECT` +
   `finishConnect`; reads/writes are bounded and nonblocking;
