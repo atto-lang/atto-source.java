@@ -205,7 +205,11 @@ public final class ExportAbiMetadata {
     }
 
     private static Ast.ExportKind kindOf(Ast.Decl declaration) {
-        if (declaration instanceof Ast.FunctionDecl) return Ast.ExportKind.FUNCTION;
+        if (declaration instanceof Ast.FunctionDecl fn) {
+            return fn.kind() == Ast.CallableKind.ROUTINE
+                    ? Ast.ExportKind.ROUTINE
+                    : Ast.ExportKind.FUNCTION;
+        }
         if (declaration instanceof Ast.ClassDecl cls)
             return cls.actorKind() == Ast.ActorKind.NONE ? Ast.ExportKind.CLASS : Ast.ExportKind.ACTOR;
         if (declaration instanceof Ast.InterfaceDecl iface) {

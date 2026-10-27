@@ -549,7 +549,8 @@ public final class TreeShaker {
                     declarations.add(rewriteDeclaration(module.name(), declaration));
                 }
                 modules.add(new Ast.ModuleDecl(
-                        module.name(), module.annotations(), module.contracts(), declarations, module.exports()));
+                        module.name(), module.annotations(), module.contracts(),
+                        declarations, module.exports(), module.visibility()));
             }
             return new Ast.Program(program.namespace(), program.imports(), modules);
         }
@@ -1510,7 +1511,7 @@ public final class TreeShaker {
                 if (!declarations.isEmpty()) {
                     modules.add(new Ast.ModuleDecl(
                             module.name(), module.annotations(), module.contracts(), declarations,
-                            retainedExports(module, declarations)));
+                            retainedExports(module, declarations), module.visibility()));
                 }
             }
 

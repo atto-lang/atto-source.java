@@ -752,7 +752,8 @@ public final class TypeChecker {
         }
         if (fn.name().equals("init")) {
             Ast.TypeRef initReturn = fn.returnType();
-            if (fn.visibility() != Ast.Visibility.PRIVATE
+            if ((fn.visibility() != Ast.Visibility.PRIVATE
+                    && fn.visibility() != Ast.Visibility.EXPLICIT_PRIVATE)
                     || fn.async()
                     || fn.suspends()
                     || fn.generator()
@@ -8205,7 +8206,9 @@ public final class TypeChecker {
             Ast.ClassDecl owner,
             String kind,
             String name) {
-        if (visibility == Ast.Visibility.PRIVATE && currentClassOwner != owner) {
+        if ((visibility == Ast.Visibility.PRIVATE
+                || visibility == Ast.Visibility.EXPLICIT_PRIVATE)
+                && currentClassOwner != owner) {
             throw new IllegalArgumentException(
                     "private " + kind + " '" + owner.name() + "." + name
                             + "' is accessible only from code declared in class " + owner.name());

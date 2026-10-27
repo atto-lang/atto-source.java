@@ -54,15 +54,35 @@ public final class ExportResolver {
         }
 
         void validateFamilyVisibility() {
-            if (kind != Ast.ExportKind.FUNCTION || declarations.size() < 2) return;
-            Ast.Visibility first = visibilityOf(declarations.getFirst());
+            if ((kind != Ast.ExportKind.FUNCTION && kind != Ast.ExportKind.ROUTINE)
+                    || declarations.size() < 2) return;
+            java.util.EnumSet<Ast.Visibility> explicit = java.util.EnumSet.noneOf(Ast.Visibility.class);
             for (Ast.Decl declaration : declarations) {
-                if (visibilityOf(declaration) != first) {
-                    throw new IllegalArgumentException(
-                            "[EXPORT_OVERLOAD_VISIBILITY_CONFLICT] overload family " + name
-                                    + " mixes explicit visibility states");
-                }
+                Ast.Visibility visibility = visibilityOf(declaration);
+                if (visibility != Ast.Visibility.PRIVATE) explicit.add(visibility);
             }
+            if (explicit.size() > 1) {
+                throw new IllegalArgumentException(
+                        "[OVERLOAD_VISIBILITY_CONFLICT] overload family " + name
+                                + " mixes incompatible explicit visibility states " + explicit);
+            }
+        }
+
+        Ast.Visibility effectiveVisibility() {
+            if ((kind == Ast.ExportKind.FUNCTION || kind == Ast.ExportKind.ROUTINE)
+                    && declarations.size() > 1) {
+                Ast.Visibility effective = Ast.Visibility.PRIVATE;
+                for (Ast.Decl declaration : declarations) {
+                    Ast.Visibility visibility = visibilityOf(declaration);
+                    if (visibility != Ast.Visibility.PRIVATE) {
+                        effective = visibility;
+                        break;
+                    }
+                }
+                return effective;
+            }
+            Ast.Decl representative = representative();
+            return representative == null ? Ast.Visibility.PRIVATE : visibilityOf(representative);
         }
 
         String symbolId(String owner) {
@@ -79,6 +99,7 @@ public final class ExportResolver {
             Map<String, List<Candidate>> byName = collectCandidates(program, module, root);
             resolveNamespace(
                     module.name(),
+                    ownerScope(module, root),
                     module.exports(),
                     byName,
                     root ? importedRootNames : Set.of(),
@@ -133,6 +154,7 @@ public final class ExportResolver {
 
     private static void resolveNamespace(
             String owner,
+            Ast.ExportScope ownerScope,
             List<Ast.ExportDecl> exports,
             Map<String, List<Candidate>> byName,
             Set<String> importedNames,
@@ -141,31 +163,26 @@ public final class ExportResolver {
         Map<String, ExportBinding> externalBindings = new HashMap<>();
         Map<String, Ast.ExportScope> symbolExternalScopes = new HashMap<>();
 
-        // Inline pub is an implicit public export binding.
         for (List<Candidate> sameName : byName.values()) {
             for (Candidate candidate : sameName) {
                 candidate.validateFamilyVisibility();
-                Ast.Decl representative = candidate.representative();
-                if (representative != null && visibilityOf(representative) == Ast.Visibility.PUBLIC) {
-                    ExportBinding binding = new ExportBinding(
-                            owner,
-                            candidate.symbolId(owner),
-                            candidate.kind(),
-                            candidate.name(),
-                            Ast.ExportScope.PUBLIC,
-                            Origin.IMPLICIT_PUB,
-                            null);
-                    admit(binding, exactBindings, externalBindings, symbolExternalScopes);
-                    validateApiVisibility(binding, candidate, byName);
-                }
+                Ast.ExportScope declaredScope = exportScope(candidate.effectiveVisibility());
+                if (declaredScope == null) continue;
+                ExportBinding binding = new ExportBinding(
+                        owner,
+                        candidate.symbolId(owner),
+                        candidate.kind(),
+                        candidate.name(),
+                        capScope(declaredScope, ownerScope),
+                        Origin.IMPLICIT_PUB,
+                        null);
+                admit(binding, exactBindings, externalBindings, symbolExternalScopes);
             }
         }
 
         for (Ast.ExportDecl export : exports) {
             for (Ast.ExportItem item : export.items()) {
                 if (item.symbol()) {
-                    // Symbol declarations are not represented by current Java main yet.
-                    // Keep syntax parsed, but fail closed at semantic admission.
                     throw new IllegalArgumentException(
                             "[EXPORT_SYMBOL_DECLARATION_UNAVAILABLE] Java current main has no declaration AST for "
                                     + item.localName());
@@ -200,13 +217,19 @@ public final class ExportResolver {
                                             + " declaration"));
                 }
 
-                Ast.Decl representative = candidate.representative();
-                if (representative != null
-                        && visibilityOf(representative) == Ast.Visibility.PUBLIC
-                        && export.scope() != Ast.ExportScope.PUBLIC) {
+                candidate.validateFamilyVisibility();
+                Ast.Visibility visibility = candidate.effectiveVisibility();
+                if (visibility == Ast.Visibility.EXPLICIT_PRIVATE) {
                     throw new IllegalArgumentException(
-                            "[EXPORT_SCOPE_CONFLICT] inline pub declaration " + item.localName()
-                                    + " cannot be narrowed by explicit export scope " + export.scope());
+                            "[EXPORT_EXPLICIT_PRIVATE] explicitly private declaration "
+                                    + item.localName() + " cannot be exported");
+                }
+                Ast.ExportScope declaredScope = exportScope(visibility);
+                if (declaredScope != null && declaredScope != export.scope()) {
+                    throw new IllegalArgumentException(
+                            "[EXPORT_SCOPE_CONFLICT] declaration " + item.localName()
+                                    + " has scope " + declaredScope
+                                    + " but explicit export requests " + export.scope());
                 }
 
                 ExportBinding binding = new ExportBinding(
@@ -214,15 +237,16 @@ public final class ExportResolver {
                         candidate.symbolId(owner),
                         candidate.kind(),
                         item.externalName(),
-                        export.scope(),
+                        capScope(export.scope(), ownerScope),
                         Origin.EXPLICIT_EXPORT,
                         export.sourceSpan());
                 admit(binding, exactBindings, externalBindings, symbolExternalScopes);
-                validateApiVisibility(binding, candidate, byName);
             }
         }
 
-        out.addAll(exactBindings.values());
+        List<ExportBinding> resolved = List.copyOf(exactBindings.values());
+        validateApiVisibility(owner, ownerScope, resolved, byName);
+        out.addAll(resolved);
     }
 
     private static void admit(
@@ -251,26 +275,64 @@ public final class ExportResolver {
     }
 
     private static void validateApiVisibility(
-            ExportBinding binding,
-            Candidate candidate,
+            String owner,
+            Ast.ExportScope ownerScope,
+            List<ExportBinding> bindings,
             Map<String, List<Candidate>> byName) {
-        if (binding.scope() != Ast.ExportScope.PUBLIC) return;
-        Ast.Decl decl = candidate.representative();
-        if (decl == null) return;
+        Map<String, Integer> effectiveRanks = new HashMap<>();
+        for (List<Candidate> sameName : byName.values()) {
+            for (Candidate candidate : sameName) {
+                if (!isTypeLike(candidate.kind())) continue;
+                int rank = visibilityRank(candidate.effectiveVisibility(), ownerScope);
+                for (ExportBinding binding : bindings) {
+                    if (binding.localSymbolId().equals(candidate.symbolId(owner))) {
+                        rank = Math.max(rank, scopeRank(binding.scope()));
+                    }
+                }
+                effectiveRanks.put(candidate.symbolId(owner), rank);
+            }
+        }
+
+        for (ExportBinding binding : bindings) {
+            List<Candidate> named = byName.get(localName(binding.localSymbolId()));
+            if (named == null) continue;
+            Candidate source = named.stream()
+                    .filter(candidate -> candidate.symbolId(owner).equals(binding.localSymbolId()))
+                    .findFirst()
+                    .orElse(null);
+            if (source == null) continue;
+            validateCandidateSignature(
+                    owner, source, scopeRank(binding.scope()), byName,
+                    effectiveRanks, new LinkedHashSet<>());
+        }
+    }
+
+    private static void validateCandidateSignature(
+            String owner,
+            Candidate source,
+            int audience,
+            Map<String, List<Candidate>> byName,
+            Map<String, Integer> effectiveRanks,
+            Set<String> seen) {
+        String sourceId = source.symbolId(owner);
+        if (!seen.add(sourceId)) return;
 
         Set<String> referenced = new LinkedHashSet<>();
-        collectPublicSignatureTypes(decl, referenced);
+        for (Ast.Decl declaration : source.declarations()) {
+            collectPublicSignatureTypes(declaration, referenced);
+        }
         for (String name : referenced) {
             List<Candidate> locals = byName.get(name);
             if (locals == null) continue;
-            for (Candidate local : locals) {
-                Ast.Decl localDecl = local.representative();
-                if (localDecl != null && isTypeLike(local.kind())
-                        && visibilityOf(localDecl) != Ast.Visibility.PUBLIC) {
+            for (Candidate target : locals) {
+                if (!isTypeLike(target.kind())) continue;
+                String targetId = target.symbolId(owner);
+                if (effectiveRanks.getOrDefault(targetId, 0) < audience) {
                     throw new IllegalArgumentException(
-                            "[EXPORT_API_LEAK] public export " + binding.externalName()
+                            "[EXPORT_API_LEAK] export " + source.name()
                                     + " exposes narrower local type " + name);
                 }
+                validateCandidateSignature(owner, target, audience, byName, effectiveRanks, seen);
             }
         }
     }
@@ -284,52 +346,69 @@ public final class ExportResolver {
 
     private static void collectPublicSignatureTypes(Ast.Decl decl, Set<String> out) {
         if (decl instanceof Ast.FunctionDecl fn) {
-            for (Ast.Param p : fn.parameters()) collectType(p.type(), out);
-            collectType(fn.returnType(), out);
+            Set<String> generics = Set.copyOf(fn.genericParameters());
+            for (Ast.GenericParameter spec : fn.genericSpecs()) collectType(spec.defaultType(), out, generics);
+            for (Ast.Param p : fn.parameters()) collectType(p.type(), out, generics);
+            collectType(fn.returnType(), out, generics);
+            collectEffects(fn.effects(), out, generics);
             return;
         }
         if (decl instanceof Ast.ClassDecl cls) {
-            cls.parents().forEach(t -> collectType(t, out));
-            cls.interfaces().forEach(t -> collectType(t, out));
+            Set<String> classGenerics = Set.copyOf(cls.genericParameters());
+            cls.parents().forEach(t -> collectType(t, out, classGenerics));
+            cls.interfaces().forEach(t -> collectType(t, out, classGenerics));
             for (Ast.FieldDecl field : cls.fields()) {
-                if (field.visibility() == Ast.Visibility.PUBLIC) collectType(field.type(), out);
+                if (field.visibility() == Ast.Visibility.PUBLIC) collectType(field.type(), out, classGenerics);
             }
             if (cls.constructor() != null && cls.constructor().visibility() == Ast.Visibility.PUBLIC) {
-                for (Ast.Param p : cls.constructor().parameters()) collectType(p.type(), out);
+                for (Ast.Param p : cls.constructor().parameters()) collectType(p.type(), out, classGenerics);
             }
             for (Ast.MethodDecl method : cls.methods()) {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
-                for (Ast.Param p : method.parameters()) collectType(p.type(), out);
-                collectType(method.returnType(), out);
+                Set<String> methodGenerics = new LinkedHashSet<>(classGenerics);
+                methodGenerics.addAll(method.genericParameters());
+                for (Ast.Param p : method.parameters()) collectType(p.type(), out, methodGenerics);
+                collectType(method.returnType(), out, methodGenerics);
+                collectEffects(method.effects(), out, methodGenerics);
             }
             return;
         }
         if (decl instanceof Ast.InterfaceDecl iface) {
-            iface.parents().forEach(t -> collectType(t, out));
+            Set<String> interfaceGenerics = Set.copyOf(iface.genericParameters());
+            iface.parents().forEach(t -> collectType(t, out, interfaceGenerics));
             for (Ast.InterfaceMember member : iface.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                    for (Ast.Param p : fn.parameters()) collectType(p.type(), out);
-                    collectType(fn.returnType(), out);
+                    Set<String> memberGenerics = new LinkedHashSet<>(interfaceGenerics);
+                    memberGenerics.addAll(fn.genericParameters());
+                    for (Ast.Param p : fn.parameters()) collectType(p.type(), out, memberGenerics);
+                    collectType(fn.returnType(), out, memberGenerics);
+                    collectEffects(fn.effects(), out, memberGenerics);
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                    collectType(field.type(), out);
+                    collectType(field.type(), out, interfaceGenerics);
                 }
             }
             return;
         }
         if (decl instanceof Ast.TypeAliasDecl alias) {
-            collectType(alias.target(), out);
+            collectType(alias.target(), out, Set.copyOf(alias.genericParameters()));
             return;
         }
         if (decl instanceof Ast.FieldDecl field) {
-            collectType(field.type(), out);
+            collectType(field.type(), out, Set.of());
         }
     }
 
-    private static void collectType(Ast.TypeRef type, Set<String> out) {
+    private static void collectEffects(Ast.EffectSpec effects, Set<String> out, Set<String> generics) {
+        effects.throwsTypes().forEach(type -> collectType(type, out, generics));
+        effects.raisesTypes().forEach(type -> collectType(type, out, generics));
+        effects.panicsTypes().forEach(type -> collectType(type, out, generics));
+    }
+
+    private static void collectType(Ast.TypeRef type, Set<String> out, Set<String> generics) {
         if (type == null) return;
         String name = type.name();
-        if (!name.startsWith("$") && !isPrimitive(name)) out.add(name);
-        for (Ast.TypeRef arg : type.arguments()) collectType(arg, out);
+        if (!generics.contains(name) && !name.startsWith("$") && !isPrimitive(name)) out.add(name);
+        for (Ast.TypeRef arg : type.arguments()) collectType(arg, out, generics);
     }
 
     private static boolean isPrimitive(String name) {
@@ -347,7 +426,11 @@ public final class ExportResolver {
     }
 
     private static Ast.ExportKind declarationKind(Ast.Decl decl) {
-        if (decl instanceof Ast.FunctionDecl) return Ast.ExportKind.FUNCTION;
+        if (decl instanceof Ast.FunctionDecl fn) {
+            return fn.kind() == Ast.CallableKind.ROUTINE
+                    ? Ast.ExportKind.ROUTINE
+                    : Ast.ExportKind.FUNCTION;
+        }
         if (decl instanceof Ast.ClassDecl cls) {
             return cls.actorKind() == Ast.ActorKind.NONE ? Ast.ExportKind.CLASS : Ast.ExportKind.ACTOR;
         }
@@ -367,6 +450,46 @@ public final class ExportResolver {
             };
         }
         throw new IllegalArgumentException("unsupported declaration in export resolver: " + decl.getClass().getName());
+    }
+
+    private static Ast.ExportScope ownerScope(Ast.ModuleDecl module, boolean root) {
+        if (root) return Ast.ExportScope.PUBLIC;
+        return switch (module.visibility()) {
+            case PUBLIC -> Ast.ExportScope.PUBLIC;
+            case PACKAGE -> Ast.ExportScope.PACKAGE;
+            case FILE, PRIVATE, EXPLICIT_PRIVATE -> Ast.ExportScope.FILE;
+        };
+    }
+
+    private static Ast.ExportScope exportScope(Ast.Visibility visibility) {
+        return switch (visibility) {
+            case FILE -> Ast.ExportScope.FILE;
+            case PACKAGE -> Ast.ExportScope.PACKAGE;
+            case PUBLIC -> Ast.ExportScope.PUBLIC;
+            case PRIVATE, EXPLICIT_PRIVATE -> null;
+        };
+    }
+
+    private static Ast.ExportScope capScope(Ast.ExportScope scope, Ast.ExportScope owner) {
+        return scopeRank(scope) <= scopeRank(owner) ? scope : owner;
+    }
+
+    private static int visibilityRank(Ast.Visibility visibility, Ast.ExportScope owner) {
+        Ast.ExportScope scope = exportScope(visibility);
+        return scope == null ? 0 : scopeRank(capScope(scope, owner));
+    }
+
+    private static int scopeRank(Ast.ExportScope scope) {
+        return switch (scope) {
+            case FILE -> 1;
+            case PACKAGE -> 2;
+            case PUBLIC -> 3;
+        };
+    }
+
+    private static String localName(String symbolId) {
+        int marker = symbolId.lastIndexOf("::");
+        return marker < 0 ? symbolId : symbolId.substring(marker + 2);
     }
 
     private static Ast.Visibility visibilityOf(Ast.Decl decl) {

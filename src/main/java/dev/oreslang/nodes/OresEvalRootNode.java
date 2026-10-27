@@ -9251,7 +9251,9 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ClassDecl accessClass,
                 String kind,
                 String name) {
-            if (visibility == Ast.Visibility.PRIVATE && accessClass != owner) {
+            if ((visibility == Ast.Visibility.PRIVATE
+                    || visibility == Ast.Visibility.EXPLICIT_PRIVATE)
+                    && accessClass != owner) {
                 throw new IllegalArgumentException(
                         "private " + kind + " '" + owner.name() + "." + name
                                 + "' is accessible only from code declared in class " + owner.name());

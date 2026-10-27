@@ -48,7 +48,7 @@ public final class Ast {
     public enum ExportScope { FILE, PACKAGE, PUBLIC }
 
     public enum ExportKind {
-        MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE,
+        MODULE, ACTOR, CLASS, FUNCTION, ROUTINE, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE,
         CONST, VAL, LET, SYMBOL
     }
 
@@ -103,27 +103,43 @@ public final class Ast {
             List<Annotation> annotations,
             List<TypeRef> contracts,
             List<Decl> declarations,
-            List<ExportDecl> exports) {
+            List<ExportDecl> exports,
+            Visibility visibility) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
             exports = List.copyOf(exports);
+            java.util.Objects.requireNonNull(visibility, "module visibility");
+        }
+        /** Preserve the pre-scoped-visibility constructor ABI. */
+        public ModuleDecl(
+                String name,
+                List<Annotation> annotations,
+                List<TypeRef> contracts,
+                List<Decl> declarations,
+                List<ExportDecl> exports) {
+            this(name, annotations, contracts, declarations, exports, Visibility.PUBLIC);
         }
         public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
-            this(name, annotations, contracts, declarations, List.of());
+            this(name, annotations, contracts, declarations, List.of(), Visibility.PUBLIC);
         }
         public ModuleDecl(String name, List<Decl> declarations) {
-            this(name, List.of(), List.of(), declarations, List.of());
+            this(name, List.of(), List.of(), declarations, List.of(), Visibility.PUBLIC);
         }
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
-            this(name, annotations, List.of(), declarations, List.of());
+            this(name, annotations, List.of(), declarations, List.of(), Visibility.PUBLIC);
         }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
-    public enum Visibility { PRIVATE, PUBLIC }
+    /**
+     * PRIVATE is omitted/default visibility. EXPLICIT_PRIVATE preserves a written
+     * 'private' modifier so export admission can distinguish it from a declaration
+     * that may be published later with an explicit export.
+     */
+    public enum Visibility { PRIVATE, EXPLICIT_PRIVATE, FILE, PACKAGE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
 

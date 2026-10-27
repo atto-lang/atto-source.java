@@ -108,7 +108,9 @@ public final class AnnotationExpander {
                 declarations.add(declaration);
             }
         }
-        return new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations, module.exports());
+        return new Ast.ModuleDecl(
+                module.name(), module.annotations(), module.contracts(),
+                declarations, module.exports(), module.visibility());
     }
 
     private static Ast.ClassDecl expandClass(Ast.ClassDecl klass) {

@@ -193,12 +193,13 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                    if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
-                        throw error(previous(), "modules do not accept declaration modifiers");
+                        throw error(previous(), "modules accept only visibility modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
-                    modules.add(parseModule(annotations));
+                    modules.add(parseModule(annotations, modifiers.visibilitySeen
+                            ? modifiers.visibility : Ast.Visibility.PUBLIC));
                     continue;
                 }
                 if (match(CONTRACT)) {
@@ -247,7 +248,8 @@ public final class Parser {
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         if (!rootDeclarations.isEmpty() || !rootExports.isEmpty()) {
-            modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations, rootExports));
+            modules.add(new Ast.ModuleDecl(
+                    ROOT_MODULE, List.of(), List.of(), rootDeclarations, rootExports, Ast.Visibility.PUBLIC));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(namespace, imports, modules);
@@ -317,7 +319,8 @@ public final class Parser {
         if (match(MODULE)) return Ast.ExportKind.MODULE;
         if (match(ACTOR, ISOACTOR)) return Ast.ExportKind.ACTOR;
         if (match(CLASS)) return Ast.ExportKind.CLASS;
-        if (match(FNC, ROUTINE)) return Ast.ExportKind.FUNCTION;
+        if (match(FNC)) return Ast.ExportKind.FUNCTION;
+        if (match(ROUTINE)) return Ast.ExportKind.ROUTINE;
         if (match(INTERFACE)) return Ast.ExportKind.INTERFACE;
         if (match(CONTRACT)) return Ast.ExportKind.CONTRACT;
         if (match(TRAIT)) return Ast.ExportKind.TRAIT;
@@ -475,7 +478,7 @@ public final class Parser {
         return consume(IDENT, "expected imported name").lexeme();
     }
 
-    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
@@ -501,7 +504,7 @@ public final class Parser {
         } finally {
             moduleForwards = enclosing;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations, exports);
+        return new Ast.ModuleDecl(name, annotations, contracts, declarations, exports, visibility);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
@@ -834,6 +837,9 @@ public final class Parser {
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
+            if (isScopedVisibility(mods.visibility)) {
+                throw error(peek(), "[VISIBILITY_MEMBER_SCOPE_UNSUPPORTED] class methods do not accept pub[file]/pub[pkg]");
+            }
             if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
@@ -868,6 +874,9 @@ public final class Parser {
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
         Token keyword = advance(); // contextual 'constructor'
+        if (isScopedVisibility(mods.visibility)) {
+            throw error(keyword, "[VISIBILITY_MEMBER_SCOPE_UNSUPPORTED] constructors do not accept pub[file]/pub[pkg]");
+        }
         if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.trapped
                 || mods.isStatic || mods.isAbstract || mods.shared || mods.untrusted) {
             throw error(keyword,
@@ -893,8 +902,22 @@ public final class Parser {
         int lookahead = current + 1;
         while (lookahead < tokens.size()) {
             Token.Type type = tokens.get(lookahead).type();
-            if (type == PUB || type == PRIVATE) {
+            if (type == PRIVATE) {
                 lookahead++;
+                continue;
+            }
+            if (type == PUB) {
+                lookahead++;
+                if (lookahead < tokens.size()
+                        && (tokens.get(lookahead).type() == LBRACKET
+                            || tokens.get(lookahead).type() == LPAREN)) {
+                    Token.Type close = tokens.get(lookahead).type() == LBRACKET ? RBRACKET : RPAREN;
+                    lookahead++;
+                    if (lookahead >= tokens.size() || tokens.get(lookahead).type() != IDENT) return false;
+                    lookahead++;
+                    if (lookahead >= tokens.size() || tokens.get(lookahead).type() != close) return false;
+                    lookahead++;
+                }
                 continue;
             }
             return type == DEFINE;
@@ -911,6 +934,9 @@ public final class Parser {
     }
 
     private void validateClassFieldModifiers(Modifiers modifiers) {
+        if (isScopedVisibility(modifiers.visibility)) {
+            throw error(peek(), "[VISIBILITY_MEMBER_SCOPE_UNSUPPORTED] class fields do not accept pub[file]/pub[pkg]");
+        }
         if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                 || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
             throw error(peek(), "class fields accept only private/pub visibility modifiers");
@@ -1222,7 +1248,7 @@ public final class Parser {
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
-        if (modifiers.visibility == Ast.Visibility.PUBLIC) {
+        if (modifiers.visibility == Ast.Visibility.PUBLIC || isScopedVisibility(modifiers.visibility)) {
             throw error(peek(), "actor state fields are private; expose state through actor methods");
         }
         if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical
@@ -1232,6 +1258,9 @@ public final class Parser {
     }
 
     private void validateActorMethodModifiers(Modifiers modifiers) {
+        if (isScopedVisibility(modifiers.visibility)) {
+            throw error(peek(), "[VISIBILITY_MEMBER_SCOPE_UNSUPPORTED] actor methods do not accept pub[file]/pub[pkg]");
+        }
         if (modifiers.generator || modifiers.nonLexical || modifiers.trapped || modifiers.isAbstract
                 || modifiers.shared || modifiers.untrusted) {
             throw error(peek(), "actor methods do not accept generator, nlex, abstract, shared, or untrusted modifiers");
@@ -1748,13 +1777,14 @@ public final class Parser {
                         + "typed pipeline role, forwarding and transport lowering");
             }
             if (match(PUB)) {
-                if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
+                Token pubToken = previous();
+                if (visibilitySeen) throw error(pubToken, "[DUPLICATE_VISIBILITY] duplicate/conflicting visibility modifier");
                 visibilitySeen = true;
-                visibility = Ast.Visibility.PUBLIC;
+                visibility = parsePublicVisibility(pubToken);
             } else if (match(PRIVATE)) {
-                if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
+                if (visibilitySeen) throw error(previous(), "[DUPLICATE_VISIBILITY] duplicate/conflicting visibility modifier");
                 visibilitySeen = true;
-                visibility = Ast.Visibility.PRIVATE;
+                visibility = Ast.Visibility.EXPLICIT_PRIVATE;
             } else if (match(ASYNC)) {
                 if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
                 asyncSeen = true;
@@ -1811,9 +1841,32 @@ public final class Parser {
         return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
     }
 
+    private Ast.Visibility parsePublicVisibility(Token pubToken) {
+        if (!check(LBRACKET) && !check(LPAREN)) return Ast.Visibility.PUBLIC;
+        Token.Type open = advance().type();
+        Token.Type close = open == LBRACKET ? RBRACKET : RPAREN;
+        Token scope = consume(IDENT,
+                "[VISIBILITY_UNKNOWN_SCOPE] expected file, pkg, or package after 'pub'");
+        Ast.Visibility visibility = switch (scope.lexeme()) {
+            case "file" -> Ast.Visibility.FILE;
+            case "pkg", "package" -> Ast.Visibility.PACKAGE;
+            default -> throw error(scope,
+                    "[VISIBILITY_UNKNOWN_SCOPE] expected file, pkg, or package after 'pub'");
+        };
+        consume(close, "[VISIBILITY_MALFORMED_SCOPE] mismatched or unterminated pub scope");
+        if (check(LBRACKET) || check(LPAREN)) {
+            throw error(peek(), "[VISIBILITY_MULTIPLE_SCOPES] a declaration has exactly one visibility scope");
+        }
+        return visibility;
+    }
+
+    private static boolean isScopedVisibility(Ast.Visibility visibility) {
+        return visibility == Ast.Visibility.FILE || visibility == Ast.Visibility.PACKAGE;
+    }
+
     private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
         if (before.visibilitySeen && after.visibilitySeen) {
-            throw error(previous(), "duplicate/conflicting visibility modifier");
+            throw error(previous(), "[DUPLICATE_VISIBILITY] duplicate/conflicting visibility modifier");
         }
         if (before.async && after.async) throw error(previous(), "duplicate 'async' modifier");
         if (before.suspends && after.suspends) throw error(previous(), "duplicate 'suspends' modifier");
