@@ -34,6 +34,17 @@ final class ScalarSourceEffectFactsV1Test {
     }
 
     @Test
+    void actualAsyncAndAwaitAreSuspendingThroughTypedSourceCalls() {
+        var report = analyze("""
+                async fnc leaf(): int { return 42; }
+                async fnc outer(): int { return await leaf(); }
+                """);
+        assertTrue(report.effectsOf("leaf").contains(Effect.SUSPEND));
+        assertTrue(report.effectsOf("outer").contains(Effect.SUSPEND));
+        assertThrows(IllegalArgumentException.class, () -> report.requireNoEffects("outer"));
+    }
+
+    @Test
     void expressionFormsWithoutVerifiedTypedLoweringFailClosed() {
         var report = analyze("""
                 fnc scalar_arithmetic(): int { return 1 + 2; }
