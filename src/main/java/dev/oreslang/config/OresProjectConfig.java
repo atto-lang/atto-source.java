@@ -279,11 +279,8 @@ public final class OresProjectConfig {
 
             Path physicalRoot = lexicalRoot.toRealPath();
             if (!Files.isDirectory(physicalRoot, LinkOption.NOFOLLOW_LINKS)) {
-                if (rootAttributes.isSymbolicLink()) {
-                    throw new IllegalArgumentException(
-                            "configured search root does not resolve to a directory: " + lexicalRoot);
-                }
-                return Optional.empty();
+                throw new IllegalArgumentException(
+                        "configured search root does not resolve to a directory: " + lexicalRoot);
             }
 
             Path relative = lexicalRoot.relativize(normalizedCandidate);
