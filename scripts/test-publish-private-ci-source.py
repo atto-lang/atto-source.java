@@ -591,10 +591,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             visibility="private", archived=False, disabled=False,
                             fork=False, default_branch="main"):
         routes = []
-        if contexts is None:
-            contexts = sorted(pub.SOURCE_REQUIRED_STATUS_CONTEXTS)
-        if named_checks is None:
-            named_checks = []
+        if contexts is None and named_checks is None:
+            contexts = []
+            named_checks = [
+                {"context": name, "app_id": pub.GITHUB_ACTIONS_APP_ID}
+                for name in sorted(pub.SOURCE_REQUIRED_STATUS_CONTEXTS)
+            ]
+        else:
+            if contexts is None:
+                contexts = []
+            if named_checks is None:
+                named_checks = []
         if source_id is None:
             source_id = pub.SOURCE_REPOSITORY_ID
         if codeowners_file is None:
@@ -756,15 +763,27 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_origin_requires_private_ci_governance_status_checks(self):
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
-        for contexts, missing in (
-            (["preflight-regressions"], "policy-negative-tests"),
-            (["policy-negative-tests"], "preflight-regressions"),
-            (["unrelated-lint"], "policy-negative-tests"),
-        ):
-            with self.subTest(contexts=contexts):
-                api, _ = self.verified_origin_api(contexts=contexts)
+        cases = (
+            (["preflight-regressions", "policy-negative-tests"], [], "legacy contexts only"),
+            ([], [
+                {"context": "preflight-regressions", "app_id": None},
+                {"context": "policy-negative-tests", "app_id": pub.GITHUB_ACTIONS_APP_ID},
+            ], "unbound preflight"),
+            ([], [
+                {"context": "preflight-regressions", "app_id": pub.GITHUB_ACTIONS_APP_ID + 1},
+                {"context": "policy-negative-tests", "app_id": pub.GITHUB_ACTIONS_APP_ID},
+            ], "wrong app"),
+            ([], [
+                {"context": "preflight-regressions", "app_id": pub.GITHUB_ACTIONS_APP_ID},
+            ], "missing policy check"),
+        )
+        for contexts, named_checks, label in cases:
+            with self.subTest(case=label):
+                api, _ = self.verified_origin_api(
+                    contexts=contexts, named_checks=named_checks
+                )
                 with patch.object(pub, "gh_api", side_effect=api):
-                    with self.assertRaisesRegex(pub.Denied, "governance checks"):
+                    with self.assertRaisesRegex(pub.Denied, "GitHub-Actions-bound"):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_requires_last_push_and_conversation_resolution(self):
@@ -808,8 +827,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             contexts=[],
             named_checks=[
                 {"context": "preflight-regressions", "app_id": None},
-                {"context": "preflight-regressions", "app_id": 15368},
-                {"context": "policy-negative-tests", "app_id": None},
+                {"context": "preflight-regressions", "app_id": pub.GITHUB_ACTIONS_APP_ID},
+                {"context": "policy-negative-tests", "app_id": pub.GITHUB_ACTIONS_APP_ID},
             ],
         )
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
