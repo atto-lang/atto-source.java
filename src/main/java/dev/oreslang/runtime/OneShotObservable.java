@@ -25,6 +25,19 @@ public final class OneShotObservable<T> {
         }
     }
 
+    /** Reject malformed value-vs-event cardinality instead of manufacturing EOF. */
+    public static final class NullObservablePayloadError extends IllegalArgumentException {
+        public NullObservablePayloadError() {
+            super("non-void Future completed with null");
+        }
+    }
+
+    public static final class InvalidVoidPayloadError extends IllegalArgumentException {
+        public InvalidVoidPayloadError() {
+            super("void Future completed with an unexpected value");
+        }
+    }
+
     /** One terminal item is staged until a valid detach registration exists. */
     private record TerminalSignal<V>(V value, Throwable failure, boolean cancelled) { }
 
@@ -80,8 +93,9 @@ public final class OneShotObservable<T> {
         // exactly one terminal signal; publish only after token admission.
         AtomicReference<TerminalSignal<T>> staged = new AtomicReference<>();
         AtomicBoolean registrationValid = new AtomicBoolean();
+        AtomicBoolean notificationsDrained = new AtomicBoolean();
         Runnable deliver = () -> {
-            if (!registrationValid.get()) return;
+            if (!registrationValid.get() || !notificationsDrained.get()) return;
             TerminalSignal<T> terminal = staged.getAndSet(null);
             if (terminal == null) return;
             try {
@@ -89,12 +103,16 @@ public final class OneShotObservable<T> {
                     reduction.cancel(false); // authenticated producer CANCELLED
                 } else if (terminal.failure() != null) {
                     reduction.failFromRuntime(OresFuture.unwrap(terminal.failure()));
+                } else if (eventOnly && terminal.value() != null) {
+                    reduction.failFromRuntime(new InvalidVoidPayloadError());
+                } else if (!eventOnly && terminal.value() == null) {
+                    reduction.failFromRuntime(new NullObservablePayloadError());
                 } else if (mode == Mode.FIRST) {
                     @SuppressWarnings("unchecked")
-                    R option = (R) ((eventOnly || terminal.value() == null)
+                    R option = (R) (eventOnly
                             ? Optional.<T>empty() : Optional.of(terminal.value()));
                     reduction.completeFromRuntime(option);
-                } else if (eventOnly || terminal.value() == null) {
+                } else if (eventOnly) {
                     reduction.failFromRuntime(new EmptyObservableError());
                 } else {
                     @SuppressWarnings("unchecked")
@@ -113,7 +131,10 @@ public final class OneShotObservable<T> {
             subscribed = producer.whenCompleteRuntimeCancellable((value, failure) -> {
                 staged.compareAndSet(null,
                         new TerminalSignal<>(value, failure, producer.isCancelled()));
-                deliver.run();
+                producer.whenNotificationsDrainedRuntime(() -> {
+                    notificationsDrained.set(true);
+                    deliver.run();
+                });
             });
             if (subscribed == null) {
                 throw new IllegalStateException(
