@@ -12,8 +12,8 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * This proves the hosted Java compiler fails closed. It is not a freestanding
- * execution or actor/allocator runtime parity test.
+ * Proves the two-layer ores.core / ores.std admission contract.
+ * This is not a freestanding execution proof.
  */
 final class FreestandingLibraryProfileAdmissionTest {
     @TempDir Path temp;
@@ -25,23 +25,27 @@ final class FreestandingLibraryProfileAdmissionTest {
     }
 
     @Test
-    void missingProfileDefaultsToHostedWithoutChangingExistingProjects() throws Exception {
+    void missingProfileDefaultsToStdWithoutChangingExistingProjects() throws Exception {
         OresProjectConfig withoutManifest = OresProjectConfig.discover(temp, Map.of());
-        assertEquals(OresProjectConfig.LibraryProfile.HOSTED, withoutManifest.libraryProfile());
+        assertEquals(OresProjectConfig.LibraryProfile.STD, withoutManifest.libraryProfile());
         OresProjectConfig explicit = OresProjectConfig.load(
-                manifest("library_profile = \"hosted\""), Map.of());
-        assertEquals(OresProjectConfig.LibraryProfile.HOSTED, explicit.libraryProfile());
-        assertDoesNotThrow(explicit::requireHostedJavaBackend);
+                manifest("library_profile = \"std\""), Map.of());
+        assertEquals(OresProjectConfig.LibraryProfile.STD, explicit.libraryProfile());
+        assertDoesNotThrow(explicit::requireStdJavaBackend);
     }
 
     @Test
-    void unknownAndMistypedProfilesFailManifestAdmission() throws Exception {
+    void onlyCoreAndStdProfilesAreAccepted() throws Exception {
         for (String value : new String[]{
-                "library_profile = \"freestanding-unknown\"",
+                "library_profile = \"hosted\"",
+                "library_profile = \"freestanding-core\"",
+                "library_profile = \"freestanding-alloc\"",
+                "library_profile = \"freestanding-actor\"",
+                "library_profile = \"freestanding-otp\"",
                 "library_profile = 7",
                 "library_profile = true",
-                "library_profille = \"freestanding-core\"",
-                "library_profile = \"HOSTED\"",
+                "library_profille = \"core\"",
+                "library_profile = \"CORE\"",
                 "library_profile = \"\""
         }) {
             IllegalArgumentException denied = assertThrows(
@@ -50,39 +54,36 @@ final class FreestandingLibraryProfileAdmissionTest {
             assertTrue(denied.getMessage().contains("library_profile")
                     || denied.getMessage().contains("unknown build configuration"), value);
         }
+        assertEquals(OresProjectConfig.LibraryProfile.CORE,
+                OresProjectConfig.load(manifest("library_profile = \"core\""), Map.of()).libraryProfile());
+        assertEquals(OresProjectConfig.LibraryProfile.STD,
+                OresProjectConfig.load(manifest("library_profile = \"std\""), Map.of()).libraryProfile());
     }
 
     @Test
-    void allFreestandingProfilesRejectBeforeAnyGuestParsingOrEmission() throws Exception {
+    void coreProfileRejectsBeforeAnyGuestParsingOrEmission() throws Exception {
         Path entry = temp.resolve("main.ores");
-        // Deliberately invalid Oreslang syntax: should never get to the parser.
         Files.writeString(entry, "THIS IS NOT A VALID ORESLANG SOURCE !!!!!");
-        for (String profile : new String[]{
-                "freestanding-core", "freestanding-alloc",
-                "freestanding-actor", "freestanding-otp"
-        }) {
-            manifest("library_profile = \"" + profile + "\"");
-            OresProjectConfig config = OresProjectConfig.discover(entry, Map.of());
-            assertEquals(profile, config.libraryProfile().manifestValue());
-            IllegalArgumentException denied = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> LinkedProgramRunner.validate(entry, Map.of()), profile);
-            assertTrue(denied.getMessage().contains(profile));
-            assertTrue(denied.getMessage().contains("not yet supported"));
-        }
+        manifest("library_profile = \"core\"");
+        OresProjectConfig config = OresProjectConfig.discover(entry, Map.of());
+        assertEquals(OresProjectConfig.LibraryProfile.CORE, config.libraryProfile());
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry, Map.of()));
+        assertTrue(denied.getMessage().contains("ores.core"));
+        assertTrue(denied.getMessage().contains("not yet supported"));
     }
 
     @Test
-    void executionEntryPointAlsoRejectsBeforeParsingOrUsingHostPolicy() throws Exception {
+    void executionEntryPointAlsoRejectsCoreBeforeHostPolicy() throws Exception {
         Path entry = temp.resolve("main.ores");
-        // Even invalid guest syntax and missing host policy must not be reached.
         Files.writeString(entry, "not valid Oreslang source !!!");
-        manifest("library_profile = \"freestanding-core\"");
+        manifest("library_profile = \"core\"");
         IllegalArgumentException denied = assertThrows(
                 IllegalArgumentException.class,
                 () -> LinkedProgramRunner.runWithExitStatus(
                         entry, null, null, null, null, Set.of(), Map.of(), null, null));
-        assertTrue(denied.getMessage().contains("freestanding-core"));
+        assertTrue(denied.getMessage().contains("ores.core"));
         assertTrue(denied.getMessage().contains("not yet supported"));
     }
 
@@ -100,7 +101,7 @@ final class FreestandingLibraryProfileAdmissionTest {
         IllegalArgumentException denied = assertThrows(
                 IllegalArgumentException.class,
                 () -> OresProjectConfig.load(manifest(
-                        "library_profile = \"hosted\"\nunchecked_os = true"), Map.of()));
+                        "library_profile = \"std\"\nunchecked_os = true"), Map.of()));
         assertTrue(denied.getMessage().contains("unknown build configuration"));
     }
 }
