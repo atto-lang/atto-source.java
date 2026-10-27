@@ -5624,7 +5624,8 @@ public final class TypeChecker {
                             Primitive.INT, Primitive.INT), new Named("NioTcpListener", List.of()));
                 }
                 if (!name.equals("connect_async")) return null;
-                result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+                result = new Named("NioTcpConnection", List.of());
+                parameters = List.of(Primitive.STRING, Primitive.INT);
             }
             case "NioTcpListener" -> {
                 switch (name) {
