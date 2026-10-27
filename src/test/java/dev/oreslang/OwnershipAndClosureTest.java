@@ -421,6 +421,31 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void lambdasCannotReturnBorrowRootedInCapturedOwner() {
+        for (String lambda : new String[] {
+                "|| -> rt borrow box",
+                "|| -> { return rt borrow box; }"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define class Box as
+                              pub val int value = 7;
+                            end
+
+                            fnc bad(): void {
+                              let Box box = new Box();
+                              val (() => borrow Box) leak = %s;
+                              return;
+                            }
+                            """.formatted(lambda))));
+            assertTrue(error.getMessage().contains("returned borrows")
+                    || error.getMessage().contains("outlive"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
     void explicitNlexNestedLambdaDoesNotCreateTransitiveCapture() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
