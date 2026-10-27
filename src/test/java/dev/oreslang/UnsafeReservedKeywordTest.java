@@ -35,7 +35,10 @@ final class UnsafeReservedKeywordTest {
                 "fnc f(unsafe: int): int { return 1; }",
                 "fnc f(): void { val unsafe: int = 1; return; }",
                 "define class UnsafeExample as unsafe read(): void { return; } end",
-                "define actor A as receive(unsafe: int): void { return; } end"
+                "define actor A as receive(unsafe: int): void { return; } end",
+                "fnc good(): int { return 42; } unsafe",
+                "fnc f(): int { return std.unsafe.memory.read(); }",
+                "@unsafe fnc f(): int { return 42; }"
         };
         for (String source : unsupported) {
             IllegalArgumentException failure = assertThrows(
@@ -43,6 +46,35 @@ final class UnsafeReservedKeywordTest {
             assertTrue(failure.getMessage().contains("unsafe is reserved until checked unsafe effects"),
                     failure::getMessage);
         }
+    }
+
+    @Test
+    void externallyConstructedTokensCannotForgeUnsafeIdentifier() {
+        List<Token> forged = List.of(
+                new Token(Token.Type.IDENT, "unsafe", 6, 9),
+                new Token(Token.Type.EOF, "", 6, 15));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> new Parser(forged));
+        assertTrue(rejected.getMessage().contains("6:9"), rejected::getMessage);
+        assertTrue(rejected.getMessage().contains("unsafe is reserved"), rejected::getMessage);
+
+        assertThrows(IllegalArgumentException.class, () -> new Parser(List.of(
+                new Token(Token.Type.UNSAFE, "unsafe", 2, 1),
+                new Token(Token.Type.EOF, "", 2, 7))));
+        assertDoesNotThrow(() -> new Parser(List.of(
+                new Token(Token.Type.STRING, "unsafe", 1, 1),
+                new Token(Token.Type.SYMBOL_LITERAL, "unsafe", 1, 10),
+                new Token(Token.Type.EOF, "", 1, 17))));
+    }
+
+    @Test
+    void reservedWordDoesNotConsumeLongerOrdinaryNames() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc unsafe_helper(): int {
+                    const unsafe_count: int = 42;
+                    return unsafe_count;
+                }
+                """));
     }
 
     @Test
