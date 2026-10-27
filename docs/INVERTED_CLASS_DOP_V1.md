@@ -293,6 +293,27 @@ with no arbitrary guest callbacks; it clears the failpoint before throwing.
 Source inspection and source-order assertions are weaker evidence than an
 executed Java failure-injection suite.
 
+### Exception-safe column loan issuance across store and facade
+
+Borrow acquisition also has an allocation-publication boundary. A low-level
+`InvertedColumnStore.borrowRead/borrowWrite` must **allocate its
+`ColumnLoan` first**, and only then increment the reader counter or publish
+the exclusive-writer flag. If loan allocation throws, no unreleaseable borrow
+may remain. Package-private, one-shot `BEFORE_COLUMN_LOAN_ISSUE` injection
+supports regression of both read and write allocation failures.
+
+At the facade boundary, `InvertedArray.borrowRead/borrowWrite` first acquires
+a valid store loan and then allocates a `FieldLoan` wrapper. That *second*
+allocation can also fail. A `finally` guard must close the acquired store
+loan unless the wrapper was successfully published. A separate package-private
+one-shot `FieldLoan` injection demonstrates that the failed wrapper does not
+leave a reader/writer hold or disturb unrelated column loans. This applies
+even to `OutOfMemoryError`, not merely ordinary runtime exceptions.
+
+These tests are committed against the source and the publication ordering
+can be statically inspected, but **no actual JDK 25/JUnit/GraalVM execution
+receipt exists** while source-hosted Actions jobs fail with zero steps.
+
 ## Borrow and concurrency rules
 
 A column view is zero-copy and tied to its owning store; compiler-enforced, nonescaping lifetime is mandatory. Read loans on a field may coexist; a write loan excludes all other same-field access. Disjoint columns may have independent write loans. Structural changes (push, erase, reorder, reserve/reallocate, close, ownership transfer) require quiescence across *all* columns; no suspension or `await` may extend an unsafe exclusive loan without an explicit proof. A raw host-language `span` must not escape its loan; the compiler is responsible for enforcing this when lowered to Oreslang.
