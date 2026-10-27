@@ -38,7 +38,9 @@ final class UnsafeReservedKeywordTest {
                 "define actor A as receive(unsafe: int): void { return; } end",
                 "fnc good(): int { return 42; } unsafe",
                 "fnc f(): int { return std.unsafe.memory.read(); }",
-                "@unsafe fnc f(): int { return 42; }"
+                "@unsafe fnc f(): int { return 42; }",
+                "fnc good(): int { return 42; } // ignored\runsafe",
+                "fnc good(): int { return 42; } // ignored\r\nunsafe"
         };
         for (String source : unsupported) {
             IllegalArgumentException failure = assertThrows(
@@ -83,6 +85,21 @@ final class UnsafeReservedKeywordTest {
                 () -> Parser.parse("fnc f(): string { return `value ${unsafe}`; }"));
         assertTrue(failure.getMessage().contains("unsafe is reserved until checked unsafe effects"),
                 failure::getMessage);
+    }
+
+    @Test
+    void lineCommentsNeverSwallowUnsafeOnCrOnlyLines() {
+        for (String ending : List.of("\r", "\n", "\r\n")) {
+            String source = "fnc good(): int { return 42; } // comment"
+                    + ending + "unsafe fnc bad(): void { return; }";
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source));
+            assertTrue(error.getMessage().contains(
+                    "unsafe is reserved until checked unsafe effects"),
+                    error::getMessage);
+        }
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc good(): int { return 42; } // unsafe\r"));
     }
 
     @Test
