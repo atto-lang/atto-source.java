@@ -663,56 +663,14 @@ class PrivateCiV3Test(unittest.TestCase):
         }]
         return carrier, api, reviews
 
-    def test_unprotected_carrier_accepts_exact_tree_independent_review(self):
+    def test_unprotected_carrier_denied_even_with_exact_review(self):
         carrier, api, reviews = self.carrier_review_fixture()
         with (
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(v3, "gh_api_list", return_value=reviews),
         ):
-            self.assertEqual(
-                v3.checked_carrier_main("trusted/ci", carrier), BASE
-            )
-
-    def test_unprotected_carrier_requires_review_pr_and_exact_reviewed_tree(self):
-        carrier = contract()
-
-        def branch_only(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/branches/main":
-                return {
-                    "name": "main",
-                    "protected": False,
-                    "commit": {"sha": BASE},
-                }
-            raise AssertionError(route)
-
-        with patch.object(v3.legacy, "gh_api", side_effect=branch_only):
-            with self.assertRaisesRegex(v3.Denied, "requires reviewed carrier PR"):
+            with self.assertRaisesRegex(v3.Denied, "carrier main is not protected"):
                 v3.checked_carrier_main("trusted/ci", carrier)
-
-        carrier, api, reviews = self.carrier_review_fixture(main_tree="8" * 40)
-        with (
-            patch.object(v3.legacy, "gh_api", side_effect=api),
-            patch.object(v3, "gh_api_list", return_value=reviews),
-        ):
-            with self.assertRaisesRegex(v3.Denied, "tree differs"):
-                v3.checked_carrier_main("trusted/ci", carrier)
-
-    def test_unprotected_carrier_rejects_stale_review_or_reviewer_as_author(self):
-        carrier, api, reviews = self.carrier_review_fixture(state="CHANGES_REQUESTED")
-        with (
-            patch.object(v3.legacy, "gh_api", side_effect=api),
-            patch.object(v3, "gh_api_list", return_value=reviews),
-        ):
-            with self.assertRaisesRegex(v3.Denied, "stale, late, or not approved"):
-                v3.checked_carrier_main("trusted/ci", carrier)
-
-        for author_id in (v3.CARRIER_REVIEW_USER_ID, 0):
-            carrier, api, reviews = self.carrier_review_fixture(
-                author_id=author_id
-            )
-            with patch.object(v3.legacy, "gh_api", side_effect=api):
-                with self.assertRaisesRegex(v3.Denied, "independent merged"):
-                    v3.checked_carrier_main("trusted/ci", carrier)
 
     def test_protected_carrier_still_requires_codeowner_admin_and_no_bypass(self):
         carrier = contract()
@@ -720,11 +678,18 @@ class PrivateCiV3Test(unittest.TestCase):
             "required_pull_request_reviews": {
                 "require_code_owner_reviews": True,
                 "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
                 "required_approving_review_count": 1,
                 "bypass_pull_request_allowances": {
                     "users": [], "teams": [], "apps": [],
                 },
             },
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["carrier-source-free-gate"],
+                "checks": [],
+            },
+            "required_conversation_resolution": {"enabled": True},
             "enforce_admins": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
@@ -753,6 +718,43 @@ class PrivateCiV3Test(unittest.TestCase):
             self.assertEqual(
                 v3.checked_carrier_main("trusted/ci", carrier), BASE
             )
+
+        for mutate, message in (
+            (
+                lambda p: p["required_pull_request_reviews"].__setitem__(
+                    "require_last_push_approval", False
+                ),
+                "last-push approval",
+            ),
+            (
+                lambda p: p["required_status_checks"].__setitem__("strict", False),
+                "strict required CI",
+            ),
+            (
+                lambda p: p.__setitem__(
+                    "required_conversation_resolution", {"enabled": False}
+                ),
+                "conversation resolution",
+            ),
+        ):
+            weakened = json.loads(json.dumps(protection))
+            mutate(weakened)
+
+            def weakened_api(route, method="GET", payload=None, weakened=weakened):
+                if route == "repos/trusted/ci/branches/main":
+                    return {
+                        "name": "main",
+                        "protected": True,
+                        "commit": {"sha": BASE},
+                    }
+                if route == "repos/trusted/ci/branches/main/protection":
+                    return weakened
+                raise AssertionError(route)
+
+            with self.subTest(message=message):
+                with patch.object(v3.legacy, "gh_api", side_effect=weakened_api):
+                    with self.assertRaisesRegex(v3.Denied, message):
+                        v3.checked_carrier_main("trusted/ci", carrier)
 
         weak = json.loads(json.dumps(protection))
         weak["required_pull_request_reviews"]["bypass_pull_request_allowances"]["users"] = [{"login": "bypass"}]
@@ -941,6 +943,10 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=good_api),
             patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ) as carrier_guard,
+            patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
             ),
@@ -950,6 +956,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 Path("."), "trusted/ci", POLICY, carrier,
                 1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
             )
+            carrier_guard.assert_called_once_with("trusted/ci", carrier)
             governance.assert_called_once_with(
                 Path("."), "trusted/ci", POLICY, carrier, 1482, PROTECTED
             )
@@ -973,6 +980,50 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3, "verify_source_pr") as source_pr_check,
         ):
             with self.assertRaisesRegex(v3.Denied, "main changed"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                )
+            source_pr_check.assert_not_called()
+
+    def test_authorize_write_rejects_carrier_protection_weakening_each_write(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return {
+                    "name": "main",
+                    "commit": {"sha": carrier["base_sha"]},
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3, "checked_carrier_main",
+                side_effect=v3.Denied(
+                    "carrier main must enforce strict required CI and conversation resolution"
+                ),
+            ),
+            patch.object(v3, "verify_source_pr") as source_pr_check,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "strict required CI"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
                     1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
@@ -1008,6 +1059,10 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ),
+            patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
             ) as source_pr_check,
@@ -1030,6 +1085,10 @@ class PrivateCiV3Test(unittest.TestCase):
             ),
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ),
             patch.object(
                 v3, "verify_source_pr",
                 side_effect=v3.Denied("source PR security owner approval is stale or revoked"),
