@@ -273,6 +273,28 @@ public final class OwnershipChecker {
     private Set<String> constructorFixedFieldWrites;
 
     private void checkClass(Ast.ClassDecl klass) {
+        // Methods, actor messages, and constructors are callable boundaries,
+        // not local ownership-preserving InvertedArray moves.
+        if (klass.constructor() != null) {
+            for (Ast.Param param : klass.constructor().parameters()) {
+                if (containsInvertedArrayStorage(param.type())) {
+                    throw error("constructor '" + klass.name()
+                            + "' cannot receive InvertedArray storage in v1");
+                }
+            }
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (containsInvertedArrayStorage(method.returnType())) {
+                throw error("method '" + klass.name() + "." + method.name()
+                        + "' cannot return InvertedArray storage in v1");
+            }
+            for (Ast.Param param : method.parameters()) {
+                if (containsInvertedArrayStorage(param.type())) {
+                    throw error("method '" + klass.name() + "." + method.name()
+                            + "' cannot receive InvertedArray storage in v1");
+                }
+            }
+        }
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
             if (containsInvertedArrayStorage(fieldType)) {
