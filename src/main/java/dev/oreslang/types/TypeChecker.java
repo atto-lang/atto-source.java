@@ -2924,10 +2924,9 @@ public final class TypeChecker {
                 }
                 Type payload = typeOf(
                         call.arguments().getFirst(), env, generics, self);
-                validateActorCallableBoundaryType(
+                validateActorOutputDataType(
                         payload,
                         currentActorKind,
-                        false,
                         "io.out.write payload");
                 return new Named("Future", List.of(Primitive.VOID));
             }
@@ -3319,10 +3318,9 @@ public final class TypeChecker {
                                     "self.send expects exactly one outbound value");
                         }
                         Type payload = typeOf(call.arguments().getFirst(), env, generics, self);
-                        validateActorCallableBoundaryType(
+                        validateActorOutputDataType(
                                 payload,
                                 currentActorKind,
-                                false,
                                 "self.send outbound value");
                         if (currentClassOwner != null) {
                             StreamPorts ports = streamPortsForClass(
@@ -5889,6 +5887,65 @@ public final class TypeChecker {
                 || !isSendSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+        }
+    }
+
+    /**
+     * Actor output streams are data-only and intentionally stricter than
+     * mailbox transport. The runtime rejects live ActorRef/shared/mutex
+     * capabilities before freezing an output value; keep the source checker
+     * aligned so rejected capabilities cannot survive until runtime.
+     */
+    private void validateActorOutputDataType(
+            Type type,
+            Ast.ActorKind actorKind,
+            String where) {
+        validateActorCallableBoundaryType(type, actorKind, false, where);
+        rejectActorOutputCapabilities(type, where);
+    }
+
+    private void rejectActorOutputCapabilities(Type type, String where) {
+        type = deref(type);
+        if (type instanceof ListType list) {
+            rejectActorOutputCapabilities(list.element(), where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                rejectActorOutputCapabilities(
+                        tuple.elements().get(i), where + " tuple element " + i);
+            }
+            return;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                rejectActorOutputCapabilities(option, where + " union member");
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Map.Entry<String, Type> member : record.members().entrySet()) {
+                rejectActorOutputCapabilities(
+                        member.getValue(), where + " field '" + member.getKey() + "'");
+            }
+            return;
+        }
+        if (!(type instanceof Named named)) return;
+
+        if (named.name().startsWith("$ActorIO")
+                || Set.of(
+                        "ActorRef",
+                        "SharedMutex",
+                        "Shared",
+                        "SyncCell",
+                        "ActorGroupJoinCapability")
+                        .contains(named.name())) {
+            throw new IllegalArgumentException(
+                    where + " is data-only and cannot contain live capability "
+                            + named.name());
+        }
+        for (Type argument : named.arguments()) {
+            rejectActorOutputCapabilities(argument, where + " type argument");
         }
     }
 
