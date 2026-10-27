@@ -1023,6 +1023,9 @@ public final class OwnershipChecker {
                 throw error("rt borrow expects exactly one argument");
             }
             BorrowPlace place = borrowPlace(runtime.arguments().getFirst(), scope);
+            if (containsInvertedArrayStorage(place.type())) {
+                throw error("rt borrow cannot expose InvertedArray storage in v1");
+            }
             beginPersistentBorrow(place.owner(), false);
             value = new ValueInfo(
                     Ast.TypeRef.borrowed(place.type(), false),
@@ -1033,6 +1036,9 @@ public final class OwnershipChecker {
             // Legacy compatibility only. Canonical source uses rt borrow.
             boolean mutableBorrow = unary.operator().equals("&mut");
             BorrowPlace place = borrowPlace(unary.operand(), scope);
+            if (containsInvertedArrayStorage(place.type())) {
+                throw error("direct borrow cannot expose InvertedArray storage in v1");
+            }
             if (mutableBorrow && !(unary.operand() instanceof Ast.NameExpr)) {
                 throw error("mutable projected borrows need path-exclusive loan tracking");
             }
