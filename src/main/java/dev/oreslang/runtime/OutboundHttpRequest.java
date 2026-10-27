@@ -572,7 +572,7 @@ public final class OutboundHttpRequest {
                         context.outboundHttpPolicy(),
                         64L * 1024 * 1024,
                         context.outboundHttpBudget(),
-                        context.nativeIo());
+                        context.outboundDnsResolver());
         revocation.trackTransport(transport);
         BodyPipe pipe = null;
         try (transport) {
