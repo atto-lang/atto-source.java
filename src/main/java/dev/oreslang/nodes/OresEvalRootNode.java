@@ -5217,7 +5217,8 @@ public final class OresEvalRootNode extends RootNode {
                 // Admission must precede invoke(): a newly launched source
                 // child may execute before the parent sees its Future.
                 if (env.hasLiveMutexGuards()
-                        && !declaredFuture
+                        && (invocation.kind() != InvocationKind.INVOKABLE
+                                || !declaredFuture)
                         && invocationMayLaunchSourceTask(invocation)) {
                     throw new IllegalStateException(
                             "cannot launch or suspend a source callable while holding a live MutexGuard");
