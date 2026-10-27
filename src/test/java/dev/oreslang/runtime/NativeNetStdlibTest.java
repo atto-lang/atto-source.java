@@ -165,4 +165,58 @@ final class NativeNetStdlibTest {
             Files.deleteIfExists(entry);
         }
     }
+    @Test void realGuestOutboundConnectReadWriteThroughNonblockingKernel()
+            throws Exception {
+        Path entry = Files.createTempFile("ores-net-connect-guest-", ".ores");
+        ExecutorService host = Executors.newSingleThreadExecutor();
+        try (ServerSocket listener = new ServerSocket(
+                0, 1, InetAddress.getByAddress(new byte[] {127, 0, 0, 1}))) {
+            int port = listener.getLocalPort();
+            Future<String> echo = host.submit(() -> {
+                try (Socket accepted = listener.accept()) {
+                    accepted.setSoTimeout(3000);
+                    accepted.getOutputStream().write(
+                            "PING".getBytes(StandardCharsets.US_ASCII));
+                    return new String(
+                            accepted.getInputStream().readNBytes(4),
+                            StandardCharsets.US_ASCII);
+                }
+            });
+
+            Files.writeString(entry, ("""
+                import module net_core from "std/net";
+                pub async routine main(): void {
+                  val Future<NioTcpConnection> pending =
+                    net_core.connect_ipv4("127.0.0.1", %d);
+                  val NioTcpConnection peer = await pending;
+                  val Future<Array<int>> pending_read =
+                    net_core.read(rt borrow peer, 4);
+                  val Array<int> bytes = await pending_read;
+                  val Future<int> pending_write =
+                    net_core.write(rt borrow peer, bytes);
+                  val int sent = await pending_write;
+                  val Future<void> pending_close =
+                    net_core.close_connection(peer);
+                  await pending_close;
+                  return;
+                }
+                """).formatted(port));
+
+            LinkedProgramRunner.run(
+                    entry,
+                    IsolatePolicy.developer().withCapabilities(
+                            IsolatePolicy.Capability.NETWORK),
+                    ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(),
+                    new ByteArrayOutputStream());
+
+            assertEquals("PING", echo.get(5, TimeUnit.SECONDS),
+                    "outbound guest connection must use the same async read/write surface");
+        } finally {
+            host.shutdownNow();
+            assertTrue(host.awaitTermination(3, TimeUnit.SECONDS));
+            Files.deleteIfExists(entry);
+        }
+    }
+
 }
