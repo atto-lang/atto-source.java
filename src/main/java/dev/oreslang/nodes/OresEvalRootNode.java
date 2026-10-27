@@ -15,6 +15,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
+import dev.oreslang.runtime.RuntimePermissions;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
@@ -11249,35 +11250,39 @@ public final class OresEvalRootNode extends RootNode {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
         if (args.isEmpty() || args.size() > 32)
             throw new IllegalArgumentException(operation + " requires 1 to 32 values");
-        // The evaluator has already evaluated every argument in source order.
-        // Render the complete record before publishing one output operation.
-        StringBuilder text = new StringBuilder();
-        for (Object argument : args) text.append(CycleSafeDisplay.render(argument));
-        long started = dev.oreslang.runtime.CorePerf.start();
-        try {
-            if (newline) context.output().println(text);
-            else { context.output().print(text); context.output().flush(); }
-        } finally {
-            dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
-        }
-        return null;
+        // Render guest-owned values before crossing into the host I/O worker.
+        StringBuilder rendered = new StringBuilder();
+        for (Object argument : args) rendered.append(CycleSafeDisplay.render(argument));
+        String text = rendered.toString();
+        return context.nativeIo().submit(context, IsolatePolicy.Capability.STDOUT, operation, () -> {
+            long started = dev.oreslang.runtime.CorePerf.start();
+            try {
+                synchronized (context.output()) {
+                    if (newline) context.output().println(text);
+                    else { context.output().print(text); context.output().flush(); }
+                }
+            } finally {
+                dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
+            }
+            return null;
+        });
     }
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
         requireOne(args, operation);
         String value = CycleSafeDisplay.render(args.getFirst());
-        long started = dev.oreslang.runtime.CorePerf.start();
-        try {
-            if (newline) {
-                context.output().println(value);
-            } else {
-                context.output().print(value);
-                context.output().flush();
+        return context.nativeIo().submit(context, IsolatePolicy.Capability.STDOUT, operation, () -> {
+            long started = dev.oreslang.runtime.CorePerf.start();
+            try {
+                synchronized (context.output()) {
+                    if (newline) context.output().println(value);
+                    else { context.output().print(value); context.output().flush(); }
+                }
+            } finally {
+                dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
             }
-        } finally {
-            dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
-        }
-        return null;
+            return null;
+        });
     }
     private record StdoutFacade(OresContext context) {
         private Object write(List<Object> args) {
@@ -11288,10 +11293,18 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object log(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(CycleSafeDisplay.render(arg));
-            context.output().println();
-            context.output().flush();
-            return null;
+            StringBuilder rendered = new StringBuilder();
+            for (Object arg : args) rendered.append(CycleSafeDisplay.render(arg));
+            String text = rendered.toString();
+            return context.nativeIo().submit(context, IsolatePolicy.Capability.STDOUT,
+                    "stdio.stdout.log", () -> {
+                        synchronized (context.output()) {
+                            context.output().print(text);
+                            context.output().println();
+                            context.output().flush();
+                        }
+                        return null;
+                    });
         }
         private Object logList(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.logList");
@@ -11303,12 +11316,21 @@ public final class OresEvalRootNode extends RootNode {
         private Object readLine(List<Object> args) {
             context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");
             requireZero(args, "stdio.stdin.read_line");
-            try {
-                String value = context.input().readLine();
-                return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
-            } catch (java.io.IOException failure) {
-                throw new IllegalStateException("stdin read failed: " + failure.getMessage(), failure);
-            }
+            return context.nativeIo().submit(context, IsolatePolicy.Capability.STDIN,
+                    "stdio.stdin.read_line", () -> {
+                        try {
+                            String value;
+                            synchronized (context.input()) {
+                                value = context.input().readLine();
+                            }
+                            return value == null
+                                    ? new OptionValue(false, null)
+                                    : new OptionValue(true, value);
+                        } catch (java.io.IOException failure) {
+                            throw new IllegalStateException(
+                                    "stdin read failed: " + failure.getMessage(), failure);
+                        }
+                    });
         }
     }
     private record StdFacade(OresContext context) { }
