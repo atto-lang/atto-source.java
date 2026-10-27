@@ -61,6 +61,8 @@ SECURITY_CODEOWNER_PATHS = (
     "/.github/private-ci-approved-repositories.txt",
     "/.github/private-ci-incident-dispositions.json",
     "/.github/private-ci-carrier-contracts.json",
+    "/.github/workflows/private-ci-mirror-preflight.yml",
+    "/.github/workflows/source-free-private-ci-gates.yml",
     "/scripts/check-private-ci-destination.sh",
     "/scripts/run-in-private-ci-destination.sh",
     "/scripts/publish-private-ci-source.py",
