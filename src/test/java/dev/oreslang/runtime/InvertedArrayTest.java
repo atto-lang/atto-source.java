@@ -17,6 +17,45 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class InvertedArrayTest {
     @Test
+    void facadeReadLoanWrapperAllocationFailureReleasesUnderlyingReader() {
+        try (var array = InvertedArray.fromClass(particle(), 1)) {
+            var row = array.pushValues(11.0, 12.0, 13.0, 14.0, true);
+            array.armFieldLoanWrapperFailureForTest();
+            assertThrows(OutOfMemoryError.class, () -> array.borrowRead("x"));
+            // No unreachable underlying read hold may remain.
+            try (var writer = array.borrowWrite("x")) {
+                writer.writeAt(0, 15.0);
+            }
+            assertEquals(15.0, (Double) array.read(row, "x"));
+            var second = array.pushValues(21.0, 22.0, 23.0, 24.0, false);
+            assertEquals(21.0, (Double) array.read(second, "x"));
+        }
+    }
+
+    @Test
+    void facadeWriteLoanWrapperAllocationFailureReleasesUnderlyingWriter() {
+        try (var array = InvertedArray.fromClass(particle(), 1)) {
+            var row = array.pushValues(31.0, 32.0, 33.0, 34.0, false);
+            try (var otherField = array.borrowRead("y")) {
+                array.armFieldLoanWrapperFailureForTest();
+                assertThrows(OutOfMemoryError.class, () -> array.borrowWrite("x"));
+                // The unrelated field loan remains live, but the failed
+                // x writer cannot leak an unreleaseable exclusive borrow.
+                try (var reader = array.borrowRead("x")) {
+                    assertEquals(31.0, (Double) reader.readAt(0));
+                }
+                try (var writer = array.borrowWrite("x")) {
+                    writer.writeAt(0, 35.0);
+                }
+                assertEquals(32.0, (Double) otherField.readAt(0));
+            }
+            assertEquals(35.0, (Double) array.read(row, "x"));
+            assertDoesNotThrow(() -> array.pushValues(41.0, 42.0, 43.0, 44.0, true));
+        }
+    }
+
+final class InvertedArrayTest {
+    @Test
     void primitiveF64TransposeUpdatesAreAtomicWithoutGuestCallbacks()
             throws InterruptedException {
         try (var array = InvertedArray.fromClass(particle(), 0)) {
