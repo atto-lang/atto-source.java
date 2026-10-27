@@ -491,6 +491,9 @@ public final class Parser {
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
         if (modifiers.generator) {
+            if (modifiers.shared || modifiers.untrusted) {
+                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            }
             return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         }
         if (match(CONTRACT)) {
