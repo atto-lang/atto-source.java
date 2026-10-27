@@ -63,6 +63,11 @@ public final class OwnershipChecker {
             Ast.TaskExpr, Map<String, Ast.TaskCaptureTransfer>> pendingTaskCaptures =
             new IdentityHashMap<>();
 
+    /** Type-proven inverted sites staged until the whole ownership pass succeeds. */
+    private final IdentityHashMap<
+            Ast.MemberExpr, Ast.InvertedIndexTypeEvidence> pendingInvertedIndexes =
+            new IdentityHashMap<>();
+
     private OwnershipChecker(Ast.Program program) {
         this(program, Map.of());
     }
@@ -77,6 +82,7 @@ public final class OwnershipChecker {
         // Rechecking an existing immutable Program immediately invalidates
         // older executable Task proofs. A failed check must fail closed.
         Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
+        Ast.CheckedInvertedIndexes.beginCheck(checkedProgram, taskCheckEpoch);
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
@@ -90,7 +96,7 @@ public final class OwnershipChecker {
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
-        checker.publishTaskAdmissions();
+        checker.publishAdmissions();
         return program;
     }
 
@@ -135,15 +141,39 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
-        checker.publishTaskAdmissions();
+        checker.publishAdmissions();
         return program;
     }
 
-    private void publishTaskAdmissions() {
+    private void publishAdmissions() {
         Ast.CheckedTaskCaptures.publish(
                 checkedProgram,
                 taskCheckEpoch,
                 pendingTaskCaptures);
+        Ast.CheckedInvertedIndexes.publish(
+                checkedProgram,
+                taskCheckEpoch,
+                pendingInvertedIndexes);
+    }
+
+    private Ast.InvertedIndexTypeEvidence stageInvertedIndex(
+            Ast.MemberExpr member,
+            Ast.InvertedIndexAccess expectedAccess) {
+        Ast.InvertedIndexTypeEvidence evidence =
+                Ast.CheckedInvertedIndexTypes.lookup(member);
+        if (evidence == null || evidence.access() != expectedAccess
+                || member.receiver() != evidence.index()
+                || !member.member().equals(evidence.fieldName())) {
+            throw error(
+                    "inverted bracket-field site lacks matching TypeChecker evidence");
+        }
+        Ast.InvertedIndexTypeEvidence previous =
+                pendingInvertedIndexes.putIfAbsent(member, evidence);
+        if (previous != null && !previous.equals(evidence)) {
+            throw error(
+                    "same inverted bracket-field site produced inconsistent ownership evidence");
+        }
+        return evidence;
     }
 
     private void index(Ast.Program program) {
