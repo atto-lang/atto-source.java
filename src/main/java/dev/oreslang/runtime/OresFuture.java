@@ -293,6 +293,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * grant such proofs. Runtime callbacks only settle observer state; guest
      * continuations remain scheduler/actor-enqueued.</p>
      */
+    private record ObservationCompletion<V>(
+            V value, Throwable failure, boolean cancelled) { }
+
     public static <T> OresFuture<T> observe(OresFuture<T> source) {
         Objects.requireNonNull(source, "source");
         AtomicReference<RuntimeWaiterRegistration<T>> subscription =
@@ -301,30 +304,48 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             RuntimeWaiterRegistration<T> active = subscription.getAndSet(null);
             if (active != null) active.detach();
         });
-        RuntimeWaiterRegistration<T> registration =
-                source.whenCompleteRuntimeCancellable((value, failure) -> {
-                    try {
-                        if (failure == null) {
-                            observer.completeFromRuntime(value);
-                        } else if (source.isCancelled()) {
-                            // Only the authenticated source cancellation bit
-                            // permits a CANCELLED observer outcome. A thrown
-                            // CancellationException without it remains FAILED.
-                            observer.cancel(false);
-                        } else {
-                            observer.failFromRuntime(unwrap(failure));
-                        }
-                    } finally {
-                        RuntimeWaiterRegistration<T> active =
-                                subscription.getAndSet(null);
-                        if (active != null) active.detach();
-                    }
-                });
-        // A settled source may invoke its runtime waiter synchronously before
-        // it returns the registration. The post-publication check is required
-        // to detach a late installed handle. Cancellation races are also safe:
-        // either its hook gets the handle or this check does.
+
+        // Terminal callback may run before subscribe returns a detachable
+        // handle. Stage until registration succeeds: synchronous completion
+        // is never published before we have the authority to unsubscribe.
+        AtomicReference<ObservationCompletion<T>> staged = new AtomicReference<>();
+        AtomicBoolean registrationValid = new AtomicBoolean();
+        Runnable deliver = () -> {
+            if (!registrationValid.get()) return;
+            ObservationCompletion<T> terminal = staged.getAndSet(null);
+            if (terminal == null) return;
+            try {
+                if (terminal.cancelled()) {
+                    observer.cancel(false); // authenticated source cancellation
+                } else if (terminal.failure() != null) {
+                    observer.failFromRuntime(unwrap(terminal.failure()));
+                } else {
+                    observer.completeFromRuntime(terminal.value());
+                }
+            } finally {
+                RuntimeWaiterRegistration<T> active = subscription.getAndSet(null);
+                if (active != null) active.detach();
+            }
+        };
+        final RuntimeWaiterRegistration<T> registration;
+        try {
+            registration = source.whenCompleteRuntimeCancellable((value, failure) -> {
+                staged.compareAndSet(null, new ObservationCompletion<>(
+                        value, failure, source.isCancelled()));
+                deliver.run();
+            });
+            if (registration == null) {
+                throw new IllegalStateException(
+                        "Future observer registration returned no detach token");
+            }
+        } catch (RuntimeException | Error registrationFailure) {
+            staged.set(null);
+            observer.failFromRuntime(registrationFailure);
+            return observer;
+        }
         subscription.set(registration);
+        registrationValid.set(true);
+        deliver.run();
         if (observer.isDone()) {
             RuntimeWaiterRegistration<T> active = subscription.getAndSet(null);
             if (active != null) active.detach();
