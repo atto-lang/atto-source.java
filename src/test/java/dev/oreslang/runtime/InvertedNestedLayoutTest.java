@@ -137,6 +137,24 @@ final class InvertedNestedLayoutTest {
     }
 
     @Test
+    void nestedFloatingEncodingPreservesRawNaNPayloadAndSignedZero() {
+        Ast.TypeRef type = Ast.TypeRef.recordType(Map.of(
+                "signal", Ast.TypeRef.recordType(Map.of(
+                        "nan", Ast.TypeRef.simple("f64"),
+                        "negativeZero", Ast.TypeRef.simple("f64")))));
+        var codec = InvertedRecordLayout.fromType(type);
+        long payload = 0x7ff8000000000042L;
+        byte[] encoded = codec.encode(Map.of("signal", Map.of(
+                "nan", Double.longBitsToDouble(payload),
+                "negativeZero", -0.0)));
+        Map<?, ?> nested = (Map<?, ?>) codec.decode(encoded).get("signal");
+        assertEquals(payload,
+                Double.doubleToRawLongBits((Double) nested.get("nan")));
+        assertEquals(Double.doubleToRawLongBits(-0.0),
+                Double.doubleToRawLongBits((Double) nested.get("negativeZero")));
+    }
+
+    @Test
     void nestedValueRecordsRemainUnadmittedToGuestWithoutOwnershipProof() {
         String source = """
                 define inverted class Packet as
