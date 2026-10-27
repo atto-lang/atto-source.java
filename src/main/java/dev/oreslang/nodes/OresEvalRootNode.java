@@ -11265,7 +11265,7 @@ public final class OresEvalRootNode extends RootNode {
         StringBuilder rendered = new StringBuilder();
         for (Object argument : args) rendered.append(CycleSafeDisplay.render(argument));
         String text = rendered.toString();
-        return context.nativeIo().submit(context, IsolatePolicy.Capability.STDOUT, operation, () -> {
+        return context.nativeIo().submitOrdered(context, IsolatePolicy.Capability.STDOUT, operation, () -> {
             long started = dev.oreslang.runtime.CorePerf.start();
             try {
                 synchronized (context.output()) {
@@ -11282,7 +11282,7 @@ public final class OresEvalRootNode extends RootNode {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
         requireOne(args, operation);
         String value = CycleSafeDisplay.render(args.getFirst());
-        return context.nativeIo().submit(context, IsolatePolicy.Capability.STDOUT, operation, () -> {
+        return context.nativeIo().submitOrdered(context, IsolatePolicy.Capability.STDOUT, operation, () -> {
             long started = dev.oreslang.runtime.CorePerf.start();
             try {
                 synchronized (context.output()) {
@@ -11307,7 +11307,7 @@ public final class OresEvalRootNode extends RootNode {
             StringBuilder rendered = new StringBuilder();
             for (Object arg : args) rendered.append(CycleSafeDisplay.render(arg));
             String text = rendered.toString();
-            return context.nativeIo().submit(context, IsolatePolicy.Capability.STDOUT,
+            return context.nativeIo().submitOrdered(context, IsolatePolicy.Capability.STDOUT,
                     "stdio.stdout.log", () -> {
                         synchronized (context.output()) {
                             context.output().print(text);
@@ -11327,7 +11327,7 @@ public final class OresEvalRootNode extends RootNode {
         private Object readLine(List<Object> args) {
             context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");
             requireZero(args, "stdio.stdin.read_line");
-            return context.nativeIo().submit(context, IsolatePolicy.Capability.STDIN,
+            return context.nativeIo().submitOrdered(context, IsolatePolicy.Capability.STDIN,
                     "stdio.stdin.read_line", () -> {
                         try {
                             String value;
