@@ -66,7 +66,7 @@ class AsyncNativeIoTest {
             define untrusted actor Worker as
               receive(ActorMail<String> mail): void {
                 try {
-                  val operation = fs.write_text_async(mail.value, "escaped");
+                  val operation = fs.write_text(mail.value, "escaped");
                   self.send("unexpected-admission");
                 } catch (failure) { self.send("denied"); }
                 self.end(); return;
@@ -90,8 +90,8 @@ class AsyncNativeIoTest {
         Files.createSymbolicLink(permitted.resolve("escape"), outside);
         String output = run("""
             pub async routine main(): void {
-              try { await fs.write_text_async("%s/escape/secret.txt", "escaped"); }
-              catch (failure) { stdio.println("denied"); }
+              try { await fs.write_text("%s/escape/secret.txt", "escaped"); }
+              catch (failure) { await stdio.println("denied"); }
               return;
             }
             """.formatted(permitted), RuntimePermissions.denyAll().withAllowed(
@@ -880,18 +880,18 @@ class AsyncNativeIoTest {
             });
             String program = """
                 define actor Probe as
-                  receive(ActorMail<String> mail): void { stdio.println("probe"); self.end(); return; }
+                  receive(ActorMail<String> mail): void { await stdio.println("probe"); self.end(); return; }
                 end
                 define actor Reader as
                   receive(ActorMail<String> mail): void {
-                    val socket = await network.connect_async("127.0.0.1", %d);
-                    val reading = socket.read_line_async();
+                    val socket = await network.connect("127.0.0.1", %d);
+                    val reading = socket.read_line();
                     self.send("reading");
                     val line = await reading;
-                    stdio.println(line);
-                    stdio.println(await socket.read_line_async());
-                    await socket.write_text_async("ack\\n");
-                    await socket.close_async();
+                    await stdio.println(line);
+                    await stdio.println(await socket.read_line());
+                    await socket.write_text("ack\\n");
+                    await socket.close();
                     self.end(); return;
                   }
                 end
@@ -931,10 +931,10 @@ class AsyncNativeIoTest {
             String url = "http://127.0.0.1:" + server.getAddress().getPort();
             String output = run("""
                 pub async routine main(): void {
-                  stdio.println(await http.get_text_async("%s/"));
-                  stdio.println(await http.post_text_async("%s/", "posted"));
-                  await http.get_text_async("%s/redirect");
-                  stdio.println("redirect-not-followed");
+                  await stdio.println(await http.get_text("%s/"));
+                  await stdio.println(await http.post_text("%s/", "posted"));
+                  await http.get_text("%s/redirect");
+                  await stdio.println("redirect-not-followed");
                   return;
                 }
                 """.formatted(url, url, url), RuntimePermissions.denyAll().withAllowed(
