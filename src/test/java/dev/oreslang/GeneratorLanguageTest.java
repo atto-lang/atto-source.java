@@ -500,6 +500,29 @@ final class GeneratorLanguageTest {
     }
 
     @Test
+    void yieldCannotCreateFreshBorrowInsideYieldExpression() {
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                          pub val int value = 1;
+
+                          pub same(): self {
+                            return self;
+                          }
+                        end
+
+                        generator fnc bad(): Box {
+                          let Box owner = new Box();
+                          yield (rt borrow owner).same();
+                          return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("borrow")
+                || error.getMessage().contains("yield"),
+                error::getMessage);
+    }
+
+    @Test
     void synchronousForAwaitAdapterStillRejectsLiveBorrows() {
         var error = assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define class Box as
