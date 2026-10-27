@@ -528,6 +528,17 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(v3.Denied):
                 v3.safe_policy_path(value, "ci/test-plans/", ".json")
 
+    def test_handoff_nonce_generation_is_exact_lower_hex(self):
+        with patch.object(v3.secrets, "token_hex", return_value="ab" * 16):
+            self.assertEqual(v3.new_handoff_nonce(), "ab" * 16)
+        for bad in (None, "", "ab" * 15, "AB" * 16, "zz" * 16, "ab" * 17):
+            with self.subTest(bad=bad):
+                with patch.object(v3.secrets, "token_hex", return_value=bad):
+                    with self.assertRaisesRegex(
+                        v3.Denied, "handoff nonce generation failed"
+                    ):
+                        v3.new_handoff_nonce()
+
     def test_handoff_ref_is_exact_tree_or_authorization_sha_only(self):
         self.assertRegex("ci/oreslang-" + SOURCE_TREE, v3.HANDOFF_REF)
         self.assertRegex("ci/authorized-" + COMMIT, v3.HANDOFF_REF)
