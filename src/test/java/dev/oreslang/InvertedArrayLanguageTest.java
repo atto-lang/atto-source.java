@@ -359,7 +359,7 @@ final class InvertedArrayLanguageTest {
                           val f64 x;
                         end
 
-                        pub shared actor fnc bad(
+                        actor fnc bad(
                             InvertedArray<Particle> values): void {
                           return;
                         }
