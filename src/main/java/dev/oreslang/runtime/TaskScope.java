@@ -14,6 +14,9 @@ public final class TaskScope {
     private int active;
     private boolean closing;
     private boolean published;
+    // Prevent the last child from publishing a successful drain while
+    // lexical close hooks are still running and may themselves fail.
+    private int closeHookDispatches;
     private Throwable firstFailure;
     // One-way cancellation seal. Volatile publication lets Registration.attach()
     // observe cancellation without acquiring the scope monitor while it holds
@@ -62,15 +65,14 @@ public final class TaskScope {
         Registration[] admitted;
         synchronized (this) {
             closing = true;
+            closeHookDispatches++;
             admitted = children.toArray(new Registration[0]);
         }
-        // Resource-like structured children (currently generator producers)
-        // need a close signal so a pull-driven activation cannot pin normal
-        // lexical scope exit forever. Ordinary Tasks install no hook.
-        for (Registration ticket : admitted) {
-            ticket.requestScopeClose();
+        try {
+            requestCloseHooks(admitted);
+        } finally {
+            finishCloseHookDispatch();
         }
-        publishIfReady();
         return drained;
     }
 
@@ -89,6 +91,7 @@ public final class TaskScope {
         synchronized (this) {
             closing = true;
             cancellationRequested = true;
+            closeHookDispatches++;
             if (firstFailure == null) {
                 firstFailure = new java.util.concurrent.CancellationException(
                         "enclosing scoped Task was cancelled");
@@ -96,8 +99,10 @@ public final class TaskScope {
             admitted = children.toArray(new Registration[0]);
         }
 
-        for (Registration ticket : admitted) {
-            ticket.requestScopeClose();
+        try {
+            requestCloseHooks(admitted);
+        } finally {
+            finishCloseHookDispatch();
         }
 
         ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
@@ -131,6 +136,31 @@ public final class TaskScope {
         return drained;
     }
 
+    /**
+     * A faulty resource close callback must neither bypass the remaining
+     * callbacks nor publish a false successful scope join. Callbacks run
+     * outside the scope lock, and all failures reach the final join receipt.
+     */
+    private void requestCloseHooks(Registration[] admitted) {
+        for (Registration ticket : admitted) {
+            try {
+                ticket.requestScopeClose();
+            } catch (Throwable failure) {
+                synchronized (this) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+                }
+            }
+        }
+    }
+
+    private void finishCloseHookDispatch() {
+        synchronized (this) {
+            closeHookDispatches--;
+        }
+        publishIfReady();
+    }
+
     private void childDone(Registration ticket, Throwable failure) {
         synchronized (this) {
             if (active == 0) {
@@ -151,7 +181,7 @@ public final class TaskScope {
     private void publishIfReady() {
         Throwable failure;
         synchronized (this) {
-            if (published || !closing || active != 0) return;
+            if (published || !closing || active != 0 || closeHookDispatches != 0) return;
             published = true;
             failure = firstFailure;
         }
