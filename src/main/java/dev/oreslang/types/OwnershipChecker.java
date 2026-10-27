@@ -2631,6 +2631,11 @@ public final class OwnershipChecker {
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
+        if (isBorrowValue(argument)) {
+            throw error(callable + " argument " + position
+                    + " requires owned data; pass an explicit borrow parameter "
+                    + "instead of laundering a lexical loan through a by-value call");
+        }
     }
 
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
