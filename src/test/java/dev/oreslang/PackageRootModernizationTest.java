@@ -308,6 +308,65 @@ final class PackageRootModernizationTest {
                 config.resolveImport(importer, "shared").orElseThrow());
     }
 
+
+    @Test
+    void projectRootAuthorityFollowsTheImportersNearestModernPackage() throws Exception {
+        Path entryRoot = modernPackage("entry-package");
+        Path entry = entryRoot.resolve("main.ores");
+        Files.writeString(entry, "pub routine main(): void { return; }\n");
+
+        Path dependency = modernPackage("dependency-package");
+        Path dependencyImporter = dependency.resolve("src/worker.ores");
+        Path dependencyTarget = dependency.resolve("lib/helper.ores");
+        Files.createDirectories(dependencyImporter.getParent());
+        Files.createDirectories(dependencyTarget.getParent());
+        Files.writeString(dependencyImporter, "pub fnc worker(): void { return; }\n");
+        Files.writeString(dependencyTarget, "pub fnc helper(): int { return 42; }\n");
+
+        OresProjectConfig entryConfig = OresProjectConfig.discover(entry, Map.of());
+        assertEquals(
+                dependencyTarget.toRealPath(),
+                entryConfig.resolveImport(dependencyImporter, "+lib/helper").orElseThrow());
+    }
+
+    @Test
+    void nestedLegacyPackageBlocksParentProjectRootAuthority() throws Exception {
+        Path root = modernPackage("parent-modern-nested-legacy");
+        Path nested = Files.createDirectories(root.resolve("nested"));
+        Files.writeString(
+                nested.resolve(OresProjectConfig.MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Path importer = nested.resolve("main.ores");
+        Files.writeString(importer, "pub routine main(): void { return; }\n");
+
+        Path parentTarget = root.resolve("lib/helper.ores");
+        Files.createDirectories(parentTarget.getParent());
+        Files.writeString(parentTarget, "pub fnc helper(): int { return 42; }\n");
+
+        OresProjectConfig parentConfig = OresProjectConfig.discover(root.resolve("entry.ores"), Map.of());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> parentConfig.resolveImport(importer, "+lib/helper"));
+        assertTrue(failure.getMessage().contains("nearest package authority"),
+                failure.getMessage());
+    }
+
+    @Test
+    void malformedNearestModernMarkerBlocksParentProjectRootAuthority() throws Exception {
+        Path root = modernPackage("parent-modern-malformed-child");
+        Path nested = Files.createDirectories(root.resolve("nested"));
+        Files.createDirectory(nested.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME));
+        Path importer = nested.resolve("main.ores");
+        Files.writeString(importer, "pub routine main(): void { return; }\n");
+
+        OresProjectConfig parentConfig = OresProjectConfig.discover(root.resolve("entry.ores"), Map.of());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> parentConfig.resolveImport(importer, "+lib/helper"));
+        assertTrue(failure.getMessage().contains("regular non-symlink"),
+                failure.getMessage());
+    }
+
     @Test
     void linkedRunnerResolvesCanonicalProjectRootImport() throws Exception {
         Path root = modernPackage("linked-plus");
