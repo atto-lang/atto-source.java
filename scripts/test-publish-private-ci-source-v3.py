@@ -863,6 +863,135 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "not source-free"):
                 v3.checked_destination("trusted/ci", carrier)
 
+    def test_checked_destination_rehashes_workflow_and_plan_content(self):
+        workflow_bytes = b"name: trusted\n"
+        workflow_blob = v3.git_blob_sha(workflow_bytes)
+        plan_blob = v3.git_blob_sha(PLAN)
+        carrier = dict(
+            contract(),
+            workflow_blob_sha=workflow_blob,
+            test_plan_blob_sha=plan_blob,
+        )
+
+        def base_api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + BASE:
+                return {"sha": BASE, "tree": {"sha": ROOT_TREE}}
+            if route == "repos/trusted/ci/git/trees/" + ROOT_TREE + "?recursive=1":
+                return {"sha": ROOT_TREE, "truncated": False, "tree": []}
+            if route == (
+                "repos/trusted/ci/contents/"
+                + carrier["workflow_path"]
+                + "?ref="
+                + BASE
+            ):
+                return {
+                    "path": carrier["workflow_path"],
+                    "type": "file",
+                    "encoding": "base64",
+                    "content": base64.b64encode(workflow_bytes).decode(),
+                    "sha": workflow_blob,
+                }
+            if route == (
+                "repos/trusted/ci/contents/"
+                + carrier["test_plan_path"]
+                + "?ref="
+                + BASE
+            ):
+                return {
+                    "path": carrier["test_plan_path"],
+                    "type": "file",
+                    "encoding": "base64",
+                    "content": base64.b64encode(PLAN).decode(),
+                    "sha": plan_blob,
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": carrier["repository_id"],
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                },
+            ),
+            patch.object(v3, "checked_carrier_main", return_value=BASE),
+            patch.object(v3.legacy, "gh_api", side_effect=base_api),
+        ):
+            _repo, _tree, got_plan = v3.checked_destination(
+                "trusted/ci", carrier
+            )
+        self.assertEqual(got_plan, PLAN)
+
+        def forged_workflow_api(route, method="GET", payload=None):
+            item = base_api(route, method, payload)
+            if route == (
+                "repos/trusted/ci/contents/"
+                + carrier["workflow_path"]
+                + "?ref="
+                + BASE
+            ):
+                item = dict(item)
+                item["content"] = base64.b64encode(b"tampered\n").decode()
+            return item
+
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": carrier["repository_id"],
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                },
+            ),
+            patch.object(v3, "checked_carrier_main", return_value=BASE),
+            patch.object(v3.legacy, "gh_api", side_effect=forged_workflow_api),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "blob digest mismatch"):
+                v3.checked_destination("trusted/ci", carrier)
+
+        def forged_plan_api(route, method="GET", payload=None):
+            item = base_api(route, method, payload)
+            if route == (
+                "repos/trusted/ci/contents/"
+                + carrier["test_plan_path"]
+                + "?ref="
+                + BASE
+            ):
+                item = dict(item)
+                item["content"] = base64.b64encode(b"{}\n").decode()
+            return item
+
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": carrier["repository_id"],
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                },
+            ),
+            patch.object(v3, "checked_carrier_main", return_value=BASE),
+            patch.object(v3.legacy, "gh_api", side_effect=forged_plan_api),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "blob digest mismatch"):
+                v3.checked_destination("trusted/ci", carrier)
+
     def test_verify_source_pr_requires_exact_open_head(self):
         def api(route, method="GET", payload=None):
             if route == "repos/" + v3.legacy.SOURCE_REPO:
