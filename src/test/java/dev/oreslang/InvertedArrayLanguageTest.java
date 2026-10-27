@@ -429,6 +429,87 @@ final class InvertedArrayLanguageTest {
                 () -> admission.physicalSchemaFingerprint().add("forged"));
     }
 
+
+    /**
+     * Inject a host-created array into the *actual checked evaluator frame*.
+     * Guest source cannot construct this substitution, so this test deliberately
+     * uses reflection without adding a production host-injection capability.
+     * The evaluator must consult the exact Program/MemberExpr admission before
+     * invoking bindField(), index(), or any column read.
+     */
+    @Test
+    void evaluatorRejectsSameNamePhysicalSchemaSubstitutionBeforeColumnAccess()
+            throws ReflectiveOperationException {
+        Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.MemberExpr site = returnedMember(typed);
+        Ast.ClassDecl checkedRow = typed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.ClassDecl substitutedRow = (Ast.ClassDecl) Parser.parse("""
+                define inverted class Particle as
+                  val i64 x;
+                  val f64 y;
+                  val bool ready;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        try (InvertedArray valid = InvertedArray.fromClass(checkedRow, 0);
+                InvertedArray substituted = InvertedArray.fromClass(substitutedRow, 0)) {
+            valid.pushValues(1.5, 2.5, true);
+            assertEquals(1.5, evaluateCheckedInvertedField(typed, site, valid));
+
+            // With no rows, an attempted index/column read would instead fail
+            // out of bounds. The fingerprint error establishes the guard order.
+            assertEquals(0, substituted.size());
+            java.lang.reflect.InvocationTargetException rejected = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> evaluateCheckedInvertedField(typed, site, substituted));
+            IllegalStateException failure = assertInstanceOf(
+                    IllegalStateException.class, rejected.getCause());
+            assertTrue(
+                    failure.getMessage().contains("schema fingerprint changed after admission"),
+                    failure::getMessage);
+            assertEquals(0, substituted.size());
+        }
+    }
+
+    private static Object evaluateCheckedInvertedField(
+            Ast.Program typed, Ast.MemberExpr site, InvertedArray array)
+            throws ReflectiveOperationException {
+        Class<?> evaluatorClass = Class.forName(
+                "dev.oreslang.nodes.OresEvalRootNode$Evaluator");
+        Class<?> envClass = Class.forName(
+                "dev.oreslang.nodes.OresEvalRootNode$Env");
+
+        var constructor = evaluatorClass.getDeclaredConstructor(
+                Ast.Program.class,
+                dev.oreslang.runtime.OresContext.class,
+                String.class,
+                long.class,
+                long.class);
+        constructor.setAccessible(true);
+        Object evaluator = constructor.newInstance(
+                typed,
+                null,
+                "<inverted-substitution-test>",
+                Ast.CheckedTaskCaptures.requireProgramEpoch(typed),
+                Ast.CheckedInvertedIndexes.requireProgramEpoch(typed));
+
+        var envConstructor = envClass.getDeclaredConstructor(envClass);
+        envConstructor.setAccessible(true);
+        Object env = envConstructor.newInstance((Object) null);
+        var define = envClass.getDeclaredMethod(
+                "define", String.class, Object.class, Ast.BindingKind.class);
+        define.setAccessible(true);
+        define.invoke(env, "particles", array, Ast.BindingKind.LET);
+
+        var eval = evaluatorClass.getDeclaredMethod("eval", Ast.Expr.class, envClass);
+        eval.setAccessible(true);
+        return eval.invoke(evaluator, site, env);
+    }
+
     @Test
     void checkedMetadataCopyDoesNotTransferInvertedLayoutAuthority() {
         Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
