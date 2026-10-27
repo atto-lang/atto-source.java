@@ -6945,6 +6945,7 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.CallExpr implicitSelfMethodCall(Ast.CallExpr call, Env env) {
             if (call.origin() != Ast.CallOrigin.DIRECT
                     || !(call.callee() instanceof Ast.NameExpr name)
+                    || isBooleanIntrinsicName(name.name())
                     || env.lookup(name.name()) != Env.MISSING) return null;
             Object receiver = env.lookup("self");
             if (!(receiver instanceof OresObject object)
