@@ -19,7 +19,7 @@ final class ActorIoIntrinsicTest {
     @Test
     void actorIoOutIsIntrinsicAndAwaitable() throws Exception {
         check("""
-                pub async actor fnc worker(string value) -> void {
+                pub suspends actor fnc worker(string value) -> void {
                   await io.out.write(value);
                   return;
                 }
@@ -44,6 +44,38 @@ final class ActorIoIntrinsicTest {
                         }
                         """, "actor-process-stdio.ores"));
         assertTrue(failure.getMessage().contains("process-level I/O"), failure::getMessage);
+    }
+
+    @Test
+    void nestedStdoutBuiltinCannotBypassActorStdioBan() {
+        PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                check("""
+                        pub actor fnc worker(string value) -> void {
+                          stdio.stdout.log(value);
+                          return;
+                        }
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-process-stdout-log.ores"));
+        assertTrue(failure.getMessage().contains("process-level I/O"), failure::getMessage);
+    }
+
+    @Test
+    void actorIoCapabilityCannotBeWrittenAsActorData() {
+        PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                check("""
+                        pub suspends actor fnc worker(string value) -> void {
+                          await io.out.write(io);
+                          return;
+                        }
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-io-capability-escape.ores"));
+        assertTrue(failure.getMessage().contains("cannot use $ActorIO"), failure::getMessage);
     }
 
     @Test
@@ -79,7 +111,7 @@ final class ActorIoIntrinsicTest {
     void unimplementedActorChannelsFailClosedAtTypecheck() {
         PolyglotException failure = assertThrows(PolyglotException.class, () ->
                 check("""
-                        pub async actor fnc worker(string value) -> void {
+                        pub suspends actor fnc worker(string value) -> void {
                           await io.err.write(value);
                           return;
                         }
