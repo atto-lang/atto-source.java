@@ -63,6 +63,22 @@ final class ActorIoIntrinsicTest {
     }
 
     @Test
+    void actorIoOutFutureCannotBeSilentlyDiscarded() {
+        PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                check("""
+                        pub suspends actor fnc worker(string value) -> void {
+                          io.out.write(value);
+                          return;
+                        }
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-io-unawaited-write.ores"));
+        assertTrue(failure.getMessage().contains("await it"), failure::getMessage);
+    }
+
+    @Test
     void actorIoCapabilityCannotBeWrittenAsActorData() {
         PolyglotException failure = assertThrows(PolyglotException.class, () ->
                 check("""
