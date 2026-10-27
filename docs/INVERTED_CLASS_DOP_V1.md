@@ -161,6 +161,24 @@ This is **not** permission for arbitrary guest closures to run under the
 monitor, block scheduler threads, perform I/O or cross await/Task boundaries.
 Full guest code generation and ownership proofs remain disabled.
 
+### Closed primitive compound-lowering targets
+
+The Java host now provides `ColumnAccess.addF64At(denseIndex, delta)`
+and `ColumnAccess.addF64(issuedHandle, delta)` as narrow checked lowering
+targets for a compiler-proven **f64 addition**. Both route to a single
+synchronized primitive read-modify-write: no callback, boxing into a
+generated row object, runtime name lookup, or split `getAt/setAt` race.
+The first selects the current dense position; the second validates and follows
+an opaque generation-checked handle through swap-delete. Disjoint column loans
+are preserved, while overlapping column loans reject the mutation.
+
+These host methods **do not** enable source-language `+=`. The type/effect
+checker must still prove that the source RHS evaluates exactly once in Oreslang
+order, uses f64 arithmetic and no unsupported suspension/callback effects.
+Do not silently extend this f64-only primitive to integer overflow modes,
+f32 precision, records, or general user overloads before their semantics and
+cross-backend differential tests are specified.
+
 ## Borrow and concurrency rules
 
 A column view is zero-copy and tied to its owning store; compiler-enforced, nonescaping lifetime is mandatory. Read loans on a field may coexist; a write loan excludes all other same-field access. Disjoint columns may have independent write loans. Structural changes (push, erase, reorder, reserve/reallocate, close, ownership transfer) require quiescence across *all* columns; no suspension or `await` may extend an unsafe exclusive loan without an explicit proof. A raw host-language `span` must not escape its loan; the compiler is responsible for enforcing this when lowered to Oreslang.
