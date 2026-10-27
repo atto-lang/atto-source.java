@@ -10,7 +10,11 @@ on:
       - "src/main/java/dev/oreslang/compiler/ExportAbiMetadata.java"
       - "src/main/java/dev/oreslang/compiler/OresCompiler.java"
       - "src/main/java/dev/oreslang/compiler/TreeShaker.java"
+      - "src/main/java/dev/oreslang/compiler/IncrementalCompiler.java"
+      - "src/main/java/dev/oreslang/types/TypeChecker.java"
       - "src/test/java/dev/oreslang/ExplicitExportSyntaxTest.java"
+      - "src/test/java/dev/oreslang/ExplicitExportSemanticMatrixTest.java"
+      - "src/test/java/dev/oreslang/ExplicitVisibilityContractTest.java"
       - ".github/workflows/explicit-exports-exact-head.yml"
   workflow_dispatch:
 
@@ -45,4 +49,7 @@ jobs:
       - name: Compile Java sources
         run: mvn -B -ntp -DskipTests compile
       - name: Run explicit export v1 tests
-        run: mvn -B -ntp -Dtest=ExplicitExportSyntaxTest test
+        run: >-
+          mvn -B -ntp
+          -Dtest=ExplicitExportSyntaxTest,ExplicitExportSemanticMatrixTest,ExplicitVisibilityContractTest
+          test

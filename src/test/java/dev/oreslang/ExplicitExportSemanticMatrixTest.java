@@ -3,7 +3,6 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.ExportResolver;
 import dev.oreslang.parser.Parser;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -167,8 +166,10 @@ final class ExplicitExportSemanticMatrixTest {
     void c17_publicSignatureLeaksPackageType() {
         assertExportError("EXPORT_API_LEAK", """
                 pub[pkg] define type Hidden = int;
-                export fnc reveal;
-                fnc reveal(Hidden value): int { return 1; }
+                define class Api as
+                  pub expose(Hidden value): Hidden { return value; }
+                end
+                export class Api;
                 """);
     }
 
@@ -176,21 +177,25 @@ final class ExplicitExportSemanticMatrixTest {
     void c18_packageSignatureMayUsePackageType() {
         List<ExportResolver.ExportBinding> bindings = resolve("""
                 pub[pkg] define type Hidden = int;
-                export[pkg] fnc id;
-                fnc id(Hidden value): Hidden { return value; }
+                define class Api as
+                  pub expose(Hidden value): Hidden { return value; }
+                end
+                export[pkg] class Api;
                 """);
         assertEquals(2, bindings.size());
         assertTrue(bindings.stream().allMatch(b -> b.scope() == Ast.ExportScope.PACKAGE));
         assertTrue(bindings.stream().anyMatch(b -> b.externalName().equals("Hidden")));
-        assertTrue(bindings.stream().anyMatch(b -> b.externalName().equals("id")));
+        assertTrue(bindings.stream().anyMatch(b -> b.externalName().equals("Api")));
     }
 
     @Test
     void c19_packageSignatureLeaksFileType() {
         assertExportError("EXPORT_API_LEAK", """
                 pub[file] define type Hidden = int;
-                export[pkg] fnc id;
-                fnc id(Hidden value): Hidden { return value; }
+                define class Api as
+                  pub expose(Hidden value): Hidden { return value; }
+                end
+                export[pkg] class Api;
                 """);
     }
 
@@ -430,7 +435,11 @@ final class ExplicitExportSemanticMatrixTest {
         assertExportError("EXPORT_API_LEAK", """
                 private define type Hidden = int;
                 define type Wrapper = Hidden;
+                define class Api as
+                  pub expose(Wrapper value): Wrapper { return value; }
+                end
                 export type Wrapper;
+                export class Api;
                 """);
     }
 
@@ -449,12 +458,14 @@ final class ExplicitExportSemanticMatrixTest {
         List<ExportResolver.ExportBinding> bindings = resolve("""
                 define type Internal = int;
                 export type Internal as PublicType;
-                fnc use(Internal value): Internal { return value; }
-                export fnc use;
+                define class Api as
+                  pub expose(Internal value): Internal { return value; }
+                end
+                export class Api;
                 """);
         assertEquals(2, bindings.size());
         assertTrue(bindings.stream().anyMatch(b -> b.externalName().equals("PublicType")));
-        assertTrue(bindings.stream().anyMatch(b -> b.externalName().equals("use")));
+        assertTrue(bindings.stream().anyMatch(b -> b.externalName().equals("Api")));
     }
 
     @Test
