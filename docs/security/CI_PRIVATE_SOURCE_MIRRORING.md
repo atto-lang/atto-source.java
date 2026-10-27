@@ -11,11 +11,15 @@ default**. No cross-repository mirroring is authorized until maintainers and
 the independent security owner `@ORESoftware` explicitly review an exact
 `owner/repo numeric-repository-id` destination.
 
-An allowlist line is necessary but not sufficient. The reviewed
-`.github/private-ci-carrier-contracts.json` independently pins the live
-destination repository ID, an exact source-free carrier `main` commit, the
-carrier workflow blob, and exact test-plan blob/PR sets. Carrier `main`
-advance, repository delete/recreate, workflow change, or test-plan change
+An allowlist line is necessary but not sufficient. Carrier-contract schema v2
+is fail-closed and the checked-in registry is intentionally empty until a fresh
+protected carrier is independently approved. A future reviewed
+`.github/private-ci-carrier-contracts.json` row must pin the live destination
+repository ID, an exact source-free carrier `main` commit, the carrier workflow
+blob, the exact test-plan blob/PR set, and the complete carrier execution
+control plane (CODEOWNERS plus verifier, plan-runner, dependency-preparation,
+Maven-preparation, and sandbox helpers) by Git blob. Carrier `main` advance,
+repository delete/recreate, workflow/control-helper change, or test-plan change
 fails closed until the source policy is reviewed again.
 
 Blocking private-source incidents have a separate protected authority file:
@@ -34,8 +38,11 @@ changing the protected registry therefore revokes further writes.
 V3 requires **protected source `main` for every private-source export**.
 If GitHub reports source `main protected: true`, V3 delegates to the legacy
 protected-origin verifier. It requires CODEOWNER review, stale-review dismissal,
-at least one approval, strict non-empty required status checks, administrator
-enforcement, no review bypasses, no force pushes, and no branch deletion.
+last-push approval, at least one approval, conversation resolution,
+administrator enforcement, no review bypasses, no force pushes, and no branch
+deletion. Required CI is not satisfied by an arbitrary status name: both
+`preflight-regressions` and `policy-negative-tests` must be configured as
+required checks produced by the GitHub Actions app (`app_id=15368`).
 
 There is deliberately no review-attested fallback for the source repository.
 A reviewed governance PR, CODEOWNERS text, or successful source-free carrier
@@ -45,11 +52,12 @@ private export is denied.
 
 Carrier `main` must also be live-protected. There is deliberately **no
 review-history fallback** for a carrier. V3 requires CODEOWNER review,
-stale-review dismissal, last-push approval, at least one approval, strict
-non-empty required status checks, conversation resolution, administrator
-enforcement, no review bypasses, no force pushes, no deletion, and the exact
-security CODEOWNERS file. A prior merged PR or historical approval can never
-substitute for these live controls.
+stale-review dismissal, last-push approval, at least one approval, conversation
+resolution, administrator enforcement, no review bypasses, no force pushes, no
+deletion, and the exact security CODEOWNERS file. Required CI must include
+`verifier-tests` bound to the GitHub Actions app (`app_id=15368`); a legacy
+or unbound status with the same name does not qualify. A prior merged PR or
+historical approval can never substitute for these live controls.
 
 The exact carrier-main SHA and full protection contract are rechecked before
 every source-bearing destination write, immediately before executable refs,
@@ -125,7 +133,8 @@ snapshots while preserving unrelated destination workflows and files.
 The v3 dispatcher creates a canonical `ores-private-ci-receipt-v3` that
 binds source repository ID, PR number/head SHA/root-tree SHA, manifest SHA-256,
 destination repository ID and reviewed base commit, immutable carrier workflow
-blob, reviewed test-plan digest, and a 24-hour expiry. The receipt digest is
+blob, the protected source-side manifest of all carrier execution-control Git
+blobs, reviewed test-plan digest, and a 24-hour expiry. The receipt digest is
 bound into the carrier commit message. It then creates a **new**
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>` ref and the exact
 `ci/authorized-<CARRIER_COMMIT_SHA>` dispatcher authorization ref required
@@ -156,8 +165,10 @@ a fresh HOME/XDG config domain and no token/secret/authentication environment.
 
 The reviewed workflow must prove before test execution that representative
 unrelated carrier paths are absent both from the worktree and from the local Git
-object database. The pinned workflow blob is part of the protected carrier
-contract, so replacing this isolation logic requires a new source-policy review.
+object database. The workflow and every source-handling helper it invokes are
+independently pinned by Git blob in the protected source-side carrier contract,
+so replacing verifier, dependency, plan-runner, Maven-preparation, sandbox, or
+workflow logic requires a new source-policy review.
 
 Reference cleanup is deliberately privilege-separated: the source-executing job
 does **not** receive write permission. A separate no-checkout cleanup job may
