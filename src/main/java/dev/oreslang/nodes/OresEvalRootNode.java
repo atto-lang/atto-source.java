@@ -9335,10 +9335,9 @@ public final class OresEvalRootNode extends RootNode {
                 String name,
                 List<Object> args) {
             ExportResolver.ExportBinding binding =
-                    SourceExportTable.resolvePublic(
+                    SourceExportTable.resolvePublicCallable(
                             program,
                             module.name(),
-                            Ast.ImportKind.FUNCTION,
                             name);
             if (binding == null) {
                 throw new IllegalArgumentException(
