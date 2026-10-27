@@ -5081,6 +5081,12 @@ public final class OresEvalRootNode extends RootNode {
                 evalSuspendableCall(task, implicit, env, continuation);
                 return;
             }
+            try {
+                requireUnqualifiedRootCallNotShadowed(call, env);
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
             if (call.callee() instanceof Ast.MemberExpr imported && isImportsMember(imported)) {
                 try {
                     namedImportedFnc(imported.member());
@@ -7016,6 +7022,22 @@ public final class OresEvalRootNode extends RootNode {
                     && name.name().equals(Parser.IMPORTS_NAMESPACE);
         }
 
+        private void requireUnqualifiedRootCallNotShadowed(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.NameExpr name)
+                    || env.lookup(name.name()) != Env.MISSING) return;
+            String local = name.name();
+            boolean imported = hostFunctionImports.containsKey(local)
+                    || (namedImports.containsKey(local)
+                        && namedImports.get(local).declaration().kind() == Ast.ImportKind.FUNCTION);
+            if (imported && functions.containsKey(Parser.ROOT_MODULE + "." + local)
+                    && findQualifiedFunction(Parser.ROOT_MODULE + "." + local,
+                            call.arguments().size()) == null) {
+                throw new IllegalArgumentException(
+                        "file-root function '" + local + "' has no matching arity; "
+                                + "use imports::" + local + "(...) for the imported function");
+            }
+        }
+
         private ImportedBinding namedImportedFnc(String name) {
             if (hostFunctionImports.containsKey(name)) return null;
             ImportedBinding imported = namedImports.get(name);
@@ -7111,6 +7133,7 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
             if (implicit != null) return prepareInvocation(implicit, env);
+            requireUnqualifiedRootCallNotShadowed(call, env);
             if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
                 Ast.FunctionDecl direct = pkgRootCallable(pkg.member(), call.arguments().size(), env);
                 return functionInvocation(direct, evaluateArguments(call.arguments(), env));
@@ -7500,7 +7523,11 @@ public final class OresEvalRootNode extends RootNode {
                     return hostClass;
                 }
                 Invokable hostFunction = hostFunctions.get(name.name());
-                if (hostFunction != null) return hostFunction;
+                if (hostFunction != null
+                        && !(hostFunctionImports.containsKey(name.name())
+                        && functions.containsKey(Parser.ROOT_MODULE + "." + name.name()))) {
+                    return hostFunction;
+                }
                 Ast.ModuleDecl module = modules.get(name.name());
                 if (module != null) {
                     requireLexicalNamespaceAccess(env, name.name(), "module");
