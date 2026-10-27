@@ -195,6 +195,70 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void graphAdmissionRollbackPreservesPrimaryFailureWhenChildCancellationThrows()
+            throws Exception {
+        OresFuture<Integer> borrowed = new OresFuture<>();
+        OresFuture<Integer> exposed = new OresFuture<>();
+        AtomicInteger revocationAttempts = new AtomicInteger();
+
+        AssertionError cancellationError = new AssertionError("child cancellation admission failed");
+        OresFuture<Integer> child = new OresFuture<>(
+                () -> {
+                    revocationAttempts.incrementAndGet();
+                    throw cancellationError;
+                },
+                () -> { });
+        AtomicReference<OresFuture<?>> slot = new AtomicReference<>(child);
+        IllegalStateException graphFailure = new IllegalStateException("graph admission failed");
+
+        assertSame(graphFailure, assertThrows(IllegalStateException.class,
+                () -> TaskPipeline.armOwnedPipelineAwait(
+                        exposed, child, slot, (owner, awaited) -> { throw graphFailure; })));
+        assertNull(slot.get(), "child ownership slot must be retired even on cancellation error");
+        assertEquals(1, revocationAttempts.get(), "only one child cancellation may be attempted");
+        assertEquals(1, graphFailure.getSuppressed().length);
+        assertSame(cancellationError, graphFailure.getSuppressed()[0],
+                "secondary cancellation failure must not replace primary graph error");
+        assertFalse(child.isCancelled(),
+                "a rejecting cancellation admission did not transition child state");
+        assertFalse(borrowed.isDone(), "unrelated borrowed producer must remain pending");
+        assertFalse(exposed.isDone(), "synthetic graph admission may not publish completion");
+        assertEquals(0, TaskPipeline.pendingPipelineAwaitCount());
+        assertTrue(borrowed.completeFromRuntime(41));
+        assertEquals(41, borrowed.get(5, TimeUnit.SECONDS));
+
+        // Symmetric JVM Error primary and RuntimeException cleanup path.
+        IllegalStateException cancellationException =
+                new IllegalStateException("secondary cancellation exception");
+        AssertionError fatal = new AssertionError("primary graph Error");
+        AtomicReference<OresFuture<?>> fatalSlot = new AtomicReference<>();
+        OresFuture<Integer> fatalChild = new OresFuture<>(
+                () -> { throw cancellationException; }, () -> { });
+        fatalSlot.set(fatalChild);
+        assertSame(fatal, assertThrows(AssertionError.class,
+                () -> TaskPipeline.armOwnedPipelineAwait(
+                        exposed, fatalChild, fatalSlot,
+                        (owner, awaited) -> { throw fatal; })));
+        assertNull(fatalSlot.get());
+        assertEquals(1, fatal.getSuppressed().length);
+        assertSame(cancellationException, fatal.getSuppressed()[0]);
+        assertFalse(fatalChild.isCancelled());
+        assertEquals(0, TaskPipeline.pendingPipelineAwaitCount());
+
+        // Throwable.addSuppressed forbids self-suppression; preserve identity.
+        AssertionError sameFailure = new AssertionError("same throwable from both operations");
+        OresFuture<Integer> sameChild = new OresFuture<>(
+                () -> { throw sameFailure; }, () -> { });
+        AtomicReference<OresFuture<?>> sameSlot = new AtomicReference<>(sameChild);
+        assertSame(sameFailure, assertThrows(AssertionError.class,
+                () -> TaskPipeline.armOwnedPipelineAwait(
+                        exposed, sameChild, sameSlot,
+                        (owner, awaited) -> { throw sameFailure; })));
+        assertNull(sameSlot.get());
+        assertEquals(0, sameFailure.getSuppressed().length);
+    }
+
+    @Test
     void admittedStageSnapshotIsIsolatedFromLaterCallerMutation() throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
         AtomicInteger maliciousInvocations = new AtomicInteger();
