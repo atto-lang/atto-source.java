@@ -32,6 +32,22 @@ final class FutureFromInlineTaskLanguageTest {
     }
 
     @Test
+    void canonicalConstFutureStringInlineTaskSurfaceIsAccepted() throws Exception {
+        assertEquals("result", run("""
+                pub fnc main(): void {
+                  const Future<String> f = Future.from_task(
+                    task {
+                      return "result";
+                    }
+                  );
+                  const String result = await f;
+                  stdio.stdout.write(result);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void compilerKeepsExactTaskPayloadAndVoidResultType() throws Exception {
         assertEquals("ok", run("""
                 pub fnc main(): void {
