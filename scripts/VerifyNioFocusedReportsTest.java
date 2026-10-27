@@ -19,9 +19,11 @@ final class VerifyNioFocusedReportsTest {
                     "refusedConnectRetiresLeaseAndDoesNotPoisonLaterConnect"),
             "VmNioTcpConnectionTest", List.of(
                     "closeAsyncWaitsForPendingReadRetirementAndRunsTerminalHookOnce",
+                    "connectionAllowsOneReadAndOneWriteButRejectsDuplicateRead",
                     "closedOutboundConnectionFailsFurtherIoWithoutReadinessAdmission"),
             "NativeNetStdlibTest", List.of(
-                    "realGuestOutboundConnectReadWriteThroughNonblockingKernel"),
+                    "realGuestOutboundConnectReadWriteThroughNonblockingKernel",
+                    "realGuestDuplexReadAndWriteOverlapOnOneConnection"),
             "StrictNonblockingStdlibIoTest", List.of(
                     "hostnameConnectFailsClosedBeforeBlockingDns"));
 
