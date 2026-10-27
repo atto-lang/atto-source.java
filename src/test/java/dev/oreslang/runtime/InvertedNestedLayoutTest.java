@@ -71,7 +71,7 @@ final class InvertedNestedLayoutTest {
         assertEquals(2, schema.fieldCount(),
                 "nested immutable values never become additional physical columns");
         var layout = schema.fields().getFirst().recordLayout();
-        assertEquals(InvertedColumnStore.Kind.RECORD, layout.members().get(1).kind());
+        assertEquals(InvertedColumnStore.Kind.RECORD, layout.members().getFirst().kind());
         assertEquals(17, layout.bytes());
         try (var array = InvertedArray.fromClass(packet, 1)) {
             var location = new java.util.LinkedHashMap<String, Object>();
@@ -255,6 +255,16 @@ final class InvertedNestedLayoutTest {
         }
         assertThrows(IllegalArgumentException.class,
                 () -> InvertedRecordLayout.fromType(Ast.TypeRef.recordType(tooMany)));
+        // Budget counts all nested fields, not only top-level siblings.
+        var wideChildren = new java.util.LinkedHashMap<String, Ast.TypeRef>();
+        for (int i = 0; i < 520; ++i) {
+            wideChildren.put("f_" + i, Ast.TypeRef.simple("i64"));
+        }
+        Ast.TypeRef aggregate = Ast.TypeRef.recordType(Map.of(
+                "left", Ast.TypeRef.recordType(wideChildren),
+                "right", Ast.TypeRef.recordType(wideChildren)));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedRecordLayout.fromType(aggregate));
         var twoLevels = Ast.TypeRef.recordType(Map.of(
                 "inner", Ast.TypeRef.recordType(Map.of(
                         "x", Ast.TypeRef.simple("i64")))));
