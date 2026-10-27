@@ -99,6 +99,51 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
+    void borrowedSelfAliasCannotGainMutableAuthority() {
+        IllegalArgumentException mutation = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Foo as
+                          pub let int value = 7;
+
+                          pub same(): self {
+                            return self;
+                          }
+                        end
+
+                        fnc bad(borrow Foo foo): void {
+                          val Foo alias = foo.same();
+                          alias.value = 9;
+                          return;
+                        }
+                        """)));
+        assertTrue(mutation.getMessage().contains("borrow")
+                || mutation.getMessage().contains("provenance"),
+                mutation::getMessage);
+
+        IllegalArgumentException reborrow = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Foo as
+                          pub let int value = 7;
+
+                          pub same(): self {
+                            return self;
+                          }
+                        end
+
+                        fnc bad(borrow Foo foo): void {
+                          val Foo alias = foo.same();
+                          val mutable = rt mut borrow alias;
+                          return;
+                        }
+                        """)));
+        assertTrue(reborrow.getMessage().contains("mutably reborrow")
+                || reborrow.getMessage().contains("provenance"),
+                reborrow::getMessage);
+    }
+
+    @Test
     void borrowedSelfResultMayBeUsedImmediatelyForCopyOnlyRead() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Foo as
