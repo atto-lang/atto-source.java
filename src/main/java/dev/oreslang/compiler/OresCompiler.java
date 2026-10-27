@@ -84,6 +84,18 @@ public final class OresCompiler {
     }
 
     /**
+     * Phase-three prototype: lower the strictly admitted scalar direct-call
+     * subset to closed specialized HIR, not machine code. The same AST is
+     * type-/ownership-checked once and bound to its finite instance manifest.
+     */
+    public static AotSpecializedIr.Module lowerFiniteAotHir(
+            String source, BuildOptions options) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        AotFiniteGenericClosure.Plan plan = AotFiniteGenericClosure.plan(checked, options);
+        return AotSpecializedIr.lower(checked, plan);
+    }
+
+    /**
      * Performs syntax, type, and language-capability admission without
      * executing guest code.
      */
