@@ -210,6 +210,71 @@ final class InvertedArrayLanguageTest {
     }
 
     @Test
+    void invertedStorageCannotEscapeThroughReturnOrTaskResult() {
+        IllegalArgumentException directReturn = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+
+                        fnc bad(): InvertedArray<Particle> {
+                          let mut InvertedArray<Particle> particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          return particles;
+                        }
+                        """));
+        assertTrue(
+                directReturn.getMessage().contains(
+                        "InvertedArray storage is lexical in v1"),
+                directReturn::getMessage);
+
+        IllegalArgumentException wrappedReturn = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        type HiddenStore = InvertedArray<Particle>;
+
+                        fnc bad(): Option<HiddenStore> {
+                          let mut HiddenStore particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          return Some(particles);
+                        }
+                        """));
+        assertTrue(
+                wrappedReturn.getMessage().contains(
+                        "InvertedArray storage is lexical in v1"),
+                wrappedReturn::getMessage);
+
+        IllegalArgumentException taskResult = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+
+                        async fnc bad(): void {
+                          let worker = task {
+                            let mut InvertedArray<Particle> particles =
+                                new InvertedArray<Particle>();
+                            particles.push(1.0);
+                            return particles;
+                          };
+                          await worker;
+                          return;
+                        }
+                        """));
+        assertTrue(
+                taskResult.getMessage().contains(
+                        "InvertedArray storage is lexical in v1"),
+                taskResult::getMessage);
+    }
+
+    @Test
     void closuresAndTasksCannotCaptureInvertedStorage() {
         IllegalArgumentException closure = assertThrows(
                 IllegalArgumentException.class,
