@@ -129,4 +129,26 @@ final class UnsafeReservedKeywordTest {
         List<Token> tokens = new Lexer("`unsafe body without interpolation`").scan();
         assertEquals(Token.Type.TEMPLATE_LITERAL, tokens.getFirst().type());
     }
+
+    @Test
+    void blockCommentDepthIsBoundedAndCannotHideRealUnsafeTokens() {
+        String withinBudget = "/*".repeat(128) + "unsafe" + "*/".repeat(128);
+        assertEquals(List.of(Token.Type.EOF),
+                new Lexer(withinBudget).scan().stream().map(Token::type).toList());
+
+        String tooDeep = "/*".repeat(129) + "unsafe" + "*/".repeat(129);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> new Lexer(tooDeep).scan());
+        assertTrue(rejected.getMessage().contains("block comment nesting exceeds 128"),
+                rejected::getMessage);
+
+        String afterComment = withinBudget + " unsafe";
+        var tokens = new Lexer(afterComment).scan();
+        assertEquals(List.of(Token.Type.UNSAFE, Token.Type.EOF),
+                tokens.stream().map(Token::type).toList());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(afterComment));
+        assertTrue(denied.getMessage().contains("unsafe is reserved"),
+                denied::getMessage);
+    }
 }
