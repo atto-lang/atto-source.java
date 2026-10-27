@@ -264,6 +264,81 @@ final class InvertedArrayLanguageTest {
     }
 
     @Test
+    void typeAliasesCannotLaunderInvertedStorageAcrossClosureOrChannelBoundaries() {
+        IllegalArgumentException aliasClosure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        type HiddenStore = InvertedArray<Particle>;
+
+                        fnc bad(): void {
+                          let mut HiddenStore particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          val (() => int) capture = || -> {
+                            val hidden = particles;
+                            return 1;
+                          };
+                          return;
+                        }
+                        """));
+        assertTrue(
+                aliasClosure.getMessage().contains(
+                        "closure cannot capture InvertedArray storage"),
+                aliasClosure::getMessage);
+
+        IllegalArgumentException wrapperAliasClosure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        type HiddenStore = InvertedArray<Particle>;
+                        type HiddenOption = Option<HiddenStore>;
+
+                        fnc bad(): void {
+                          let mut HiddenStore particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          val HiddenOption wrapped = Some(particles);
+                          val (() => int) capture = || -> {
+                            val hidden = wrapped;
+                            return 1;
+                          };
+                          return;
+                        }
+                        """));
+        assertTrue(
+                wrapperAliasClosure.getMessage().contains(
+                        "closure cannot capture InvertedArray storage"),
+                wrapperAliasClosure::getMessage);
+
+        IllegalArgumentException aliasChannel = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+                        type HiddenStore = InvertedArray<Particle>;
+
+                        fnc bad(): void {
+                          let mut HiddenStore particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          val channel = Channel.new<HiddenStore>(1);
+                          val pending = nb writech channel, particles;
+                          return;
+                        }
+                        """));
+        assertTrue(
+                aliasChannel.getMessage().contains(
+                        "cannot transport InvertedArray storage"),
+                aliasChannel::getMessage);
+    }
+
+    @Test
     void bracketIndexCannotCallOrSuspendInV1() {
         for (String index : new String[] {"next()", "await nextAsync()"}) {
             String functions = index.startsWith("await")
