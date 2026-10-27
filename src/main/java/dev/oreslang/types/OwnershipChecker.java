@@ -761,7 +761,7 @@ public final class OwnershipChecker {
                 // storage semantics.
                 if (arm.operation() != Ast.ChannelOperation.AWAIT
                         && containsInvertedArrayStorage(element)) {
-                    throw error("select channel cannot carry InvertedArray storage across a transport boundary");
+                    throw error("select channel cannot transport InvertedArray storage across a transport boundary");
                 }
                 // Treat the annotation as a naming/typechecking constraint;
                 // never as proof that the source value is copyable.
