@@ -279,6 +279,59 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return this;
     }
 
+    /**
+     * Create a distinct, non-owning observation of one existing Future.
+     *
+     * <p>The returned observer may be cancelled independently to detach its
+     * runtime waiter; doing so NEVER cancels the source producer. Unlike
+     * {@link #from(OresFuture)}, this method does not preserve the source
+     * Future's cancellation capability or object identity.</p>
+     *
+     * <p>Actual guest-language projection still requires checked T ownership
+     * (especially affine/move-only T), actor permissions and a separate
+     * physical Task/producer retirement receipt. This host helper does not
+     * grant such proofs. Runtime callbacks only settle observer state; guest
+     * continuations remain scheduler/actor-enqueued.</p>
+     */
+    public static <T> OresFuture<T> observe(OresFuture<T> source) {
+        Objects.requireNonNull(source, "source");
+        AtomicReference<RuntimeWaiterRegistration<T>> subscription =
+                new AtomicReference<>();
+        OresFuture<T> observer = new OresFuture<>(() -> {
+            RuntimeWaiterRegistration<T> active = subscription.getAndSet(null);
+            if (active != null) active.detach();
+        });
+        RuntimeWaiterRegistration<T> registration =
+                source.whenCompleteRuntimeCancellable((value, failure) -> {
+                    try {
+                        if (failure == null) {
+                            observer.completeFromRuntime(value);
+                        } else if (source.isCancelled()) {
+                            // Only the authenticated source cancellation bit
+                            // permits a CANCELLED observer outcome. A thrown
+                            // CancellationException without it remains FAILED.
+                            observer.cancel(false);
+                        } else {
+                            observer.failFromRuntime(unwrap(failure));
+                        }
+                    } finally {
+                        RuntimeWaiterRegistration<T> active =
+                                subscription.getAndSet(null);
+                        if (active != null) active.detach();
+                    }
+                });
+        // A settled source may invoke its runtime waiter synchronously before
+        // it returns the registration. The post-publication check is required
+        // to detach a late installed handle. Cancellation races are also safe:
+        // either its hook gets the handle or this check does.
+        subscription.set(registration);
+        if (observer.isDone()) {
+            RuntimeWaiterRegistration<T> active = subscription.getAndSet(null);
+            if (active != null) active.detach();
+        }
+        return observer;
+    }
+
     @SuppressWarnings("unchecked")
     public static <T> OresFuture<T> from(OresFuture<? extends T> future) {
         return (OresFuture<T>) Objects.requireNonNull(future, "future");
