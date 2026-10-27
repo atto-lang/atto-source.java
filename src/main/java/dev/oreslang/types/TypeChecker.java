@@ -87,6 +87,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** Only explicitly named import fnc bindings; wildcard aliases do not flatten. */
+    private final Map<String, Ast.ImportDecl> importedFunctions = new HashMap<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -322,6 +324,7 @@ public final class TypeChecker {
 
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
+        Set<String> localFunctions = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
@@ -337,7 +340,10 @@ public final class TypeChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    localNames.add(fn.name());
+                    if (module.name().equals(Parser.ROOT_MODULE)) localFunctions.add(fn.name());
+                }
                 else if (declaration instanceof Ast.ClassDecl klass) {
                     if (klass.name().equals("HttpResponse")) {
                         throw new IllegalArgumentException(
@@ -362,8 +368,14 @@ public final class TypeChecker {
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
-                if (localNames.contains(name)) {
-                    throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
+                if (localNames.contains(name)
+                        && !(imported.kind() == Ast.ImportKind.FUNCTION
+                                && !imported.wildcard() && localFunctions.contains(name))) {
+                    throw new IllegalArgumentException("imported name '" + name
+                            + "' conflicts with a local or builtin name");
+                }
+                if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
+                    importedFunctions.put(name, imported);
                 }
                 // Cross-file imports are opaque to this per-unit typechecker.
                 // Runtime-bearing imports enter the value namespace. Oreslang
@@ -2408,8 +2420,9 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
-            if (name.name().equals(Parser.PKG_ROOT_NAMESPACE)) {
-                throw new IllegalArgumentException("pkg is a qualification-only compiler namespace");
+            if (name.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                    || name.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                throw new IllegalArgumentException("pkg/imports are qualification-only compiler namespaces");
             }
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
@@ -2451,7 +2464,10 @@ public final class TypeChecker {
                 rejectUnimportedClassNamespace(classNamespace);
                 return new ClassNamespace(qualifiedClassName(classNamespace));
             }
-            if (importedValues.contains(name.name())) return Unknown.INSTANCE;
+            // File-root callable wins when an explicitly imported fnc has
+            // the same name; use imports::name to select that imported symbol.
+            if (importedValues.contains(name.name())
+                    && !importedFunctions.containsKey(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
                 rejectImplicitClassCallable(name.name());
@@ -2480,6 +2496,7 @@ public final class TypeChecker {
                 }
                 return trapFunctionType(fn, Set.of(), null);
             }
+            if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -2981,6 +2998,25 @@ public final class TypeChecker {
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
                 return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
+            }
+            if (call.callee() instanceof Ast.MemberExpr importedCall
+                    && importedCall.receiver() instanceof Ast.NameExpr importNamespace
+                    && importNamespace.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                if (!importedFunctions.containsKey(importedCall.member())) {
+                    throw new IllegalArgumentException(
+                            "imports::" + importedCall.member()
+                                    + " must name an explicitly imported fnc in this source unit");
+                }
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "imports::" + importedCall.member()
+                                    + " cannot specialize an opaque imported fnc");
+                }
+                fixedCallArity(call.arguments(), env, generics, self,
+                        "imports::" + importedCall.member());
+                // Cross-file return/parameter types remain opaque until linked
+                // signatures are checked. Do not borrow a same-name local type.
+                return Unknown.INSTANCE;
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
@@ -3809,6 +3845,15 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                if (!importedFunctions.containsKey(member.member())) {
+                    throw new IllegalArgumentException(
+                            "imports::" + member.member()
+                                    + " must name an explicitly imported fnc in this source unit");
+                }
+                return Unknown.INSTANCE;
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
