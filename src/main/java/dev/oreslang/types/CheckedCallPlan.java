@@ -202,6 +202,23 @@ public record CheckedCallPlan(
     private static boolean preservesRawBindingShape(
             Ast.Expr source,
             Ast.Expr target) {
+        // The source-to-formal proof belongs to the selected callable, not
+        // merely to an argument list with matching labels. A rewrite that
+        // retargets the callee, constructor, or explicit generics must be
+        // checked again before it receives execution authority.
+        if (source instanceof Ast.CallExpr from
+                && target instanceof Ast.CallExpr to) {
+            if (from.origin() != to.origin()
+                    || !from.callee().equals(to.callee())
+                    || from.typeArgumentsPresent() != to.typeArgumentsPresent()
+                    || !from.typeArguments().equals(to.typeArguments())) {
+                return false;
+            }
+        } else if (source instanceof Ast.NewExpr from
+                && target instanceof Ast.NewExpr to
+                && !from.type().equals(to.type())) {
+            return false;
+        }
         List<Ast.Expr> sourceArguments =
                 source instanceof Ast.CallExpr call
                         ? call.arguments()
