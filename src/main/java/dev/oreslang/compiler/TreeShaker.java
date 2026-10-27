@@ -110,7 +110,11 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues, roots);
+            // Tree shaking constructs new Program objects. Preserve the caller's
+            // canonical compilation-unit identity for subsequent AOT stages.
+            Ast.Program identified = MacroSourceUnitIdentity.attach(
+                    pruned, MacroSourceUnitIdentity.unitId(input));
+            return new Result(identified, retained, removed, constantValues, roots);
         }
 
         private void collectConstants() {
@@ -356,6 +360,13 @@ public final class TreeShaker {
                 return substituted;
             }
             if (expression instanceof Ast.MemberExpr member) {
+                if (MacroIdentifierHygiene.lookup(member)
+                        instanceof MacroIdentifierHygiene.CapturedFunction) {
+                    // A checked capture is authorized for this *exact* AST
+                    // identity. Rebuilding the member would destroy proof.
+                    MacroIdentifierHygiene.authorizedCapturedFunction(member);
+                    return member;
+                }
                 return new Ast.MemberExpr(
                         substitute(member.receiver(), substitutions, shadowed),
                         member.member());
@@ -962,6 +973,11 @@ public final class TreeShaker {
                 return rewritten;
             }
             if (expression instanceof Ast.MemberExpr member) {
+                if (MacroIdentifierHygiene.lookup(member)
+                        instanceof MacroIdentifierHygiene.CapturedFunction) {
+                    MacroIdentifierHygiene.authorizedCapturedFunction(member);
+                    return member;
+                }
                 return new Ast.MemberExpr(
                         rewriteExpression(member.receiver(), module, locals),
                         member.member());
@@ -1342,6 +1358,21 @@ public final class TreeShaker {
                 return;
             }
             if (expression instanceof Ast.MemberExpr member) {
+                MacroIdentifierHygiene.CapturedFunction captured =
+                        MacroIdentifierHygiene.authorizedCapturedFunction(member);
+                if (captured != null) {
+                    // Checked function capture is a static, explicit dependency
+                    // on the caller's real declaration—not an external name.
+                    String target = qualify(
+                            captured.hygiene().callerModule(), captured.name());
+                    if (!symbols.containsKey(target)) {
+                        throw new IllegalArgumentException(
+                                "tree shaking cannot resolve checked macro capture '"
+                                        + target + "'; AOT fallback is forbidden");
+                    }
+                    mark(target);
+                    return;
+                }
                 if (member.receiver() instanceof Ast.NameExpr namespace
                         && !locals.contains(namespace.name())) {
                     String qualified = qualify(namespace.name(), member.member());
