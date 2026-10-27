@@ -73,7 +73,7 @@ have nonzero executed-step evidence. All 62 shared vectors remain PENDING.
 ## 2026-10-27: actual executable-step discovery and fail-closed JUnit receipt
 
 The new source-only `.github/workflows/async-interop-source-org-runner-canary.yml`
-targets `[self-hosted, linux, x64, oreslang-isolated-ephemeral]` with
+targets `[self-hosted, linux, x64, oreslang-isolated-canary-2172-v2]` with
 `permissions: {}`. Its single step **never checks out, fetches, or executes
 the Oreslang private source**. It merely identifies installed runtime tools
 and prints an explicitly source-free receipt. A queued canary is NOT a proof
@@ -161,3 +161,11 @@ discovery command: **10/10 passed**. Separately the canary YAML parsed and
 its embedded Bash passed `bash -n`. Neither proves JVM compilation,
 source-facing guest execution, physical Task retirement, AOT or source-org
 runner capability.
+
+## 2026-10-27: v2 runner label isolation and independent canary review
+
+Standalone [draft source-free canary PR #2172](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2172) is restricted to a reviewed manual dispatch on protected `main` and has a **single changed workflow file**. Independent `@ORESoftware` review has been requested, not completed.
+
+**DEPRECATED:** `oreslang-isolated-ephemeral` was used by historical PR-triggered workflows that remained queued. Never assign this label to a new runner. The reviewed source-free canary instead requires `oreslang-isolated-canary-2172-v2`. Provision a purpose-specific disposable worker with the **v2 label only**, plus built-in `self-hosted`, `linux`, `x64`, in a restrictive runner group for approved workflows. This provides label-level separation from the three legacy queued jobs, but it does not independently verify GitHub's runner-group restrictions, host credentials, or network isolation.
+
+The Actions administrator still must cancel all old queued PR-controlled workflows (runs 40546884149, 40546920891, 40547417920) and verify no equivalent pending jobs, establish enforced `main` protection and independent review, then merge ONLY the approved canary workflow to the protected default branch. Do not register a runner or run any source-bearing job as a shortcut. The Java application PR must remain draft until actual JVM/AOT proof. Do not put the v2 label on any PR-triggered workflow.
