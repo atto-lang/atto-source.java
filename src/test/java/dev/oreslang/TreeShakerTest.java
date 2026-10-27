@@ -58,6 +58,26 @@ final class TreeShakerTest {
     }
 
     @Test
+    void optimizerCannotEraseUnexpandedMacroDeclarationsAsDeadCode() {
+        Ast.Program unchecked = Parser.parse("""
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+                pub fnc main() -> int {
+                    return identity!(syntax expr 42);
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TreeShaker.shake(unchecked, BuildOptions.executable(Map.of())));
+        assertTrue(failure.getMessage().contains("erased compile-time macro"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
     void cliDefinesOverrideEnvironmentDefinesDeterministically() {
         Map<String, String> merged = BuildOptions.mergeDefines(
                 Map.of(
