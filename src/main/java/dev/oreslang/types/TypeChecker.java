@@ -2436,7 +2436,6 @@ public final class TypeChecker {
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
             }
-            if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {
@@ -2881,7 +2880,7 @@ public final class TypeChecker {
                     }
                     typeOf(argument, env, generics, self);
                 }
-                return Primitive.VOID;
+                return new Named("Future", List.of(Primitive.VOID));
             }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -2894,7 +2893,7 @@ public final class TypeChecker {
                         typeOf(argument, env, generics, self);
                     }
                 }
-                return Primitive.VOID;
+                return new Named("Future", List.of(Primitive.VOID));
             }
             if (isBuiltinStdoutCall(call, "logList", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -2904,7 +2903,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("stdio.stdout.logList expects exactly one array/list/tuple argument");
                 }
                 requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
-                return Primitive.VOID;
+                return new Named("Future", List.of(Primitive.VOID));
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
@@ -3809,7 +3808,8 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
-                return new Function(List.of(), Primitive.STRING);
+                return new Function(List.of(), new Named("Future", List.of(
+                        new Named("Option", List.of(Primitive.STRING)))));
             }
             if (member.receiver() instanceof Ast.NameExpr clockName && clockName.name().equals("process")
                     && env.lookup("process") == null
@@ -3818,7 +3818,8 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
-                if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                if (member.member().equals("print") || member.member().equals("println"))
+                    return new Function(List.of(Unknown.INSTANCE), new Named("Future", List.of(Primitive.VOID)));
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
@@ -3995,7 +3996,7 @@ public final class TypeChecker {
             receiver = receiverDispatchType(unwrapMutexGuard(deref(receiver)));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout")) {
                 if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
-                    return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                    return new Function(List.of(Unknown.INSTANCE), new Named("Future", List.of(Primitive.VOID)));
                 }
                 if (member.member().equals("log")) {
                     throw new IllegalArgumentException(
@@ -4008,14 +4009,20 @@ public final class TypeChecker {
                 return new Function(List.of(), Primitive.STRING);
             }
             if (member.receiver() instanceof Ast.NameExpr name
-                    && (name.name().equals("process")
-                        || name.name().equals("actor")
-                        || name.name().equals("fs")
+                    && (name.name().equals("fs")
                         || name.name().equals("File")
                         || name.name().equals("network")
                         || name.name().equals("net")
                         || name.name().equals("http")
-                        || name.name().equals("env"))) return Unknown.INSTANCE;
+                        || name.name().equals("env"))) {
+                throw new IllegalArgumentException(
+                        "unknown strict stdlib member '" + name.name() + "."
+                                + member.member()
+                                + "'; core/std I/O uses canonical async-default names only");
+            }
+            if (member.receiver() instanceof Ast.NameExpr name
+                    && (name.name().equals("process") || name.name().equals("actor")))
+                return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
@@ -5575,19 +5582,6 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
-        if (named.name().equals("fs") || named.name().equals("File")) {
-            Type string = Primitive.STRING;
-            Type booleanType = Primitive.BOOL;
-            switch (name) {
-                case "list_dir": return new Function(List.of(string), new ListType(string));
-                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
-                case "read_text": return new Function(List.of(string), string);
-                case "write_text", "write_text_atomic", "append_text":
-                    return new Function(List.of(string, string), Primitive.VOID);
-                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
-                default: break;
-            }
-        }
         if (named.name().equals("env")) {
             switch (name) {
                 case "get": return new Function(List.of(Primitive.STRING),
@@ -5601,29 +5595,39 @@ public final class TypeChecker {
         switch (named.name()) {
             case "fs", "File" -> {
                 switch (name) {
-                    case "read_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "exists_async" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
-                    case "write_text_async", "append_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
-                    case "remove_async", "mkdir_all_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    case "read_text" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
+                    case "list_dir" -> { result = new ListType(Primitive.STRING); parameters = List.of(Primitive.STRING); }
+                    case "is_dir", "is_symlink", "exists" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
+                    case "write_text", "write_text_atomic", "append_text" -> {
+                        result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING);
+                    }
+                    case "remove", "mkdir_all" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
                     default -> { return null; }
                 }
             }
             case "network", "net" -> {
-                if (!name.equals("connect_async")) return null;
-                result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+                if (!name.equals("connect")) return null;
+                result = new Named("TcpConnection", List.of());
+                parameters = List.of(Primitive.STRING, Primitive.INT);
             }
             case "TcpConnection" -> {
                 switch (name) {
-                    case "read_line_async" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
-                    case "write_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
-                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
+                    case "read_line" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
+                    case "write_text" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    case "close" -> { result = Primitive.VOID; parameters = List.of(); }
                     default -> { return null; }
                 }
             }
             case "http" -> {
                 switch (name) {
-                    case "get_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "post_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "get_text" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
+                    case "post_text" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "listen" -> {
+                        result = new Named("HttpServer", List.of());
+                        parameters = List.of(
+                                Primitive.STRING, Primitive.INT, Primitive.INT,
+                                Primitive.INT, Primitive.INT);
+                    }
                     default -> { return null; }
                 }
             }
@@ -5639,9 +5643,6 @@ public final class TypeChecker {
         Type voidFuture = new Named("Future", List.of(Primitive.VOID));
         return switch (named.name()) {
             case "http" -> switch (name) {
-                case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
-                case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
-                case "claim" -> new Function(List.of(Primitive.STRING), exchange);
                 case "response" -> new Function(List.of(Primitive.INT, Primitive.STRING, Primitive.STRING), new Named("HttpResponse", List.of()));
                 case "response_empty" -> new Function(List.of(Primitive.INT), new Named("HttpResponse", List.of()));
                 default -> null;
