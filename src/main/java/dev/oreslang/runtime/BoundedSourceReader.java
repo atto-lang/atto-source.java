@@ -87,6 +87,9 @@ public final class BoundedSourceReader {
             Path leaf = absolute.getFileName();
             BasicFileAttributeView view = current.getFileAttributeView(
                     leaf, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+            if (view == null) {
+                throw new IOException("filesystem cannot provide no-follow source attributes");
+            }
             BasicFileAttributes before = view.readAttributes();
             requireRegularBounded(before, absolute);
 
@@ -160,7 +163,9 @@ public final class BoundedSourceReader {
         for (;;) {
             int count = channel.read(buffer);
             if (count < 0) break;
-            if (count == 0) continue;
+            if (count == 0) {
+                throw new IOException("zero-byte read while snapshotting regular source file");
+            }
             total += count;
             if (total > MAX_BYTES) {
                 throw new IllegalArgumentException("Oreslang source exceeds 16 MiB source limit");
