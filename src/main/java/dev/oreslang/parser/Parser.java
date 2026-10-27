@@ -22,6 +22,9 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
+    private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
+            new java.util.ArrayDeque<>();
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -1950,10 +1953,11 @@ public final class Parser {
         if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
         if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
         if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
-        if ((check(STRUCT) || (check(IDENT) && peek().lexeme().equals("record")))
+        if ((check(STRUCT) || isContextualIdentifier("record"))
                 && checkNext(LBRACE)) {
-            advance(); // 'struct' and 'record' denote a structural shape in type position.
-            return parseTypeAtom(); // the existing '{field: Type}' parser owns the braces
+            boolean struct = check(STRUCT);
+            advance();
+            return parseClosedAggregateType(struct);
         }
         if (match(TYPE)) {
             Ast.TypeRef marked = parseTypeAtom();
@@ -2159,10 +2163,86 @@ public final class Parser {
 
     private List<Ast.Stmt> parseBlock() {
         consume(LBRACE, "expected '{'");
-        List<Ast.Stmt> body = new ArrayList<>();
-        while (!check(RBRACE) && !check(EOF)) body.add(parseStatement());
-        consume(RBRACE, "expected '}'");
-        return body;
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = new ArrayList<>();
+            while (!check(RBRACE) && !check(EOF)) body.add(parseStatement());
+            consume(RBRACE, "expected '}'");
+            return body;
+        } finally {
+            localTypeScopes.pop();
+        }
+    }
+
+    /** Distinguish a statically declared local aggregate from an arbitrary name
+     *  followed by a control-flow block. Only prior lexical declarations qualify.
+     */
+    private boolean isLocalTypeName(String name) {
+        for (java.util.Set<String> scope : localTypeScopes) {
+            if (scope.contains(name)) return true;
+        }
+        return false;
+    }
+
+    private Ast.LocalTypeDeclStmt parseLocalTypeDeclaration(boolean nominal, boolean structShortForm) {
+        String name = consume(IDENT, "expected local type name").lexeme();
+        Ast.TypeRef target;
+        if (structShortForm) {
+            target = parseClosedAggregateType(nominal);
+        } else {
+            consume(EQUAL, "expected '=' after local type name");
+            target = parseTypeRef();
+        }
+        if (localTypeScopes.isEmpty() || !localTypeScopes.peek().add(name)) {
+            throw error(previous(), "duplicate local type declaration '" + name + "'");
+        }
+        match(SEMICOLON);
+        return new Ast.LocalTypeDeclStmt(name, target, nominal);
+    }
+
+    private Ast.TypeRef parseClosedAggregateType(boolean struct) {
+        consume(LBRACE, "expected '{' in aggregate type");
+        java.util.Map<String, Ast.TypeRef> fields = new java.util.LinkedHashMap<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            String field;
+            Ast.TypeRef type;
+            if (check(IDENT) && checkNext(COLON)) {
+                field = consumeStaticObjectKeyName("expected aggregate field name");
+                consume(COLON, "expected ':' after aggregate field name");
+                type = parseTypeRef();
+            } else {
+                type = parseTypeRef();
+                field = consumeStaticObjectKeyName("expected aggregate field after its type");
+            }
+            if (fields.putIfAbsent(field, type) != null) {
+                throw error(previous(), "duplicate aggregate field '" + field + "'");
+            }
+            if (!match(COMMA, SEMICOLON)) break;
+        }
+        consume(RBRACE, "expected '}' after aggregate type");
+        return struct ? Ast.TypeRef.structType(fields) : Ast.TypeRef.recordType(fields);
+    }
+
+    private Ast.LocalAggregateConstructExpr parseLocalAggregateConstructor(String name) {
+        consume(LBRACE, "expected '{' in local aggregate constructor");
+        List<Ast.Expr> positional = new ArrayList<>();
+        List<Ast.ObjectField> named = new ArrayList<>();
+        if (!check(RBRACE)) {
+            do {
+                if (check(IDENT) && checkNext(COLON)) {
+                    String field = consumeStaticObjectKeyName("expected aggregate field name");
+                    consume(COLON, "expected ':' after aggregate field name");
+                    named.add(Ast.ObjectField.named(field, parseExpression()));
+                } else {
+                    positional.add(parseExpression());
+                }
+                if (!positional.isEmpty() && !named.isEmpty()) {
+                    throw error(previous(), "cannot mix positional and named aggregate constructor fields");
+                }
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after local aggregate constructor");
+        return new Ast.LocalAggregateConstructExpr(name, positional, named);
     }
 
     private Ast.Stmt parseStatement() {
@@ -2253,6 +2333,23 @@ public final class Parser {
         }
         if (check(TRAIT)) {
             throw error(peek(), "trait declarations are static/module-scope declarations; runtime trait creation is forbidden");
+        }
+        if (check(CLASS)) {
+            throw error(peek(), "class declarations are module-scope and cannot be declared inside a callable");
+        }
+        if (check(CONST) && checkNext(TYPE)) {
+            throw error(peek(), "'const type' is redundant; types are compile-time immutable declarations");
+        }
+        if (check(STRUCT) && checkNext(IDENT)) {
+            advance();
+            return parseLocalTypeDeclaration(true, true);
+        }
+        if (isContextualIdentifier("record") && checkNext(IDENT)) {
+            advance();
+            return parseLocalTypeDeclaration(false, true);
+        }
+        if (match(TYPE)) {
+            return parseLocalTypeDeclaration(false, false);
         }
 
         if (check(AT)) {
@@ -4052,6 +4149,9 @@ public final class Parser {
                 // evaluation path; no dynamic symbol lookup or macro rewrite.
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
+            } else if (expr instanceof Ast.NameExpr name
+                    && check(LBRACE) && isLocalTypeName(name.name())) {
+                expr = parseLocalAggregateConstructor(name.name());
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
                 consume(RBRACKET, "expected ']' after index");
