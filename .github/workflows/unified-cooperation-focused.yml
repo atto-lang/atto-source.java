@@ -1,0 +1,67 @@
+name: Unified cooperation focused — JDK25 guest/runtime
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/runtime/AsyncRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/SourceCooperationQuantum.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java'
+      - 'src/test/java/dev/oreslang/runtime/AsyncRuntimeCooperationTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SourceCooperationQuantumTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresSchedulerTest.java'
+      - 'scripts/VerifyCooperationReports.java'
+      - '.github/workflows/unified-cooperation-focused.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unified-cooperation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jdk25-cooperation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pinned
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact PR source, tree, and clean checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          echo "EXACT_SOURCE_COMMIT=$EXPECTED_HEAD"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1 pinned
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Print execution toolchain
+        run: |
+          java --version
+          mvn --version
+          native-image --version
+      - name: Execute exact cooperation and borrow regression suites
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=SourceLoopSoftPreemptionTest,AsyncRuntimeCooperationTest,SourceCooperationQuantumTest,OresSchedulerTest \
+            -DfailIfNoTests=true test
+      - name: Reject incomplete, skipped or inconsistent actual JUnit reports
+        run: |
+          set -euo pipefail
+          java scripts/VerifyCooperationReports.java target/surefire-reports
