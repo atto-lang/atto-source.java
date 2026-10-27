@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Real typed Oreslang frontend admission; real installed Z3 required. */
@@ -52,6 +53,58 @@ public final class TypedScalarSmtTest {
                 StandardCharsets.UTF_8);
     }
 
+    /**
+     * Fail-closed splitter for the two exact queries emitted by TypedScalarSmt.
+     * This is structural extraction from a real checked-AST-derived SMT file,
+     * NOT an independently proved translation from AST to SMT.
+     */
+    private static List<String> separateProofAndControl(String document) {
+        if (document == null || document.length() > 65_536
+                || !document.startsWith("(set-logic QF_BV)\n")
+                || document.contains("(echo ") || document.contains("(exit)")) {
+            throw new IllegalArgumentException("unrecognized scalar SMT document");
+        }
+        String marker = "(push 1)\n";
+        int first = document.indexOf(marker);
+        int second = first < 0 ? -1 : document.indexOf(marker, first + marker.length());
+        if (first < 0 || second < 0
+                || document.indexOf(marker, second + marker.length()) >= 0) {
+            throw new IllegalArgumentException("expected exactly two scalar obligations");
+        }
+        String prelude = document.substring(0, first);
+        if (!prelude.contains("(define-fun implementation ")
+                || !prelude.contains("(define-fun contract ")
+                || prelude.contains("(check-sat)")
+                || prelude.contains("(assert ")) {
+            throw new IllegalArgumentException("unexpected query prelude");
+        }
+        String positive = document.substring(first + marker.length(), second);
+        String control = document.substring(second + marker.length());
+        for (String body : List.of(positive, control)) {
+            String termination = "\n(check-sat)\n(pop 1)\n";
+            if (!body.startsWith("(assert ") || !body.endsWith(termination)
+                    || body.indexOf(termination) != body.lastIndexOf(termination)
+                    || body.indexOf("(check-sat)") != body.lastIndexOf("(check-sat)")
+                    || body.contains("(push 1)") || body.contains("(echo ")) {
+                throw new IllegalArgumentException("noncanonical scalar obligation");
+            }
+        }
+        return List.of(prelude + marker + positive, prelude + marker + control);
+    }
+
+    private static void replaySeparated(String label, String source, String combined,
+                                        String positiveVerdict) throws Exception {
+        List<String> slices = separateProofAndControl(combined);
+        String observedPositive = evaluateWithZ3(slices.get(0));
+        String observedControl = evaluateWithZ3(slices.get(1));
+        writeReceipt(label + "-implementation", source, slices.get(0), observedPositive);
+        writeReceipt(label + "-negative-control", source, slices.get(1), observedControl);
+        assertEquals(positiveVerdict, observedPositive,
+                "actual checked implementation SMT disagrees: " + label);
+        assertEquals("sat", observedControl,
+                "required independent incorrect-implementation control is absent: " + label);
+    }
+
     @Test
     void genuineCheckedJavaAstRefinesAllThreeCoreFunctions() throws Exception {
         String source = core();
@@ -60,6 +113,7 @@ public final class TypedScalarSmtTest {
             assertTrue(smt.contains("(define-fun implementation"));
             String observed = evaluateWithZ3(smt);
             writeReceipt("checked-" + name, source, smt, observed);
+            replaySeparated("checked-" + name, source, smt, "unsat");
             assertEquals("unsat\nsat", observed,
                     "typed AST did not refine BV64 contract: " + name);
         }
@@ -75,10 +129,12 @@ public final class TypedScalarSmtTest {
         String minSmt = TypedScalarSmt.fromSource(badMin, "core", "min_int");
         String minVerdict = evaluateWithZ3(minSmt);
         writeReceipt("mutated-min_int", badMin, minSmt, minVerdict);
+        replaySeparated("mutated-min_int", badMin, minSmt, "sat");
         assertEquals("sat\nsat", minVerdict);
         String clampSmt = TypedScalarSmt.fromSource(badClamp, "core", "clamp_int");
         String clampVerdict = evaluateWithZ3(clampSmt);
         writeReceipt("mutated-clamp_int", badClamp, clampSmt, clampVerdict);
+        replaySeparated("mutated-clamp_int", badClamp, clampSmt, "sat");
         assertEquals("sat\nsat", clampVerdict);
     }
 
@@ -95,6 +151,20 @@ public final class TypedScalarSmtTest {
         String literal = source.replace("return upper;", "return 1;");
         assertThrows(IllegalArgumentException.class, () ->
                 TypedScalarSmt.fromSource(literal, "core", "clamp_int"));
+    }
+
+    @Test
+    void separatedQueryParserRejectsPartialAndInjectedDocuments() throws Exception {
+        String smt = TypedScalarSmt.fromSource(core(), "core", "min_int");
+        assertEquals(2, separateProofAndControl(smt).size());
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replaceFirst("\\(check-sat\\)", "(echo \"unsat\")")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt + "(check-sat)\n"));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replace("(push 1)\n", "")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt + "(push 1)\n(check-sat)\n(pop 1)\n"));
     }
 
     @Test
