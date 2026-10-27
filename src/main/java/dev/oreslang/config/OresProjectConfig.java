@@ -186,20 +186,31 @@ public final class OresProjectConfig {
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(absoluteManifest)) {
-            throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
+        BasicFileAttributes manifestAttributes;
+        try {
+            manifestAttributes = Files.readAttributes(
+                    absoluteManifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        } catch (NoSuchFileException missing) {
+            throw new IllegalArgumentException(
+                    "project manifest does not exist: " + absoluteManifest, missing);
+        }
+        if (manifestAttributes.isSymbolicLink() || !manifestAttributes.isRegularFile()) {
+            throw new IllegalArgumentException(
+                    "project manifest must be a regular non-symlink file: " + absoluteManifest);
         }
 
-        TomlParseResult toml = Toml.parse(absoluteManifest);
+        String manifestName = absoluteManifest.getFileName().toString();
+        String manifestContents = readManifestSnapshot(absoluteManifest);
+        TomlParseResult toml = Toml.parse(manifestContents);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
-                    "invalid " + MANIFEST_NAME + ": " + toml.errors().getFirst());
+                    "invalid " + manifestName + ": " + toml.errors().getFirst());
         }
 
         String schemaVersion = toml.getString("schema_version");
         if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
-                    MANIFEST_NAME + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
+                    manifestName + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
 
         Object rawBuild = toml.get("build");
@@ -219,11 +230,27 @@ public final class OresProjectConfig {
                 buildTable == null ? null : buildTable.get("library_profile"));
 
         Path manifestDir = absoluteManifest.getParent();
+        boolean modernPackage = isPackageManifest(absoluteManifest);
         String rootText = defaultString(toml.getString("project.root"), ".");
-        Path projectRoot = resolvePath(manifestDir, rootText);
+        Path projectRoot;
+        if (modernPackage) {
+            if (!".".equals(rootText)) {
+                throw new IllegalArgumentException(
+                        PACKAGE_MANIFEST_NAME
+                                + " anchors the package root to its own directory; "
+                                + "[project].root must be omitted or '.'");
+            }
+            projectRoot = manifestDir.toRealPath();
+            if (!Files.isDirectory(projectRoot, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "package manifest parent is not a physical directory: " + manifestDir);
+            }
+        } else {
+            projectRoot = resolvePath(manifestDir, rootText);
+        }
 
         List<String> sourceRootValues = stringArray(toml, "source.roots");
-        if (sourceRootValues.isEmpty()) sourceRootValues = List.of(".");
+        if (toml.get("source.roots") == null) sourceRootValues = List.of(".");
         List<Path> sourceRoots = resolvePaths(projectRoot, sourceRootValues);
         List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
 
@@ -233,8 +260,12 @@ public final class OresProjectConfig {
         return new OresProjectConfig(
                 absoluteManifest,
                 projectRoot,
-                toml.getString("project.name"),
-                toml.getString("project.version"),
+                modernPackage
+                        ? defaultString(toml.getString("package.name"), toml.getString("project.name"))
+                        : toml.getString("project.name"),
+                modernPackage
+                        ? defaultString(toml.getString("package.version"), toml.getString("project.version"))
+                        : toml.getString("project.version"),
                 sourceRoots,
                 importPaths,
                 parseEnvironmentPaths(environment),
