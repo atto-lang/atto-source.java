@@ -597,6 +597,32 @@ class PrivateCiV3Test(unittest.TestCase):
                 raw, "trusted/ci", 1483, "ci/test-plans/java-pr1482.json"
             )
 
+    def test_contract_rejects_incomplete_carrier_control_blob_set(self):
+        control = dict(CONTROL_BLOBS)
+        control.pop(v3.CARRIER_CONTROL_PATHS[-1])
+        raw = json.dumps({
+            "schema": 2,
+            "carriers": {
+                "trusted/ci": {
+                    "repository_id": 42,
+                    "base_sha": BASE,
+                    "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+                    "workflow_blob_sha": WORKFLOW,
+                    "control_blobs": control,
+                    "test_plans": {
+                        "ci/test-plans/java-pr1482.json": {
+                            "blob_sha": PLAN_BLOB,
+                            "allowed_prs": [1482],
+                        }
+                    },
+                }
+            },
+        }).encode()
+        with self.assertRaisesRegex(v3.Denied, "control blob set"):
+            v3.parse_contract(
+                raw, "trusted/ci", 1482, "ci/test-plans/java-pr1482.json"
+            )
+
     def test_contract_rejects_poisoned_nonselected_registry_rows(self):
         def carrier(repo_id):
             return {
@@ -688,7 +714,7 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_contract_rejects_review_history_fallback_field(self):
         raw = {
-            "schema": 1,
+            "schema": 2,
             "carriers": {
                 "trusted/ci": {
                     "repository_id": 42,
@@ -1047,6 +1073,17 @@ class PrivateCiV3Test(unittest.TestCase):
                 return {"sha": BASE, "tree": {"sha": ROOT_TREE}}
             if route == "repos/trusted/ci/git/trees/" + ROOT_TREE + "?recursive=1":
                 return {"sha": ROOT_TREE, "truncated": False, "tree": []}
+            for control_path, control_bytes in CONTROL_BYTES.items():
+                if route == (
+                    "repos/trusted/ci/contents/" + control_path + "?ref=" + BASE
+                ):
+                    return {
+                        "path": control_path,
+                        "type": "file",
+                        "encoding": "base64",
+                        "content": base64.b64encode(control_bytes).decode(),
+                        "sha": CONTROL_BLOBS[control_path],
+                    }
             if route == (
                 "repos/trusted/ci/contents/"
                 + carrier["workflow_path"]
@@ -1096,6 +1133,42 @@ class PrivateCiV3Test(unittest.TestCase):
                 "trusted/ci", carrier
             )
         self.assertEqual(got_plan, PLAN)
+
+        control_path = "scripts/run-oreslang-sandbox.sh"
+        changed_control = b"changed reviewed helper\n"
+        changed_control_blob = v3.git_blob_sha(changed_control)
+        def changed_control_api(route, method="GET", payload=None):
+            if route == (
+                "repos/trusted/ci/contents/" + control_path + "?ref=" + BASE
+            ):
+                return {
+                    "path": control_path,
+                    "type": "file",
+                    "encoding": "base64",
+                    "content": base64.b64encode(changed_control).decode(),
+                    "sha": changed_control_blob,
+                }
+            return base_api(route, method, payload)
+
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": carrier["repository_id"],
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                },
+            ),
+            patch.object(v3, "checked_carrier_main", return_value=BASE),
+            patch.object(v3.legacy, "gh_api", side_effect=changed_control_api),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "control file differs"):
+                v3.checked_destination("trusted/ci", carrier)
 
         def forged_workflow_api(route, method="GET", payload=None):
             item = base_api(route, method, payload)
