@@ -99,6 +99,20 @@ final class LocalStructShapeTypeTest {
     }
 
     @Test
+    void constructorSupportsStaticReservedAndQuotedMemberKeys() {
+        String source = """
+                fnc make(): T {
+                    type T = struct { stop: int, "done": int };
+                    return T{ "done": 2, stop: 1 };
+                }
+                """;
+        Ast.ReturnStmt returned = (Ast.ReturnStmt) function(source).body().getFirst();
+        Ast.ObjectExpr value = assertInstanceOf(Ast.ObjectExpr.class, returned.value());
+        assertEquals(2, value.fields().size());
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
     void constructorRejectsUnknownAndDuplicateFields() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(): T {
