@@ -20,6 +20,9 @@ import java.util.Set;
 public final class AotSpecializedIr {
     private static final int MAX_LOWERED_NODES = 16_384;
     private static final int MAX_LOWERING_DEPTH = 64;
+    private static final int MAX_SOURCE_MODULES = 256;
+    private static final int MAX_SOURCE_DECLARATIONS = 4_096;
+    private static final int MAX_INSTANCES = 256;
     private static final Set<String> SCALAR_LAYOUTS =
             Set.of("int", "bool", "float", "string");
 
@@ -107,11 +110,19 @@ public final class AotSpecializedIr {
             if (!plan.sourceUnitId().equals(MacroSourceUnitIdentity.unitId(source))) {
                 throw fail("source unit/manifest mismatch");
             }
-            if (plan.reachable().isEmpty() || closedInstances.size() != plan.reachable().size()) {
+            if (plan.reachable().isEmpty() || plan.reachable().size() > MAX_INSTANCES
+                    || closedInstances.size() != plan.reachable().size()) {
                 throw fail("empty or duplicate specialization manifest");
             }
+            if (source.modules().size() > MAX_SOURCE_MODULES) {
+                throw fail("specialized HIR module indexing budget exceeded");
+            }
+            int declarationCount = 0;
             for (Ast.ModuleDecl module : source.modules()) {
                 for (Ast.Decl declaration : module.declarations()) {
+                    if (++declarationCount > MAX_SOURCE_DECLARATIONS) {
+                        throw fail("specialized HIR declaration indexing budget exceeded");
+                    }
                     if (!(declaration instanceof Ast.FunctionDecl function)) {
                         throw fail("unclosed nonfunction declaration in specialized IR");
                     }
@@ -217,7 +228,7 @@ public final class AotSpecializedIr {
                     List<Branch> branches = new ArrayList<>();
                     for (Ast.IfBranch arm : conditional.branches()) {
                         Value condition = value(arm.condition(), module, generics, locals, depth + 1);
-                        if (!condition.type().name().equals("bool")) {
+                        if (condition == null || !condition.type().name().equals("bool")) {
                             throw fail("non-boolean static HIR branch");
                         }
                         branches.add(new Branch(condition, statements(arm.body(), module,
@@ -272,7 +283,9 @@ public final class AotSpecializedIr {
                 Value cond = value(conditional.condition(), module, generics, locals, depth + 1);
                 Value yes = value(conditional.whenTrue(), module, generics, locals, depth + 1);
                 Value no = value(conditional.whenFalse(), module, generics, locals, depth + 1);
-                if (!cond.type().name().equals("bool") || !yes.type().equals(no.type())) {
+                if (cond == null || yes == null || no == null
+                        || !cond.type().name().equals("bool")
+                        || !yes.type().equals(no.type())) {
                     throw fail("unproven conditional result layout");
                 }
                 return new Select(cond, yes, no, yes.type());
