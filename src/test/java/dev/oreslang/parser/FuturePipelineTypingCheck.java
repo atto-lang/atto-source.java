@@ -92,7 +92,7 @@ public final class FuturePipelineTypingCheck {
         // An independent program's plan must remain valid: the ledger is
         // identity-based, not a global proof cache reset.
         Ast.Program independentProgram = TypeChecker.check(Parser.parse("""
-                async fnc source(): int { return 9; }
+                async fnc source(): int { return 1; }
                 fnc keep(int value): int { return value; }
                 fnc main(): void {
                   val Future<int> pending = source() |> keep();
@@ -105,6 +105,15 @@ public final class FuturePipelineTypingCheck {
                 ((Ast.BindingStmt) independentMain.body().getFirst()).initializer();
         if (!TypeChecker.CheckedFuturePipe.lookup(independentPipe)) {
             throw new AssertionError("independent admitted Future proof missing");
+        }
+        // Programs/calls can be structurally equal without sharing identity.
+        // Invalidating one must never revoke authorization for the other.
+        if (independentProgram == fullyAdmitted
+                || !independentProgram.equals(fullyAdmitted)
+                || independentPipe == fullyAdmittedPipe
+                || !independentPipe.equals(fullyAdmittedPipe)) {
+            throw new AssertionError(
+                    "independent Future-pipe programs must be value-equal but identity-distinct");
         }
         try {
             TypeChecker.checkWithLinkedMetadataWithDiagnostics(
@@ -132,9 +141,40 @@ public final class FuturePipelineTypingCheck {
         if (!TypeChecker.CheckedFuturePipe.lookup(readmittedPipe)) {
             throw new AssertionError("successful recheck did not republish Future authority");
         }
-        // A type-only pass does not keep the earlier full-admission proof.
-        TypeChecker.checkTypesWithDiagnostics(readmitted);
+        // Also fail after collection, at the orphaned linked-alias metadata
+        // validation. Previously admitted authority must still be revoked.
+        try {
+            TypeChecker.checkWithLinkedMetadataWithDiagnostics(
+                    readmitted, java.util.Map.of(),
+                    java.util.Map.of("orphan", java.util.Map.of()),
+                    java.util.Map.of());
+            throw new AssertionError("orphaned linked metadata unexpectedly passed");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("orphaned linked class field alias metadata")) {
+                throw new AssertionError(
+                        "wrong late linked recheck rejection: " + expected.getMessage(), expected);
+            }
+        }
         if (TypeChecker.CheckedFuturePipe.lookup(readmittedPipe)) {
+            throw new AssertionError(
+                    "late linked-metadata failure retained previously published Future authority");
+        }
+        if (!TypeChecker.CheckedFuturePipe.lookup(independentPipe)) {
+            throw new AssertionError(
+                    "late linked-metadata failure revoked an independent Future proof");
+        }
+        Ast.Program recovered = TypeChecker.check(readmitted);
+        Ast.FunctionDecl recoveredMain = (Ast.FunctionDecl)
+                recovered.modules().getFirst().declarations().get(2);
+        Ast.CallExpr recoveredPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) recoveredMain.body().getFirst()).initializer();
+        if (!TypeChecker.CheckedFuturePipe.lookup(recoveredPipe)) {
+            throw new AssertionError(
+                    "late linked-metadata failure blocked successful future readmission");
+        }
+        // A type-only pass does not keep the earlier full-admission proof.
+        TypeChecker.checkTypesWithDiagnostics(recovered);
+        if (TypeChecker.CheckedFuturePipe.lookup(recoveredPipe)) {
             throw new AssertionError("type-only recheck retained executable Future authority");
         }
         if (!TypeChecker.CheckedFuturePipe.lookup(independentPipe)) {
