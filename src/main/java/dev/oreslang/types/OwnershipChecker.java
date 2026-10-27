@@ -1237,6 +1237,9 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr root
                     && root.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE)) {
+                if (member.member().equals("init")) {
+                    throw error("pkg::init is a lifecycle hook and cannot be a value");
+                }
                 Map<Integer, Ast.FunctionDecl> family =
                         functions.get(dev.oreslang.parser.Parser.ROOT_MODULE + "." + member.member());
                 if (family == null || family.size() != 1) {
@@ -1676,10 +1679,17 @@ public final class OwnershipChecker {
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
             boolean pkgRoot = namespace.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE);
             String moduleName = pkgRoot ? dev.oreslang.parser.Parser.ROOT_MODULE : namespace.name();
+            if (pkgRoot && qualified.member().equals("init")) {
+                throw error("pkg::init is a lifecycle hook and cannot be called directly");
+            }
             Ast.FunctionDecl fn = findFunction(
                     moduleName + "." + qualified.member(),
                     syntacticCallArgumentTypes(call.arguments(), scope).size());
             if (fn != null) {
+                if (pkgRoot && fn.actorKind() != Ast.ActorKind.NONE) {
+                    throw error("pkg::" + qualified.member()
+                            + " cannot invoke an actor entry point");
+                }
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
