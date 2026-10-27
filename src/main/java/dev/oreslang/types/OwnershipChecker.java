@@ -337,7 +337,13 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
+            boolean previousAsyncGenerator = currentAsyncGenerator;
+            currentAsyncGenerator = method.generator() && (method.async() || method.suspends());
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentAsyncGenerator = previousAsyncGenerator;
+            }
             scope.close();
         }
     }
