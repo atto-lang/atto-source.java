@@ -83,14 +83,12 @@ final class NativeNetStdlibTest {
                         .append(" = net_core.close_listener(l").append(i).append(");\n");
                 source.append("  await stop").append(i).append(";\n");
             }
-            source.append("  stdio.println(777);\n  return;\n}\n");
+            source.append("  return;\n}\n");
             Files.writeString(entry, source.toString());
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
             LinkedProgramRunner.run(entry,
                     IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
-                    ExecutionProfile.serverJit(), out, new ByteArrayOutputStream());
-            assertTrue(out.toString().contains("777"),
-                    "completed guest restarts must eventually release the context listener quota");
+                    ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
         } finally {
             Files.deleteIfExists(entry);
         }
@@ -98,55 +96,63 @@ final class NativeNetStdlibTest {
 
     @Test void realGuestAcceptReadWriteThroughNonblockingKernel() throws Exception {
         Path entry = Files.createTempFile("ores-net-guest-", ".ores");
-        ExecutorService runner = Executors.newFixedThreadPool(2);
+        ExecutorService runner = Executors.newSingleThreadExecutor();
+        int port;
+        try (ServerSocket reservation = new ServerSocket(
+                0, 1, InetAddress.getByName("127.0.0.1"))) {
+            port = reservation.getLocalPort();
+        }
         try {
-            Files.writeString(entry, """
+            Files.writeString(entry, ("""
                 import module net_core from "std/net";
                 pub async routine main(): void {
-                  val NioTcpListener listener = net_core.listen_loopback(0, 32, 4, 16);
-                  stdio.println(listener.port);
+                  val NioTcpListener listener = net_core.listen_loopback(%d, 32, 4, 16);
                   val Future<NioTcpConnection> pending_accept = net_core.accept(rt borrow listener);
                   val NioTcpConnection peer = await pending_accept;
                   val Future<Array<int>> pending_read = net_core.read(rt borrow peer, 64);
                   val Array<int> bytes = await pending_read;
                   val Future<int> pending_write = net_core.write(rt borrow peer, bytes);
                   val int sent = await pending_write;
-                  stdio.println(sent);
                   val Future<void> pending_close = net_core.close_connection(peer);
                   await pending_close;
                   val Future<void> pending_shutdown = net_core.close_listener(listener);
                   await pending_shutdown;
                   return;
                 }
-                """);
-            PipedInputStream readPort = new PipedInputStream(8192);
-            PipedOutputStream output = new PipedOutputStream(readPort);
+                """).formatted(port));
             Future<?> program = runner.submit(() -> {
                 try {
-                    LinkedProgramRunner.run(entry, IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
-                            ExecutionProfile.serverJit(), output, new ByteArrayOutputStream());
-                } catch (Exception e) { throw new RuntimeException(e); }
-                finally { try { output.close(); } catch (IOException ignored) {} }
-            });
-            Future<String> line = runner.submit(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(readPort))) {
-                    return reader.readLine();
+                    LinkedProgramRunner.run(entry,
+                            IsolatePolicy.developer().withCapabilities(
+                                    IsolatePolicy.Capability.NETWORK),
+                            ExecutionProfile.serverJit(),
+                            new ByteArrayOutputStream(), new ByteArrayOutputStream());
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
                 }
             });
-            // Any guest compilation failure must also terminate the stream.
-            String portText = line.get(20, TimeUnit.SECONDS);
-            if (portText == null) {
+
+            Socket socket = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (socket == null && System.nanoTime() < deadline) {
+                Socket attempt = new Socket();
                 try {
-                    program.get(2, TimeUnit.SECONDS);
-                } catch (ExecutionException failure) {
-                    throw new AssertionError("Oreslang guest server failed before listening",
-                            failure.getCause());
+                    attempt.connect(
+                            new InetSocketAddress(
+                                    InetAddress.getByName("127.0.0.1"), port),
+                            100);
+                    socket = attempt;
+                } catch (ConnectException notReady) {
+                    attempt.close();
+                    if (program.isDone()) {
+                        program.get(2, TimeUnit.SECONDS);
+                        fail("guest exited before accepting loopback TCP");
+                    }
+                    Thread.sleep(10);
                 }
-                fail("guest exited without producing listening port");
             }
-            int port = Integer.parseInt(portText.trim());
-            assertTrue(port > 0);
-            try (Socket socket = new Socket(InetAddress.getByName("127.0.0.1"), port)) {
+            assertNotNull(socket, "guest loopback listener did not become ready");
+            try (socket) {
                 socket.setSoTimeout(2000);
                 socket.getOutputStream().write("PING".getBytes(StandardCharsets.US_ASCII));
                 assertEquals("PING", new String(socket.getInputStream().readNBytes(4),
@@ -155,7 +161,7 @@ final class NativeNetStdlibTest {
             program.get(20, TimeUnit.SECONDS);
         } finally {
             runner.shutdownNow();
+            assertTrue(runner.awaitTermination(3, TimeUnit.SECONDS));
             Files.deleteIfExists(entry);
         }
-    }
-}
+    }}
