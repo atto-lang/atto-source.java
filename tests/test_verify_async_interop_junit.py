@@ -76,6 +76,41 @@ class JUnitProofTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid tests"):
             verify.verify(self.root)
 
+    def test_extra_suite_denied(self):
+        (self.root / "TEST-other.SmokeTest.xml").write_text(
+            '<testsuite name="other.SmokeTest" tests="0" errors="0" failures="0" skipped="0"/>',
+            encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unexpected JUnit"):
+            verify.verify(self.root)
+
+    def test_report_doctype_denied(self):
+        p = self.report("TaskFutureAdaptersTest")
+        raw = p.read_bytes()
+        p.write_bytes(b'<!DOCTYPE testsuite [<!ENTITY x "expanded">]>' + raw)
+        with self.assertRaisesRegex(ValueError, "DTD forbidden"):
+            verify.verify(self.root)
+
+    def test_oversized_report_denied(self):
+        p = self.report("TaskFutureAdaptersTest")
+        with p.open("ab") as f:
+            f.write(b" " * (verify.MAX_REPORT_BYTES + 1))
+        with self.assertRaisesRegex(ValueError, "oversized JUnit"):
+            verify.verify(self.root)
+
+    def test_hidden_skipped_case_denied(self):
+        p = self.report("OresFutureObserverTest")
+        tree = ET.parse(p)
+        ET.SubElement(tree.getroot().find("testcase"), "skipped")
+        tree.write(p)
+        with self.assertRaisesRegex(ValueError, "missing, misattributed"):
+            verify.verify(self.root)
+
+    def test_unexpected_report_even_with_correct_total_denied(self):
+        p = self.root / "TEST-arbitrary.Injected.xml"
+        p.write_text('<testsuite name="arbitrary.Injected" tests="0" failures="0" errors="0" skipped="0"/>', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unexpected JUnit"):
+            verify.verify(self.root)
+
     def test_invalid_xml_denied(self):
         self.report("TaskFutureAdaptersTest").write_text("<testsuite", encoding="utf-8")
         with self.assertRaises(ET.ParseError):
