@@ -30,7 +30,36 @@ public final class TreeShaker {
     public static Result shake(Ast.Program checkedProgram, BuildOptions options) {
         Objects.requireNonNull(checkedProgram, "checkedProgram");
         Objects.requireNonNull(options, "options");
-        return new Engine(checkedProgram, options).run();
+        // A caller bypassing type checking cannot use dead-code removal to
+        // erase compile-time declarations or unexpanded macro invocations.
+        requireMacroFreeExecutableProgram(checkedProgram);
+        Result result = new Engine(checkedProgram, options).run();
+        requireMacroFreeExecutableProgram(result.program());
+        return result;
+    }
+
+    /**
+     * Phase-one AOT closure: macro and comptime syntax must be fully erased
+     * before executable optimization. This is NOT a finite-generic-closure,
+     * native code generation or WCET certificate.
+     */
+    private static void requireMacroFreeExecutableProgram(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.MacroDecl
+                        || declaration instanceof Ast.MacroInvocationDecl) {
+                    throw new IllegalArgumentException(
+                            "AOT optimizer requires erased compile-time macro declarations; "
+                                    + "runtime/dead-code fallback is forbidden");
+                }
+            }
+        }
+        MacroExpansionPlanner.Plan pending = MacroExpansionPlanner.plan(program);
+        if (pending.hasInvocations()) {
+            throw new IllegalArgumentException(
+                    "AOT optimizer requires macro-free executable expressions; "
+                            + "runtime/dead-code fallback is forbidden");
+        }
     }
 
     public record Result(
