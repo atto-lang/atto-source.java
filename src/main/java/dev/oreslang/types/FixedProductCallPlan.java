@@ -161,6 +161,13 @@ public record FixedProductCallPlan(
                             "product call provenance reorders source call items");
                 }
                 if (slot.callItemIndex() == previousCallItemIndex) {
+                    // A single source spread cannot be tuple and record
+                    // projections simultaneously, even in legacy plan views.
+                    if ((slot.label() == null)
+                            != (sourceOrder.get(i - 1).label() == null)) {
+                        throw new IllegalArgumentException(
+                                "product call item mixes tuple and record projections");
+                    }
                     if (slot.projectionIndex() < 0
                             || previousProjectionIndex < 0
                             || slot.projectionIndex() != previousProjectionIndex + 1) {
