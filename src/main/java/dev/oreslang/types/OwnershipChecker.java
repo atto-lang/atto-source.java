@@ -1369,6 +1369,30 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            Ast.InvertedIndexTypeEvidence invertedEvidence =
+                    Ast.CheckedInvertedIndexTypes.lookup(member);
+            if (invertedEvidence != null) {
+                if (invertedEvidence.access() != Ast.InvertedIndexAccess.READ) {
+                    throw error(
+                            "write-only inverted bracket-field site cannot be evaluated as a read");
+                }
+                Ast.IndexExpr index = invertedEvidence.index();
+                if (!(index.receiver() instanceof Ast.NameExpr ownerName)) {
+                    throw error(
+                            "inverted bracket-field receiver lost its direct named ownership root");
+                }
+                VarState owner = requireState(scope, ownerName.name());
+                requireUsable(owner, ownerName.name(), false);
+                if (!owner.type.name().equals("InvertedArray")
+                        || owner.type.arguments().size() != 1) {
+                    throw error(
+                            "inverted bracket-field ownership root is not InvertedArray<T>");
+                }
+                checkExpr(index.index(), scope, false);
+                stageInvertedIndex(member, Ast.InvertedIndexAccess.READ);
+                Ast.TypeRef fieldType = invertedEvidence.fieldType();
+                return new ValueInfo(fieldType, kindOfType(fieldType), null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -2740,6 +2764,25 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            Ast.InvertedIndexTypeEvidence invertedEvidence =
+                    Ast.CheckedInvertedIndexTypes.lookup(member);
+            if (invertedEvidence != null) {
+                if (invertedEvidence.access() != Ast.InvertedIndexAccess.WRITE) {
+                    throw error(
+                            "read-only inverted bracket-field site cannot be used as assignment target");
+                }
+                Ast.IndexExpr index = invertedEvidence.index();
+                if (!(index.receiver() instanceof Ast.NameExpr ownerName)) {
+                    throw error(
+                            "inverted bracket-field write requires a direct named ownership root");
+                }
+                ensureMutableReceiver(
+                        index.receiver(), scope,
+                        "inverted field '" + invertedEvidence.fieldName() + "'");
+                checkExpr(index.index(), scope, false);
+                stageInvertedIndex(member, Ast.InvertedIndexAccess.WRITE);
+                return;
+            }
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
