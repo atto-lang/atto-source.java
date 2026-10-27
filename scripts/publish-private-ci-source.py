@@ -435,12 +435,14 @@ def _require_strict_source_protection(protection):
         checks, "origin main", SOURCE_POLICY_CHECK
     )
     bypasses = reviews.get("bypass_pull_request_allowances")
-    if bypasses is not None:
-        if (not isinstance(bypasses, dict)
-                or any(not isinstance(bypasses.get(category, []), list)
-                       or bypasses.get(category)
-                       for category in ("users", "teams", "apps"))):
-            raise Denied("origin main has PR review bypass allowances")
+    if (not isinstance(bypasses, dict)
+            or set(bypasses) != {"users", "teams", "apps"}
+            or any(not isinstance(bypasses.get(category), list)
+                   or bypasses.get(category)
+                   for category in ("users", "teams", "apps"))):
+        raise Denied(
+            "origin main review bypass policy is missing, malformed, or nonempty"
+        )
     return (
         reviews["require_code_owner_reviews"],
         reviews["dismiss_stale_reviews"],
