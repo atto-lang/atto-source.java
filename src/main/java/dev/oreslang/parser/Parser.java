@@ -2191,34 +2191,38 @@ public final class Parser {
                         throw error(peek(),
                                 "local type declarations must precede executable statements in fnc/routine");
                     }
-                    advance();
-                    Ast.TypeAliasDecl alias = parseTypeAlias(Ast.Visibility.PRIVATE);
-                    if (!alias.genericParameters().isEmpty()) {
-                        throw error(previous(),
+                    advance(); // 'type': a compile-time declaration, not a const binding
+                    String aliasName = consume(IDENT, "expected local record alias name").lexeme();
+                    if (check(LT)) {
+                        throw error(peek(),
                                 "generic local record aliases require specialized signature lowering");
                     }
-                    if (!alias.target().isRecordType()) {
-                        throw error(previous(),
-                                "local type declarations currently require a record { ... } type");
+                    consume(EQUAL, "expected '=' after local record alias name");
+                    consumeContextualIdentifier("record",
+                            "local type declarations currently require a record { ... } type");
+                    if (!check(LBRACE)) {
+                        throw error(peek(), "local record alias requires a closed record { ... } type");
                     }
-                    if (specs.stream().anyMatch(spec -> spec.name().equals(alias.name()))
+                    Ast.TypeRef aliasTarget = parseTypeRef();
+                    consumeStatementTerminator("expected ';' after local record alias");
+                    if (specs.stream().anyMatch(spec -> spec.name().equals(aliasName))
                             || java.util.Set.of("int", "string", "String", "float", "bool",
                                     "any", "unknown", "void", "self", "Object", "Error",
                                     "Symbol", "Type", "Option", "Result", "Array",
-                                    "List", "Map", "Ref", "WeakRef", "Future").contains(alias.name())) {
+                                    "List", "Map", "Ref", "WeakRef", "Future").contains(aliasName)) {
                         throw error(previous(), "local record alias conflicts with reserved or generic type '"
-                                + alias.name() + "'");
+                                + aliasName + "'");
                     }
-                    if (callableRecordAliases.containsKey(alias.name())) {
+                    if (callableRecordAliases.containsKey(aliasName)) {
                         throw error(previous(),
-                                "duplicate local record type alias '" + alias.name() + "'");
+                                "duplicate local record type alias '" + aliasName + "'");
                     }
-                    if (containsNamedType(alias.target(), alias.name())) {
+                    if (containsNamedType(aliasTarget, aliasName)) {
                         throw error(previous(),
-                                "recursive local record alias '" + alias.name()
+                                "recursive local record alias '" + aliasName
                                         + "' needs a separately checked recursive-type contract");
                     }
-                    callableRecordAliases.put(alias.name(), alias.target());
+                    callableRecordAliases.put(aliasName, aliasTarget);
                 } else {
                     inTypePrologue = false;
                     body.add(parseStatement());
