@@ -140,6 +140,71 @@ public record CheckedCallPlan(
         }
     }
 
+    /**
+     * One semantic-validation attempt, including nested linked/type-only
+     * passes. A failing pass revokes only the call sites it visited, never
+     * the plans of independent ASTs or concurrently checked programs.
+     */
+    public static final class ValidationScope implements AutoCloseable {
+        private final ValidationScope parent;
+        private final java.util.Set<Ast.Expr> visited =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        private boolean committed;
+        private boolean closed;
+
+        private ValidationScope(ValidationScope parent) {
+            this.parent = parent;
+        }
+
+        public void commit() {
+            if (closed || ACTIVE_VALIDATION.get() != this) {
+                throw new IllegalStateException("checked-call validation scope is not active");
+            }
+            committed = true;
+        }
+
+        @Override public void close() {
+            if (closed || ACTIVE_VALIDATION.get() != this) {
+                throw new IllegalStateException("checked-call validation scopes must close in order");
+            }
+            closed = true;
+            ACTIVE_VALIDATION.set(parent);
+            if (!committed) {
+                for (Ast.Expr site : visited) invalidate(site);
+            }
+        }
+    }
+
+    private static final ThreadLocal<ValidationScope> ACTIVE_VALIDATION =
+            new ThreadLocal<>();
+
+    public static ValidationScope beginValidation() {
+        ValidationScope scope = new ValidationScope(ACTIVE_VALIDATION.get());
+        ACTIVE_VALIDATION.set(scope);
+        return scope;
+    }
+
+    /** Rechecking this exact AST must never use its older checked proof. */
+    public static synchronized void beginRecheck(Ast.Expr callSite) {
+        if (!(callSite instanceof Ast.CallExpr)
+                && !(callSite instanceof Ast.NewExpr)) {
+            throw new IllegalArgumentException(
+                    "checked call recheck requires CallExpr or NewExpr");
+        }
+        for (ValidationScope scope = ACTIVE_VALIDATION.get();
+                scope != null;
+                scope = scope.parent) {
+            scope.visited.add(callSite);
+        }
+        invalidate(callSite);
+    }
+
+    public static synchronized void invalidate(Ast.Expr callSite) {
+        Objects.requireNonNull(callSite, "checked call site");
+        expungeCheckedCallSites();
+        CHECKED_CALL_SITES.remove(new IdentityKey(callSite, null));
+    }
+
     public static synchronized void record(
             Ast.Expr callSite,
             CheckedCallPlan plan) {
