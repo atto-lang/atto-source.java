@@ -183,6 +183,21 @@ final class InvertedNestedLayoutTest {
     }
 
     @Test
+    void oversizedRecordShapesAndNestedRecordCodecsFailClosed() {
+        var tooMany = new java.util.LinkedHashMap<String, Ast.TypeRef>();
+        for (int i = 0; i <= InvertedRecordLayout.MAX_RECORD_MEMBERS; i++) {
+            tooMany.put("field_" + i, Ast.TypeRef.simple("i64"));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedRecordLayout.fromType(Ast.TypeRef.recordType(tooMany)));
+        var twoLevels = Ast.TypeRef.recordType(Map.of(
+                "inner", Ast.TypeRef.recordType(Map.of(
+                        "x", Ast.TypeRef.simple("i64")))));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedRecordLayout.fromType(twoLevels));
+    }
+
+    @Test
     void noImplicitInvertedStructOrRecordDeclarationDesugaring() {
         for (String source : new String[]{
                 "define inverted struct Packet as x: i64; end",
