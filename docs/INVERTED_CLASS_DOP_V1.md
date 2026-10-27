@@ -171,6 +171,24 @@ ordinary `Array<T>`, dynamic `Any`, `Symbol.index` and user-macro fallback;
 unsupported nested, multi-index and slice syntax. All must reject rather
 than silently use text-based generated accessors.
 
+### Conservative index-expression staging limits
+
+The independent `InvertedIndexPlan` syntax candidate accepts direct named
+receivers and candidate integer-index subexpressions only. At this stage,
+integer `i32/i64` literals and names are allowed, together with a restricted
+`+/-` unary and integer-arithmetic binary operator subset. Boolean, string,
+floating-point, comparison/logical, call, await, dynamic, or member-derived
+index expressions are rejected rather than assuming they are integral or
+non-suspending. Names and arithmetic may still be overloaded or ill-typed:
+**this filter is not a type/effect/ownership admission proof**.
+
+Traversal must be iterative, bounded at **1,024 nested levels** and
+**4,096 logical visited AST nodes**, including repeated visits of a shared
+subgraph. Oversized, malformed or synthesised index sites fail with controlled
+diagnostics rather than risking compiler stack exhaustion or unbounded staging
+work. JUnit fixtures cover both deep chains and repeatedly shared binary
+subtrees; they remain unverified until a real Java test runner executes.
+
 ### Atomic compound indexed operations
 
 A generated `rows[i].field += expression` must never be implemented as
