@@ -73,7 +73,17 @@ public final class TaskPipeline {
         try {
             graphAdmission.arm(owner, child);
         } catch (RuntimeException | Error admissionFailure) {
-            if (ownedStage.compareAndSet(child, null)) child.cancel(false);
+            if (ownedStage.compareAndSet(child, null)) {
+                try {
+                    child.cancel(false);
+                } catch (RuntimeException | Error revocationFailure) {
+                    // Never replace the original graph-admission failure
+                    // with a failure from best-effort child cancellation.
+                    if (revocationFailure != admissionFailure) {
+                        admissionFailure.addSuppressed(revocationFailure);
+                    }
+                }
+            }
             throw admissionFailure;
         }
     }
