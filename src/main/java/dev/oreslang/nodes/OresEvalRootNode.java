@@ -5056,7 +5056,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
-            if (isActorIoOutWriteCall(call)) {
+            if (ActorRuntime.inActorExecution() && isActorIoOutWriteCall(call)) {
                 evalSuspendableArguments(
                         task,
                         call.arguments(),
@@ -7583,7 +7583,7 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
-                if (isActorIoOutWriteCall(call)) {
+                if (ActorRuntime.inActorExecution() && isActorIoOutWriteCall(call)) {
                     return actorIoOutWrite(evaluateArguments(call.arguments(), env));
                 }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
