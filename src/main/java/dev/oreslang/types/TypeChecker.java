@@ -5689,10 +5689,10 @@ public final class TypeChecker {
         if (named.name().equals("$ActorIO")) {
             return switch (name) {
                 case "out" -> new Named("$ActorIOOut", List.of());
-                case "in" -> new Named("$ActorIOIn", List.of());
-                case "err" -> new Named("$ActorIOErr", List.of());
-                case "events" -> new Named("$ActorIOEvents", List.of());
-                case "meta" -> new Named("$ActorIOMeta", List.of());
+                case "in", "err", "events", "meta" ->
+                        throw new IllegalArgumentException(
+                                "actor-local io." + name
+                                        + " channel is reserved but not implemented on this backend yet");
                 default -> throw new IllegalArgumentException(
                         "unknown actor io member '" + name + "'");
             };
