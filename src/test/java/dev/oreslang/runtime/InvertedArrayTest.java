@@ -17,6 +17,57 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class InvertedArrayTest {
     @Test
+    void boundColumnCompoundUpdateIsAtomicAndDoesNotRebindByGuestName()
+            throws InterruptedException {
+        var schema = InvertedArray.Schema.fromClass(declaration("""
+                define inverted class OddName as
+                    __ores_internal_row: i32;
+                end
+                """));
+        try (var array = new InvertedArray(schema, 0)) {
+            var row = array.pushValues(0);
+            var binding = schema.bindField("__ores_internal_row");
+            var accessor = array.bindField(binding);
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Runnable increment = () -> {
+                try {
+                    for (int i = 0; i < 1000; i++) {
+                        accessor.transformAt(0, old -> (Integer) old + 1);
+                    }
+                } catch (Throwable t) {
+                    failure.compareAndSet(null, t);
+                }
+            };
+            Thread first = new Thread(increment);
+            Thread second = new Thread(increment);
+            first.start();
+            second.start();
+            first.join();
+            second.join();
+            assertNull(failure.get());
+            assertEquals(2000, accessor.getAt(0));
+            assertEquals(2000, accessor.get(row));
+
+            assertThrows(IllegalStateException.class,
+                    () -> accessor.transformAt(0, old -> {
+                        try { accessor.getAt(0); } catch (IllegalStateException ignored) { }
+                        return 9999; // swallowed nested error must taint transaction
+                    }));
+            assertEquals(2000, accessor.getAt(0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> accessor.transformAt(Long.MAX_VALUE, old -> 0));
+            assertEquals(2000, accessor.getAt(0));
+
+            try (var read = array.borrowRead("__ores_internal_row")) {
+                assertThrows(IllegalStateException.class,
+                        () -> accessor.transformAt(0, old -> 1));
+            }
+            accessor.transformAt(0, old -> (Integer) old + 1);
+            assertEquals(2001, accessor.get(row));
+        }
+    }
+
+    @Test
     void generatedTransposeNamespaceDoesNotCollideWithGuestMemberNames() {
         var decl = declaration("""
                 define inverted class UnusualNames as
