@@ -535,6 +535,58 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void asyncCloseReceiptPreservesCleanupFailureAfterPhysicalExit() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            try {
+                emitter.emit(1);
+            } finally {
+                throw new IllegalStateException("async generator cleanup failed");
+            }
+        });
+        try {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+
+            OresFuture<Void> closing = generator.closeAsync();
+            java.util.concurrent.ExecutionException failed = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> closing.get(2, TimeUnit.SECONDS));
+            IllegalStateException cleanup =
+                    assertInstanceOf(IllegalStateException.class, failed.getCause());
+            assertEquals("async generator cleanup failed", cleanup.getMessage());
+            assertSame(closing, generator.closeAsync(),
+                    "repeated async close must preserve one cleanup receipt");
+            assertFalse(closing.cancel(true),
+                    "settled cleanup failure cannot be replaced by cancellation");
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void asyncCloseBeforeFirstPullNeverStartsProducer() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var ran = new java.util.concurrent.atomic.AtomicBoolean();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            ran.set(true);
+            emitter.emit(1);
+        });
+        try {
+            OresFuture<Void> closing = generator.closeAsync();
+            assertNull(closing.get(2, TimeUnit.SECONDS));
+            assertFalse(ran.get(), "closing an unstarted generator must not start guest code");
+            assertSame(closing, generator.closeAsync());
+            assertFalse(closing.cancel(true));
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+            assertFalse(ran.get(), "terminal pulls after close must not start guest code");
+        } finally {
+            runtime.close();
+        }
+    }
+
+
+    @Test
     void asyncClosePreservesCleanupFailureAfterPhysicalExit() throws Exception {
         AsyncRuntime runtime = new AsyncRuntime();
         var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
