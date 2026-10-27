@@ -63,7 +63,7 @@ final class ScalarSourceEffectFactsV1Test {
         assertThrows(IllegalArgumentException.class, () -> analyze("""
                 fnc unbound(): int { return unknown_name; }
                 """));
-        assertThrows(IllegalArgumentException.class, () -> analyze("".repeat(1_048_577)));
+        assertThrows(IllegalArgumentException.class, () -> analyze("x".repeat(1_048_577)));
     }
 
     @Test
