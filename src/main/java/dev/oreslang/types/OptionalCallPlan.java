@@ -101,6 +101,13 @@ public record OptionalCallPlan(
                             "optional call provenance reorders source call items");
                 }
                 if (slot.callItemIndex() == previousCallItemIndex) {
+                    // Mixed projection kinds for one source item cannot be
+                    // produced by the parser; reject public-plan forgeries.
+                    if ((slot.label() == null)
+                            != (sourceOrder.get(i - 1).label() == null)) {
+                        throw new IllegalArgumentException(
+                                "optional call item mixes tuple and record projections");
+                    }
                     if (slot.projectionIndex() < 0
                             || previousProjectionIndex < 0
                             || slot.projectionIndex() != previousProjectionIndex + 1) {
