@@ -486,7 +486,7 @@ final class PinnedHttpTransport implements AutoCloseable {
                 null);
     }
 
-    private PinnedHttpTransport(
+    PinnedHttpTransport(
             OutboundEgressPolicy.Purpose purpose,
             OutboundEgressPolicy.Policy policy,
             OutboundEgressPolicy.Resolver resolver,
