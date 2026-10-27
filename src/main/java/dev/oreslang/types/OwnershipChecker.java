@@ -948,6 +948,13 @@ public final class OwnershipChecker {
                     || state.immutableBorrows > 0 || state.mutableBorrowed))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
         }
+        if (scope.visibleStates().stream().anyMatch(state ->
+                !state.moved && state.type.name().equals("InvertedArray"))) {
+            throw error(
+                    "cannot " + operation
+                            + " while InvertedArray storage is live in v1; "
+                            + "leave or consume the lexical owner before suspension");
+        }
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
