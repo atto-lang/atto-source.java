@@ -234,12 +234,28 @@ public final class OresProjectConfig {
 
         String unix = importPath.replace('\\', '/');
         Path raw = Path.of(unix);
-        if (raw.isAbsolute()) return existingSource(raw);
+        if (raw.isAbsolute()) {
+            return existingExplicitSource(raw, importPath, null, false);
+        }
 
         if (unix.startsWith(".")) {
-            Path parent = importer.toAbsolutePath().normalize().getParent();
+            Path physicalImporter = canonicalRegularSource(
+                    importer.toAbsolutePath().normalize(),
+                    "importer for relative import '" + importPath + "'");
+            Path parent = physicalImporter.getParent();
             if (parent == null) parent = Path.of("").toAbsolutePath().normalize();
-            return existingSource(parent.resolve(raw).normalize());
+
+            Path physicalBoundary = null;
+            if (manifestPath != null) {
+                physicalBoundary = canonicalDirectory(
+                        projectRoot,
+                        "project root for relative import '" + importPath + "'");
+            }
+            return existingExplicitSource(
+                    parent.resolve(raw).normalize(),
+                    importPath,
+                    physicalBoundary,
+                    manifestPath != null);
         }
 
         for (Path root : searchRoots()) {
@@ -253,6 +269,140 @@ public final class OresProjectConfig {
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
+    }
+
+    /**
+     * Explicit filesystem imports never fall through to ambient search roots.
+     * They resolve to canonical physical source identity. Relative imports in
+     * a manifest-backed project are additionally confined to that project's
+     * physical root and cannot cross a nested package marker.
+     */
+    private Optional<Path> existingExplicitSource(
+            Path candidate,
+            String importPath,
+            Path physicalBoundary,
+            boolean rejectNestedPackages) {
+        Path normalized = candidate.toAbsolutePath().normalize();
+        try {
+            Optional<Path> exact = canonicalExplicitCandidate(
+                    normalized, importPath, physicalBoundary, rejectNestedPackages);
+            if (exact.isPresent()) return exact;
+
+            String text = normalized.toString().toLowerCase();
+            if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
+
+            Optional<Path> ores = canonicalExplicitCandidate(
+                    Path.of(normalized.toString() + ".ores"),
+                    importPath,
+                    physicalBoundary,
+                    rejectNestedPackages);
+            if (ores.isPresent()) return ores;
+
+            return canonicalExplicitCandidate(
+                    Path.of(normalized.toString() + ".java"),
+                    importPath,
+                    physicalBoundary,
+                    rejectNestedPackages);
+        } catch (IOException failure) {
+            throw new IllegalArgumentException(
+                    "cannot verify physical source path for import '" + importPath + "'", failure);
+        }
+    }
+
+    private Optional<Path> canonicalExplicitCandidate(
+            Path candidate,
+            String importPath,
+            Path physicalBoundary,
+            boolean rejectNestedPackages) throws IOException {
+        BasicFileAttributes attributes;
+        try {
+            attributes = Files.readAttributes(
+                    candidate, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        } catch (NoSuchFileException missing) {
+            return Optional.empty();
+        }
+
+        if (attributes.isDirectory()) return Optional.empty();
+        if (!attributes.isRegularFile() && !attributes.isSymbolicLink()) {
+            throw new IllegalArgumentException(
+                    "import '" + importPath + "' resolves through a non-regular source node '"
+                            + candidate + "'");
+        }
+
+        Path physicalSource = candidate.toRealPath();
+        if (!Files.isRegularFile(physicalSource, LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.isDirectory(physicalSource, LinkOption.NOFOLLOW_LINKS)) {
+                return Optional.empty();
+            }
+            throw new IllegalArgumentException(
+                    "import '" + importPath + "' does not resolve to a regular source file");
+        }
+
+        if (physicalBoundary != null) {
+            requireExplicitContainment(physicalBoundary, physicalSource, importPath);
+            if (rejectNestedPackages) {
+                rejectNestedPackageBoundary(physicalBoundary, physicalSource, importPath);
+            }
+        }
+        return Optional.of(physicalSource);
+    }
+
+    private static Path canonicalRegularSource(Path source, String label) {
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(
+                    source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isRegularFile() && !attributes.isSymbolicLink()) {
+                throw new IllegalArgumentException(label + " is not a regular source file: " + source);
+            }
+            Path physical = source.toRealPath();
+            if (!Files.isRegularFile(physical, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(label + " is not a regular source file: " + source);
+            }
+            return physical;
+        } catch (NoSuchFileException missing) {
+            throw new IllegalArgumentException(label + " does not exist: " + source, missing);
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("cannot verify " + label + ": " + source, failure);
+        }
+    }
+
+    private static Path canonicalDirectory(Path directory, String label) {
+        try {
+            Path physical = directory.toRealPath();
+            if (!Files.isDirectory(physical, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(label + " is not a directory: " + directory);
+            }
+            return physical;
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("cannot verify " + label + ": " + directory, failure);
+        }
+    }
+
+    private static void requireExplicitContainment(
+            Path physicalRoot,
+            Path physicalSource,
+            String importPath) {
+        if (!physicalSource.startsWith(physicalRoot)) {
+            throw new IllegalArgumentException(
+                    "relative import '" + importPath
+                            + "' escapes physical project root '" + physicalRoot + "'");
+        }
+    }
+
+    private static void rejectNestedPackageBoundary(
+            Path physicalRoot,
+            Path physicalSource,
+            String importPath) {
+        for (Path cursor = physicalSource.getParent();
+                cursor != null && !cursor.equals(physicalRoot);
+                cursor = cursor.getParent()) {
+            Path marker = cursor.resolve(MANIFEST_NAME);
+            if (Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "relative import '" + importPath
+                                + "' crosses nested package boundary at '" + cursor + "'");
+            }
+        }
     }
 
     /**
