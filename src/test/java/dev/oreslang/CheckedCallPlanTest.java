@@ -165,6 +165,81 @@ final class CheckedCallPlanTest {
     }
 
     @Test
+    void checkedPlanMetadataDoesNotCrossBindingShapeChanges() {
+        Ast.CallExpr namedSource = new Ast.CallExpr(
+                new Ast.NameExpr("f"),
+                List.of(
+                        new Ast.NamedArgExpr("a", new Ast.LiteralExpr(1L)),
+                        new Ast.NamedArgExpr("b", new Ast.LiteralExpr(2L))));
+        CheckedCallPlan namedPlan = CheckedCallPlan.required(
+                List.of("a", "b"),
+                List.of(named("a", 0), named("b", 1)));
+        CheckedCallPlan.record(namedSource, namedPlan);
+
+        Ast.CallExpr relabeled = namedSource.rewrite(
+                namedSource.callee(),
+                namedSource.typeArguments(),
+                namedSource.typeArgumentsPresent(),
+                List.of(
+                        new Ast.NamedArgExpr("b", new Ast.LiteralExpr(1L)),
+                        new Ast.NamedArgExpr("a", new Ast.LiteralExpr(2L))));
+        Ast.copyCheckedMetadata(namedSource, relabeled);
+        assertNull(
+                CheckedCallPlan.lookup(relabeled),
+                "changing named labels must require a fresh checked plan");
+
+        Ast.CallExpr positional = namedSource.rewrite(
+                namedSource.callee(),
+                namedSource.typeArguments(),
+                namedSource.typeArgumentsPresent(),
+                List.of(
+                        new Ast.LiteralExpr(1L),
+                        new Ast.LiteralExpr(2L)));
+        Ast.copyCheckedMetadata(namedSource, positional);
+        assertNull(
+                CheckedCallPlan.lookup(positional),
+                "named-to-positional rewrites must not inherit call plans");
+
+        Ast.CallExpr spreadSource = new Ast.CallExpr(
+                new Ast.NameExpr("f"),
+                List.of(new Ast.SpreadExpr(
+                        new Ast.TupleExpr(List.of(
+                                new Ast.LiteralExpr(1L),
+                                new Ast.LiteralExpr(2L))))));
+        CheckedCallPlan spreadPlan = CheckedCallPlan.required(
+                List.of("a", "b"),
+                List.of(
+                        positionalProjection(0, 0),
+                        positionalProjection(0, 1)));
+        CheckedCallPlan.record(spreadSource, spreadPlan);
+
+        Ast.CallExpr unwrapped = spreadSource.rewrite(
+                spreadSource.callee(),
+                spreadSource.typeArguments(),
+                spreadSource.typeArgumentsPresent(),
+                List.of(new Ast.TupleExpr(List.of(
+                        new Ast.LiteralExpr(1L),
+                        new Ast.LiteralExpr(2L)))));
+        Ast.copyCheckedMetadata(spreadSource, unwrapped);
+        assertNull(
+                CheckedCallPlan.lookup(unwrapped),
+                "spread-to-scalar rewrites must require a fresh checked plan");
+
+        Ast.CallExpr valueOnlyRewrite = namedSource.rewrite(
+                namedSource.callee(),
+                namedSource.typeArguments(),
+                namedSource.typeArgumentsPresent(),
+                List.of(
+                        new Ast.NamedArgExpr("a", new Ast.LiteralExpr(10L)),
+                        new Ast.NamedArgExpr("b", new Ast.LiteralExpr(20L))));
+        Ast.copyCheckedMetadata(namedSource, valueOnlyRewrite);
+        assertEquals(
+                namedPlan,
+                CheckedCallPlan.require(valueOnlyRewrite),
+                "rewriting only named argument values preserves binding shape");
+    }
+
+    @Test
     void legacyPlansDelegateToExactlyTheSameCanonicalBinding() {
         List<String> names = List.of("a", "b", "c");
         List<CheckedCallPlan.InputSlot> checkedFixedInputs =
