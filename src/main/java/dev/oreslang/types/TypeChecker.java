@@ -1940,6 +1940,11 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.LocalTypeDeclStmt declaration) {
+            throw new IllegalArgumentException(
+                    "local type '" + declaration.name() + "' is parsed but requires checked "
+                            + "lexical identity, callable signature metadata and backend lowering");
+        }
         // Parse into a dedicated lexical node, but do not authorize execution
         // until RequestHandle provenance, scoped-loan fencing, suspension,
         // cancellation and unwind behavior have all been implemented. This
@@ -2388,6 +2393,11 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.LocalAggregateConstructExpr construct) {
+            throw new IllegalArgumentException(
+                    "local aggregate constructor '" + construct.typeName()
+                            + "{...}' requires verified type identity, layout and executable lowering");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
