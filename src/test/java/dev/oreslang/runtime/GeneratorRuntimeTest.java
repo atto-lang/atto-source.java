@@ -337,4 +337,35 @@ final class GeneratorRuntimeTest {
             assertFalse(resumed.await(100, TimeUnit.MILLISECONDS));
         }
     }
+
+    @Test
+    void syncGeneratorReturnsOneStableIteratorView() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(1);
+                 emitter.emit(2);
+             })) {
+            var first = generator.iterator();
+            var second = generator.iterator();
+            assertSame(first, second);
+            assertEquals(1, first.next());
+            assertEquals(2, second.next());
+            assertFalse(first.hasNext());
+        }
+    }
+
+    @Test
+    void closeInvalidatesPrefetchedSyncYield() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(1);
+                 emitter.emit(2);
+             })) {
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            generator.close();
+            assertFalse(iterator.hasNext());
+            assertThrows(java.util.NoSuchElementException.class, iterator::next);
+        }
+    }
 }
