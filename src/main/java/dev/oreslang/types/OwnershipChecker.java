@@ -2780,7 +2780,7 @@ public final class OwnershipChecker {
                     || (value.type != null && value.type.isBorrow()));
     }
 
-    private boolean isBorrowState(VarState state) {
+    private static boolean isBorrowState(VarState state) {
         return state != null
                 && (state.kind == ValueKind.IMM_BORROW
                     || state.kind == ValueKind.MUT_BORROW
