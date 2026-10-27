@@ -32,7 +32,17 @@ jobs:
           command -v javac
           command -v python3
           java -version
+          javac -version
+          native-image --version
+          mvn --version
           python3 --version
+          java -XshowSettings:properties -version 2>&1 | grep -E 'java.specification.version = 25
+          echo "ASYNC_INTEROP_SOURCE_FREE_RUNNER_EXECUTED=true"
+          echo "ASYNC_INTEROP_PRIVATE_SOURCE_CHECKOUT=false"
+          echo "ASYNC_INTEROP_JVM_TESTS_EXECUTED=false"
+          echo "ASYNC_INTEROP_ISOLATION_REQUIRES_ADMIN_ATTESTATION=true"
+
+          native-image --version | grep -qi 'graalvm'
           echo "ASYNC_INTEROP_SOURCE_FREE_RUNNER_EXECUTED=true"
           echo "ASYNC_INTEROP_PRIVATE_SOURCE_CHECKOUT=false"
           echo "ASYNC_INTEROP_JVM_TESTS_EXECUTED=false"
