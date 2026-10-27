@@ -163,6 +163,13 @@ final class InvertedIndexPlanTest {
                     () -> "unverified noninteger site must fail closed: " + invalid);
         }
 
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.planInvertedIndex(
+                        particle,
+                        new Ast.IndexExpr(array, new Ast.LiteralExpr(true)),
+                        "x", InvertedIndexPlan.Access.READ),
+                "the public staging facade must not bypass index shape admission");
+
         for (Ast.Expr validCandidate : List.<Ast.Expr>of(
                 new Ast.LiteralExpr(0),
                 new Ast.LiteralExpr(1L),
