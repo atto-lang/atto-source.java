@@ -12,6 +12,8 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.SecureDirectoryStream;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Objects;
 import java.util.Set;
 
 /** Single bounded, strict UTF-8 source admission boundary for the CLI and file loader. */
@@ -35,7 +37,21 @@ public final class BoundedSourceReader {
         // spelling. A later symlink swap at that alias cannot redirect the
         // descriptor-relative read to another source object.
         Path physical = path.toAbsolutePath().normalize().toRealPath();
+        BasicFileAttributes before = Files.readAttributes(
+                physical, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!before.isRegularFile()) {
+            throw new IllegalArgumentException("Oreslang source must be a regular file");
+        }
+
         byte[] bytes = readSnapshot(physical);
+
+        BasicFileAttributes after = Files.readAttributes(
+                physical, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!after.isRegularFile()
+                || before.size() != after.size()
+                || !Objects.equals(before.fileKey(), after.fileKey())) {
+            throw new IllegalArgumentException("Oreslang source path changed during snapshot");
+        }
         // Reject binary source before lexical analysis (aligns with LLVM/Forge).
         for (byte value : bytes) {
             if (value == 0) {
