@@ -179,6 +179,35 @@ final class InvertedIndexPlanTest {
     }
 
     @Test
+    void fusedIndexedAccessTracksCurrentDenseRowAfterSwapDelete() {
+        Ast.ClassDecl particle = particle();
+        var read = InvertedIndexPlan.compile(
+                particle, site(), "x", InvertedIndexPlan.Access.READ);
+        var write = InvertedIndexPlan.compile(
+                particle, site(), "x", InvertedIndexPlan.Access.WRITE);
+        try (var array = InvertedArray.fromClass(particle, 2)) {
+            var removed = array.pushValues(11.0, 1.0, false);
+            var survivor = array.pushValues(22.0, 2.0, true);
+            assertEquals(11.0, read.bind(array).read(0));
+            assertEquals(22.0, read.bind(array).read(1));
+
+            array.eraseSwap(removed);
+            assertEquals(22.0, read.bind(array).read(0),
+                    "dense index must select the survivor after swap-delete");
+            assertThrows(IllegalArgumentException.class,
+                    () -> read.bind(array).read(1));
+            write.bind(array).write(0, 33.0);
+            assertEquals(33.0, array.read(survivor, "x"),
+                    "positional write must update the surviving logical row");
+            assertThrows(IllegalArgumentException.class,
+                    () -> array.read(removed, "x"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> write.bind(array).write(Long.MAX_VALUE, 44.0));
+            assertEquals(33.0, read.bind(array).read(0));
+        }
+    }
+
+    @Test
     void compilerPlanApiDoesNotExposeRowViewsOrHandles() {
         for (Method method : InvertedIndexPlan.class.getMethods()) {
             assertNotEquals(
