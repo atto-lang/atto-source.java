@@ -154,6 +154,7 @@ public final class ExportAbiMetadata {
             } else if (cls.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 field(out, "public-constructor");
                 params(out, cls.constructor().parameters());
+                annotations(out, cls.constructor().annotations());
             }
             for (Ast.FieldDecl field : cls.fields()) {
                 if (field.visibility() != Ast.Visibility.PUBLIC) continue;
@@ -169,6 +170,9 @@ public final class ExportAbiMetadata {
                 field(out, "method");
                 field(out, method.name());
                 flags(out, method.isStatic(), method.isAbstract(), method.async(), method.suspends(), method.structural());
+                field(out, "receiver");
+                if (method.explicitReceiverType() == null) field(out, "implicit");
+                else type(out, method.explicitReceiverType());
                 strings(out, method.genericParameters());
                 params(out, method.parameters());
                 type(out, method.returnType());

@@ -590,6 +590,70 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void exportedAnnotationCannotLeakPrivateNominalType() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ExportResolver.resolve(Parser.parse("""
+                        private define type InternalId = int;
+                        @ApiTag(InternalId)
+                        fnc reveal(): int { return 1; }
+                        export fnc reveal;
+                        """)));
+
+        assertTrue(failure.getMessage().contains("EXPORT_API_LEAK"), failure.getMessage());
+    }
+
+    @Test
+    void receiverMutabilityParticipatesInExportSignatureDigest() {
+        ExportAbiMetadata.Entry readonly = OresCompiler.emitExportMetadata("""
+                export class Box;
+                define class Box as
+                  pub read(self): int { return 1; }
+                end
+                """).entries().stream()
+                .filter(entry -> entry.localKind() == Ast.ExportKind.CLASS)
+                .findFirst().orElseThrow();
+
+        ExportAbiMetadata.Entry mutable = OresCompiler.emitExportMetadata("""
+                export class Box;
+                define class Box as
+                  pub read(mut self): int { return 1; }
+                end
+                """).entries().stream()
+                .filter(entry -> entry.localKind() == Ast.ExportKind.CLASS)
+                .findFirst().orElseThrow();
+
+        assertNotEquals(readonly.signatureDigest(), mutable.signatureDigest(),
+                "receiver ownership/mutability is part of the public method contract");
+    }
+
+    @Test
+    void constructorAnnotationsParticipateInExportSignatureDigest() {
+        ExportAbiMetadata.Entry first = OresCompiler.emitExportMetadata("""
+                export class Box;
+                define class Box as
+                  @ApiTag(int)
+                  pub constructor() { return; }
+                end
+                """).entries().stream()
+                .filter(entry -> entry.localKind() == Ast.ExportKind.CLASS)
+                .findFirst().orElseThrow();
+
+        ExportAbiMetadata.Entry second = OresCompiler.emitExportMetadata("""
+                export class Box;
+                define class Box as
+                  @ApiTag(String)
+                  pub constructor() { return; }
+                end
+                """).entries().stream()
+                .filter(entry -> entry.localKind() == Ast.ExportKind.CLASS)
+                .findFirst().orElseThrow();
+
+        assertNotEquals(first.signatureDigest(), second.signatureDigest(),
+                "public constructor annotations are source-interface metadata");
+    }
+
+    @Test
     void exportedConstMetadataFailsClosedUntilCanonicalValueEncodingExists() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,

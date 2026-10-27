@@ -379,6 +379,7 @@ public final class ExportResolver {
             for (Ast.Param p : fn.parameters()) collectType(p.type(), out, generics);
             collectType(fn.returnType(), out, generics);
             collectEffects(fn.effects(), out, generics);
+            collectAnnotations(fn.annotations(), out, generics);
             return;
         }
         if (decl instanceof Ast.ClassDecl cls) {
@@ -386,7 +387,10 @@ public final class ExportResolver {
             cls.parents().forEach(t -> collectType(t, out, classGenerics));
             cls.interfaces().forEach(t -> collectType(t, out, classGenerics));
             for (Ast.FieldDecl field : cls.fields()) {
-                if (field.visibility() == Ast.Visibility.PUBLIC) collectType(field.type(), out, classGenerics);
+                if (field.visibility() == Ast.Visibility.PUBLIC) {
+                    collectType(field.type(), out, classGenerics);
+                    collectAnnotations(field.annotations(), out, classGenerics);
+                }
             }
             if (cls.constructor() == null) {
                 // The legacy synthesized constructor is externally callable for
@@ -398,14 +402,17 @@ public final class ExportResolver {
                 }
             } else if (cls.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 for (Ast.Param p : cls.constructor().parameters()) collectType(p.type(), out, classGenerics);
+                collectAnnotations(cls.constructor().annotations(), out, classGenerics);
             }
             for (Ast.MethodDecl method : cls.methods()) {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
                 Set<String> methodGenerics = new LinkedHashSet<>(classGenerics);
                 methodGenerics.addAll(method.genericParameters());
+                collectType(method.explicitReceiverType(), out, methodGenerics);
                 for (Ast.Param p : method.parameters()) collectType(p.type(), out, methodGenerics);
                 collectType(method.returnType(), out, methodGenerics);
                 collectEffects(method.effects(), out, methodGenerics);
+                collectAnnotations(method.annotations(), out, methodGenerics);
             }
             return;
         }
@@ -431,6 +438,18 @@ public final class ExportResolver {
         }
         if (decl instanceof Ast.FieldDecl field) {
             collectType(field.type(), out, Set.of());
+            collectAnnotations(field.annotations(), out, Set.of());
+        }
+    }
+
+    private static void collectAnnotations(
+            List<Ast.Annotation> annotations,
+            Set<String> out,
+            Set<String> generics) {
+        for (Ast.Annotation annotation : annotations) {
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                collectType(argument, out, generics);
+            }
         }
     }
 
