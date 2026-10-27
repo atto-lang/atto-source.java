@@ -14,17 +14,17 @@ final class NativeCliIoTest {
     @Test
     void stringOperationsCompileAndRunWithoutHostInterop() throws Exception {
         String source = """
-            pub routine main(): void {
+            pub async routine main(): void {
               val fields = "GET /users/{id}".split_literal(" ");
-              stdio.println(fields.get(0));
-              stdio.println(fields.get(1));
-              stdio.println("   hi  ".trim());
-              stdio.println("route.ores".ends_with(".ores"));
-              stdio.println("prefix".starts_with("pre"));
-              stdio.println("abc".contains_literal("b"));
-              stdio.println("route_name".is_identifier());
-              stdio.println("[id]".is_route_segment());
-              stdio.println("[bad/path]".is_route_segment());
+              await stdio.println(fields.get(0));
+              await stdio.println(fields.get(1));
+              await stdio.println("   hi  ".trim());
+              await stdio.println("route.ores".ends_with(".ores"));
+              await stdio.println("prefix".starts_with("pre"));
+              await stdio.println("abc".contains_literal("b"));
+              await stdio.println("route_name".is_identifier());
+              await stdio.println("[id]".is_route_segment());
+              await stdio.println("[bad/path]".is_route_segment());
               return;
             }
             """;
@@ -56,12 +56,12 @@ final class NativeCliIoTest {
         IsolatePolicy policy = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_READ);
         String source = """
-            pub routine main(): void {
-              val names = fs.list_dir("%s");
-              stdio.println(names.get(0));
-              stdio.println(names.get(1));
-              stdio.println(fs.is_dir("%s"));
-              stdio.println(fs.is_symlink("%s"));
+            pub async routine main(): void {
+              val names = await fs.list_dir("%s");
+              await stdio.println(names.get(0));
+              await stdio.println(names.get(1));
+              await stdio.println(await fs.is_dir("%s"));
+              await stdio.println(await fs.is_symlink("%s"));
               return;
             }
             """.formatted(root.toString().replace("\\", "\\\\"),
@@ -78,8 +78,8 @@ final class NativeCliIoTest {
         assertTrue(logged.contains("b.ores"));
         assertTrue(logged.contains("true"));
         String rejected = """
-            pub routine main(): void {
-              val children = fs.list_dir("%s");
+            pub async routine main(): void {
+              val children = await fs.list_dir("%s");
               return;
             }
             """.formatted(link.toString().replace("\\", "\\\\"));
@@ -107,9 +107,9 @@ final class NativeCliIoTest {
         Path target = root.resolve("rpc.ores");
         Path output = root.resolve("program.ores");
         String program = """
-            pub routine main(): void {
-              fs.write_text_atomic("%s", "first");
-              fs.write_text_atomic("%s", "second");
+            pub async routine main(): void {
+              await fs.write_text_atomic("%s", "first");
+              await fs.write_text_atomic("%s", "second");
               return;
             }
             """.formatted(target, target);
@@ -127,8 +127,8 @@ final class NativeCliIoTest {
         Path symlink = root.resolve("outside-link.ores");
         Files.createSymbolicLink(symlink, outside.resolve("outside-link.ores"));
         Files.writeString(output, """
-            pub routine main(): void {
-              fs.write_text_atomic("%s", "forbidden");
+            pub async routine main(): void {
+              await fs.write_text_atomic("%s", "forbidden");
               return;
             }
             """.formatted(symlink));
@@ -140,8 +140,8 @@ final class NativeCliIoTest {
         Path ancestor = root.resolve("escape-dir");
         Files.createSymbolicLink(ancestor, outside);
         Files.writeString(output, """
-            pub routine main(): void {
-              fs.write_text_atomic("%s", "forbidden");
+            pub async routine main(): void {
+              await fs.write_text_atomic("%s", "forbidden");
               return;
             }
             """.formatted(ancestor.resolve("write.ores")));
@@ -170,10 +170,10 @@ final class NativeCliIoTest {
         // Metadata for an absent nested entry is harmless and deterministic;
         // a dangling final symlink remains visible for explicit rejection.
         String source = """
-            pub routine main(): void {
-              stdio.println(fs.is_dir("%s"));
-              stdio.println(fs.is_symlink("%s"));
-              stdio.println(fs.is_symlink("%s"));
+            pub async routine main(): void {
+              await stdio.println(await fs.is_dir("%s"));
+              await stdio.println(await fs.is_symlink("%s"));
+              await stdio.println(await fs.is_symlink("%s"));
               return;
             }
             """.formatted(absent, absent, broken);
@@ -190,8 +190,8 @@ final class NativeCliIoTest {
         for (Path forbidden : java.util.List.of(
                 broken.resolve("child.ores"), escape.resolve("secret.ores"))) {
             Files.writeString(sourceFile, """
-                pub routine main(): void {
-                  stdio.println(fs.is_dir("%s"));
+                pub async routine main(): void {
+                  await stdio.println(await fs.is_dir("%s"));
                   return;
                 }
                 """.formatted(forbidden));
@@ -212,8 +212,8 @@ final class NativeCliIoTest {
         Files.createSymbolicLink(escape, outside);
         Path sourceFile = root.resolve("program.ores");
         Files.writeString(sourceFile, """
-            pub routine main(): void {
-              stdio.println(fs.is_dir("%s"));
+            pub async routine main(): void {
+              await stdio.println(await fs.is_dir("%s"));
               return;
             }
             """.formatted(escape.resolve("secret.txt")));
