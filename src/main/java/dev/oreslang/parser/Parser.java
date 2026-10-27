@@ -4558,7 +4558,7 @@ public final class Parser {
             declared.add(new Ast.StructFieldSpec(member.getKey(), member.getValue()));
         }
         if (!check(RBRACE)) {
-            boolean named = check(IDENT) && checkNext(COLON);
+            boolean named = (check(IDENT) || check(STRING)) && checkNext(COLON);
             if (!named) {
                 // Aggregate TypeRef canonicalizes field names; declaration
                 // order is not preserved. Positional initialization is safe
