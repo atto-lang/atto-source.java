@@ -39,9 +39,11 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousTypeAliases = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     /** Exact immutable Program identity checked by this ownership pass. */
@@ -179,7 +181,11 @@ public final class OwnershipChecker {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
-                else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.ClassDecl klass) {
+                    index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
+                }
             }
         }
     }
@@ -4174,6 +4180,14 @@ public final class OwnershipChecker {
         return classes.get(name);
     }
 
+    private Ast.TypeAliasDecl findTypeAlias(String name) {
+        if (ambiguousTypeAliases.contains(name)) {
+            throw error("ambiguous type alias '" + name
+                    + "' while proving InvertedArray storage provenance");
+        }
+        return typeAliases.get(name);
+    }
+
     private VarState ownershipRoot(VarState state) {
         VarState current = state;
         Set<VarState> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -5118,24 +5132,56 @@ public final class OwnershipChecker {
     private boolean containsInvertedArrayStorage(Ast.TypeRef type) {
         return containsInvertedArrayStorage(
                 type,
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>()),
                 java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
     }
 
     private boolean containsInvertedArrayStorage(
             Ast.TypeRef type,
-            Set<Ast.ClassDecl> visitingClasses) {
+            Set<Ast.ClassDecl> visitingClasses,
+            Set<Ast.TypeAliasDecl> visitingAliases) {
         if (type == null) return false;
         if (type.isBorrow()) {
-            return containsInvertedArrayStorage(type.borrowedTarget(), visitingClasses);
+            return containsInvertedArrayStorage(
+                    type.borrowedTarget(), visitingClasses, visitingAliases);
         }
+
+        // Ownership uses source TypeRef identities for bindings and fields.
+        // TypeChecker may have resolved a user alias for assignability without
+        // rewriting that source TypeRef. Expand aliases here as part of this
+        // independent escape/transport proof so an alias cannot hide storage.
+        Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+        if (alias != null) {
+            if (type.inferArguments()
+                    || alias.genericParameters().size() != type.arguments().size()) {
+                throw error("type alias '" + alias.name()
+                        + "' has invalid generic arity during InvertedArray storage proof");
+            }
+            if (!visitingAliases.add(alias)) {
+                throw error("cyclic type alias involving '" + alias.name()
+                        + "' while proving InvertedArray storage provenance");
+            }
+            try {
+                Map<String, Ast.TypeRef> bindings =
+                        genericBindings(alias.genericParameters(), type.arguments());
+                Ast.TypeRef expanded = substituteType(alias.target(), bindings);
+                return containsInvertedArrayStorage(
+                        expanded, visitingClasses, visitingAliases);
+            } finally {
+                visitingAliases.remove(alias);
+            }
+        }
+
         if (type.name().equals("InvertedArray")) return true;
         if (type.isClosedAggregateType()) {
             for (Ast.TypeRef member : type.aggregateMembers().values()) {
-                if (containsInvertedArrayStorage(member, visitingClasses)) return true;
+                if (containsInvertedArrayStorage(
+                        member, visitingClasses, visitingAliases)) return true;
             }
         }
         for (Ast.TypeRef argument : type.arguments()) {
-            if (containsInvertedArrayStorage(argument, visitingClasses)) return true;
+            if (containsInvertedArrayStorage(
+                    argument, visitingClasses, visitingAliases)) return true;
         }
         Ast.ClassDecl klass = findClass(type.name());
         if (klass == null || klass.inverted() || !visitingClasses.add(klass)) {
@@ -5149,7 +5195,8 @@ public final class OwnershipChecker {
                         genericBindings(
                                 field.owner().genericParameters(),
                                 field.ownerType().arguments()));
-                if (containsInvertedArrayStorage(fieldType, visitingClasses)) return true;
+                if (containsInvertedArrayStorage(
+                        fieldType, visitingClasses, visitingAliases)) return true;
             }
             return false;
         } finally {
