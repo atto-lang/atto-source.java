@@ -525,7 +525,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         )
 
     def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
-                            codeowners=True, stale=True, admins=True,
+                            codeowners=True, stale=True, last_push=True, admins=True,
                             approvals=1, force=False, deletions=False,
                             bypasses=None, strict_checks=True, contexts=None,
                             named_checks=None, source_id=None, codeowners_file=None):
@@ -555,6 +555,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main/protection":
                 reviews = {"require_code_owner_reviews": codeowners,
                            "dismiss_stale_reviews": stale,
+                           "require_last_push_approval": last_push,
                            "required_approving_review_count": approvals}
                 if bypasses is not None:
                     reviews["bypass_pull_request_allowances"] = bypasses
@@ -647,6 +648,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with patch.object(pub, "gh_api", side_effect=api):
                     with self.assertRaisesRegex(pub.Denied, "strict required CI"):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_requires_last_push_independent_approval(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        api, _ = self.verified_origin_api(last_push=False)
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "last-push independence"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_rejects_author_codeowner_instead_of_independent_security_owner(self):
         bad = (
