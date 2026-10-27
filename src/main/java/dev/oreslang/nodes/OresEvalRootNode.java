@@ -5056,6 +5056,27 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (isActorIoOutWriteCall(call)) {
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t,
+                                        actorIoOutWrite(values),
+                                        null);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -7124,6 +7145,23 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(values);
         }
 
+        private static boolean isActorIoOutWriteCall(Ast.CallExpr call) {
+            return call.callee() instanceof Ast.MemberExpr ioWrite
+                    && ioWrite.member().equals("write")
+                    && ioWrite.receiver() instanceof Ast.MemberExpr ioOut
+                    && ioOut.member().equals("out")
+                    && ioOut.receiver() instanceof Ast.NameExpr ioName
+                    && ioName.name().equals("io");
+        }
+
+        private Object actorIoOutWrite(List<Object> args) {
+            if (!ActorRuntime.inActorExecution()) {
+                throw new SecurityException(
+                        "io.out.write requires an active actor execution context");
+            }
+            return new ActorIoOutFacade(context).write(args);
+        }
+
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
             return booleanIntrinsicName(call, env) != null;
         }
@@ -7545,6 +7583,9 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (isActorIoOutWriteCall(call)) {
+                    return actorIoOutWrite(evaluateArguments(call.arguments(), env));
+                }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
@@ -7783,12 +7824,13 @@ public final class OresEvalRootNode extends RootNode {
                             "unknown actor io member " + name);
                 };
             }
-            if (receiver instanceof ActorIoOutFacade out) {
-                return switch (name) {
-                    case "write" -> (Invokable) out::write;
-                    default -> throw new IllegalArgumentException(
-                            "unknown io.out member " + name);
-                };
+            if (receiver instanceof ActorIoOutFacade) {
+                if (name.equals("write")) {
+                    throw new IllegalArgumentException(
+                            "io.out.write is an actor execution intrinsic; invoke it directly");
+                }
+                throw new IllegalArgumentException(
+                        "unknown io.out member " + name);
             }
             if (receiver instanceof ReservedActorIoChannel reserved) {
                 throw new IllegalStateException(
