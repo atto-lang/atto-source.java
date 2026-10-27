@@ -392,8 +392,33 @@ fn audit_strict_java_guest_boundary(repo_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn reject_blocking_io_aliases(tokens: &[Token]) -> Result<(), String> {
+    const ROOTS: &[&str] = &["stdio", "fs", "File", "network", "net", "http"];
+    for start in 0..tokens.len() {
+        if !ROOTS.iter().any(|root| tokens[start].name(root)) {
+            continue;
+        }
+        let mut index = start + 1;
+        while index + 1 < tokens.len() && tokens[index].symbol('.') {
+            let member = &tokens[index + 1];
+            if member.kind != Kind::Name {
+                break;
+            }
+            if member.text.ends_with("_blocking") || member.text.ends_with("_sync") {
+                return Err(format!(
+                    "line {}: blocking/synchronous I/O alias '{}' is forbidden in packaged stdlib",
+                    member.line, member.text
+                ));
+            }
+            index += 2;
+        }
+    }
+    Ok(())
+}
+
 fn inspect(source: &str) -> Result<(), String> {
     let tokens = lex(source)?;
+    reject_blocking_io_aliases(&tokens)?;
     for index in 0..tokens.len() {
         for path in FORBIDDEN_BLOCKING_IO {
             if dotted_name(&tokens, index, path) {
@@ -594,8 +619,10 @@ mod tests {
         .is_ok());
     }
     #[test]
-    fn accepts_logically_blocking_name_only_when_canonical_suffix_is_explicit() {
-        assert!(inspect("fnc f(): void { fs.read_text_blocking(\"x\"); }").is_ok());
+    fn rejects_explicit_blocking_and_sync_io_aliases() {
+        assert!(inspect("fnc f(): void { fs.read_text_blocking(\"x\"); }").is_err());
+        assert!(inspect("fnc f(): void { network.connect_sync(\"x\", 80); }").is_err());
+        assert!(inspect("fnc f(): void { stdio.stdout.write_blocking(\"x\"); }").is_err());
     }
     #[test]
     fn java_normalizer_ignores_comments_and_literals_for_code_edges() {
