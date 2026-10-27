@@ -167,7 +167,9 @@ public final class Lexer {
             char c = advance();
             if (c == '\r') { match('\n'); newline(); }
             else if (c == '\n') newline();
-            else if (c == '/' && match('*')) depth++;
+            else if (c == '/' && match('*')) {
+                if (++depth > 128) throw error("block comment nesting exceeds 128");
+            }
             else if (c == '*' && match('/')) depth--;
         }
     }
