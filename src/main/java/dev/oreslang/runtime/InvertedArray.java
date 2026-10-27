@@ -371,6 +371,20 @@ public final class InvertedArray implements AutoCloseable {
         }
 
         /**
+         * Primitive f64-only indexed compound operation. One checked,
+         * synchronized column transaction; no guest closure or row allocation.
+         * The caller/compiler must resolve the field and expression type.
+         */
+        public void addF64At(long denseIndex, double delta) {
+            store.addF64At(denseIndex, column, delta);
+        }
+
+        /** Stable logical-row variant with generation validation. */
+        public void addF64(InvertedColumnStore.Handle handle, double delta) {
+            store.addF64(handle, column, delta);
+        }
+
+        /**
          * Package-private compiler target for a PROVEN pure, bounded,
          * non-suspending compound expression. The callback is not a public
          * guest extension point. Resolve dense row + field and read/modify/
