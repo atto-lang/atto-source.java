@@ -69,6 +69,28 @@ final class AotSpecializedIrTest {
     }
 
     @Test
+    void genericLocalBindingAndReturnUseConcreteTypeAndBody() {
+        AotSpecializedIr.Module ir = OresCompiler.lowerFiniteAotHir("""
+                fnc identity<T>(T value): T {
+                    const T copy = value;
+                    return copy;
+                }
+                fnc main(): int { return identity<int>(42); }
+                """, BuildOptions.executable());
+        AotSpecializedIr.Function identity = ir.functions().stream()
+                .filter(fn -> fn.instance().name().equals("identity"))
+                .findFirst().orElseThrow();
+        AotSpecializedIr.Local local = assertInstanceOf(AotSpecializedIr.Local.class,
+                identity.body().getFirst());
+        assertEquals(Ast.TypeRef.simple("int"), local.type());
+        assertEquals(Ast.TypeRef.simple("int"),
+                assertInstanceOf(AotSpecializedIr.LocalRef.class, local.initializer()).type());
+        assertEquals("copy", assertInstanceOf(AotSpecializedIr.LocalRef.class,
+                assertInstanceOf(AotSpecializedIr.Return.class,
+                        identity.body().get(1)).value()).name());
+    }
+
+    @Test
     void genericSourceIsFullyCheckedBeforeTheEmitterReceivesIt() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.lowerFiniteAotHir("""
@@ -90,12 +112,18 @@ final class AotSpecializedIrTest {
 
     @Test
     void arithmeticWithoutProvenBackendSemanticsCannotLower() {
+        Ast.FunctionDecl main = new Ast.FunctionDecl(
+                "main", Ast.Visibility.PUBLIC, false, List.of(), List.of(),
+                Ast.TypeRef.simple("int"), List.of(),
+                List.of(new Ast.ReturnStmt(new Ast.BinaryExpr("/",
+                        new Ast.LiteralExpr(7L), new Ast.LiteralExpr(2L)))));
+        Ast.Program synthetic = new Ast.Program(List.of(
+                new Ast.ModuleDecl(dev.oreslang.parser.Parser.ROOT_MODULE, List.of(main))));
+        AotFiniteGenericClosure.Plan plan =
+                AotFiniteGenericClosure.plan(synthetic, BuildOptions.executable());
         IllegalArgumentException err = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.lowerFiniteAotHir("""
-                        fnc main(): int { return 7 / 2; }
-                        """, BuildOptions.executable()));
-        assertTrue(err.getMessage().contains("operator lacks proven scalar lowering semantics")
-                        || err.getMessage().contains("type"),
+                () -> AotSpecializedIr.lower(synthetic, plan));
+        assertTrue(err.getMessage().contains("operator lacks proven scalar lowering semantics"),
                 err::toString);
     }
 
@@ -129,15 +157,17 @@ final class AotSpecializedIrTest {
 
     @Test
     void unsupportedOpenGenericValueLayoutDoesNotBecomeDynamicCodegen() {
+        Ast.TypeRef list = new Ast.TypeRef(
+                "List", List.of(Ast.TypeRef.simple("int")), false);
+        Ast.FunctionDecl main = new Ast.FunctionDecl(
+                "main", Ast.Visibility.PUBLIC, false, List.of(), List.of(),
+                list, List.of(), List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(7L))));
+        Ast.Program synthetic = new Ast.Program(List.of(
+                new Ast.ModuleDecl(dev.oreslang.parser.Parser.ROOT_MODULE, List.of(main))));
+        AotFiniteGenericClosure.Plan plan =
+                AotFiniteGenericClosure.plan(synthetic, BuildOptions.executable());
         IllegalArgumentException err = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.lowerFiniteAotHir("""
-                        fnc identity<T>(T value): T { return value; }
-                        fnc main(): List<int> {
-                            return identity<List<int>>(new List<int>());
-                        }
-                        """, BuildOptions.executable()));
-        assertTrue(err.getMessage().contains("AOT")
-                        || err.getMessage().contains("type"),
-                err::toString);
+                () -> AotSpecializedIr.lower(synthetic, plan));
+        assertTrue(err.getMessage().contains("fixed scalar layout proof"), err::toString);
     }
 }
