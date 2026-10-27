@@ -241,24 +241,47 @@ public final class InvertedIndexPlan {
         }
     }
 
+    /**
+     * Conservative syntax-only prefilter for a later verified integer index.
+     * This is not type/effect evidence: even accepted NameExpr/binary sites
+     * still require the full type and ownership checker before guest lowering.
+     * Do not accept boolean/string/floating literal or arbitrary operator
+     * syntax and then mistake this candidate for a validated integer site.
+     */
     private static void requireScalarNonSuspending(
             Ast.Expr expression,
             String label) {
-        if (expression instanceof Ast.NameExpr
-                || expression instanceof Ast.LiteralExpr) {
-            return;
+        Objects.requireNonNull(expression, "inverted index expression");
+        if (expression instanceof Ast.NameExpr) return;
+        if (expression instanceof Ast.LiteralExpr literal) {
+            if (literal.value() instanceof Integer
+                    || literal.value() instanceof Long) return;
+            throw new IllegalArgumentException(
+                    label + " requires an integral i32/i64 literal, got "
+                            + (literal.value() == null ? "null"
+                                    : literal.value().getClass().getSimpleName()));
         }
         if (expression instanceof Ast.UnaryExpr unary) {
+            if (!unary.operator().equals("+")
+                    && !unary.operator().equals("-")) {
+                throw new IllegalArgumentException(
+                        label + " does not permit unary " + unary.operator());
+            }
             requireScalarNonSuspending(unary.operand(), label);
             return;
         }
         if (expression instanceof Ast.BinaryExpr binary) {
+            if (!java.util.Set.of("+", "-", "*", "/", "%", "mod")
+                    .contains(binary.operator())) {
+                throw new IllegalArgumentException(
+                        label + " does not permit binary " + binary.operator());
+            }
             requireScalarNonSuspending(binary.left(), label);
             requireScalarNonSuspending(binary.right(), label);
             return;
         }
         throw new IllegalArgumentException(
-                label + " must be a non-suspending scalar expression; got "
+                label + " must be a non-suspending integral expression; got "
                         + expression.getClass().getSimpleName());
     }
 }
