@@ -1900,8 +1900,31 @@ public final class TypeChecker {
         return env;
     }
 
+    private static boolean typeRefContainsInvertedArray(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return typeRefContainsInvertedArray(type.borrowedTarget());
+        if (type.name().equals("InvertedArray")) return true;
+        if (type.isClosedAggregateType()) {
+            for (Ast.TypeRef member : type.aggregateMembers().values()) {
+                if (typeRefContainsInvertedArray(member)) return true;
+            }
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (typeRefContainsInvertedArray(argument)) return true;
+        }
+        return false;
+    }
+
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
+        if (typeRefContainsInvertedArray(field.type())
+                || (field.initializer() instanceof Ast.NewExpr created
+                    && created.type().name().equals("InvertedArray"))) {
+            throw new IllegalArgumentException(
+                    "module/global binding '" + field.name()
+                            + "' cannot own InvertedArray storage in v1; "
+                            + "keep it in a direct lexical function binding");
+        }
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
         requireMutableReferentCompatible(
                 actual,
