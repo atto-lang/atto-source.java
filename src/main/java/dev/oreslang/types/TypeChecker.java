@@ -5128,8 +5128,9 @@ public final class TypeChecker {
             case "fs", "File" -> {
                 switch (name) {
                     case "read_text" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "exists" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
-                    case "write_text", "append_text" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "list_dir" -> { result = new ListType(Primitive.STRING); parameters = List.of(Primitive.STRING); }
+                    case "is_dir", "is_symlink", "exists" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
+                    case "write_text", "write_text_atomic", "append_text" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
                     case "remove", "mkdir_all" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
                     default -> { return null; }
                 }
