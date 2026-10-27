@@ -15,6 +15,7 @@ final class VerifyNioFocusedReports {
             "NioReadinessGroupTest",
             "OresVMNioLifecycleTest",
             "VmNioTcpListenerTest",
+            "VmNioTcpConnectionTest",
             "OresSchedulerTest",
             "ActorFutureBlockingTest",
             "OresFutureTerminalNotificationRaceTest",
@@ -38,6 +39,9 @@ final class VerifyNioFocusedReports {
                             "outboundConnectUsesSelectorAndTransfersNonblockingChannel",
                             "unresolvedConnectFailsClosedBeforeReactorOrDnsAdmission",
                             "refusedConnectRetiresLeaseAndDoesNotPoisonLaterConnect"),
+                    "VmNioTcpConnectionTest", java.util.Set.of(
+                            "closeAsyncWaitsForPendingReadRetirementAndRunsTerminalHookOnce",
+                            "closedOutboundConnectionFailsFurtherIoWithoutReadinessAdmission"),
                     "NativeNetStdlibTest", java.util.Set.of(
                             "realGuestOutboundConnectReadWriteThroughNonblockingKernel"),
                     "StrictNonblockingStdlibIoTest", java.util.Set.of(
