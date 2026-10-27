@@ -38,6 +38,10 @@ jobs:
           fi
           printf 'ORESLANG_SOURCE_SHA=%s\n' "$actual" >> "$GITHUB_ENV"
           printf 'conformance_source_commit=%s\nconformance_source_tree=%s\n' "$actual" "$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify every committed Java source blob and fail-closed Git inventory
+        run: bash scripts/verify-source-tree.sh "$ORESLANG_SOURCE_SHA"
+      - name: Verify synthetic fail-closed Java source checkout admissions
+        run: bash tests/java_source_tree_integrity_admission.sh
       - name: Validate source parity launcher fail-closed CLI admissions
         run: bash tests/java_source_parity_launcher_admission.sh
       - name: Test AI smoke evidence admission (no compiler claims)
