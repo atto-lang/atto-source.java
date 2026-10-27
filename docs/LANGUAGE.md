@@ -556,6 +556,42 @@ end
 
 Anonymous structs and array literals are values, not classes, and cannot be inherited from.
 
+## Record type positions versus record value positions
+
+`record { ... }` is unambiguous because the *enclosing grammar* selects
+whether the braces contain field types or field values. The compiler must not
+infer the grammar from whether a field payload is a literal or an identifier.
+
+```ores
+type T = record { foo: string };       // type declaration; foo has type string
+
+pub fnc make(string value): T {
+    const T x = record { foo: value }; // value binding; foo evaluates value
+    return x;
+}
+
+pub fnc inline(): record { foo: string } {
+    return record { foo: "hello" };
+}
+```
+
+A plain record literal is a value and never implicitly binds an undeclared type
+name. In the current compiler, `const T x = record {...}` requires `T` to be
+an existing type alias. `const T x = infer<T> record {...}` or the proven
+short named-inference form may instead capture a *lexical*, readonly structural
+type alias, but must not manufacture nominal identity or a runtime type object.
+
+Type declarations are immutable by definition. `const type T = ...` is invalid;
+`type T = ...` defines a type, whereas `const type T x = ...` may use
+`type T` as an explicit named-type marker in a value binding.
+
+Function-/routine-local standalone declarations such as
+`fnc make(): T { type T = record { foo: string }; ... }` remain **proposed**,
+not executable in this compiler revision. Supporting them requires
+compile-time lexical type registration, return-signature dependency resolution,
+public ABI serialization, and ownership/backend conformance. Do not treat a
+local `type` statement as a runtime value or silently export its name.
+
 ## Inline values
 
 Oreslang structs always have a compile-time-known, closed field shape. The
