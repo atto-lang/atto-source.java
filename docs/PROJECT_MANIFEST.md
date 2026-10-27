@@ -37,50 +37,45 @@ and silently ignored.
 
 ## Library profile (Java/Graal fail-closed admission)
 
-The version 1 project manifest now recognizes one optional `[build]` setting:
+Oreslang has exactly two library layers:
+
+- `ores.core`: freestanding language/runtime facilities with no operating-system dependency.
+- `ores.std`: hosted/platform facilities, including OS I/O and other services unavailable on bare metal.
+
+The version 1 project manifest recognizes one optional `[build]` setting:
 
 ```toml
 [build]
-library_profile = "hosted"
+library_profile = "std"
 ```
 
-Allowed request values are `hosted`, `freestanding-core`,
-`freestanding-alloc`, `freestanding-actor`, and `freestanding-otp`.
-An omitted value is `hosted` for backward compatibility. Unknown,
-misspelled or non-string `library_profile` values fail manifest admission;
-unrecognized `[build]` keys are rejected instead of silently ignored.
+The only accepted values are `std` and `core`. An omitted value defaults to
+`std` for backward compatibility with existing hosted projects. Unknown,
+misspelled, or non-string values fail admission.
 
-**Important:** the Java/Graal compiler and `LinkedProgramRunner` currently
-support only `hosted`. Requesting any freestanding library profile produces
-a descriptive hard error *before import traversal, parsing, compilation or
-execution*. Merely recognizing the manifest value does not grant `no_std`
-capability or supply heap-free code generation. This guard closes the silent
-hosted-compile fallback; it is **not** a working freestanding backend.
+The Java/Graal runner currently executes only the `std` profile. Requesting
+`core` fails before import traversal, parsing, compilation, or guest execution.
+That fail-closed check prevents a hosted build from being mislabeled as a
+freestanding/no-OS build.
 
-The next compiler milestone is trusted canonical `core/*`, `alloc/*`,
-`actor/*`, `otp/*` and `std/*` source resolution plus effect inference.
-The legacy `std/core` remains a hosted compatibility module and is
-**not** an alias for `core/numeric`: neither identity nor capability
-inheritance is silently substituted. Both currently provide simple scalar
-helpers; the eventual migration must verify their semantics together.
-Bare `core/*`, `alloc/*`, `actor/*`, and `otp/*` import roots are
-reserved against filesystem and `ORESLANG_PATH` fallback. An initial canonical compiler-owned `core/numeric` source unit now ships
-from `src/main/resources/dev/oreslang/core/numeric.ores`, with identity
-`@core/numeric.ores` and the Oreslang functions `min_int`, `max_int`, and
-`clamp_int`. Unknown `core/*` entries and all `alloc/*`, `actor/*`,
-and `otp/*` entries still fail closed until their source registries are
-introduced. The module is linkable in **hosted mode only**; it must not be
-mistaken for no-libc or no-OS execution proof. This prevents a project file
-from impersonating an allocation-free `core` module or trusted actor runtime.
-Application-local relative paths such as `./core/utility` remain ordinary
-filesystem imports, and the legacy `std/core` compatibility module remains
-compiler-owned. Projects previously using **bare** `core/...` or `actor/...`
-as application-package paths must rename them or use explicit relative paths;
-this is a deliberate namespace-compatibility change. The target-profile validator draft must not be called with
-arbitrary user-produced source-unit labels as authority.
+Canonical compiler-owned imports use `ores.core/*` and `ores.std/*`.
+The initial `ores.core/numeric` module is packaged source with unit identity
+`@ores.core/numeric.ores`. It cannot be shadowed by project files or
+`ORESLANG_PATH`, and an `ores.core/*` module may import only other
+`ores.core/*` modules. It may not import `ores.std/*`, Java host classes,
+project modules, or ambient modules.
 
-See [target profile draft #16](https://github.com/ores-truffle-oreslang/oreslang-target-profiles/pull/16)
-and [Java admission issue #1209](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1209).
+Existing `std/*` imports remain a compatibility spelling for `ores.std/*`
+during migration. They do not define a third library layer. The old proposed
+`alloc/*`, `actor/*`, and `otp/*` top-level library profiles/namespaces
+are intentionally removed from this design; those facilities belong beneath
+one of the two canonical layers according to whether they require hosted
+platform services.
+
+The packaged `ores.core/numeric` source is still only a source-provenance
+proof on Java/Graal. It is not yet evidence of a no-libc/no-OS executable.
+
+See [Java admission issue #1209](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1209).
 
 ## Import resolution
 
