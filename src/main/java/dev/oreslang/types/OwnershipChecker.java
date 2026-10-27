@@ -2886,6 +2886,11 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a lambda");
                 }
+                // Expression-bodied lambdas have the same lifetime boundary as
+                // explicit return statements. A closure that owns captured state
+                // cannot return a loan rooted in that capture, because the loan
+                // could otherwise outlive the closure that owns the referent.
+                validateReturnedBorrow(lambda.expressionBody(), returned);
             } else {
                 for (Ast.Stmt stmt : lambda.blockBody()) {
                     checkStatement(stmt, closure, Ast.TypeRef.inferred());
