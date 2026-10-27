@@ -11,6 +11,62 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class InvertedColumnStoreTest {
     @Test
+    void failedRowAdmissionCannotConsumeReusableSlotOrPublishPartialColumns() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I32,
+                InvertedColumnStore.Kind.BOOL)) {
+            var deleted = store.push(7, true);
+            var survivor = store.push(8, false);
+            store.eraseSwap(deleted);
+            int count = store.size();
+            long previousGeneration = deleted.generation();
+
+            // Admission errors must precede physical column writes and
+            // reuse-list consumption. This test does not simulate OOME in
+            // the private Handle constructor; that is covered by the source
+            // ordering rule (issue before publication).
+            assertThrows(IllegalArgumentException.class, () -> store.push(9));
+            assertThrows(IllegalArgumentException.class, () -> store.push(9, 1));
+            assertThrows(IllegalArgumentException.class, () -> store.push(9, null));
+            assertThrows(IllegalArgumentException.class, () -> store.push(9, true, 1));
+            assertEquals(count, store.size());
+            assertArrayEquals(new Object[]{8, false}, store.snapshot(survivor));
+            assertThrows(IllegalArgumentException.class, () -> store.snapshot(deleted));
+
+            var next = store.push(10, true);
+            assertEquals(deleted.slot(), next.slot());
+            assertNotEquals(previousGeneration, next.generation());
+            assertArrayEquals(new Object[]{10, true}, store.snapshot(next));
+            assertEquals(2, store.size());
+            assertArrayEquals(new Object[]{8, false}, store.snapshot(survivor));
+        }
+    }
+
+    @Test
+    void failedRecordAdmissionLeavesPhysicalRowAndHandleIntact() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.ColumnSpec.record(4),
+                InvertedColumnStore.ColumnSpec.scalar(InvertedColumnStore.Kind.I64))) {
+            var handle = store.push(new byte[]{1, 2, 3, 4}, 11L);
+            int count = store.size();
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.push(new byte[]{5, 6}, 12L));
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.push(new byte[]{5, 6, 7, 8}, 12));
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.push((Object) new byte[]{5, 6, 7, 8}));
+            assertEquals(count, store.size());
+            assertArrayEquals(new Object[]{11L}, new Object[]{store.get(handle, 1)});
+            assertArrayEquals(new byte[]{1, 2, 3, 4},
+                    (byte[]) store.get(handle, 0));
+            var next = store.push(new byte[]{8, 7, 6, 5}, 22L);
+            assertEquals(2, store.size());
+            assertArrayEquals(new byte[]{8, 7, 6, 5},
+                    (byte[]) store.get(next, 0));
+        }
+    }
+
+    @Test
     void atomicIndexedCompoundUpdatesCannotLoseConcurrentIncrements()
             throws InterruptedException {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
