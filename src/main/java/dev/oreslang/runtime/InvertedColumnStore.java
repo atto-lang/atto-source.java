@@ -108,7 +108,9 @@ public final class InvertedColumnStore implements AutoCloseable {
     private boolean rejectedReentrantAccess;
 
     /** Package-private, one-shot allocation failure injection for host tests only. */
-    enum AllocationFailurePoint { BEFORE_HANDLE_ISSUE, BEFORE_RESERVE_COMMIT }
+    enum AllocationFailurePoint {
+        BEFORE_HANDLE_ISSUE, BEFORE_RESERVE_COMMIT, BEFORE_COLUMN_LOAN_ISSUE
+    }
     private AllocationFailurePoint injectedFailure;
 
     synchronized void armAllocationFailureForTest(AllocationFailurePoint at) {
@@ -555,16 +557,23 @@ public final class InvertedColumnStore implements AutoCloseable {
         int i = column(field);
         if (writers[i]) throw new IllegalStateException("column is mutably borrowed");
         if (readers[i] == Integer.MAX_VALUE) throw new IllegalStateException("reader count overflow");
+        // Issue the loan before publishing its read hold. A failed host
+        // allocation must never create a borrow that no caller can release.
+        failAllocationOnce(AllocationFailurePoint.BEFORE_COLUMN_LOAN_ISSUE);
+        ColumnLoan issued = new ColumnLoan(i, false);
         readers[i]++;
-        return new ColumnLoan(i, false);
+        return issued;
     }
 
     public synchronized ColumnLoan borrowWrite(int field) {
         open();
         int i = column(field);
         if (writers[i] || readers[i] != 0) throw new IllegalStateException("column is borrowed");
+        // Exclusive hold publication is the final, allocation-free step.
+        failAllocationOnce(AllocationFailurePoint.BEFORE_COLUMN_LOAN_ISSUE);
+        ColumnLoan issued = new ColumnLoan(i, true);
         writers[i] = true;
-        return new ColumnLoan(i, true);
+        return issued;
     }
 
     /** Borrow-bound logical column access; backing bytes never escape. */
