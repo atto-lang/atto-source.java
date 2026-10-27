@@ -34,7 +34,7 @@ the next operation in the same direction; TCP reads and writes may run in parall
 pub async routine main(): void {
   await fs.write_text("./message.txt", "hello");
   val String text = await fs.read_text("./message.txt");
-  stdio.println(text);
+  await stdio.println(text);
   return;
 }
 ```
