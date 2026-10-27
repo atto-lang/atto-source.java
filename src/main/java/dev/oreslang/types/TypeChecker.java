@@ -325,6 +325,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localFunctions = new HashSet<>();
+        Set<String> otherLocalDeclarations = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
@@ -339,7 +340,10 @@ public final class TypeChecker {
         Set<String> builtinNames = Set.copyOf(localNames);
 
         for (Ast.ModuleDecl module : program.modules()) {
-            if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
+            if (!module.name().equals(Parser.ROOT_MODULE)) {
+                localNames.add(module.name());
+                otherLocalDeclarations.add(module.name());
+            }
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
                     localNames.add(fn.name());
@@ -351,15 +355,23 @@ public final class TypeChecker {
                                 "HttpResponse is a sealed transport response type; user classes cannot shadow it");
                     }
                     localNames.add(klass.name());
+                    otherLocalDeclarations.add(klass.name());
                 }
-                else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
-                else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
+                else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    localNames.add(iface.name());
+                    otherLocalDeclarations.add(iface.name());
+                }
+                else if (declaration instanceof Ast.FieldDecl field) {
+                    localNames.add(field.name());
+                    otherLocalDeclarations.add(field.name());
+                }
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     if (alias.name().equals("HttpResponse")) {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
                     }
                     localNames.add(alias.name());
+                    otherLocalDeclarations.add(alias.name());
                 }
             }
         }
@@ -372,7 +384,8 @@ public final class TypeChecker {
                 if (localNames.contains(name)
                         && !(imported.kind() == Ast.ImportKind.FUNCTION
                                 && !imported.wildcard() && localFunctions.contains(name)
-                                && !builtinNames.contains(name))) {
+                                && !builtinNames.contains(name)
+                                && !otherLocalDeclarations.contains(name))) {
                     throw new IllegalArgumentException("imported name '" + name
                             + "' conflicts with a local or builtin name");
                 }
