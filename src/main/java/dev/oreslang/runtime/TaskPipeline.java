@@ -51,6 +51,33 @@ public final class TaskPipeline {
         }
     }
 
+    /**
+     * Graph-admission failures must retire a freshly transferred child before
+     * the scheduler can leave its current turn. A singleton production
+     * admission function avoids allocating a callback per pipeline stage;
+     * tests can inject an Error without unsafe global graph manipulation.
+     */
+    @FunctionalInterface
+    interface AwaitGraphAdmission {
+        void arm(OresFuture<?> owner, OresFuture<?> awaited);
+    }
+
+    private static final AwaitGraphAdmission RUNTIME_GRAPH_ADMISSION =
+            TaskPipeline::armPipelineAwait;
+
+    static void armOwnedPipelineAwait(
+            OresFuture<?> owner,
+            OresFuture<?> child,
+            AtomicReference<OresFuture<?>> ownedStage,
+            AwaitGraphAdmission graphAdmission) {
+        try {
+            graphAdmission.arm(owner, child);
+        } catch (RuntimeException | Error admissionFailure) {
+            if (ownedStage.compareAndSet(child, null)) child.cancel(false);
+            throw admissionFailure;
+        }
+    }
+
     private static void retirePipelineAwait(OresFuture<?> owner, OresFuture<?> expected) {
         if (owner == null) return;
         synchronized (PIPELINE_GRAPH_LOCK) {
@@ -354,15 +381,8 @@ public final class TaskPipeline {
                             if (ownedStage.compareAndSet(child, null)) child.cancel(false);
                             throw new UpstreamCancelled();
                         }
-                        try {
-                            armPipelineAwait(exposedRef.get(), child);
-                        } catch (RuntimeException | Error admissionFailure) {
-                            // If graph admission fails catastrophically, the
-                            // just-created owned child must not escape without
-                            // its cancellation authority being retired.
-                            if (ownedStage.compareAndSet(child, null)) child.cancel(false);
-                            throw admissionFailure;
-                        }
+                        armOwnedPipelineAwait(
+                                exposedRef.get(), child, ownedStage, RUNTIME_GRAPH_ADMISSION);
                         awaited = child;
                         return OresScheduler.await(child);
                     }
