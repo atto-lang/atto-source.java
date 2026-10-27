@@ -18,6 +18,8 @@ public final class TypeclassRegistry {
     public record TypeRef(String module, String name, List<TypeRef> arguments, boolean variable) {
         public TypeRef {
             Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(module, "module");
+            if (!variable && module.isBlank()) throw new IllegalArgumentException("nominal types require a module");
             if (name.isBlank()) throw new IllegalArgumentException("type name cannot be empty");
             arguments = List.copyOf(arguments);
             if (variable && (!module.isEmpty() || !arguments.isEmpty())) {
@@ -58,16 +60,16 @@ public final class TypeclassRegistry {
     }
 
     public static final class Registry {
-        private final Map<String, Typeclass> definitions = new LinkedHashMap<>();
-        private final Map<String, List<Instance>> instances = new LinkedHashMap<>();
+        private final Map<Typeclass, Typeclass> definitions = new LinkedHashMap<>();
+        private final Map<Typeclass, List<Instance>> instances = new LinkedHashMap<>();
 
         public void define(Typeclass typeclass) {
-            if (definitions.putIfAbsent(typeclass.qualifiedName(), typeclass) != null)
+            if (definitions.putIfAbsent(typeclass, typeclass) != null)
                 throw new IllegalArgumentException("duplicate typeclass: " + typeclass.qualifiedName());
         }
 
         public void register(Instance instance) {
-            Typeclass tc = definitions.get(instance.typeclass().qualifiedName());
+            Typeclass tc = definitions.get(instance.typeclass());
             if (!instance.typeclass().equals(tc))
                 throw new IllegalArgumentException("undefined or mismatched typeclass: "
                         + instance.typeclass().qualifiedName());
@@ -79,7 +81,7 @@ public final class TypeclassRegistry {
                 throw new IllegalArgumentException("orphan instance: " + tc.qualifiedName()
                         + " in " + instance.definingModule());
             }
-            List<Instance> list = instances.computeIfAbsent(tc.qualifiedName(), ignored -> new ArrayList<>());
+            List<Instance> list = instances.computeIfAbsent(tc, ignored -> new ArrayList<>());
             for (Instance prior : list) {
                 if (overlaps(prior.arguments(), instance.arguments())) {
                     throw new IllegalArgumentException("overlapping typeclass instances: "
@@ -110,7 +112,7 @@ public final class TypeclassRegistry {
 
         /** Preserve the unique witness's generic substitutions for associated types. */
         public Resolution resolveWithBindings(Typeclass typeclass, List<TypeRef> groundArguments) {
-            if (!typeclass.equals(definitions.get(typeclass.qualifiedName())))
+            if (!typeclass.equals(definitions.get(typeclass)))
                 throw new IllegalArgumentException("unknown typeclass: " + typeclass.qualifiedName());
             if (groundArguments.size() != typeclass.arity()
                     || groundArguments.stream().anyMatch(arg -> !arg.isGround())) {
@@ -118,7 +120,7 @@ public final class TypeclassRegistry {
             }
             Instance selected = null;
             Map<String, TypeRef> selectedBindings = null;
-            for (Instance candidate : instances.getOrDefault(typeclass.qualifiedName(), List.of())) {
+            for (Instance candidate : instances.getOrDefault(typeclass, List.of())) {
                 Map<String, TypeRef> variables = new HashMap<>();
                 boolean match = true;
                 for (int i = 0; i < groundArguments.size(); i++) {
