@@ -99,6 +99,12 @@ public final class AssociatedTypeWitnesses {
                             List<TypeclassRegistry.TypeRef> groundArguments) {
         Objects.requireNonNull(protocol, "protocol");
         Objects.requireNonNull(groundArguments, "groundArguments");
+        int[] incomingBudget = {MAX_TYPE_NODES};
+        for (var argument : groundArguments) {
+            Objects.requireNonNull(argument, "ground witness argument");
+            // Resolving a deeply recursive user type before admission is not safe.
+            requireBoundVariables(argument, Set.of(), incomingBudget);
+        }
         TypeclassRegistry.Registry.Resolution evidence =
                 coherence.resolveWithBindings(protocol, groundArguments);
         Map<String, TypeclassRegistry.TypeRef> equationsForWitness =
