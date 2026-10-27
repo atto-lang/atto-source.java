@@ -12,6 +12,18 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NativeNetStdlibTest {
+    @Test void canonicalHostedAndLegacyNamesResolveTheSameNioModule() throws Exception {
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("net.ores"));
+        assertFalse(CoreLibrarySources.packagedCorePaths().contains("net.ores"));
+        assertEquals(CoreLibrarySources.unitId("std/net"),
+                CoreLibrarySources.unitId("ores.std/net"));
+        assertEquals(CoreLibrarySources.source("std/net"),
+                CoreLibrarySources.source("ores.std/net"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.oresCoreSource("ores.core/net"));
+    }
+
+
     @Test void sourceModuleOwnsTcpOrchestrationWithoutHostInterop() throws Exception {
         String source = CoreLibrarySources.source("std/net");
         MixedSourceUnit parsed = MixedSourceUnit.parse(
@@ -104,7 +116,7 @@ final class NativeNetStdlibTest {
         }
         try {
             Files.writeString(entry, ("""
-                import module net_core from "std/net";
+                import module net_core from "ores.std/net";
                 pub async routine main(): void {
                   val NioTcpListener listener = net_core.listen_loopback(%d, 32, 4, 16);
                   val Future<NioTcpConnection> pending_accept = net_core.accept(rt borrow listener);

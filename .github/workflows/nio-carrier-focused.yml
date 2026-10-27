@@ -1,0 +1,92 @@
+name: NIO carrier contract focused qualification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/nio-carrier-focused.yml"
+      - "scripts/VerifyNioFocusedReports.java"
+      - "pom.xml"
+      - "src/main/java/dev/oreslang/**"
+      - "src/test/java/dev/oreslang/runtime/**"
+      - "src/test/java/dev/oreslang/config/CoreStdLibraryProfileAdmissionTest.java"
+      - "stdlib/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nio-carrier-focused-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      NIO_TESTS: OresCarrierPermitPoolTest,OresCarrierBudgetTest,AdaptiveCarrierExecutorTest,NioReadinessGroupTest,OresVMNioLifecycleTest,VmNioTcpListenerTest,OresSchedulerTest,ActorFutureBlockingTest,OresFutureTerminalNotificationRaceTest,FormalPhysicalStopJobModelCheckTest,FormalContextShutdownOrderModelCheckTest,ActorShardStopRaceTest,AsyncNativeIoTest,ActorHeapPlacementGuardTest,ActorHeapAdmissionTest,ActorPhysicalTurnCreditsTest,NativeNetStdlibTest,StrictNonblockingStdlibIoTest,CanonicalCoreLibraryTest,CoreStdLibraryImportProvenanceTest,CoreStdLibraryProfileAdmissionTest
+    steps:
+      - name: Checkout exact submitted source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify source identity and current main ancestry
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git merge-base --is-ancestor refs/remotes/origin/main HEAD
+          mkdir -p ci-evidence
+          {
+            printf 'source_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'source_tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+            printf 'main_sha=%s\n' "$(git rev-parse refs/remotes/origin/main)"
+            printf 'run_id=%s\nattempt=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'carrier=native\nsuites=%s\n' "$NIO_TESTS"
+          } | tee ci-evidence/source-identity.txt
+      - name: Set up GraalVM JDK25
+        id: toolchain
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Record toolchain and focused command
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version 2>&1 | tee ci-evidence/java-version.txt
+          mvn -version | tee ci-evidence/maven-version.txt
+          printf '%s\n' "mvn -B -ntp -Dores.runtime.carriers=native -Dtest=$NIO_TESTS -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true clean test" > ci-evidence/command.txt
+      - name: Execute the complete focused NIO carrier suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=$NIO_TESTS" \
+            -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true clean test \
+            2>&1 | tee ci-evidence/maven-focused.log
+      - name: Require executed tests in every selected suite
+        if: always() && steps.toolchain.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          java scripts/VerifyNioFocusedReports.java target/surefire-reports "$NIO_TESTS" \
+            2>&1 | tee ci-evidence/junit-counts.txt
+      - name: Retain source identity and execution reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nio-carrier-focused-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/
+            target/surefire-reports/TEST-*.xml
+          retention-days: 7
+          if-no-files-found: error
