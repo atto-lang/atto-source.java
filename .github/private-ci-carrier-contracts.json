@@ -28,6 +28,20 @@
           ]
         }
       }
+    },
+    "canonical-cloud-test/readiness-edge-e2e": {
+      "repository_id": 1352982959,
+      "base_sha": "a0e7416a936e240a8c188943e0d34afa2b407df7",
+      "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+      "workflow_blob_sha": "648da5de390b0d5f88b4b5e621774da4aa11e0c7",
+      "test_plans": {
+        "ci/test-plans/java-pr1816.json": {
+          "blob_sha": "7daa0e5c6b89bcd6e250cd7a89f41d653c997ed9",
+          "allowed_prs": [
+            1816
+          ]
+        }
+      }
     }
   }
 }
