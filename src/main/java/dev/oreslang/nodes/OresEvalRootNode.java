@@ -6472,7 +6472,6 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     for (Object item : values) {
                         context.schedulerSafepoint();
-                        generatorLoopSafepoint(env);
                         Env iteration = new Env(env);
                         bindSequenceDestructure(iterableValues(item, env), loop.bindings(), iteration,
                                 "for-of destructure");
@@ -6482,10 +6481,15 @@ public final class OresEvalRootNode extends RootNode {
                                     iteration,
                                     inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                         } catch (ContinueSignal ignored) {
+                            // The item/iteration body has committed before a
+                            // cooperative carrier handoff. Never suspend
+                            // after pulling an iterator item but before use.
+                            generatorLoopSafepoint(env);
                             continue;
                         } catch (BreakSignal ignored) {
                             break;
                         }
+                        generatorLoopSafepoint(env);
                     }
                 } finally {
                     closeIterable(values);
@@ -6500,7 +6504,6 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     for (Object item : values) {
                         context.schedulerSafepoint();
-                        generatorLoopSafepoint(env);
                         Env iteration = new Env(env);
                         iteration.define(loop.bindingName(), item, loop.bindingKind());
                         try {
@@ -6509,10 +6512,15 @@ public final class OresEvalRootNode extends RootNode {
                                     iteration,
                                     inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                         } catch (ContinueSignal ignored) {
+                            // The item/iteration body has committed before a
+                            // cooperative carrier handoff. Never suspend
+                            // after pulling an iterator item but before use.
+                            generatorLoopSafepoint(env);
                             continue;
                         } catch (BreakSignal ignored) {
                             break;
                         }
+                        generatorLoopSafepoint(env);
                     }
                 } finally {
                     closeIterable(values);
