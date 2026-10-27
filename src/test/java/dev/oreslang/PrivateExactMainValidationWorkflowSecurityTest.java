@@ -28,11 +28,11 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     @Test
     void onlyExplicitDispatchCanRunWithReadOnlyToken() throws Exception {
         String text = workflow();
-        assertEquals("on:\n  workflow_dispatch:\n",
+        assertEquals("on:\n  workflow_dispatch:",
                 region(text, "on:\n", "\npermissions:"));
-        assertEquals("permissions:\n  contents: read\n",
+        assertEquals("permissions:\n  contents: read",
                 region(text, "permissions:\n", "\nconcurrency:"));
-        assertFalse(Pattern.compile("(?m)^\\s+(?:permissions|pull_request|pull_request_target|push):")
+        assertFalse(Pattern.compile("(?m)^[ \\t]+(?:permissions|pull_request|pull_request_target|push):")
                 .matcher(text).find(), "no nested token overrides or implicit source triggers");
         assertEquals(1, text.split("\npermissions:\n", -1).length - 1);
         assertTrue(text.contains("group: private-oreslang-isolated-validation"));
