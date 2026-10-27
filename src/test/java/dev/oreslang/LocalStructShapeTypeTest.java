@@ -65,6 +65,56 @@ final class LocalStructShapeTypeTest {
     }
 
     @Test
+    void singleFieldLocalAliasSupportsPositionalConstructor() {
+        String source = """
+                pub fnc make(): T {
+                    type T = struct { foo: int };
+                    return T{5};
+                }
+                """;
+        Ast.ReturnStmt result = (Ast.ReturnStmt) function(source).body().getFirst();
+        Ast.ObjectExpr object = assertInstanceOf(Ast.ObjectExpr.class, result.value());
+        assertEquals(Ast.ObjectKind.EXPLICIT_STRUCT, object.kind());
+        assertEquals("foo", object.fields().getFirst().name());
+        assertEquals("foo", object.declaredFields().getFirst().name());
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void multiFieldAliasRequiresNamedInitialization() {
+        String source = """
+                fnc make(): T {
+                    type T = struct { foo: int, bar: string };
+                    return T{ bar: "yes", foo: 5 };
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): T {
+                    type T = struct { foo: int, bar: int };
+                    return T{5, 6};
+                }
+                """));
+    }
+
+    @Test
+    void constructorRejectsUnknownAndDuplicateFields() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): T {
+                    type T = struct { foo: int };
+                    return T{ bar: 5 };
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): T {
+                    type T = struct { foo: int };
+                    return T{ foo: 5, foo: 7 };
+                }
+                """));
+    }
+
+    @Test
     void independentLocalAliasesCanUseDifferentExactShapes() {
         String source = """
                 fnc a(): T {
