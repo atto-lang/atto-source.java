@@ -95,6 +95,53 @@ final class ActorIoIntrinsicTest {
     }
 
     @Test
+    void actorRefCannotEscapeThroughIoOut() {
+        PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                check("""
+                        define actor Child as
+                          receive(ActorMail<String> mail): void {
+                            self.end();
+                            return;
+                          }
+                        end
+
+                        pub suspends actor fnc worker(string value) -> void {
+                          await io.out.write(spawn Child());
+                          return;
+                        }
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-io-actorref-output.ores"));
+        assertTrue(
+                failure.getMessage().contains("data-only")
+                        && failure.getMessage().contains("ActorRef"),
+                failure::getMessage);
+    }
+
+    @Test
+    void actorRefCannotEscapeThroughSelfSendOutput() {
+        PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                check("""
+                        define actor Parent as
+                          receive(ActorMail<String> mail): void {
+                            self.send(spawn Parent());
+                            return;
+                          }
+                        end
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-self-send-actorref-output.ores"));
+        assertTrue(
+                failure.getMessage().contains("data-only")
+                        && failure.getMessage().contains("ActorRef"),
+                failure::getMessage);
+    }
+
+    @Test
     void rootIoIsNotAnAmbientProcessAlias() {
         PolyglotException failure = assertThrows(PolyglotException.class, () ->
                 check("""
