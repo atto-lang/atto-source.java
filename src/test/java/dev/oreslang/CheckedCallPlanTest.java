@@ -181,6 +181,53 @@ final class CheckedCallPlanTest {
     }
 
     @Test
+    void typeCheckerFailedCallRecheckRevokesPreviousProofBeforeRecord() {
+        Ast.Program first = dev.oreslang.types.TypeChecker.checkTypes(
+                dev.oreslang.parser.Parser.parse("""
+                        fnc f(int value): int { return value; }
+                        pub routine main(): int { return f(1); }
+                        """));
+        Ast.ModuleDecl module = first.modules().getFirst();
+        Ast.FunctionDecl main = module.declarations().stream()
+                .filter(decl -> decl instanceof Ast.FunctionDecl fn
+                        && fn.name().equals("main"))
+                .map(decl -> (Ast.FunctionDecl) decl)
+                .findFirst().orElseThrow();
+        Ast.ReturnStmt returned = (Ast.ReturnStmt) main.body().getFirst();
+        Ast.CallExpr call = (Ast.CallExpr) returned.value();
+        CheckedCallPlan admitted = CheckedCallPlan.require(call);
+        assertEquals(List.of(0), admitted.abiToSource());
+
+        Ast.Program alternative = dev.oreslang.parser.Parser.parse("""
+                fnc f(int value, int missing): int { return value; }
+                """);
+        Ast.FunctionDecl changed = (Ast.FunctionDecl)
+                alternative.modules().getFirst().declarations().getFirst();
+        // Deliberately reuse the exact checked main declaration and CallExpr,
+        // while changing its callable family signature to one that rejects.
+        Ast.Program sameCallNewContext = new Ast.Program(
+                first.namespace(),
+                first.imports(),
+                List.of(new Ast.ModuleDecl(
+                        module.name(), List.of(changed, main))));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(
+                        sameCallNewContext));
+        assertNull(
+                CheckedCallPlan.lookup(call),
+                "an old checked proof must not survive failure before record");
+
+        // The first program's call is an AST identity, not an arbitrary
+        // signature cache: independent call nodes are never revoked.
+        Ast.CallExpr independent = new Ast.CallExpr(
+                new Ast.NameExpr("f"),
+                List.of(new Ast.LiteralExpr(3L)));
+        CheckedCallPlan.record(independent, admitted);
+        assertSame(admitted, CheckedCallPlan.require(independent));
+    }
+
+    @Test
     void failedRevalidationRevokesPreviouslyPublishedCallProofs() {
         Ast.CallExpr source = new Ast.CallExpr(
                 new Ast.NameExpr("f"),
