@@ -70,6 +70,39 @@ final class InvertedArrayTest {
     }
 
     @Test
+    void sourceParsedBracketWriteAndReadBindWithoutMacroExpansion() {
+        Ast.Program source = Parser.parse("""
+                define inverted class Particle as
+                    x: f64;
+                end
+
+                fnc probe(InvertedArray<Particle> rows, int i): f64 {
+                    rows[i].x = 7.0;
+                    return rows[i].x;
+                }
+                """);
+        var declarations = source.modules().getFirst().declarations();
+        var cls = (Ast.ClassDecl) declarations.get(0);
+        var fn = (Ast.FunctionDecl) declarations.get(1);
+        var schema = InvertedArray.Schema.fromClass(cls);
+        var statement = (Ast.ExprStmt) fn.body().getFirst();
+        var returned = (Ast.ReturnStmt) fn.body().get(1);
+
+        var write = InvertedIndexedFieldPlan.bindWrite(statement.expression(), schema);
+        var read = InvertedIndexedFieldPlan.bindRead(returned.value(), schema);
+        assertEquals("x", write.field().name());
+        assertSame(write.field(), read.field());
+        assertTrue(write.receiver() instanceof Ast.NameExpr);
+        assertTrue(write.index() instanceof Ast.NameExpr);
+        assertSame(((Ast.AssignExpr) statement.expression()).value(), write.value());
+        assertEquals(InvertedIndexedFieldPlan.Operation.WRITE, write.operation());
+        assertEquals(InvertedIndexedFieldPlan.Operation.READ, read.operation());
+
+        // Recognizing AST shapes does not satisfy typed ownership lowering.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(source));
+    }
+
+    @Test
     void indexedFieldAstPlanRetainsExactExpressionsAndNominalBindings() {
         var schema = InvertedArray.Schema.fromClass(particle());
         var differentSchema = InvertedArray.Schema.fromClass(particle());
