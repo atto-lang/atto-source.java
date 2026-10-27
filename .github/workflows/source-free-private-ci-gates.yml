@@ -1,19 +1,7 @@
 name: Source-free private CI gate regression
 on:
+  # Always emit the required governance check for protected-main merges.
   pull_request:
-    paths:
-      - 'scripts/check-private-ci-destination.sh'
-      - 'scripts/test-private-ci-destination.sh'
-      - 'scripts/run-in-private-ci-destination.sh'
-      - 'scripts/publish-private-ci-source*.py'
-      - 'scripts/test-private-ci-codeowners-contract.sh'
-      - '.github/private-ci-approved-repositories.txt'
-      - '.github/private-ci-incident-dispositions.json'
-      - '.github/private-ci-carrier-contracts.json'
-      - '.github/CODEOWNERS'
-      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
-      - '.github/workflows/source-free-private-ci-gates.yml'
-      - '.github/workflows/private-ci-mirror-preflight.yml'
   workflow_dispatch:
 permissions:
   contents: read
