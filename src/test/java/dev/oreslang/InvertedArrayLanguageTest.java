@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.InvertedArray;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -399,6 +400,33 @@ final class InvertedArrayLanguageTest {
                     failure.getMessage().contains("non-suspending scalar expression"),
                     failure::getMessage);
         }
+    }
+
+    @Test
+    void executableAdmissionPinsTheTypecheckedPhysicalSchema() {
+        Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.MemberExpr member = returnedMember(typed);
+        Ast.InvertedIndexTypeEvidence evidence =
+                Ast.CheckedInvertedIndexTypes.lookup(member);
+        assertNotNull(evidence);
+
+        long epoch = Ast.CheckedInvertedIndexes.requireProgramEpoch(typed);
+        Ast.InvertedIndexAdmission admission = Ast.CheckedInvertedIndexes.require(
+                typed, member, epoch, Ast.InvertedIndexAccess.READ);
+
+        Ast.ClassDecl particle = typed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .filter(klass -> klass.name().equals("Particle"))
+                .findFirst()
+                .orElseThrow();
+        var expected =
+                InvertedArray.Schema.fromClass(particle).physicalFingerprint();
+
+        assertEquals(expected, evidence.physicalSchemaFingerprint());
+        assertEquals(expected, admission.physicalSchemaFingerprint());
+        assertThrows(UnsupportedOperationException.class,
+                () -> admission.physicalSchemaFingerprint().add("forged"));
     }
 
     @Test
