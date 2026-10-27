@@ -28,8 +28,9 @@ public final class TypedScalarSmtTest {
     private static String evaluateWithCommand(String smt, List<String> command,
                                               long timeoutMillis) throws Exception {
         byte[] input = smt.getBytes(StandardCharsets.UTF_8);
-        assertTrue(input.length <= 65_536, "SMT input exceeds the proof budget");
-        assertTrue(timeoutMillis > 0 && timeoutMillis <= 30_000, "invalid solver deadline");
+        if (input.length > 65_536 || timeoutMillis <= 0 || timeoutMillis > 30_000) {
+            throw new IllegalArgumentException("invalid SMT input length or solver deadline");
+        }
         Process process = new ProcessBuilder(command).start();
         java.util.concurrent.ExecutorService streams =
                 java.util.concurrent.Executors.newFixedThreadPool(3, runnable -> {
@@ -57,11 +58,13 @@ public final class TypedScalarSmtTest {
             write.get(2, TimeUnit.SECONDS);
             byte[] stdoutBytes = stdout.get(2, TimeUnit.SECONDS);
             byte[] stderrBytes = stderr.get(2, TimeUnit.SECONDS);
-            assertTrue(stdoutBytes.length <= 4096 && stderrBytes.length <= 4096,
-                    "Z3 output exceeds the proof transcript budget");
+            if (stdoutBytes.length > 4096 || stderrBytes.length > 4096) {
+                throw new IllegalArgumentException("Z3 output exceeds proof transcript budget");
+            }
             String diagnostics = new String(stderrBytes, StandardCharsets.UTF_8);
-            assertEquals(0, process.exitValue(), "Z3 exited unsuccessfully: " + diagnostics);
-            assertEquals("", diagnostics, "unexpected solver diagnostic");
+            if (process.exitValue() != 0 || !diagnostics.isEmpty()) {
+                throw new IllegalArgumentException("Z3 exit failure or unexpected solver diagnostic");
+            }
             return requireExactSolverTranscript(
                     new String(stdoutBytes, StandardCharsets.UTF_8));
         } finally {
@@ -266,17 +269,17 @@ public final class TypedScalarSmtTest {
     @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
     void boundedSolverProcessRejectsDeadlocksAndForgedStdout() throws Exception {
         assertEquals("unsat", evaluateWithCommand("(check-sat)\n",
-                List.of("sh", "-c", "printf 'unsat\\n'"), 2_000));
-        assertThrows(Exception.class, () -> evaluateWithCommand("(check-sat)\n",
-                List.of("sh", "-c", "printf 'unsat\\n'; printf 'diagnostic\\n' >&2"),
+                List.of("sh", "-c", "cat >/dev/null; printf 'unsat\\n'"), 2_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; printf 'unsat\\n'; printf 'diagnostic\\n' >&2"),
                 2_000));
-        assertThrows(Exception.class, () -> evaluateWithCommand("(check-sat)\n",
-                List.of("sh", "-c", "printf 'unsat\\n'; exit 91"), 2_000));
-        assertThrows(Exception.class, () -> evaluateWithCommand("(check-sat)\n",
-                List.of("sh", "-c", "yes overflow | head -c 200000"), 1_000));
-        assertThrows(Exception.class, () -> evaluateWithCommand("(check-sat)\n",
-                List.of("sh", "-c", "yes error | head -c 200000 >&2"), 1_000));
-        assertThrows(Exception.class, () -> evaluateWithCommand("x".repeat(65_536),
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; printf 'unsat\\n'; exit 91"), 2_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; yes overflow | head -c 200000"), 1_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; yes error | head -c 200000 >&2"), 1_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("x".repeat(65_536),
                 List.of("sh", "-c", "sleep 5"), 250));
     }
 
