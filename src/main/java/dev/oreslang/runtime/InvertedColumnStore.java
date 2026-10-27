@@ -141,6 +141,9 @@ public final class InvertedColumnStore implements AutoCloseable {
 
     private static ColumnSpec[] scalarSpecs(Kind[] types) {
         if (types == null) throw new IllegalArgumentException("null inverted column kinds");
+        if (types.length > MAX_COLUMN_COUNT) {
+            throw new IllegalArgumentException("inverted store exceeds maximum column count");
+        }
         ColumnSpec[] specs = new ColumnSpec[types.length];
         for (int i = 0; i < types.length; i++) specs[i] = ColumnSpec.scalar(types[i]);
         return specs;
