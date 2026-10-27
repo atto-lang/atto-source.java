@@ -251,6 +251,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         // Simulate failure after preparing every replacement array but before
         // publishing any of them. This is a host-only one-shot test seam.
         failAllocationOnce(AllocationFailurePoint.BEFORE_RESERVE_COMMIT);
+        byte[][] retiredColumns = columns;
         columns = newColumns;
         buffers = newBuffers;
         rowSlots = newRowSlots;
@@ -259,6 +260,11 @@ public final class InvertedColumnStore implements AutoCloseable {
         live = newLive;
         reusable = newReusable;
         capacity = required;
+        // After the new physical image is fully published, scrub all
+        // retired copies. They are inaccessible through the store, but
+        // otherwise retain row payload bytes until garbage collection.
+        // This is allocation-free and cannot invalidate new backing.
+        for (byte[] retired : retiredColumns) Arrays.fill(retired, (byte) 0);
     }
 
     private static void validateValue(ColumnSpec spec, Object value) {
