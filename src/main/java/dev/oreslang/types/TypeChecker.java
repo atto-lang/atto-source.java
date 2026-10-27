@@ -259,6 +259,7 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        Ast.CheckedInvertedIndexes.revokeForTypeRecheck(program);
         rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
@@ -302,6 +303,9 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        // Revoke at the actual public entry, before even null/linked metadata
+        // validation. A failed recheck must never retain executable indexing.
+        Ast.CheckedInvertedIndexes.revokeForTypeRecheck(program);
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
