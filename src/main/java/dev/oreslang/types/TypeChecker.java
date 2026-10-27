@@ -2871,7 +2871,8 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr console
                     && console.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("stdio") && env.lookup("stdio") == null
-                    && (console.member().equals("print") || console.member().equals("println"))) {
+                    && (console.member().equals("print_async")
+                        || console.member().equals("println_async"))) {
                 if (call.typeArgumentsPresent() || call.arguments().isEmpty()
                         || call.arguments().size() > 32) {
                     throw new IllegalArgumentException("stdio." + console.member()
@@ -2879,11 +2880,12 @@ public final class TypeChecker {
                 }
                 for (Ast.Expr argument : call.arguments()) {
                     if (argument instanceof Ast.SpreadExpr) {
-                        throw new IllegalArgumentException("stdio console spread is unsupported; use stdio.stdout.log");
+                        throw new IllegalArgumentException(
+                                "async stdio console spread is unsupported; use stdio.stdout.log_list_async");
                     }
                     typeOf(argument, env, generics, self);
                 }
-                return Primitive.VOID;
+                return new Named("Future", List.of(Primitive.VOID));
             }
             if (isBuiltinStdoutCall(call, "log_async", env)) {
                 if (call.typeArgumentsPresent()) {
