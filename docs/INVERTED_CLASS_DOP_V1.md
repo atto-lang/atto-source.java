@@ -189,6 +189,27 @@ diagnostics rather than risking compiler stack exhaustion or unbounded staging
 work. JUnit fixtures cover both deep chains and repeatedly shared binary
 subtrees; they remain unverified until a real Java test runner executes.
 
+### Recheck revocation across type and ownership entry points
+
+An exact-Program inverted-index execution epoch is revoked **at the start**
+of `TypeChecker.checkTypesWithDiagnostics` and the linked-metadata type
+entry point, including before argument validation, annotation expansion,
+import resolution or any operation that can throw. A failure leaves the
+original immutable Program unable to execute its old bracket-field evidence.
+The revocation is scoped to Program object identity: independently admitted
+ASTs continue to function even when their source text is identical.
+
+A type failure also fences direct `OwnershipChecker.check(oldProgram)`
+from laundering its previous type side table into a new executable epoch.
+The recheck barrier is **not publicly clearable**; the supported repair path
+is a successful complete TypeChecker/OwnershipChecker analysis of a freshly
+expanded Program with newly admitted exact-site evidence. The annotation
+expander returns a distinct Program identity rather than reusing the old one.
+Fail-closed negative fixtures must cover failing linked metadata, stale
+execution epochs, independent valid ASTs and the fresh reanalysis path.
+These are committed regression fixtures, **not a JUnit pass** until an
+actual source runner has executed them.
+
 ### Atomic compound indexed operations
 
 A generated `rows[i].field += expression` must never be implemented as
