@@ -1,6 +1,8 @@
 package dev.oreslang.interop;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.ExportResolver;
+import dev.oreslang.compiler.SourceExportTable;
 import dev.oreslang.imports.ImportRules;
 
 import javax.tools.Diagnostic;
@@ -116,26 +118,39 @@ public final class MixedJavaCompiler {
 
         Map<String, String> importedJavaTypes = importedJavaTypes(program);
         Map<String, List<Ast.FunctionDecl>> publicByName = new LinkedHashMap<>();
-        for (Ast.ModuleDecl module : program.modules()) {
-            for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    publicByName.computeIfAbsent(fn.name(), ignored -> new ArrayList<>()).add(fn);
+        for (var namespace : ExportResolver.resolve(program).namespaces().values()) {
+            for (ExportResolver.ExportBinding binding : namespace) {
+                if (binding.scope() != Ast.ExportScope.PUBLIC
+                        || (binding.localKind() != Ast.ExportKind.FNC
+                                && binding.localKind() != Ast.ExportKind.ROUTINE)) {
+                    continue;
+                }
+                List<Ast.FunctionDecl> family =
+                        publicByName.computeIfAbsent(
+                                binding.externalName(), ignored -> new ArrayList<>());
+                for (Ast.Decl declaration :
+                        SourceExportTable.localDeclarations(program, binding)) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && !family.contains(fn)) {
+                        family.add(fn);
+                    }
                 }
             }
         }
 
         for (Map.Entry<String, List<Ast.FunctionDecl>> entry : publicByName.entrySet()) {
             if (entry.getValue().size() != 1) continue;
+            String externalName = entry.getKey();
             Ast.FunctionDecl fn = entry.getValue().getFirst();
-            if (!javaIdentifier(fn.name()) || fn.name().equals("call")) continue;
+            if (!javaIdentifier(externalName) || externalName.equals("call")) continue;
             String returnType = javaReturnType(fn.returnType(), importedJavaTypes);
-            out.append("  public static ").append(returnType).append(' ').append(fn.name()).append('(');
+            out.append("  public static ").append(returnType).append(' ').append(externalName).append('(');
             for (int i = 0; i < fn.parameters().size(); i++) {
                 if (i > 0) out.append(", ");
                 out.append("Object p").append(i);
             }
             out.append(") {\n    ");
-            String call = "call(\"" + javaString(fn.name()) + "\"";
+            String call = "call(\"" + javaString(externalName) + "\"";
             for (int i = 0; i < fn.parameters().size(); i++) call += ", p" + i;
             call += ")";
             appendReturn(out, returnType, call);
