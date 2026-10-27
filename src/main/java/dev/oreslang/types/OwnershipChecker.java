@@ -40,6 +40,7 @@ public final class OwnershipChecker {
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
+    private final Set<String> importedFncs = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
@@ -147,6 +148,13 @@ public final class OwnershipChecker {
     }
 
     private void index(Ast.Program program) {
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
+                for (String source : imported.names()) {
+                    importedFncs.add(dev.oreslang.imports.ImportRules.localName(imported, source));
+                }
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
@@ -1236,6 +1244,14 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr root
+                    && root.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)) {
+                if (!importedFncs.contains(member.member())) {
+                    throw error("imports::" + member.member()
+                            + " requires an explicitly named import fnc binding");
+                }
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
+            }
+            if (member.receiver() instanceof Ast.NameExpr root
                     && root.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE)) {
                 if (member.member().equals("init")) {
                     throw error("pkg::init is a lifecycle hook and cannot be a value");
@@ -1675,6 +1691,24 @@ public final class OwnershipChecker {
             }
         }
 
+        if (call.callee() instanceof Ast.MemberExpr imported
+                && imported.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)) {
+            if (!importedFncs.contains(imported.member())) {
+                throw error("imports::" + imported.member()
+                        + " requires an explicitly named import fnc binding");
+            }
+            if (call.typeArgumentsPresent()) {
+                throw error("imports::" + imported.member()
+                        + " cannot specialize an opaque imported fnc");
+            }
+            // No linked signature is fabricated here. Each argument is still
+            // ownership-checked, including moves and outstanding borrows.
+            for (Ast.Expr argument : call.arguments()) {
+                checkExpr(argument, scope, true);
+            }
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
             boolean pkgRoot = namespace.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE);
