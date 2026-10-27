@@ -66,6 +66,20 @@ public final class ExportResolver {
                         "[OVERLOAD_VISIBILITY_CONFLICT] overload family " + name
                                 + " mixes incompatible explicit visibility states " + explicit);
             }
+
+            Set<String> signatures = new LinkedHashSet<>();
+            for (Ast.Decl declaration : declarations) {
+                Ast.FunctionDecl fn = (Ast.FunctionDecl) declaration;
+                String signature = fn.parameters().stream()
+                        .map(parameter -> parameter.type().toString())
+                        .collect(java.util.stream.Collectors.joining(",", "(", ")"))
+                        + "->" + fn.returnType();
+                if (!signatures.add(signature)) {
+                    throw new IllegalArgumentException(
+                            "[DUPLICATE_OVERLOAD_SIGNATURE] overload family " + name
+                                    + " repeats signature " + signature);
+                }
+            }
         }
 
         Ast.Visibility effectiveVisibility() {
