@@ -1,0 +1,44 @@
+define class Sequences as
+  pub static gen* values(): Iterator<int> {
+    yield 20;
+    yield 22;
+    return;
+  }
+
+  pub static async gen* events(): AsyncIterator<int> {
+    yield 20;
+    yield 22;
+    return;
+  }
+
+  pub static suspend gen* cooperative(): AsyncIterator<int> {
+    rt cooperate;
+    yield 20;
+    yield 22;
+    return;
+  }
+end
+
+pub async routine main(): void {
+  let int sync_total = 0;
+  for const value of Sequences.values() {
+    sync_total = sync_total + value;
+  }
+
+  let int async_total = 0;
+  for await const value of Sequences.events() {
+    async_total = async_total + value;
+  }
+
+  let int suspend_total = 0;
+  for await const value of Sequences.cooperative() {
+    suspend_total = suspend_total + value;
+  }
+
+  stdio.stdout.write(sync_total);
+  stdio.stdout.write(":");
+  stdio.stdout.write(async_total);
+  stdio.stdout.write(":");
+  stdio.stdout.write(suspend_total);
+  return;
+}
