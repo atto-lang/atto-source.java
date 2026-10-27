@@ -55,13 +55,26 @@ MAX_GOVERNANCE_FILE = 1024 * 1024
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
 CARRIER_REQUIRED_STATUS_CONTEXTS = frozenset({"verifier-tests"})
-CONTRACT_SCHEMA = 1
+CONTRACT_SCHEMA = 2
 INCIDENT_DISPOSITION_SCHEMA = 1
 MAX_CONTRACT = 64 * 1024
 MAX_INCIDENT_DISPOSITION = 64 * 1024
 MAX_DISPOSITION_COMMENT = 64 * 1024
 MAX_CONTRACT_CARRIERS = 32
 MAX_CONTRACT_TEST_PLANS = 64
+CARRIER_CONTROL_PATHS = (
+    ".github/CODEOWNERS",
+    "scripts/verify-oreslang-private-carrier.py",
+    "scripts/test-oreslang-private-carrier.py",
+    "scripts/run-oreslang-test-plan.py",
+    "scripts/test-run-oreslang-test-plan.py",
+    "scripts/materialize-oreslang-dependency-inputs.py",
+    "scripts/test-materialize-oreslang-dependency-inputs.py",
+    "scripts/prepare-oreslang-maven-offline.py",
+    "scripts/test-prepare-oreslang-maven-offline.py",
+    "scripts/run-oreslang-sandbox.sh",
+    "scripts/test-run-oreslang-sandbox.py",
+)
 MAX_PLAN = 64 * 1024
 RECEIPT_TTL = dt.timedelta(hours=24)
 SOURCE_REPOSITORY_ID = 1400792274
@@ -282,13 +295,13 @@ def parse_contract(raw, repository, source_pr, test_plan):
             or doc.get("schema") != CONTRACT_SCHEMA):
         raise Denied("unsupported or non-exact carrier contract schema")
     carriers = doc.get("carriers")
-    if (not isinstance(carriers, dict) or not carriers
+    if (not isinstance(carriers, dict)
             or len(carriers) > MAX_CONTRACT_CARRIERS):
         raise Denied("carrier contract has invalid carrier registry")
 
     required_carrier_fields = {
         "repository_id", "base_sha", "workflow_path",
-        "workflow_blob_sha", "test_plans"
+        "workflow_blob_sha", "control_blobs", "test_plans"
     }
     allowed_carrier_fields = required_carrier_fields
     seen_slugs = set()
@@ -330,6 +343,15 @@ def parse_contract(raw, repository, source_pr, test_plan):
         valid_sha(
             candidate.get("workflow_blob_sha"), "carrier workflow blob invalid"
         )
+        control_blobs = candidate.get("control_blobs")
+        if (not isinstance(control_blobs, dict)
+                or set(control_blobs) != set(CARRIER_CONTROL_PATHS)):
+            raise Denied("carrier control blob set is not exact")
+        for control_path in CARRIER_CONTROL_PATHS:
+            valid_sha(
+                control_blobs.get(control_path),
+                "carrier control blob invalid: " + control_path,
+            )
 
         plans = candidate.get("test_plans")
         if (not isinstance(plans, dict) or not plans
@@ -365,6 +387,13 @@ def parse_contract(raw, repository, source_pr, test_plan):
     workflow_blob = valid_sha(
         carrier["workflow_blob_sha"], "carrier workflow blob invalid"
     )
+    control_blobs = {
+        path: valid_sha(
+            carrier["control_blobs"][path],
+            "carrier control blob invalid: " + path,
+        )
+        for path in CARRIER_CONTROL_PATHS
+    }
     plans = carrier["test_plans"]
     plan_path = safe_policy_path(test_plan, "ci/test-plans/", ".json")
     plan = plans.get(plan_path)
@@ -379,6 +408,7 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "base_sha": base_sha,
         "workflow_path": workflow_path,
         "workflow_blob_sha": workflow_blob,
+        "control_blobs": control_blobs,
         "test_plan_path": plan_path,
         "test_plan_blob_sha": plan_blob,
     }
@@ -659,9 +689,11 @@ def checked_carrier_main(repository, contract):
                        or bypasses.get(key) for key in ("users", "teams", "apps"))):
             raise Denied("carrier main has pull-request review bypasses")
 
-    codeowners, _ = remote_carrier_file(
+    codeowners, codeowners_blob = remote_carrier_file(
         repository, legacy.CODEOWNERS_PATH, base_sha, MAX_GOVERNANCE_FILE
     )
+    if codeowners_blob != contract["control_blobs"][legacy.CODEOWNERS_PATH]:
+        raise Denied("carrier CODEOWNERS differs from protected contract")
     require_carrier_security_codeowners(codeowners)
     return base_sha
 
@@ -693,6 +725,18 @@ def checked_destination(repository, contract):
                 or isinstance(path, str) and path.startswith(legacy.PREFIX + "/")
                 or path == RECEIPT_PATH):
             raise Denied("reviewed carrier base is not source-free")
+
+    for control_path, expected_blob in contract["control_blobs"].items():
+        control_bytes, control_blob = remote_carrier_file(
+            repository, control_path, base_sha, MAX_GOVERNANCE_FILE
+        )
+        if control_blob != expected_blob:
+            raise Denied(
+                "carrier control file differs from protected contract: "
+                + control_path
+            )
+        if not control_bytes:
+            raise Denied("carrier control file is empty: " + control_path)
 
     workflow_bytes, workflow_blob = remote_carrier_file(
         repository, contract["workflow_path"], base_sha, MAX_GOVERNANCE_FILE
