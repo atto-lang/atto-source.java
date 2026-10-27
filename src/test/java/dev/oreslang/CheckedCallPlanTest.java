@@ -185,15 +185,15 @@ final class CheckedCallPlanTest {
         Ast.Program first = dev.oreslang.types.TypeChecker.checkTypes(
                 dev.oreslang.parser.Parser.parse("""
                         fnc f(int value): int { return value; }
-                        pub routine main(): int { return f(1); }
+                        fnc caller(): int { return f(1); }
                         """));
         Ast.ModuleDecl module = first.modules().getFirst();
-        Ast.FunctionDecl main = module.declarations().stream()
+        Ast.FunctionDecl caller = module.declarations().stream()
                 .filter(decl -> decl instanceof Ast.FunctionDecl fn
-                        && fn.name().equals("main"))
+                        && fn.name().equals("caller"))
                 .map(decl -> (Ast.FunctionDecl) decl)
                 .findFirst().orElseThrow();
-        Ast.ReturnStmt returned = (Ast.ReturnStmt) main.body().getFirst();
+        Ast.ReturnStmt returned = (Ast.ReturnStmt) caller.body().getFirst();
         Ast.CallExpr call = (Ast.CallExpr) returned.value();
         CheckedCallPlan admitted = CheckedCallPlan.require(call);
         assertEquals(List.of(0), admitted.abiToSource());
@@ -203,13 +203,13 @@ final class CheckedCallPlanTest {
                 """);
         Ast.FunctionDecl changed = (Ast.FunctionDecl)
                 alternative.modules().getFirst().declarations().getFirst();
-        // Deliberately reuse the exact checked main declaration and CallExpr,
+        // Deliberately reuse the exact checked caller declaration and CallExpr,
         // while changing its callable family signature to one that rejects.
         Ast.Program sameCallNewContext = new Ast.Program(
                 first.namespace(),
                 first.imports(),
                 List.of(new Ast.ModuleDecl(
-                        module.name(), List.of(changed, main))));
+                        module.name(), List.of(changed, caller))));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> dev.oreslang.types.TypeChecker.checkTypes(
