@@ -10415,6 +10415,21 @@ public final class TypeChecker {
                 && named.arguments().size() == 1;
     }
 
+    /**
+     * Runtime omission materialization currently receives the declared
+     * parameter TypeRef, not a fully resolved TypeChecker Type. Therefore an
+     * implicit None default is admitted only when the source parameter itself
+     * has canonical Option<T> shape (including T? sugar). A type alias that
+     * resolves to Option<T> must carry an explicit @DefaultArgVals(name: None)
+     * until checked default materialization is published as compiler metadata.
+     */
+    private static boolean hasDirectRuntimeOptionShape(Ast.Param param) {
+        Ast.TypeRef type = param.type();
+        return type.name().equals("Option")
+                && type.arguments().size() == 1
+                && !type.inferArguments();
+    }
+
     private Type defaultLiteralType(
             Ast.TypeRef literal,
             Type expected,
@@ -10474,12 +10489,14 @@ public final class TypeChecker {
             }
 
             if (explicit == null) {
-                if (!isOptionType(expected)) {
+                if (!isOptionType(expected)
+                        || !hasDirectRuntimeOptionShape(param)) {
                     throw new IllegalArgumentException(
-                            "omittable scalar parameter '" + param.name()
+                            "omittable parameter '" + param.name()
                                     + "' requires @DefaultArgVals("
                                     + param.name() + ": literal); "
-                                    + "Option<T> omittable parameters default to None");
+                                    + "only a directly declared Option<T> / T? "
+                                    + "parameter may use the implicit None runtime default");
                 }
             } else {
                 // A declaration default must be valid for every specialization.
