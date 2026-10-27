@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.config.OresProjectConfig;
+import dev.oreslang.runtime.LinkedProgramRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -220,6 +221,95 @@ final class ExplicitImportPhysicalBoundaryTest {
                 Map.of(OresProjectConfig.ENV_ORESLANG_PATH, ambientRoot.toString()));
         assertEquals(target.toRealPath(),
                 config.resolveImport(importer, "..backup/util").orElseThrow());
+    }
+
+
+    @Test
+    void linkedRunnerPreservesLexicalProjectAuthorityForSymlinkedEntry() throws Exception {
+        Path project = manifestProject("linked-symlink-entry");
+        Path src = Files.createDirectories(project.resolve("src"));
+        Path outside = Files.createDirectories(temp.resolve("linked-symlink-entry-outside"));
+        Path physicalEntry = outside.resolve("main.ores");
+        Files.writeString(physicalEntry, """
+                import * as helper from "./helper.ores";
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(outside.resolve("helper.ores"),
+                "pub fnc helper(): int { return 42; }\n");
+
+        Path lexicalEntry = src.resolve("main.ores");
+        requireSymlink(lexicalEntry, physicalEntry);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(lexicalEntry, Map.of()));
+        assertTrue(failure.getMessage().contains("escapes physical project root"),
+                failure.getMessage());
+    }
+
+    @Test
+    void relativeImportCannotReachNestedPackageThroughDirectoryAlias() throws Exception {
+        Path project = manifestProject("nested-package-alias");
+        Path src = Files.createDirectories(project.resolve("src"));
+        Path importer = src.resolve("main.ores");
+        Files.writeString(importer, "pub fnc main(): void { return; }\n");
+
+        Path child = Files.createDirectories(src.resolve("child"));
+        Files.writeString(child.resolve(OresProjectConfig.MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(child.resolve("secret.ores"),
+                "pub fnc secret(): int { return 7; }\n");
+        requireSymlink(src.resolve("alias"), child);
+
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "./alias/secret"));
+        assertTrue(failure.getMessage().contains("nested package boundary"),
+                failure.getMessage());
+    }
+
+    @Test
+    void malformedNestedPackageMarkerStillClaimsBoundary() throws Exception {
+        Path project = manifestProject("malformed-nested-marker");
+        Path src = Files.createDirectories(project.resolve("src"));
+        Path importer = src.resolve("main.ores");
+        Files.writeString(importer, "pub fnc main(): void { return; }\n");
+
+        Path child = Files.createDirectories(src.resolve("child"));
+        Files.writeString(child.resolve(OresProjectConfig.MANIFEST_NAME),
+                "this is not valid toml = [\n");
+        Files.writeString(child.resolve("secret.ores"),
+                "pub fnc secret(): int { return 7; }\n");
+
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "./child/secret"));
+        assertTrue(failure.getMessage().contains("nested package boundary"),
+                failure.getMessage());
+    }
+
+    @Test
+    void danglingNestedPackageMarkerStillClaimsBoundary() throws Exception {
+        Path project = manifestProject("dangling-nested-marker");
+        Path src = Files.createDirectories(project.resolve("src"));
+        Path importer = src.resolve("main.ores");
+        Files.writeString(importer, "pub fnc main(): void { return; }\n");
+
+        Path child = Files.createDirectories(src.resolve("child"));
+        requireSymlink(
+                child.resolve(OresProjectConfig.MANIFEST_NAME),
+                child.resolve("missing-manifest.toml"));
+        Files.writeString(child.resolve("secret.ores"),
+                "pub fnc secret(): int { return 7; }\n");
+
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "./child/secret"));
+        assertTrue(failure.getMessage().contains("nested package boundary"),
+                failure.getMessage());
     }
 
     private Path manifestProject(String name) throws IOException {
