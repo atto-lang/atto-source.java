@@ -9670,6 +9670,11 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) {
                     throw new IllegalArgumentException(ref.name() + "<void> is invalid");
                 }
+                if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            ref.name() + "<T> requires owned element data until iterator-bound "
+                                    + "lifetimes are explicit; borrowed values cannot survive iterator storage/pulls");
+                }
                 yield new Named(ref.name().equals("Generator") ? "Iterator" : ref.name().equals("AsyncGenerator") ? "AsyncIterator" : ref.name(), List.of(element));
             }
             case "SharedMutex" -> {
