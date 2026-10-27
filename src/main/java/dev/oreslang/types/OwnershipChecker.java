@@ -1620,7 +1620,8 @@ public final class OwnershipChecker {
         // the lexical receiver, but names used as values never bind self.
         // Re-run the ordinary explicit receiver ownership path, including
         // mutable loans, constructor restrictions and actor isolation.
-        if (call.callee() instanceof Ast.NameExpr implicit
+        if (call.origin() == Ast.CallOrigin.DIRECT
+                && call.callee() instanceof Ast.NameExpr implicit
                 && scope.lookup(implicit.name()) == null) {
             VarState receiver = scope.lookup("self");
             if (receiver != null) {
