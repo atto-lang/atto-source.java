@@ -132,6 +132,9 @@ jobs:
           grep -x "orestra-edge-guards-ok" /tmp/edge-guards-aot.out
           grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-aot.out
           grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-aot.out
+      - name: Verify restricted Future pipeline source behavior
+        run: bash scripts/test-future-pipeline-native.sh ./target/ores-aot --mode=aot --platform=linux
+
 
   native-aot-ref64:
     runs-on: ubuntu-latest
@@ -173,6 +176,9 @@ jobs:
         run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
       - name: Load packaged native stdlib under full-width AOT
         run: ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
+      - name: Verify restricted Future pipeline source behavior
+        run: bash scripts/test-future-pipeline-native.sh ./target/ores-aot --mode=aot --platform=linux
+
 
   native-hybrid:
     runs-on: ubuntu-latest
@@ -235,6 +241,9 @@ jobs:
           grep -x "orestra-edge-guards-ok" /tmp/edge-guards-hybrid.out
           grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-hybrid.out
           grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-hybrid.out
+      - name: Verify restricted Future pipeline source behavior
+        run: bash scripts/test-future-pipeline-native.sh ./target/ores-hybrid --mode=hybrid --platform=linux
+
 
   polyglot-isolate:
     runs-on: ubuntu-latest

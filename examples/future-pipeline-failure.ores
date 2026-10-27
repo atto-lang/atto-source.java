@@ -1,0 +1,20 @@
+define class Animal as
+end
+define class Dog extends Animal as
+end
+define class Cat extends Animal as
+end
+
+async fnc failed(): int {
+  rt cooperate;
+  val Animal animal = new Cat();
+  val Dog dog = animal as Dog;
+  return 1;
+}
+fnc increment(int value): int { return value + 1; }
+
+pub fnc main(): void {
+  val Option<int> none = trap await (failed() |> increment());
+  stdio.stdout.write(none.is_none());
+  return;
+}

@@ -1,0 +1,15 @@
+async fnc source(): int {
+  rt cooperate;
+  return 21;
+}
+async fnc increment_async(int value): int {
+  rt cooperate;
+  return value + 1;
+}
+fnc twice(int value): int { return value * 2; }
+pub async routine main(): void {
+  val Future<int> pending = source() |> increment_async() |> twice();
+  val int result = await pending;
+  stdio.println(result);
+  return;
+}

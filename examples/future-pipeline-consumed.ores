@@ -1,0 +1,11 @@
+async fnc source(): int {
+  rt cooperate;
+  return 21;
+}
+fnc increment(int value): int { return value + 1; }
+pub async routine main(): void {
+  val Future<int> pending = rt take source() |> increment();
+  val int result = await pending;
+  stdio.stdout.write(result);
+  return;
+}
