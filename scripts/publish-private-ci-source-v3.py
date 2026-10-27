@@ -34,6 +34,7 @@ SPEC.loader.exec_module(legacy)
 
 Denied = legacy.Denied
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
 MAVEN_ARTIFACT = re.compile(
     r"^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+"
     r"(?::[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?)?$"
@@ -46,6 +47,7 @@ HANDOFF_REF = re.compile(
     r"^ci/(?:oreslang-[0-9a-f]{40}|authorized-[0-9a-f]{40})$"
 )
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
+INCIDENT_DISPOSITION_PATH = ".github/private-ci-incident-dispositions.json"
 CARRIER_REVIEW_LOGIN = "ORESoftware"
 CARRIER_REVIEW_USER_ID = 11139560
 MAX_SOURCE_PR_REVIEWS = 100
@@ -53,7 +55,10 @@ MAX_GOVERNANCE_FILE = 1024 * 1024
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
 CONTRACT_SCHEMA = 1
+INCIDENT_DISPOSITION_SCHEMA = 1
 MAX_CONTRACT = 64 * 1024
+MAX_INCIDENT_DISPOSITION = 64 * 1024
+MAX_DISPOSITION_COMMENT = 64 * 1024
 MAX_CONTRACT_CARRIERS = 32
 MAX_CONTRACT_TEST_PLANS = 64
 MAX_PLAN = 64 * 1024
@@ -406,6 +411,125 @@ def checked_contract(root, repository, source_pr, test_plan, main_sha):
         raise Denied("local carrier contract diverges from protected source main")
     return parse_contract(remote, repository, source_pr, test_plan)
 
+
+
+def parse_incident_dispositions(raw):
+    try:
+        doc = strict_json_loads(
+            raw.decode("utf-8"), "invalid incident disposition JSON"
+        )
+    except UnicodeError as exc:
+        raise Denied("invalid incident disposition JSON") from exc
+    required_top = {
+        "schema", "incident_repository",
+        "incident_repository_id", "incidents",
+    }
+    if (not isinstance(doc, dict)
+            or set(doc) != required_top
+            or doc.get("schema") != INCIDENT_DISPOSITION_SCHEMA
+            or doc.get("incident_repository") != legacy.BLOCKING_INCIDENT_REPO
+            or doc.get("incident_repository_id")
+                != legacy.BLOCKING_INCIDENT_REPOSITORY_ID):
+        raise Denied("incident disposition registry identity/schema invalid")
+    incidents = doc.get("incidents")
+    expected_keys = {str(number) for number in legacy.BLOCKING_INCIDENTS}
+    if not isinstance(incidents, dict) or set(incidents) != expected_keys:
+        raise Denied("incident disposition registry set is not exact")
+
+    result = {}
+    for number in legacy.BLOCKING_INCIDENTS:
+        entry = incidents[str(number)]
+        if not isinstance(entry, dict):
+            raise Denied("incident disposition entry is invalid")
+        if entry.get("issue_id") != legacy.BLOCKING_INCIDENT_IDS[number]:
+            raise Denied("incident disposition issue identity changed")
+        status = entry.get("status")
+        if status == "hold":
+            if set(entry) != {"issue_id", "status"}:
+                raise Denied("hold incident disposition fields are not exact")
+        elif status == "resolved":
+            required = {
+                "issue_id", "status", "comment_id",
+                "comment_body_sha256", "comment_updated_at",
+                "reviewer_id", "reviewer_login",
+            }
+            if set(entry) != required:
+                raise Denied("resolved incident disposition fields are not exact")
+            comment_id = entry.get("comment_id")
+            digest = entry.get("comment_body_sha256")
+            if (type(comment_id) is not int or comment_id <= 0
+                    or not isinstance(digest, str)
+                    or HEX64.fullmatch(digest) is None
+                    or entry.get("reviewer_id") != CARRIER_REVIEW_USER_ID
+                    or entry.get("reviewer_login") != CARRIER_REVIEW_LOGIN):
+                raise Denied("resolved incident disposition authority invalid")
+            github_timestamp(
+                entry.get("comment_updated_at"),
+                "incident disposition timestamp invalid",
+            )
+        else:
+            raise Denied("incident disposition status invalid")
+        result[number] = entry
+    return result
+
+
+def checked_incident_dispositions(root, main_sha):
+    local = read_local_protected_file(
+        root, INCIDENT_DISPOSITION_PATH, MAX_INCIDENT_DISPOSITION
+    )
+    remote, _ = remote_file_at_source_main(
+        INCIDENT_DISPOSITION_PATH, main_sha, MAX_INCIDENT_DISPOSITION
+    )
+    if local != remote:
+        raise Denied(
+            "local incident disposition registry diverges from protected source main"
+        )
+    entries = parse_incident_dispositions(remote)
+    for number in legacy.BLOCKING_INCIDENTS:
+        entry = entries[number]
+        if entry["status"] != "resolved":
+            raise Denied(
+                "blocking P0 incident #"
+                + str(number)
+                + " lacks protected independent disposition"
+            )
+        comment_id = entry["comment_id"]
+        comment = legacy.gh_api(
+            f"repos/{legacy.BLOCKING_INCIDENT_REPO}/issues/comments/{comment_id}"
+        )
+        expected_issue_url = (
+            "https://api.github.com/repos/"
+            + legacy.BLOCKING_INCIDENT_REPO
+            + "/issues/"
+            + str(number)
+        )
+        user = comment.get("user")
+        body = comment.get("body")
+        if (comment.get("id") != comment_id
+                or comment.get("issue_url") != expected_issue_url
+                or not isinstance(user, dict)
+                or user.get("id") != CARRIER_REVIEW_USER_ID
+                or not isinstance(user.get("login"), str)
+                or user["login"].casefold() != CARRIER_REVIEW_LOGIN.casefold()
+                or not isinstance(body, str)
+                or not body
+                or len(body.encode("utf-8")) > MAX_DISPOSITION_COMMENT
+                or comment.get("updated_at") != entry["comment_updated_at"]):
+            raise Denied("incident disposition comment identity/state invalid")
+        github_timestamp(
+            comment.get("updated_at"),
+            "incident disposition live timestamp invalid",
+        )
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if digest != entry["comment_body_sha256"]:
+            raise Denied("incident disposition comment body changed")
+        marker = (
+            "PRIVATE_CI_INCIDENT_DISPOSITION_RESOLVED issue=#"
+            + str(number)
+        )
+        if marker not in body.splitlines():
+            raise Denied("incident disposition comment lacks exact resolution marker")
+    return True
 
 def _carrier_security_lines(contents):
     if (not isinstance(contents, bytes)
@@ -816,6 +940,7 @@ def revalidate_source_governance(
     if current_authority != authority_sha:
         raise Denied("source governance authority changed during transfer")
     checked_control_plane(root, authority_sha)
+    checked_incident_dispositions(root, authority_sha)
     current_contract = checked_contract(
         root, repository, source_pr,
         contract["test_plan_path"], authority_sha
@@ -1030,6 +1155,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         repository, approved_policy, approved_repository_id
     )
     checked_control_plane(trusted_root, authority_sha)
+    checked_incident_dispositions(trusted_root, authority_sha)
     contract = checked_contract(
         trusted_root, repository, source_pr, test_plan, authority_sha
     )
