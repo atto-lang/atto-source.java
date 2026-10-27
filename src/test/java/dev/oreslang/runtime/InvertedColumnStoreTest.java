@@ -11,6 +11,95 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class InvertedColumnStoreTest {
     @Test
+    void atomicIndexedCompoundUpdatesCannotLoseConcurrentIncrements()
+            throws InterruptedException {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
+            store.push(0);
+            var error = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Runnable work = () -> {
+                try {
+                    for (int n = 0; n < 1000; n++) {
+                        store.transformAt(0, 0, old -> (Integer) old + 1);
+                    }
+                } catch (Throwable t) {
+                    error.compareAndSet(null, t);
+                }
+            };
+            Thread left = new Thread(work);
+            Thread right = new Thread(work);
+            left.start();
+            right.start();
+            left.join();
+            right.join();
+            assertNull(error.get());
+            assertEquals(2000, store.getAt(0, 0));
+        }
+    }
+
+    @Test
+    void indexedTransformIsAllOrNothingAndDisallowsHiddenReentrance() {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
+            var row = store.push(12);
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.transformAt(0, 0, value -> "bad"));
+            assertEquals(12, store.get(row, 0));
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.transformAt(0, 0, value -> null));
+            assertEquals(12, store.get(row, 0));
+            assertThrows(IllegalStateException.class,
+                    () -> store.transformAt(0, 0, value -> {
+                        store.getAt(0, 0); // transaction taint, must abort
+                        return 99;
+                    }));
+            assertEquals(12, store.get(row, 0));
+
+            assertThrows(IllegalStateException.class,
+                    () -> store.transformAt(0, 0, value -> {
+                        try { store.setAt(0, 0, 21); } catch (IllegalStateException ignored) { }
+                        return 44; // cannot commit even if nested exception swallowed
+                    }));
+            assertEquals(12, store.get(row, 0));
+            assertThrows(IllegalStateException.class,
+                    () -> store.transformAt(0, 0, value -> {
+                        try { store.close(); } catch (IllegalStateException ignored) { }
+                        return 44;
+                    }));
+            assertEquals(12, store.get(row, 0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> store.transformAt(Long.MAX_VALUE, 0, value -> 17));
+            assertEquals(12, store.get(row, 0));
+            try (var read = store.borrowRead(0)) {
+                assertThrows(IllegalStateException.class,
+                        () -> store.transformAt(0, 0, value -> 90));
+            }
+            store.transformAt(0, 0, value -> (Integer) value + 1);
+            assertEquals(13, store.get(row, 0));
+        }
+    }
+
+    @Test
+    void rejectedIndexedRecordTransformCannotMutateStoredBytes() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.ColumnSpec.record(4))) {
+            byte[] initial = {1, 2, 3, 4};
+            var row = store.push((Object) initial);
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.transformAt(0, 0, value -> {
+                        ((byte[]) value)[0] = 99;
+                        return new byte[]{5}; // wrong width: abort
+                    }));
+            assertArrayEquals(new byte[]{1, 2, 3, 4}, (byte[]) store.get(row, 0));
+            store.transformAt(0, 0, value -> {
+                byte[] copy = (byte[]) value;
+                copy[0] = 7;
+                return copy;
+            });
+            assertArrayEquals(new byte[]{7, 2, 3, 4}, (byte[]) store.get(row, 0));
+            assertArrayEquals(new byte[]{1, 2, 3, 4}, initial);
+        }
+    }
+
+    @Test
     void fusedTransposeFieldAccessChecksDensePositionsAndBorrowRights() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
                                                   InvertedColumnStore.Kind.BOOL)) {
