@@ -5422,6 +5422,12 @@ public final class OresEvalRootNode extends RootNode {
                 Object index,
                 Env env,
                 Ast.Expr receiverExpression) {
+            // A bare InvertedArray index is never a guest row value. Do not
+            // let future generic-index implementations expose host RowView.
+            if (receiver instanceof InvertedArray) {
+                throw new IllegalStateException(
+                        "InvertedArray indexing requires an admitted [i].field read");
+            }
             java.util.Set<String> checkedStructuralDomain =
                     Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
             if (checkedStructuralDomain != null) {
@@ -5561,6 +5567,12 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Env env,
                 Ast.Expr receiverExpression) {
+            // Writes must likewise pass the exact-site ownership admission,
+            // never a generic index assignment or host row projection.
+            if (receiver instanceof InvertedArray) {
+                throw new IllegalStateException(
+                        "InvertedArray indexed writes require an admitted [i].field assignment");
+            }
             if (receiver instanceof OresObject object) {
                 if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
                     throw new IllegalArgumentException(
