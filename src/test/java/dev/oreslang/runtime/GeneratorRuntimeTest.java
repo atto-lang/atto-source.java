@@ -213,6 +213,36 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void concurrentSyncPullIsRejectedInsteadOfQueueingAnotherConsumer() throws Exception {
+        CountDownLatch producerStarted = new CountDownLatch(1);
+        CountDownLatch releaseProducer = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>generator(runtime, emitter -> {
+                 producerStarted.countDown();
+                 releaseProducer.await();
+                 emitter.emit(42);
+             })) {
+            java.util.concurrent.FutureTask<GeneratorRuntime.Step<Integer>> first =
+                    new java.util.concurrent.FutureTask<>(generator::nextStep);
+            Thread consumer = Thread.ofVirtual().start(first);
+            try {
+                assertTrue(producerStarted.await(2, TimeUnit.SECONDS));
+                IllegalStateException concurrent =
+                        assertThrows(IllegalStateException.class, generator::nextStep);
+                assertTrue(concurrent.getMessage().contains("concurrent Iterator.next()"));
+
+                releaseProducer.countDown();
+                assertEquals(42, first.get(2, TimeUnit.SECONDS).value());
+                assertTrue(generator.nextStep().done());
+            } finally {
+                releaseProducer.countDown();
+                consumer.join();
+            }
+        }
+    }
+
+
+    @Test
     void concurrentAsyncPullIsRejectedBeforeAnotherPullTaskIsAdmitted() throws Exception {
         CountDownLatch producerStarted = new CountDownLatch(1);
         CountDownLatch releaseProducer = new CountDownLatch(1);
