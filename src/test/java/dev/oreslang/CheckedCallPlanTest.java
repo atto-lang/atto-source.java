@@ -217,6 +217,70 @@ final class CheckedCallPlanTest {
                         .toList());
     }
     @Test
+    void oneRawSpreadCannotMixTupleAndRecordProjectionKinds() {
+        List<String> formals = List.of("a", "b");
+        List<CheckedCallPlan.InputSlot> forged =
+                List.of(
+                        positionalProjection(0, 0),
+                        namedProjection("b", 0, 1));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> CheckedCallPlan.required(formals, forged));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new CheckedCallPlan(
+                        formals,
+                        List.of(false, false),
+                        List.of(
+                                new CheckedCallPlan.BoundSlot(0, 0, null, 0, 0),
+                                new CheckedCallPlan.BoundSlot(1, 1, "b", 0, 1)),
+                        List.of(0, 1)));
+
+        List<FixedProductCallPlan.InputSlot> legacy =
+                List.of(
+                        FixedProductCallPlan.InputSlot.positionalProjection(0, 0),
+                        FixedProductCallPlan.InputSlot.namedProjection("b", 0, 1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> FixedProductCallPlan.bind(formals, legacy));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(
+                                new FixedProductCallPlan.BoundSlot(
+                                        0, 0, null, 0, 0),
+                                new FixedProductCallPlan.BoundSlot(
+                                        1, 1, "b", 0, 1)),
+                        List.of(0, 1)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OptionalCallPlan.bind(
+                        formals,
+                        List.of(false, true),
+                        legacy));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OptionalCallPlan(
+                        List.of(
+                                new OptionalCallPlan.BoundSlot(
+                                        0, 0, null, 0, 0),
+                                new OptionalCallPlan.BoundSlot(
+                                        1, 1, "b", 0, 1)),
+                        List.of(0, 1),
+                        List.of(false, true)));
+
+        // Adjacent projections of different raw call items are legal, as is
+        // a tuple argument followed by a separately named scalar argument.
+        CheckedCallPlan separate = CheckedCallPlan.required(
+                formals,
+                List.of(
+                        positionalProjection(0, 0),
+                        named("b", 1)));
+        assertEquals(List.of(0, 1), separate.abiToSource());
+    }
+
+    @Test
     void rejectsForgedTupleProjectionGapsThroughBinderAndPublicConstructors() {
         List<CheckedCallPlan.InputSlot> gap =
                 List.of(
