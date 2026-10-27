@@ -10,67 +10,64 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Admission proof only: canonical freestanding library units do not exist yet. */
 final class FreestandingLibraryImportProvenanceTest {
     @TempDir Path temp;
 
     @Test
-    void reservedLibraryPathsCannotFallBackToProjectSources() throws Exception {
-        for (String prefix : new String[]{"core", "alloc", "actor", "otp"}) {
-            Path directory = Files.createDirectories(temp.resolve(prefix));
-            Files.writeString(directory.resolve("shadow.ores"), "garbage placeholder");
-            Path entry = temp.resolve("main.ores");
-            Files.writeString(entry,
-                    "import module shadow from \"" + prefix + "/shadow\";\n"
-                    + "pub routine main(): void { return; }\n");
-            IllegalArgumentException denied = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> LinkedProgramRunner.validate(entry, Map.of()), prefix);
-            assertTrue(denied.getMessage().contains(prefix.equals("core")
-                            ? "unknown compiler-owned core module"
-                            : "reserved freestanding library import"),
-                    () -> prefix + ": " + denied.getMessage());
-            assertTrue(denied.getMessage().contains(prefix + "/shadow"));
-        }
-    }
-
-    @Test
-    void reservedLibraryPathsCannotFallBackToAmbientSearchRoots() throws Exception {
-        Path ambient = Files.createDirectories(temp.resolve("ambient"));
-        Path injected = Files.createDirectories(ambient.resolve("core"));
-        Files.writeString(injected.resolve("intrinsic.ores"), "garbage placeholder");
-        Path entry = temp.resolve("entry.ores");
+    void canonicalOresCoreCannotFallBackToProjectSources() throws Exception {
+        Path directory = Files.createDirectories(temp.resolve("ores.core"));
+        Files.writeString(directory.resolve("shadow.ores"), "garbage placeholder");
+        Path entry = temp.resolve("main.ores");
         Files.writeString(entry, """
-                import module intrinsic from "core/intrinsic";
+                import module shadow from "ores.core/shadow";
                 pub routine main(): void { return; }
                 """);
         IllegalArgumentException denied = assertThrows(
                 IllegalArgumentException.class,
-                () -> LinkedProgramRunner.validate(entry, Map.of(
-                        "ORESLANG_PATH", ambient.toString())));
-        assertTrue(denied.getMessage().contains("unknown compiler-owned core module"));
+                () -> LinkedProgramRunner.validate(entry, Map.of()));
+        assertTrue(denied.getMessage().contains("unknown compiler-owned ores.core module"),
+                denied::getMessage);
+        assertTrue(denied.getMessage().contains("ores.core/shadow"));
     }
 
     @Test
-    void onlyBareCanonicalImportsAreReserved() {
-        for (String name : new String[]{"core/math","alloc/vec",
-                "actor/runtime","otp/supervisor","core\\math",
-                "alloc\\vec","actor\\runtime","otp\\supervisor"}) {
-            assertTrue(CoreLibrarySources.isReservedFreestandingImport(name));
+    void canonicalOresCoreCannotFallBackToAmbientSearchRoots() throws Exception {
+        Path ambient = Files.createDirectories(temp.resolve("ambient"));
+        Path injected = Files.createDirectories(ambient.resolve("ores.core"));
+        Files.writeString(injected.resolve("numeric.ores"), "garbage placeholder");
+        Path entry = temp.resolve("entry.ores");
+        Files.writeString(entry, """
+                import module numeric from "ores.core/numeric";
+                pub routine main(): void { return; }
+                """);
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry, Map.of(
+                "ORESLANG_PATH", ambient.toString())));
+    }
+
+    @Test
+    void exactlyTwoCanonicalLibraryRootsAreReserved() {
+        for (String name : new String[]{"ores.core/math", "ores.std/core",
+                "ores.core\\math", "ores.std\\core"}) {
+            assertTrue(CoreLibrarySources.isReservedOresLibraryImport(name));
         }
-        for (String local : new String[]{"./core/math","../core/math",
-                "core", "core_local/math", "std/core", "std/otp/supervisor"}) {
-            assertFalse(CoreLibrarySources.isReservedFreestandingImport(local));
+        for (String local : new String[]{"./ores.core/math", "../ores.core/math",
+                "ores.core", "ores.std", "alloc/vec", "actor/runtime", "otp/supervisor"}) {
+            assertFalse(CoreLibrarySources.isReservedOresLibraryImport(local));
         }
-        // Neither slash variant can cause a packaged stdlib name to resolve
-        // from the application search path instead of the trusted source.
-        assertTrue(CoreLibrarySources.isFreestandingCoreImport("core/numeric"));
-        assertTrue(CoreLibrarySources.isFreestandingCoreImport("core\\\\numeric"));
+
+        assertTrue(CoreLibrarySources.isOresCoreImport("ores.core/numeric"));
+        assertTrue(CoreLibrarySources.isOresCoreImport("ores.core\\numeric"));
         assertThrows(IllegalArgumentException.class,
-                () -> CoreLibrarySources.freestandingCoreUnitId("core\\\\numeric"));
-        assertTrue(CoreLibrarySources.isCoreImport("std/core"));
-        assertTrue(CoreLibrarySources.isCoreImport("std\\core"));
+                () -> CoreLibrarySources.oresCoreUnitId("ores.core\\numeric"));
+
+        assertTrue(CoreLibrarySources.isStdImport("ores.std/core"));
+        assertTrue(CoreLibrarySources.isStdImport("ores.std\\core"));
         assertThrows(IllegalArgumentException.class,
-                () -> CoreLibrarySources.unitId("std\\core"));
+                () -> CoreLibrarySources.unitId("ores.std\\core"));
+
+        // Temporary compatibility spelling maps to the same hosted std unit.
+        assertTrue(CoreLibrarySources.isStdImport("std/core"));
+        assertEquals(CoreLibrarySources.unitId("std/core"),
+                CoreLibrarySources.unitId("ores.std/core"));
     }
 }
