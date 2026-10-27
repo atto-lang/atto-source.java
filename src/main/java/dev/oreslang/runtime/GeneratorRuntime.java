@@ -51,9 +51,35 @@ public final class GeneratorRuntime {
     public static final class Generator<T> implements Iterable<T>, AutoCloseable {
         private final Engine<T> engine;
         private final AtomicBoolean pullInFlight = new AtomicBoolean();
+        private final Iterator<T> iteratorView;
 
         private Generator(Engine<T> engine) {
             this.engine = engine;
+            this.iteratorView = new Iterator<>() {
+                private Step<T> buffered;
+
+                @Override
+                public synchronized boolean hasNext() {
+                    if (Generator.this.engine.isClosed()) {
+                        buffered = null;
+                        return false;
+                    }
+                    if (buffered == null) buffered = nextStep();
+                    if (Generator.this.engine.isClosed()) {
+                        buffered = null;
+                        return false;
+                    }
+                    return !buffered.done();
+                }
+
+                @Override
+                public synchronized T next() {
+                    if (!hasNext()) throw new NoSuchElementException();
+                    T value = buffered.value();
+                    buffered = null;
+                    return value;
+                }
+            };
         }
 
         public Step<T> nextStep() {
@@ -75,23 +101,10 @@ public final class GeneratorRuntime {
 
         @Override
         public Iterator<T> iterator() {
-            return new Iterator<>() {
-                private Step<T> buffered;
-
-                @Override
-                public boolean hasNext() {
-                    if (buffered == null) buffered = nextStep();
-                    return !buffered.done();
-                }
-
-                @Override
-                public T next() {
-                    if (!hasNext()) throw new NoSuchElementException();
-                    T value = buffered.value();
-                    buffered = null;
-                    return value;
-                }
-            };
+            // A generator activation is single-pass. Returning one stable
+            // iterator view prevents separate wrappers from prefetching
+            // successive yields and observing them out of source order.
+            return iteratorView;
         }
 
         @Override
@@ -188,6 +201,10 @@ public final class GeneratorRuntime {
         private Engine(AsyncRuntime runtime, Producer<T> producer) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
             this.producer = Objects.requireNonNull(producer, "producer");
+        }
+
+        private boolean isClosed() {
+            return closed.get();
         }
 
         private boolean isTerminalReady() {
