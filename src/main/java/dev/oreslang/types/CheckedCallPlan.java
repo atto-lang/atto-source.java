@@ -156,6 +156,10 @@ public record CheckedCallPlan(
         CheckedCallPlan old =
                 CHECKED_CALL_SITES.putIfAbsent(key, plan);
         if (old != null && !old.equals(plan)) {
+            // A conflicting recheck must not leave the old proof executable.
+            // Removing the identity-bound entry is atomic under this lock;
+            // callers must revalidate before republishing any plan.
+            CHECKED_CALL_SITES.remove(key);
             throw new IllegalStateException(
                     "same call-site AST identity received inconsistent checked call plans");
         }
