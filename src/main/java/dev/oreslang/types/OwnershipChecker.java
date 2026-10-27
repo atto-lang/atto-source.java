@@ -1189,12 +1189,15 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            if (isBorrowValue(source)) {
+                throw error("borrowed references cannot cross as/as? casts until cast results carry explicit loan lifetimes");
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
             return new ValueInfo(result,
                     cast.mode() == Ast.CastMode.OPTIONAL ? kindOfType(result) : source.kind,
-                    source.borrowSource);
+                    null);
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             checkExpr(binary.left(), scope, false);
@@ -2760,6 +2763,7 @@ public final class OwnershipChecker {
         return value != null
                 && (value.kind == ValueKind.IMM_BORROW
                     || value.kind == ValueKind.MUT_BORROW
+                    || value.borrowSource != null
                     || (value.type != null && value.type.isBorrow()));
     }
 
