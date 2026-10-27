@@ -2991,12 +2991,20 @@ public final class TypeChecker {
                 boolean pkgRoot = namespace.name().equals(Parser.PKG_ROOT_NAMESPACE);
                 String moduleName = pkgRoot ? Parser.ROOT_MODULE : namespace.name();
                 rejectUnimportedModuleNamespace(moduleName);
+                if (pkgRoot && qualifiedCall.member().equals("init")) {
+                    throw new IllegalArgumentException(
+                            "pkg::init is a lifecycle hook and cannot be called directly");
+                }
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + (pkgRoot ? "pkg::" : moduleName + ".") + qualifiedCall.member());
                 Ast.FunctionDecl target = findQualifiedFunction(
                         moduleName + "." + qualifiedCall.member(), arity);
                 if (target != null) {
+                    if (pkgRoot && target.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "pkg::" + target.name() + " cannot invoke an actor entry point");
+                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
@@ -3004,7 +3012,8 @@ public final class TypeChecker {
                                         + "' cannot be synchronously invoked from another actor turn; "
                                         + "use mailbox-oriented actor composition");
                     }
-                    String label = "function " + namespace.name() + "." + qualifiedCall.member();
+                    String label = "function " + (pkgRoot ? "pkg::" : moduleName + ".")
+                            + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     Type result = checkGenericCallable(
                             target.genericParameters(),
@@ -3816,9 +3825,19 @@ public final class TypeChecker {
                 boolean pkgRoot = namespace.name().equals(Parser.PKG_ROOT_NAMESPACE);
                 String moduleName = pkgRoot ? Parser.ROOT_MODULE : namespace.name();
                 rejectUnimportedModuleNamespace(moduleName);
+                if (pkgRoot && member.member().equals("init")) {
+                    throw new IllegalArgumentException(
+                            "pkg::init is a lifecycle hook and cannot be used as a value");
+                }
                 Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
                         moduleName + "." + member.member());
                 if (moduleFunction != null) {
+                    if (pkgRoot && (moduleFunction.actorKind() != Ast.ActorKind.NONE
+                            || moduleFunction.suspends())) {
+                        throw new IllegalArgumentException(
+                                "pkg::" + member.member()
+                                        + " is direct-call-only and cannot be used as a fnc value");
+                    }
                     if (moduleFunction.kind() == Ast.CallableKind.ROUTINE) {
                         throw new IllegalArgumentException("routine '" + namespace.name() + "." + member.member()
                                 + "' is direct-call-only and cannot be used as a first-class callable value; "
