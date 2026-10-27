@@ -187,13 +187,43 @@ public record CheckedCallPlan(
         boolean sameKind =
                 source instanceof Ast.CallExpr && target instanceof Ast.CallExpr
                         || source instanceof Ast.NewExpr && target instanceof Ast.NewExpr;
-        if (!sameKind) {
-            return;
-        }
+        if (!sameKind) return;
+
         CheckedCallPlan plan = lookup(source);
-        if (plan != null) {
+        if (plan != null && preservesRawBindingShape(source, target)) {
             record(target, plan);
         }
+    }
+
+    private static boolean preservesRawBindingShape(
+            Ast.Expr source,
+            Ast.Expr target) {
+        List<Ast.Expr> sourceArguments =
+                source instanceof Ast.CallExpr call
+                        ? call.arguments()
+                        : ((Ast.NewExpr) source).arguments();
+        List<Ast.Expr> targetArguments =
+                target instanceof Ast.CallExpr call
+                        ? call.arguments()
+                        : ((Ast.NewExpr) target).arguments();
+        if (sourceArguments.size() != targetArguments.size()) return false;
+
+        for (int i = 0; i < sourceArguments.size(); i++) {
+            Ast.Expr before = sourceArguments.get(i);
+            Ast.Expr after = targetArguments.get(i);
+            if (before instanceof Ast.NamedArgExpr named) {
+                if (!(after instanceof Ast.NamedArgExpr replacement)
+                        || !named.name().equals(replacement.name())) {
+                    return false;
+                }
+            } else if (before instanceof Ast.SpreadExpr) {
+                if (!(after instanceof Ast.SpreadExpr)) return false;
+            } else if (after instanceof Ast.NamedArgExpr
+                    || after instanceof Ast.SpreadExpr) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** One supplied scalar in lexical evaluation order and its formal ABI slot. */
