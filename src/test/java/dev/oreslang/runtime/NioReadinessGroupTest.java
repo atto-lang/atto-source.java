@@ -43,10 +43,36 @@ final class NioReadinessGroupTest {
                 carrier.execute(unrelatedProgress::countDown);
                 assertTrue(unrelatedProgress.await(2, TimeUnit.SECONDS),
                         "stalled socket readiness must consume zero completion-carrier time");
-                assertFalse(stalled.isDone());
 
-                assertTrue(stalled.cancel(false),
-                        "read is still pre-consumption and must remain revocable");
+                try (var scheduler = new OresScheduler(1)) {
+                    var turns = new java.util.concurrent.atomic.AtomicInteger();
+                    var waiter = scheduler.start(resume -> {
+                        if (turns.getAndIncrement() == 0)
+                            return OresScheduler.await(stalled);
+                        assertInstanceOf(java.util.concurrent.CancellationException.class,
+                                resume.failure());
+                        return OresScheduler.done(11);
+                    });
+
+                    long registered = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                    while (stalled.pendingRuntimeWaiterCount() != 1
+                            && System.nanoTime() < registered) {
+                        Thread.sleep(1);
+                    }
+                    assertEquals(1, stalled.pendingRuntimeWaiterCount());
+
+                    var independent = scheduler.start(resume -> OresScheduler.done(22));
+                    assertEquals(22, independent.get(2, TimeUnit.SECONDS),
+                            "stalled NIO await must yield the only scheduler carrier");
+                    assertFalse(waiter.isDone(),
+                            "silent peer must leave the NIO-awaiting task suspended");
+
+                    assertTrue(stalled.cancel(false),
+                            "read is still pre-consumption and must remain revocable");
+                    assertEquals(11, waiter.get(2, TimeUnit.SECONDS),
+                            "cancellation must resume exactly once through the scheduler");
+                    assertEquals(2, turns.get());
+                }
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
                 while ((group.pendingCount() != 0 || group.activeReadLeases() != 0)
                         && System.nanoTime() < deadline) {
