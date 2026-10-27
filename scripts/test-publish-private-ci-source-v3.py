@@ -1275,6 +1275,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3, "authorized_main_sha", return_value="2" * 40
             ),
             patch.object(v3, "checked_control_plane") as control_plane,
+            patch.object(v3, "checked_incident_dispositions"),
             patch.object(v3, "checked_contract") as checked_contract,
         ):
             with self.assertRaisesRegex(v3.Denied, "authority changed"):
@@ -1292,6 +1293,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3, "authorized_main_sha", return_value=PROTECTED
             ),
             patch.object(v3, "checked_control_plane") as control_plane,
+            patch.object(v3, "checked_incident_dispositions"),
             patch.object(
                 v3, "checked_contract", return_value=carrier
             ) as checked_contract,
@@ -1314,6 +1316,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3, "authorized_main_sha", return_value=PROTECTED
             ),
             patch.object(v3, "checked_control_plane"),
+            patch.object(v3, "checked_incident_dispositions"),
             patch.object(v3, "checked_contract", return_value=changed),
         ):
             with self.assertRaisesRegex(v3.Denied, "contract changed"):
@@ -1420,6 +1423,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     return_value=PROTECTED,
                 ),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=mismatched),
                 patch.object(v3, "verify_source_pr") as verify_source_pr,
             ):
@@ -1458,6 +1462,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3, "authorized_main_sha", return_value=PROTECTED
                 ),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(
                     v3, "verify_source_pr",
@@ -1542,6 +1547,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3, "authorized_main_sha", return_value=PROTECTED
                 ) as verify_origin,
                 patch.object(v3, "checked_control_plane") as control_plane,
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier) as checked_contract,
                 patch.object(
                     v3,
@@ -1694,6 +1700,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(
                     v3, "verify_source_pr",
@@ -1774,6 +1781,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(
                     v3, "verify_source_pr",
@@ -1853,6 +1861,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     side_effect=[PROTECTED, PROTECTED, v3.Denied("protection revoked")],
                 ),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
                 patch.object(
@@ -1918,6 +1927,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", side_effect=verify_calls),
                 patch.object(
@@ -1988,6 +1998,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
                 patch.object(
@@ -2061,6 +2072,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
                 patch.object(
@@ -2134,6 +2146,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
                 patch.object(
@@ -2207,6 +2220,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
                 patch.object(
