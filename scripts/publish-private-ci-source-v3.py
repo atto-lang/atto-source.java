@@ -18,6 +18,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import resource
+import secrets
 import stat
 import subprocess
 import sys
@@ -1100,6 +1101,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     source_tree = legacy.verified_exact_source_tree(files, source_commit)
     rows, manifest_sha256 = manifest(files)
     branch = "ci/oreslang-" + source_tree
+    if live_ref_sha(repository, branch, contract["repository_id"]) is not None:
+        raise Denied(
+            "carrier payload ref already exists; refusing overwrite or rollback"
+        )
+    handoff_nonce = secrets.token_hex(16)
+    if not re.fullmatch(r"[0-9a-f]{32}", handoff_nonce):
+        raise Denied("handoff nonce generation failed")
 
     def auth():
         authorize_write(
@@ -1214,7 +1222,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         f"carrier-base {contract['base_sha']} tree {base_tree}\n"
         f"connector-authorized source-repository "
         f"{legacy.SOURCE_REPO} id {source_repo_id}\n"
-        f"Oreslang-CI-Receipt-SHA256: {receipt_digest}"
+        f"Oreslang-CI-Receipt-SHA256: {receipt_digest}\n"
+        f"Oreslang-CI-Handoff-Nonce: {handoff_nonce}"
     )
     commit = legacy.gh_api(
         f"repos/{repository}/git/commits", method="POST",
@@ -1245,6 +1254,15 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # as potentially successful before it returns: transport ambiguity must not
     # strand a source-bearing ref.
     authorization = "ci/authorized-" + commit_sha
+    if live_ref_sha(repository, branch, contract["repository_id"]) is not None:
+        raise Denied(
+            "carrier payload ref appeared before publication; refusing rollback"
+        )
+    if live_ref_sha(
+            repository, authorization, contract["repository_id"]) is not None:
+        raise Denied(
+            "carrier authorization ref already exists; refusing rollback"
+        )
     payload_attempted = False
     authorization_attempted = False
     try:
