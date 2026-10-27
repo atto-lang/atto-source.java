@@ -13,9 +13,27 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout immutable Java PR source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Bind conformance reports to verified source Git commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          actual="$(git rev-parse --verify HEAD)"
+          if [[ "$expected" != "$actual" ]]; then
+            echo "refusing conformance from mismatched Java Git commit: $actual != $expected" >&2
+            exit 65
+          fi
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            echo "refusing dirty Java conformance source checkout" >&2
+            exit 65
+          fi
+          printf 'ORESLANG_SOURCE_SHA=%s\n' "$actual" >> "$GITHUB_ENV"
+          printf 'conformance_source_commit=%s\nconformance_source_tree=%s\n' "$actual" "$(git rev-parse 'HEAD^{tree}')"
       - name: Validate source parity launcher fail-closed CLI admissions
         run: bash tests/java_source_parity_launcher_admission.sh
       - name: Test AI smoke evidence admission (no compiler claims)
@@ -69,12 +87,12 @@ jobs:
             --backend java \
             --compiler "$(command -v python3)" \
             --java-probe "$(realpath contracts/v1/java_probe.py)" \
-            --source-sha "${{ github.sha }}" \
+            --source-sha "$ORESLANG_SOURCE_SHA" \
             --report target/ai-conformance-graal.json
       - name: Execute reviewed portable source i64 subset through real Graal guest
         run: python3 scripts/java_source_i64_smoke.py --report target/java-source-i64-subset.json
       - name: Validate Java borrow and semantic diagnostic cases
-        run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "${{ github.sha }}" --report target/semantics-graal.json
+        run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "$ORESLANG_SOURCE_SHA" --report target/semantics-graal.json
       - name: Verify real shared actor mailbox trace against the contract
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorTraceContractIntegrationTest test
