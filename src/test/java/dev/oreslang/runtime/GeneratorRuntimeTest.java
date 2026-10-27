@@ -355,6 +355,10 @@ final class GeneratorRuntimeTest {
             assertTrue(cleanupStarted.await(2, TimeUnit.SECONDS));
             OresFuture<Void> repeatedClose = generator.closeAsync();
             assertSame(firstClose, repeatedClose);
+            assertFalse(firstClose.cancel(true),
+                    "AsyncIterator.close is irrevocable once cleanup begins");
+            assertFalse(firstClose.isCancelled(),
+                    "cleanup receipt must not become terminal before physical close");
             assertThrows(java.util.concurrent.TimeoutException.class,
                     () -> firstClose.get(100, TimeUnit.MILLISECONDS));
 
