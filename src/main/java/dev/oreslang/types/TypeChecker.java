@@ -9951,6 +9951,12 @@ public final class TypeChecker {
             default -> {
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
+                    if (knownClass.inverted()) {
+                        throw new IllegalArgumentException(
+                                "inverted row type '" + knownClass.name()
+                                        + "' is not a standalone value type; use InvertedArray<"
+                                        + knownClass.name() + ">");
+                    }
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
                     List<Type> resolvedArgs = ref.arguments().stream()
                             .map(arg -> resolve(arg, generics, self)).toList();
