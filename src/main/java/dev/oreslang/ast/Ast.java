@@ -1578,6 +1578,26 @@ public final class Ast {
                     key.program() == null || key.get() == null);
         }
 
+        /**
+         * Revoke executable inverted-index admissions BEFORE any type recheck
+         * can throw, including import, annotation and linked-metadata gates.
+         * A type-only check never restores execution authority: only a later
+         * fully successful OwnershipChecker pass may publish a newer epoch.
+         * Independent Program identities retain their admissions.
+         */
+        public static synchronized void revokeForTypeRecheck(Program program) {
+            java.util.Objects.requireNonNull(program, "rechecked inverted program");
+            expunge();
+            ProgramIdentityKey lookup = new ProgramIdentityKey(program, null);
+            Long prior = PROGRAM_EPOCHS.get(lookup);
+            if (prior == null) return;
+            ADMISSIONS.keySet().removeIf(key -> key.program() == program);
+            if (prior > 0) {
+                PROGRAM_EPOCHS.put(
+                        new ProgramIdentityKey(program, CLEARED_PROGRAMS), -prior);
+            }
+        }
+
         public static synchronized void beginCheck(Program program, long checkEpoch) {
             if (checkEpoch <= 0) {
                 throw new IllegalArgumentException(
