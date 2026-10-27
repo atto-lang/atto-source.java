@@ -299,4 +299,92 @@ final class InvertedArrayTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(guest),
                 "no direct guest AoS lowering may occur before true compiler integration");
     }
+
+    @Test
+    void bracketIndexTargetChecksBoundsAndPreservesLogicalIdentity() {
+        try (var array = InvertedArray.fromClass(particle(), 0)) {
+            assertThrows(IllegalArgumentException.class, () -> array.index(-1));
+            assertThrows(IllegalArgumentException.class, () -> array.index(0));
+            assertThrows(IllegalArgumentException.class,
+                    () -> array.index((long) Integer.MIN_VALUE - 1L));
+            assertThrows(IllegalArgumentException.class,
+                    () -> array.index((long) Integer.MAX_VALUE + 1L));
+            assertThrows(IllegalArgumentException.class, () -> array.index(Long.MIN_VALUE));
+            assertThrows(IllegalArgumentException.class, () -> array.index(Long.MAX_VALUE));
+
+            var first = array.pushValues(10.0, 1.0, 0.0, 0.0, false);
+            var second = array.pushValues(20.0, 2.0, 0.0, 0.0, false);
+            array.pushValues(30.0, 3.0, 0.0, 0.0, false);
+
+            assertEquals(10.0, array.index(0).get("x"));
+            assertEquals(20.0, array.index(1).get("x"));
+            assertEquals(20.0, array.index(1L).get("x"),
+                    "wide integral lowering must preserve valid dense indices");
+            assertEquals(30.0, array.index(2).get("x"));
+            assertThrows(IllegalArgumentException.class, () -> array.index(3));
+
+            var savedSecond = array.index(1);
+            array.reserve(64);
+            assertEquals(20.0, savedSecond.get("x"),
+                    "reserve must not invalidate a logical row projection");
+
+            array.eraseSwap(first);
+            assertEquals(30.0, array.index(0).get("x"),
+                    "swap-delete must expose the moved last row at its new dense index");
+            assertEquals(20.0, savedSecond.get("x"),
+                    "saved projections must follow their logical row, not a physical offset");
+
+            array.eraseSwap(second);
+            assertThrows(IllegalArgumentException.class, () -> savedSecond.get("x"),
+                    "deleted row projections must become stale");
+
+            array.pushValues(40.0, 4.0, 0.0, 0.0, true);
+            assertEquals(40.0, array.index(1).get("x"));
+            assertThrows(IllegalArgumentException.class, () -> savedSecond.get("x"),
+                    "slot reuse must not revive a stale generation");
+        }
+    }
+
+    @Test
+    void bracketIndexTargetHonorsColumnLoansAndCloseFencing() {
+        var array = InvertedArray.fromClass(particle(), 1);
+        array.pushValues(1.0, 2.0, 3.0, 4.0, false);
+        var row = array.index(0);
+
+        var read = array.borrowRead("x");
+        try {
+            assertEquals(1.0, row.get("x"));
+            assertThrows(IllegalStateException.class, () -> row.set("x", 9.0));
+        } finally {
+            read.close();
+        }
+
+        var write = array.borrowWrite("x");
+        try {
+            assertThrows(IllegalStateException.class, () -> row.get("x"));
+            assertThrows(IllegalStateException.class, () -> row.set("x", 9.0));
+            write.writeAt(0, 9.0);
+        } finally {
+            write.close();
+        }
+        assertEquals(9.0, row.get("x"));
+
+        array.close();
+        assertThrows(IllegalStateException.class, () -> array.index(0));
+        assertThrows(IllegalStateException.class, () -> row.get("x"));
+    }
+
+    @Test
+    void bracketIndexTargetRejectsWrongFieldWritesWithoutPartialMutation() {
+        try (var array = InvertedArray.fromClass(particle(), 1)) {
+            array.pushValues(1.0, 2.0, 3.0, 4.0, false);
+            var row = array.index(0);
+            assertThrows(IllegalArgumentException.class, () -> row.set("x", 7));
+            assertThrows(IllegalArgumentException.class, () -> row.set("ready", 1));
+            assertThrows(IllegalArgumentException.class, () -> row.get("missing"));
+            assertEquals(1.0, row.get("x"));
+            assertEquals(false, row.get("ready"));
+        }
+    }
+
 }
