@@ -120,6 +120,32 @@ public final class InvertedArray implements AutoCloseable {
         public int fieldCount() { return fields.size(); }
 
         /**
+         * Canonical immutable physical descriptor captured by compiler
+         * admission. Field names are identifiers, so the separators below are
+         * unambiguous. Record members are already canonicalized by name and
+         * carry their physical offset and scalar kind.
+         */
+        public List<String> physicalFingerprint() {
+            ArrayList<String> fingerprint = new ArrayList<>(fields.size());
+            for (Field field : fields) {
+                StringBuilder item = new StringBuilder()
+                        .append(field.name()).append(':').append(field.kind());
+                if (field.recordLayout() != null) {
+                    item.append(':').append(field.recordLayout().bytes());
+                    for (InvertedRecordLayout.Member member
+                            : field.recordLayout().members()) {
+                        item.append(':')
+                                .append(member.name()).append('@')
+                                .append(member.offset()).append('=')
+                                .append(member.kind());
+                    }
+                }
+                fingerprint.add(item.toString());
+            }
+            return List.copyOf(fingerprint);
+        }
+
+        /**
          * Runtime nominal checks must bind the complete physical descriptor,
          * not only the class name. This protects embedding/host boundaries
          * from substituting a same-name InvertedArray with a different column
