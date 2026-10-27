@@ -19,7 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Verify read-only Actions triage unit tests
         run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
       - name: Verify native image gate with source-free mock launchers
