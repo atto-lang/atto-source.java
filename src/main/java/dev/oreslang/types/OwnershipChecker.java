@@ -1119,8 +1119,7 @@ public final class OwnershipChecker {
                         }
                     }
                     ValueInfo taken = checkExpr(argument, scope, true);
-                    if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
-                            || (taken.type != null && taken.type.isBorrow())) {
+                    if (isBorrowValue(taken)) {
                         throw error("rt take requires owned data; a borrow cannot regain ownership");
                     }
                     // Explicit take is a transfer, including for otherwise
@@ -1277,6 +1276,11 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                if (valueKind != ValueKind.COPY && isBorrowValue(receiverValue)) {
+                    throw error("cannot extract move-only field '" + member.member()
+                            + "' through a borrowed receiver; use an explicit rt borrow projection "
+                            + "until projected ownership lifetimes are represented in the type");
+                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -1287,6 +1291,11 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
+                    if (fieldKind != ValueKind.COPY && isBorrowValue(receiverValue)) {
+                        throw error("cannot extract move-only field '" + member.member()
+                                + "' through a borrowed receiver; use an explicit rt borrow projection "
+                                + "until projected ownership lifetimes are represented in the type");
+                    }
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
@@ -1306,6 +1315,11 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
+            if (elementKind != ValueKind.COPY && isBorrowValue(receiver)) {
+                throw error("cannot extract a move-only indexed value through a borrowed receiver; "
+                        + "use an explicit rt borrow projection until projected ownership lifetimes "
+                        + "are represented in the type");
+            }
             if (consuming && elementKind != ValueKind.COPY
                     && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
@@ -1586,7 +1600,7 @@ public final class OwnershipChecker {
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
             ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
-            if (owned.type != null && owned.type.isBorrow()) {
+            if (isBorrowValue(owned)) {
                 throw error(factory.name()
                         + ".new requires an owned value; borrowed values cannot become mutex state");
             }
@@ -1603,8 +1617,7 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
             }
             ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
-            if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
-                    || (payload.type != null && payload.type.isBorrow())) {
+            if (isBorrowValue(payload)) {
                 throw error(name.name()
                         + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
             }
@@ -2342,7 +2355,7 @@ public final class OwnershipChecker {
                 throw error(member.member() + " argument cannot contain MutexGuard");
             }
             if (member.member().equals("ok_or")) {
-                if (arg.type == null || arg.type.isBorrow() || !isCopyType(arg.type)) {
+                if (arg.type == null || isBorrowValue(arg) || !isCopyType(arg.type)) {
                     throw error("Option.ok_or eager error must be a concrete owned Copy value");
                 }
                 okOrErrorType = arg.type;
@@ -2767,6 +2780,14 @@ public final class OwnershipChecker {
                     || (value.type != null && value.type.isBorrow()));
     }
 
+    private static boolean isBorrowState(VarState state) {
+        return state != null
+                && (state.kind == ValueKind.IMM_BORROW
+                    || state.kind == ValueKind.MUT_BORROW
+                    || state.borrowSource != null
+                    || (state.type != null && state.type.isBorrow()));
+    }
+
     private boolean isIncomingBorrow(VarState state) {
         return state != null
                 && state.origin == Origin.PARAM
@@ -2834,7 +2855,7 @@ public final class OwnershipChecker {
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
-            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
+            if (isBorrowState(source)) {
                 if (allowActorSelfCapture
                         && capture.name.equals("self")
                         && isActorConfinedBorrow(source)) {
@@ -4317,9 +4338,7 @@ public final class OwnershipChecker {
             // Borrowed aliases of self follow ordinary lexical lifetime rules.
             if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) continue;
 
-            if (source.kind == ValueKind.IMM_BORROW
-                    || source.kind == ValueKind.MUT_BORROW
-                    || source.type.isBorrow()) {
+            if (isBorrowState(source)) {
                 throw error("deferred task/continuation cannot capture borrowed value '"
                         + capture.name
                         + "'; capture owned data or actor self instead");
@@ -4915,7 +4934,7 @@ public final class OwnershipChecker {
         private boolean hasLiveBorrow() {
             for (VarState state : visibleStates()) {
                 if (state.moved) continue;
-                if (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                if (isBorrowState(state)
                         || state.immutableBorrows > 0 || state.mutableBorrowed) {
                     return true;
                 }
