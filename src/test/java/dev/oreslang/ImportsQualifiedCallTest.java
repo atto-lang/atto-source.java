@@ -108,6 +108,31 @@ final class ImportsQualifiedCallTest {
     }
 
     @Test
+    void importedOverloadCannotSilentlyWinAfterWrongLocalArity() throws Exception {
+        Files.writeString(temp.resolve("lib.ores"), """
+                pub fnc roodles(int value): int { return value + 30; }
+                """);
+        Path entry = temp.resolve("exact-arity.ores");
+        Files.writeString(entry, """
+                import fnc roodles from "./lib.ores";
+                fnc roodles(): int { return 99; }
+                pub routine main(): void {
+                  stdio.stdout.write(imports::roodles(12));
+                }
+                """);
+        assertEquals("42", run(entry));
+
+        IllegalArgumentException wrongLocalArity = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import fnc roodles from "./lib.ores";
+                        fnc roodles(): int { return 99; }
+                        pub fnc test(): void { roodles(12); }
+                        """)));
+        assertTrue(wrongLocalArity.getMessage().contains("imports::roodles"),
+                wrongLocalArity.getMessage());
+    }
+
+    @Test
     void importQualifierRejectsNonFunctionKinds() {
         IllegalArgumentException nonFnc = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
