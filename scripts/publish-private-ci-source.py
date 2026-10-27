@@ -41,13 +41,17 @@ BLOCKING_INCIDENT_IDS = {
 BLOCKING_INCIDENTS = (22, 77, 127, 171, 172)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
+    "scintilla-run-test/gleam-runner-conformance",
+    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
     "agent-pontifex-test/agent-pontifex-e2e-tests",
     "led-dynamo/leddy-e2e",
 )
 QUARANTINED_DESTINATION_IDS = (
-    1323575966,  # zed-pkg-test/java-app
-    1370782550,  # agent-pontifex-test/agent-pontifex-e2e-tests
-    1324139596,  # led-dynamo/leddy-e2e
+    1323575966,  # zed-pkg-test/java-app (#22)
+    1323598260,  # scintilla-run-test/gleam-runner-conformance (#77)
+    1412142815,  # ores-dummy-org-oreslang-stack/... (#127)
+    1370782550,  # agent-pontifex-test/agent-pontifex-e2e-tests (#171)
+    1324139596,  # led-dynamo/leddy-e2e (#172)
 )
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
