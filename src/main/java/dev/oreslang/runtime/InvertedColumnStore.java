@@ -439,6 +439,43 @@ public final class InvertedColumnStore implements AutoCloseable {
         for (int i = 0; i < kinds.length; i++) store(i, row, updated[i]);
     }
 
+    /**
+     * Internal target for a compiler-verified compound indexed field update
+     * (e.g. rows[i].x += delta). Resolving the position, reading the prior
+     * field, evaluating its pure transform and writing the new value are one
+     * synchronized transaction. NEVER lower compound writes as getAt+setAt:
+     * another task could update the field or swap-delete the row between them.
+     *
+     * This hook is package-private intentionally: arbitrary guest callbacks,
+     * suspending expressions, resources and effects have not been verified.
+     * The callback receives a detached value for RECORD columns.
+     */
+    synchronized void transformAt(
+            long index, int field, java.util.function.UnaryOperator<Object> verifiedTransform) {
+        int row = checkedDenseRow(index);
+        int i = column(field);
+        if (readers[i] != 0 || writers[i]) {
+            throw new IllegalStateException("borrowed column");
+        }
+        Objects.requireNonNull(verifiedTransform, "verified column transform");
+        Object before = load(i, row);
+        Object updated;
+        rejectedReentrantAccess = false;
+        transforming = true;
+        try {
+            updated = verifiedTransform.apply(before);
+        } finally {
+            // A failure, even an Error, must never leave the store locked out.
+            transforming = false;
+        }
+        if (rejectedReentrantAccess) {
+            throw new IllegalStateException("column transaction attempted reentrant store access");
+        }
+        open();
+        validateValue(specs[i], updated);
+        store(i, row, updated);
+    }
+
     public synchronized ColumnLoan borrowRead(int field) {
         open();
         int i = column(field);
