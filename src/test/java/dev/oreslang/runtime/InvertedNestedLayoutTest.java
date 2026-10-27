@@ -334,6 +334,21 @@ final class InvertedNestedLayoutTest {
     }
 
     @Test
+    void topLevelColumnBudgetRejectsOversizedSchemaBeforeAllocation() {
+        StringBuilder source = new StringBuilder("define inverted class Wide as ");
+        for (int i = 0; i <= InvertedColumnStore.MAX_COLUMN_COUNT; ++i) {
+            source.append("field_").append(i).append(": i64; ");
+        }
+        source.append("end");
+        Ast.ClassDecl wide = (Ast.ClassDecl) Parser.parse(source.toString())
+                .modules().getFirst().declarations().getFirst();
+        assertEquals(InvertedColumnStore.MAX_COLUMN_COUNT + 1, wide.fields().size());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> InvertedArray.Schema.fromClass(wide));
+        assertTrue(error.getMessage().contains("maximum top-level columns"));
+    }
+
+    @Test
     void noImplicitInvertedStructOrRecordDeclarationDesugaring() {
         for (String source : new String[]{
                 "define inverted struct Packet as x: i64; end",
