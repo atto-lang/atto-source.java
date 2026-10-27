@@ -34,10 +34,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * registration-command pressure, never just because sockets are waiting.
  *
  * This is a low-level host substrate. It provides one-shot nonblocking
- * TCP accept on VM-owned selectors, but does not yet replace source-level
- * std/net read/write or own the caller's listening socket. Only one pending
- * readiness watch per channel is permitted; the host retains the channel
- * until the watch settles.
+ * TCP accept/read/write/connect on VM-owned selectors. Each channel is pinned
+ * to one selector registration; exactly one OP_READ and one OP_WRITE one-shot
+ * watch may coexist. Overlapping interests and all other multi-watch
+ * combinations are rejected. The host retains the channel until every
+ * admitted watch settles.
  * Completion only settles OresFuture: guest continuations are enqueued by
  * the Future's owning OresScheduler, not executed by a reactor.
  */
@@ -1017,6 +1018,15 @@ public final class NioReadinessGroup implements AutoCloseable {
                 pending.decrementAndGet();
                 notificationReservations.decrementAndGet();
                 if (representative == null) ownership.remove(channel);
+                SelectionKey key = registration.key;
+                if (key != null && key.isValid()) {
+                    try {
+                        key.interestOps(registration.claimedInterests);
+                    } catch (CancelledKeyException ignored) {
+                        // Reactor retirement already owns the terminal path.
+                    }
+                    target.selector.wakeup();
+                }
                 return OresFuture.failed(new RejectedExecutionException("NIO reactor command queue full"));
             }
             target.selector.wakeup();
@@ -1057,7 +1067,7 @@ public final class NioReadinessGroup implements AutoCloseable {
         final Reactor reactor;
         final ConcurrentHashMap<Watch, Boolean> watches = new ConcurrentHashMap<>();
         volatile int claimedInterests; // writes under lifecycle, reactor reads
-        SelectionKey key; // reactor-thread only
+        volatile SelectionKey key; // reactor owns mutation; admission may repair rollback
 
         ChannelRegistration(SelectableChannel channel, Reactor reactor) {
             this.channel = channel;
@@ -1203,6 +1213,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                             selector.selectNow(); // never parks the NIO worker
                             sweptCancelledKeys = true;
                         }
+                        if (watch.retired.get()) continue;
                         if (watch.future.isCancelled() || closed || stopping.get()) {
                             retire(watch, null, new IOException("NIO watch terminated"));
                             continue;
