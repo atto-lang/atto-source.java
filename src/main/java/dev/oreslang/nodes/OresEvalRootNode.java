@@ -7580,6 +7580,15 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("rt cooperate takes no arguments");
                     }
                     if (activeGeneratorEmitter.get() != null) {
+                        // Caller borrows cannot be revalidated from an ordinary
+                        // helper's independent ownership pass. Helpers whose
+                        // invocation masked the generator quantum must not
+                        // manufacture an unchecked explicit cooperation.
+                        if (activeGeneratorQuantum.get() == null) {
+                            throw new IllegalStateException(
+                                    "rt cooperate in a generator helper requires "
+                                            + "verified interprocedural suspension and borrow effects");
+                        }
                         // Legacy generator execution is a virtual-thread
                         // compatibility bridge, not a SourceTask continuation.
                         // It must never bypass the language's no-yield guard
