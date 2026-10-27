@@ -16,6 +16,9 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class InvertedColumnStore implements AutoCloseable {
     private static final int MAX_RECORD_BYTES = 64 * 1024;
+    // Preallocated empty backing for allocation-free teardown. No subsequent
+    // store operation may reach these arrays after closed=true is published.
+    private static final byte[] EMPTY_COLUMN = new byte[0];
 
     public enum Kind {
         I32(4), I64(8), F32(4), F64(8), BOOL(1), RECORD(0);
@@ -647,12 +650,14 @@ public final class InvertedColumnStore implements AutoCloseable {
         }
         if (closed) return;
         closed = true;
+        // Erase ALL previously allocated column contents before dropping even
+        // one backing reference. Never allocate a new array or ByteBuffer in
+        // this teardown path: allocation failure between columns could strand
+        // later sensitive columns unsanitized while the store appears closed.
+        for (byte[] column : columns) Arrays.fill(column, (byte) 0);
         for (int i = 0; i < kinds.length; i++) {
-            // Revoke borrows first (closed=true), then erase remaining scalar
-            // backing memory before releasing the arrays.
-            Arrays.fill(columns[i], (byte) 0);
-            columns[i] = new byte[0];
-            buffers[i] = ByteBuffer.wrap(columns[i]).order(ByteOrder.LITTLE_ENDIAN);
+            columns[i] = EMPTY_COLUMN;
+            buffers[i] = null;
         }
         length = capacity = 0;
     }
