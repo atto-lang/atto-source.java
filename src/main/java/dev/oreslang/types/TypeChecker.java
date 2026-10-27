@@ -3671,6 +3671,36 @@ public final class TypeChecker {
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
+                    Ast.ClassDecl invertedRow = invertedArrayRowClass(named);
+                    if (invertedRow != null) {
+                        if (call.typeArgumentsPresent()) {
+                            throw new IllegalArgumentException(
+                                    "InvertedArray methods do not accept call-site type arguments");
+                        }
+                        if (!member.member().equals("push")) {
+                            throw new IllegalArgumentException(
+                                    "unknown InvertedArray member '" + member.member()
+                                            + "'; v1 exposes only push(...) and immediate [i].field access");
+                        }
+                        if (call.arguments().size() != invertedRow.fields().size()) {
+                            throw new IllegalArgumentException(
+                                    "InvertedArray<" + invertedRow.name() + ">.push expects "
+                                            + invertedRow.fields().size() + " field value(s), got "
+                                            + call.arguments().size());
+                        }
+                        for (int i = 0; i < invertedRow.fields().size(); i++) {
+                            Ast.FieldDecl field = invertedRow.fields().get(i);
+                            Type expected = resolve(
+                                    field.type(), Set.of(), nominalClassType(invertedRow));
+                            Type actual = typeOf(
+                                    call.arguments().get(i), env, generics, self);
+                            requireAssignable(
+                                    actual, expected,
+                                    "InvertedArray<" + invertedRow.name()
+                                            + ">.push field '" + field.name() + "'");
+                        }
+                        return Primitive.VOID;
+                    }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
                             && member.member().equals("with_lock")) {
@@ -4183,6 +4213,13 @@ public final class TypeChecker {
             }
             Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
             Type index = typeOf(indexed.index(), env, generics, self);
+            Ast.ClassDecl invertedRow = invertedArrayRowClass(receiver);
+            if (invertedRow != null) {
+                requireInvertedIndexExpressionV1(indexed.index());
+                requireAssignable(index, Primitive.INT, "inverted array index");
+                throw new IllegalArgumentException(
+                        "inverted row projection cannot escape; use array[index].field immediately");
+            }
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
@@ -5790,6 +5827,49 @@ public final class TypeChecker {
         };
     }
 
+    private Ast.ClassDecl invertedArrayRowClass(Type type) {
+        Type dispatch = receiverDispatchType(deref(type));
+        if (!(dispatch instanceof Named named)
+                || !named.name().equals("InvertedArray")
+                || named.arguments().size() != 1
+                || !(named.arguments().getFirst() instanceof Named rowType)) {
+            return null;
+        }
+        Ast.ClassDecl row = findClass(rowType.name());
+        if (row == null || !row.inverted()) {
+            throw new IllegalArgumentException(
+                    "checked InvertedArray row type no longer resolves to an inverted class");
+        }
+        validateInvertedDeclarationV1(row);
+        return row;
+    }
+
+    private static void requireInvertedIndexExpressionV1(Ast.Expr expression) {
+        if (expression instanceof Ast.NameExpr || expression instanceof Ast.LiteralExpr) {
+            return;
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            requireInvertedIndexExpressionV1(unary.operand());
+            return;
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            requireInvertedIndexExpressionV1(binary.left());
+            requireInvertedIndexExpressionV1(binary.right());
+            return;
+        }
+        throw new IllegalArgumentException(
+                "inverted [] v1 index must be a non-suspending scalar expression; got "
+                        + expression.getClass().getSimpleName());
+    }
+
+    private Ast.FieldDecl directInvertedField(Ast.ClassDecl row, String fieldName) {
+        for (Ast.FieldDecl field : row.fields()) {
+            if (field.name().equals(fieldName)) return field;
+        }
+        throw new IllegalArgumentException(
+                "unknown inverted field '" + row.name() + "." + fieldName + "'");
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -5800,6 +5880,39 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             boolean writing) {
+        if (member.receiver() instanceof Ast.IndexExpr indexed) {
+            Type arrayType = typeOf(indexed.receiver(), env, generics, self);
+            Ast.ClassDecl row = invertedArrayRowClass(arrayType);
+            if (row != null) {
+                if (!(indexed.receiver() instanceof Ast.NameExpr)) {
+                    throw new IllegalArgumentException(
+                            "inverted [] v1 requires a direct named InvertedArray receiver");
+                }
+                requireInvertedIndexExpressionV1(indexed.index());
+                requireAssignable(
+                        typeOf(indexed.index(), env, generics, self),
+                        Primitive.INT,
+                        "inverted array index");
+                Ast.FieldDecl field = directInvertedField(row, member.member());
+                if (writing && field.bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "inverted field '" + row.name() + "." + field.name()
+                                    + "' is immutable; declare it with let to permit bracket-field writes");
+                }
+                Type fieldType = resolve(
+                        field.type(), Set.of(), nominalClassType(row));
+                Ast.CheckedInvertedIndexTypes.record(
+                        member,
+                        indexed,
+                        qualifiedClassName(row),
+                        field.name(),
+                        field.type(),
+                        writing
+                                ? Ast.InvertedIndexAccess.WRITE
+                                : Ast.InvertedIndexAccess.READ);
+                return fieldType;
+            }
+        }
         Type rawReceiver;
         if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
@@ -5814,6 +5927,11 @@ public final class TypeChecker {
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));
+        if (receiver instanceof Named named
+                && named.name().equals("InvertedArray")) {
+            throw new IllegalArgumentException(
+                    "InvertedArray members are direct-call-only; use push(...) or immediate [i].field access");
+        }
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     "cannot mutate a readonly structural record value");
