@@ -11,6 +11,51 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class InvertedColumnStoreTest {
     @Test
+    void failedReservePreservesOldBackingButSuccessfulReserveScrubsRetiredCopies()
+            throws Exception {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.ColumnSpec.scalar(InvertedColumnStore.Kind.I32),
+                InvertedColumnStore.ColumnSpec.record(4),
+                InvertedColumnStore.ColumnSpec.scalar(InvertedColumnStore.Kind.BOOL))) {
+            var row = store.push(0x12345678, new byte[]{10, 20, 30, 40}, true);
+            var columnsField = InvertedColumnStore.class.getDeclaredField("columns");
+            var buffersField = InvertedColumnStore.class.getDeclaredField("buffers");
+            columnsField.setAccessible(true);
+            buffersField.setAccessible(true);
+            byte[][] retired = ((byte[][]) columnsField.get(store)).clone();
+            java.nio.ByteBuffer[] oldBuffers =
+                    ((java.nio.ByteBuffer[]) buffersField.get(store)).clone();
+            int originalCapacity = store.capacity();
+
+            store.armAllocationFailureForTest(
+                    InvertedColumnStore.AllocationFailurePoint.BEFORE_RESERVE_COMMIT);
+            assertThrows(OutOfMemoryError.class,
+                    () -> store.reserve(originalCapacity + 5));
+            byte[][] retained = (byte[][]) columnsField.get(store);
+            for (int i = 0; i < retired.length; i++) {
+                assertSame(retired[i], retained[i],
+                        "failed reserve cannot publish or scrub original storage");
+            }
+            assertEquals(0x12345678, store.get(row, 0));
+            assertArrayEquals(new byte[]{10, 20, 30, 40}, (byte[]) store.get(row, 1));
+            assertEquals(true, store.get(row, 2));
+            assertEquals(originalCapacity, store.capacity());
+
+            store.reserve(originalCapacity + 5);
+            for (int i = 0; i < retired.length; i++) {
+                for (byte value : retired[i]) assertEquals((byte) 0, value);
+                for (byte value : oldBuffers[i].array()) assertEquals((byte) 0, value);
+                assertNotSame(retired[i], ((byte[][]) columnsField.get(store))[i]);
+            }
+            assertEquals(0x12345678, store.get(row, 0));
+            assertArrayEquals(new byte[]{10, 20, 30, 40}, (byte[]) store.get(row, 1));
+            assertEquals(true, store.get(row, 2));
+            store.set(row, 0, 101);
+            assertEquals(101, store.get(row, 0));
+        }
+    }
+
+    @Test
     void closeScrubsEveryColumnAndReleasesStorageWithoutNewBuffers()
             throws Exception {
         var store = new InvertedColumnStore(
