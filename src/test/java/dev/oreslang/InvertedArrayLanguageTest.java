@@ -475,8 +475,85 @@ final class InvertedArrayLanguageTest {
         }
     }
 
+
+    @Test
+    void evaluatorRejectsWrongLayoutOnAdmittedWriteBeforeMutatingColumns()
+            throws ReflectiveOperationException {
+        Ast.Program typed = TypeChecker.check(Parser.parse("""
+                define inverted class Particle as
+                  let f64 x;
+                  val f64 y;
+                  val bool ready;
+                end
+                fnc write(): void {
+                  let mut InvertedArray<Particle> particles =
+                      new InvertedArray<Particle>();
+                  particles.push(1.5, 2.5, true);
+                  particles[0].x = 9.25;
+                  return;
+                }
+                """));
+        Ast.FunctionDecl function = (Ast.FunctionDecl) typed.modules().getFirst()
+                .declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .findFirst().orElseThrow();
+        Ast.MemberExpr assignmentSite = function.body().stream()
+                .filter(Ast.ExprStmt.class::isInstance)
+                .map(Ast.ExprStmt.class::cast)
+                .map(Ast.ExprStmt::expression)
+                .filter(Ast.AssignExpr.class::isInstance)
+                .map(Ast.AssignExpr.class::cast)
+                .map(Ast.AssignExpr::target)
+                .map(Ast.MemberExpr.class::cast)
+                .findFirst().orElseThrow();
+        Ast.ClassDecl checkedRow = typed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+        Ast.ClassDecl substitutedRow = (Ast.ClassDecl) Parser.parse("""
+                define inverted class Particle as
+                  let i64 x;
+                  val f64 y;
+                  val bool ready;
+                end
+                """).modules().getFirst().declarations().getFirst();
+        try (InvertedArray valid = InvertedArray.fromClass(checkedRow, 0);
+                InvertedArray substituted = InvertedArray.fromClass(substitutedRow, 0)) {
+            var validRow = valid.pushValues(1.5, 2.5, true);
+            assertEquals(9.25,
+                    assignCheckedInvertedField(typed, assignmentSite, valid, 9.25));
+            assertEquals(9.25, valid.read(validRow, "x"));
+
+            var substitutedRowHandle = substituted.pushValues(17L, 2.5, true);
+            java.lang.reflect.InvocationTargetException rejected = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> assignCheckedInvertedField(
+                            typed, assignmentSite, substituted, 9.25));
+            IllegalStateException failure = assertInstanceOf(
+                    IllegalStateException.class, rejected.getCause());
+            assertTrue(
+                    failure.getMessage().contains("schema fingerprint changed after admission"),
+                    failure::getMessage);
+            assertEquals(17L, substituted.read(substitutedRowHandle, "x"));
+            assertEquals(1, substituted.size());
+        }
+    }
+
+    private static Object assignCheckedInvertedField(
+            Ast.Program typed, Ast.MemberExpr site, InvertedArray array, Object value)
+            throws ReflectiveOperationException {
+        return executeCheckedInvertedField(typed, site, array, value, true);
+    }
+
     private static Object evaluateCheckedInvertedField(
             Ast.Program typed, Ast.MemberExpr site, InvertedArray array)
+            throws ReflectiveOperationException {
+        return executeCheckedInvertedField(typed, site, array, null, false);
+    }
+
+    private static Object executeCheckedInvertedField(
+            Ast.Program typed, Ast.MemberExpr site, InvertedArray array,
+            Object value, boolean writing)
             throws ReflectiveOperationException {
         Class<?> evaluatorClass = Class.forName(
                 "dev.oreslang.nodes.OresEvalRootNode$Evaluator");
@@ -505,6 +582,12 @@ final class InvertedArrayLanguageTest {
         define.setAccessible(true);
         define.invoke(env, "particles", array, Ast.BindingKind.LET);
 
+        if (writing) {
+            var assign = evaluatorClass.getDeclaredMethod(
+                    "assignEvaluated", Ast.Expr.class, Object.class, envClass);
+            assign.setAccessible(true);
+            return assign.invoke(evaluator, site, value, env);
+        }
         var eval = evaluatorClass.getDeclaredMethod("eval", Ast.Expr.class, envClass);
         eval.setAccessible(true);
         return eval.invoke(evaluator, site, env);
