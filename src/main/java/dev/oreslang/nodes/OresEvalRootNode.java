@@ -197,6 +197,11 @@ public final class OresEvalRootNode extends RootNode {
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
+        // A generator producer owns its quantum across nested calls and
+        // yields. This is a legacy virtual-thread bridge; source Task
+        // continuations use OresScheduler.Cooperate instead.
+        private final ThreadLocal<SourceCooperationQuantum> activeGeneratorQuantum =
+                new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
 
@@ -6054,8 +6059,12 @@ public final class OresEvalRootNode extends RootNode {
 
             GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
             Boolean previousAsync = activeGeneratorAsync.get();
+            SourceCooperationQuantum previousQuantum = activeGeneratorQuantum.get();
+            SourceCooperationQuantum quantum = new SourceCooperationQuantum();
+            quantum.beginDispatch();
             activeGeneratorEmitter.set(emitter);
             activeGeneratorAsync.set(fn.async());
+            activeGeneratorQuantum.set(quantum);
             try {
                 executeBlock(fn.body(), env);
             } catch (ReturnSignal signal) {
@@ -6074,6 +6083,8 @@ public final class OresEvalRootNode extends RootNode {
                 else activeGeneratorEmitter.set(previous);
                 if (previousAsync == null) activeGeneratorAsync.remove();
                 else activeGeneratorAsync.set(previousAsync);
+                if (previousQuantum == null) activeGeneratorQuantum.remove();
+                else activeGeneratorQuantum.set(previousQuantum);
             }
         }
 
@@ -6461,6 +6472,7 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     for (Object item : values) {
                         context.schedulerSafepoint();
+                        generatorLoopSafepoint(env);
                         Env iteration = new Env(env);
                         bindSequenceDestructure(iterableValues(item, env), loop.bindings(), iteration,
                                 "for-of destructure");
@@ -6488,6 +6500,7 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     for (Object item : values) {
                         context.schedulerSafepoint();
+                        generatorLoopSafepoint(env);
                         Env iteration = new Env(env);
                         iteration.define(loop.bindingName(), item, loop.bindingKind());
                         try {
@@ -6517,6 +6530,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
                     context.schedulerSafepoint();
+                    generatorLoopSafepoint(loopEnv);
                     try {
                         executeBlock(
                                 loop.body(),
@@ -6534,6 +6548,7 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.DoWhileStmt loop) {
                 do {
                     context.schedulerSafepoint();
+                    generatorLoopSafepoint(env);
                     try {
                         executeBlock(
                                 loop.body(),
@@ -6550,6 +6565,7 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.LoopStmt loop) {
                 while (true) {
                     context.schedulerSafepoint();
+                    generatorLoopSafepoint(env);
                     try {
                         executeBlock(
                                 loop.body(),
@@ -6562,6 +6578,30 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
             }
+        }
+
+        /**
+         * CPU-heavy generators use the same reduction/time quantum as source
+         * Tasks, but yield their owned virtual carrier (not an arbitrary host
+         * or actor stack). Checks occur only at committed loop boundaries.
+         * A MutexGuard is a no-yield region; preemption remains advisory and
+         * never revokes source borrowing or shared-state authority.
+         */
+        private void generatorLoopSafepoint(Env env) {
+            SourceCooperationQuantum quantum = activeGeneratorQuantum.get();
+            if (quantum == null) return;
+            if (!quantum.completedBackedgeNeedsCheck()) return;
+            if (env.hasLiveMutexGuards()) return;
+            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+                // UNTRUSTED quotas are not yet transferable through this
+                // generator compatibility carrier.
+                return;
+            }
+            if (!quantum.shouldCooperateAtCheck()) return;
+            AsyncRuntime.cooperateCurrentCarrier();
+            quantum.recordedCooperate();
+            quantum.beginDispatch();
+            context.recordSourceLoopCooperate();
         }
 
         private void executeSelectStatement(
