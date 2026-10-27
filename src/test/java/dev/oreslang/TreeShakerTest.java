@@ -3,6 +3,8 @@ package dev.oreslang;
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.TreeShaker;
+import dev.oreslang.compiler.MacroIdentifierHygiene;
+import dev.oreslang.compiler.MacroSourceUnitIdentity;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
@@ -14,6 +16,46 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class TreeShakerTest {
+    @Test
+    void treeShakingKeepsExactMacroCaptureAuthorityAndReferencedFunction() {
+        Ast.Program source = MacroSourceUnitIdentity.attach(
+                Parser.parse("""
+                        pub fnc helper() -> int {
+                            return 42;
+                        }
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+                        pub fnc main() -> int {
+                            return reference!(ident helper)();
+                        }
+                        """), "pkg/src/main.ores");
+        Ast.Program checked = OresCompiler.analyze(source);
+        TreeShaker.Result optimized =
+                TreeShaker.shake(checked, BuildOptions.executable(Map.of()));
+
+        assertTrue(optimized.retained(Parser.ROOT_MODULE + ".helper"),
+                "checked macro function capture must retain its static callee");
+        assertEquals("pkg/src/main.ores",
+                MacroSourceUnitIdentity.unitId(optimized.program()),
+                "tree shaking must preserve the canonical compiler source identity");
+
+        Ast.FunctionDecl main = optimized.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("main"))
+                .findFirst().orElseThrow();
+        Ast.CallExpr call = assertInstanceOf(
+                Ast.CallExpr.class,
+                assertInstanceOf(Ast.ReturnStmt.class, main.body().getFirst()).value());
+        Ast.MemberExpr captured = assertInstanceOf(Ast.MemberExpr.class, call.callee());
+        MacroIdentifierHygiene.CapturedFunction admitted =
+                assertNotNull(MacroIdentifierHygiene.authorizedCapturedFunction(captured));
+        assertEquals("helper", admitted.name());
+        assertEquals(Parser.ROOT_MODULE, admitted.hygiene().callerModule());
+    }
+
     @Test
     void cliDefinesOverrideEnvironmentDefinesDeterministically() {
         Map<String, String> merged = BuildOptions.mergeDefines(
