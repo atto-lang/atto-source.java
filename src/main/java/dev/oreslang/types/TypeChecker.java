@@ -729,6 +729,16 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    private static void rejectActorExecutionIntrinsicBinding(
+            String name,
+            String where) {
+        if (name.equals("io") || name.equals("stdio") || name.equals("print")) {
+            throw new IllegalArgumentException(
+                    where + " '" + name
+                            + "' conflicts with a reserved actor execution intrinsic");
+        }
+    }
+
     private void requireSuspendableCall(boolean suspends, String label) {
         if (suspends && !currentMaySuspend)
             throw new IllegalArgumentException(
@@ -795,6 +805,9 @@ public final class TypeChecker {
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(param.name(), "actor callable parameter");
+            }
             Type parameterType = resolveParam(param, generics, null);
             argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
@@ -1620,6 +1633,9 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
             for (Ast.Param param : method.parameters()) {
+                if (!method.isStatic() && klass.actorKind() != Ast.ActorKind.NONE) {
+                    rejectActorExecutionIntrinsicBinding(param.name(), "actor method parameter");
+                }
                 Type parameterType = resolveParam(param, generics, callableSelf);
                 methodArgumentTypes.add(parameterType);
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
@@ -1854,6 +1870,19 @@ public final class TypeChecker {
             // remain pre-reserved because their name is stated explicitly and
             // must reject forward use before initialization.
             for (Ast.Stmt stmt : body) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    if (stmt instanceof Ast.BindingStmt binding) {
+                        rejectActorExecutionIntrinsicBinding(
+                                binding.name(), "actor-local binding");
+                    } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                        for (Ast.DestructureBinding binding : destructure.bindings()) {
+                            if (!binding.isDiscard()) {
+                                rejectActorExecutionIntrinsicBinding(
+                                        binding.name(), "actor-local destructure binding");
+                            }
+                        }
+                    }
+                }
                 if (stmt instanceof Ast.BindingStmt binding
                         && isShortNamedAggregateInference(binding, env, generics)) {
                     String name = binding.declaredType().name();
