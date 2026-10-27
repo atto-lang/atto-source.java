@@ -1039,7 +1039,7 @@ public final class NioReadinessGroup implements AutoCloseable {
         final SelectableChannel channel;
         final Reactor reactor;
         final ConcurrentHashMap<Watch, Boolean> watches = new ConcurrentHashMap<>();
-        int claimedInterests; // lifecycle monitor only
+        volatile int claimedInterests; // writes under lifecycle, reactor reads
         SelectionKey key; // reactor-thread only
 
         ChannelRegistration(SelectableChannel channel, Reactor reactor) {
@@ -1055,7 +1055,6 @@ public final class NioReadinessGroup implements AutoCloseable {
         final ChannelRegistration registration;
         final AtomicBoolean retired = new AtomicBoolean();
         final OresFuture<Integer> future;
-        SelectionKey key; // transitional reactor-thread field until attachment migration
         Watch(SelectableChannel channel, int interests, ChannelRegistration registration) {
             this.channel = channel;
             this.interests = interests;
@@ -1111,13 +1110,30 @@ public final class NioReadinessGroup implements AutoCloseable {
 
         void retire(Watch watch, Integer events, Throwable error) {
             if (!watch.retired.compareAndSet(false, true)) return;
-            if (watch.key != null) watch.key.cancel();
             admitted.remove(watch);
-            watch.registration.watches.remove(watch);
+            ChannelRegistration registration = watch.registration;
+            final int remainingInterests;
             synchronized (lifecycle) {
-                watch.registration.claimedInterests &= ~watch.interests;
-                if (ownership.get(watch.channel) == watch) ownership.remove(watch.channel);
+                registration.watches.remove(watch);
+                registration.claimedInterests &= ~watch.interests;
+                remainingInterests = registration.claimedInterests;
+                if (ownership.get(watch.channel) == watch) {
+                    Watch replacement = registration.watches.keySet().stream()
+                            .filter(candidate -> !candidate.retired.get())
+                            .findFirst().orElse(null);
+                    if (replacement == null) ownership.remove(watch.channel);
+                    else ownership.put(watch.channel, replacement);
+                }
                 pending.decrementAndGet();
+            }
+            SelectionKey key = registration.key;
+            if (key != null) {
+                if (remainingInterests == 0) {
+                    key.cancel();
+                    registration.key = null;
+                } else if (key.isValid()) {
+                    key.interestOps(remainingInterests);
+                }
             }
             // Runtime subscribers run synchronously in OresFuture.settle().
             // Dispatch even host-only subscribers away from the selector:
@@ -1175,7 +1191,16 @@ public final class NioReadinessGroup implements AutoCloseable {
                             continue;
                         }
                         try {
-                            watch.key = watch.channel.register(selector, watch.interests, watch);
+                            ChannelRegistration registration = watch.registration;
+                            SelectionKey key = registration.key;
+                            if (key == null || !key.isValid()) {
+                                registration.key = watch.channel.register(
+                                        selector,
+                                        registration.claimedInterests,
+                                        registration);
+                            } else {
+                                key.interestOps(registration.claimedInterests);
+                            }
                             if (watch.future.isCancelled())
                                 retire(watch, null, new IOException("NIO watch cancelled"));
                         } catch (IOException | RuntimeException failure) {
@@ -1202,10 +1227,21 @@ public final class NioReadinessGroup implements AutoCloseable {
                     while (readyQuantum++ < 128 && selected.hasNext()) {
                         SelectionKey key = selected.next();
                         selected.remove();
-                        Watch watchReady = (Watch) key.attachment();
-                        if (watchReady == null) continue;
-                        if (!key.isValid()) retire(watchReady, null, new CancelledKeyException());
-                        else retire(watchReady, key.readyOps(), null);
+                        ChannelRegistration registration =
+                                (ChannelRegistration) key.attachment();
+                        if (registration == null) continue;
+                        if (!key.isValid()) {
+                            for (Watch watchReady : registration.watches.keySet())
+                                retire(watchReady, null, new CancelledKeyException());
+                            continue;
+                        }
+                        int readyOps = key.readyOps();
+                        for (Watch watchReady : registration.watches.keySet()) {
+                            if (!watchReady.retired.get()
+                                    && (watchReady.interests & readyOps) != 0) {
+                                retire(watchReady, watchReady.interests & readyOps, null);
+                            }
+                        }
                     }
                     // Remaining cancellation notifications are processed
                     // next iteration without a full scan of all idle watches.
