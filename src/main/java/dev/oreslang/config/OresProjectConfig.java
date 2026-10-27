@@ -9,7 +9,10 @@ import org.tomlj.TomlTable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -254,36 +257,126 @@ public final class OresProjectConfig {
 
     /**
      * Bare-import roots may themselves be symlinked (for developer/package
-     * layouts), but a child path must remain inside that root after physical
-     * resolution. This preserves an explicitly configured symlink root while
-     * preventing an in-root file/directory alias from escaping to unrelated
-     * source.
+     * layouts), but every existing child component is authoritative for that
+     * root. A malformed/dangling/special component must fail closed instead
+     * of becoming an artificial miss that falls through to a lower ambient
+     * root.
      */
     private static Optional<Path> existingSourceWithinRoot(
             Path candidate,
             Path configuredRoot,
             String importPath) {
-        Optional<Path> resolved = existingSource(candidate);
-        if (resolved.isEmpty()) return Optional.empty();
-
+        Path lexicalRoot = configuredRoot.toAbsolutePath().normalize();
+        Path normalizedCandidate = candidate.toAbsolutePath().normalize();
         try {
-            // Missing configured search roots remain ordinary misses. Once a
-            // candidate exists, however, its physical ownership must be
-            // provable before it can become source identity.
-            if (!Files.exists(configuredRoot)) return Optional.empty();
-            Path physicalRoot = configuredRoot.toRealPath();
-            if (!Files.isDirectory(physicalRoot)) return Optional.empty();
-
-            Path physicalSource = resolved.get().toRealPath();
-            if (!physicalSource.startsWith(physicalRoot)) {
-                throw new IllegalArgumentException(
-                        "bare import '" + importPath
-                                + "' escapes physical configured search root '" + physicalRoot + "'");
+            BasicFileAttributes rootAttributes;
+            try {
+                rootAttributes = Files.readAttributes(
+                        lexicalRoot, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            } catch (NoSuchFileException missingRoot) {
+                return Optional.empty();
             }
-            return Optional.of(physicalSource);
+
+            Path physicalRoot = lexicalRoot.toRealPath();
+            if (!Files.isDirectory(physicalRoot, LinkOption.NOFOLLOW_LINKS)) {
+                if (rootAttributes.isSymbolicLink()) {
+                    throw new IllegalArgumentException(
+                            "configured search root does not resolve to a directory: " + lexicalRoot);
+                }
+                return Optional.empty();
+            }
+
+            Path relative = lexicalRoot.relativize(normalizedCandidate);
+            Path current = lexicalRoot;
+            for (int index = 0; index + 1 < relative.getNameCount(); index++) {
+                current = current.resolve(relative.getName(index));
+                BasicFileAttributes attributes;
+                try {
+                    attributes = Files.readAttributes(
+                            current, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                } catch (NoSuchFileException missingComponent) {
+                    return Optional.empty();
+                }
+
+                if (attributes.isSymbolicLink()) {
+                    Path physicalComponent = current.toRealPath();
+                    requirePhysicalContainment(physicalRoot, physicalComponent, importPath);
+                    if (!Files.isDirectory(physicalComponent, LinkOption.NOFOLLOW_LINKS)) {
+                        throw new IllegalArgumentException(
+                                "bare import '" + importPath
+                                        + "' is blocked by a non-directory search-root component '"
+                                        + current + "'");
+                    }
+                } else if (!attributes.isDirectory()) {
+                    throw new IllegalArgumentException(
+                            "bare import '" + importPath
+                                    + "' is blocked by a non-directory search-root component '"
+                                    + current + "'");
+                }
+            }
+
+            Optional<Path> exact = regularSourceWithinRoot(
+                    normalizedCandidate, physicalRoot, importPath);
+            if (exact.isPresent()) return exact;
+
+            String text = normalizedCandidate.toString().toLowerCase();
+            if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
+
+            Optional<Path> ores = regularSourceWithinRoot(
+                    Path.of(normalizedCandidate.toString() + ".ores"),
+                    physicalRoot,
+                    importPath);
+            if (ores.isPresent()) return ores;
+
+            return regularSourceWithinRoot(
+                    Path.of(normalizedCandidate.toString() + ".java"),
+                    physicalRoot,
+                    importPath);
         } catch (IOException failure) {
             throw new IllegalArgumentException(
                     "cannot verify physical source path for bare import '" + importPath + "'", failure);
+        }
+    }
+
+    private static Optional<Path> regularSourceWithinRoot(
+            Path candidate,
+            Path physicalRoot,
+            String importPath) throws IOException {
+        BasicFileAttributes attributes;
+        try {
+            attributes = Files.readAttributes(
+                    candidate, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        } catch (NoSuchFileException missing) {
+            return Optional.empty();
+        }
+
+        if (attributes.isDirectory()) return Optional.empty();
+        if (!attributes.isRegularFile() && !attributes.isSymbolicLink()) {
+            throw new IllegalArgumentException(
+                    "bare import '" + importPath + "' resolves through a non-regular source node '"
+                            + candidate + "'");
+        }
+
+        Path physicalSource = candidate.toRealPath();
+        requirePhysicalContainment(physicalRoot, physicalSource, importPath);
+        if (!Files.isRegularFile(physicalSource, LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.isDirectory(physicalSource, LinkOption.NOFOLLOW_LINKS)) {
+                return Optional.empty();
+            }
+            throw new IllegalArgumentException(
+                    "bare import '" + importPath + "' does not resolve to a regular source file");
+        }
+        return Optional.of(physicalSource);
+    }
+
+    private static void requirePhysicalContainment(
+            Path physicalRoot,
+            Path physicalSource,
+            String importPath) {
+        if (!physicalSource.startsWith(physicalRoot)) {
+            throw new IllegalArgumentException(
+                    "bare import '" + importPath
+                            + "' escapes physical configured search root '" + physicalRoot + "'");
         }
     }
 
