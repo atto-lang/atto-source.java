@@ -94,6 +94,10 @@ public final class GeneratorRuntime {
     public static final class AsyncGenerator<T> implements AutoCloseable {
         private final AsyncRuntime runtime;
         private final Engine<T> engine;
+        // A generator has one logical suspended activation. Do not turn
+        // overlapping consumer pulls into an unbounded queue of scheduler
+        // tasks/virtual carriers merely to serialize later inside Engine.next().
+        private final AtomicBoolean pullActive = new AtomicBoolean();
 
         private AsyncGenerator(AsyncRuntime runtime, Engine<T> engine) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -101,8 +105,9 @@ public final class GeneratorRuntime {
         }
 
         /**
-         * One asynchronous pull. Calls are serialized by the activation even
-         * if callers issue more than one pull before an earlier pull completes.
+         * One asynchronous pull. Exactly one pull may be in flight. An
+         * overlapping pull fails deterministically instead of allocating an
+         * unbounded backlog of scheduler tasks waiting on the activation.
          */
         public OresFuture<Step<T>> nextStep() {
             // Only a *settled* terminal generator can return an immediate
@@ -116,11 +121,18 @@ public final class GeneratorRuntime {
                         ? OresFuture.completed(Step.doneStep())
                         : OresFuture.failed(rejected);
             }
+            if (!pullActive.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "async generator already has an active pull"));
+            }
             // An async pull always returns an OresFuture, including when
             // scheduler admission itself rejects before any guest work starts.
             try {
-                return runtime.submit(engine::next);
+                OresFuture<Step<T>> pull = runtime.submit(engine::next);
+                pull.whenCompleteRuntime((value, failure) -> pullActive.set(false));
+                return pull;
             } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                pullActive.set(false);
                 return OresFuture.failed(rejected);
             }
         }
