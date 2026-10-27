@@ -91,13 +91,17 @@ final class StrictNonblockingStdlibIoTest {
     }
 
     @Test
-    void tcpConnectCannotReachBlockingSocketOrWorkerFallback() throws Exception {
-        assertStrictlyUnsupported("""
+    void hostnameConnectFailsClosedBeforeBlockingDns() throws Exception {
+        String text = failureText(runFailure("""
                 pub async routine main(): void {
-                  await network.connect_async("127.0.0.1", 9);
+                  await network.connect_async("localhost", 9);
                   return;
                 }
-                """);
+                """));
+        assertTrue(
+                text.contains("numeric IPv4 literal")
+                        || text.contains("async DNS is installed"),
+                text);
     }
 
     @Test
@@ -165,6 +169,8 @@ final class StrictNonblockingStdlibIoTest {
                 ): void {
                   val int port = listener.port;
                   val Future<NioTcpConnection> accepted = listener.accept_async();
+                  val Future<NioTcpConnection> outbound =
+                      network.connect_async("127.0.0.1", 9);
                   val Future<Array<int>> read = connection.read_bytes_async(64);
                   val Future<void> close_connection = connection.close_async();
                   val Future<void> close_listener = listener.close_async();
@@ -184,7 +190,7 @@ final class StrictNonblockingStdlibIoTest {
                 pub async routine main(): void {
                   val Future<String> read = fs.read_text_async("x");
                   val Future<bool> exists = fs.exists_async("x");
-                  val Future<TcpConnection> connected = network.connect_async("127.0.0.1", 9);
+                  val Future<NioTcpConnection> connected = network.connect_async("127.0.0.1", 9);
                   val Future<String> get = http.get_text_async("http://127.0.0.1:9/");
                   val Future<void> out = stdio.stdout.write_async("x");
                   val Future<Option<String>> input = stdio.stdin.read_line_async();
