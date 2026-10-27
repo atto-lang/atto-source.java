@@ -118,6 +118,28 @@ final class ProjectedBorrowOwnershipTest {
     }
 
     @Test
+    void projectedBorrowLeaseIsReleasedAtLexicalScopeExit() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Item as
+                  pub val int number;
+                end
+
+                fnc ok(): void {
+                  let mut List<Item> items = new List<Item>();
+                  items.add(new Item(1));
+                  if true; do
+                    val borrow List<Item> view = rt borrow items;
+                    for val item of view do
+                      stdio.stdout.write(item.number);
+                    done
+                  fi
+                  items.add(new Item(2));
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void storedProjectionGuardsEntireOwnerAgainstMove() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(TYPES + """
