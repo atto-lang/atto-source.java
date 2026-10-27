@@ -267,6 +267,44 @@ final class InvertedIndexPlanTest {
     }
 
     @Test
+    void differentDeclarationsWithSameNameAndLayoutCannotBorrowIndexPlanAuthority() {
+        Ast.ClassDecl admitted = particle();
+        Ast.ClassDecl lookalike = particle();
+        assertNotSame(admitted, lookalike,
+                "a name and layout do not establish nominal declaration identity");
+        InvertedIndexPlan read = InvertedIndexPlan.compile(
+                admitted, site(), "x", InvertedIndexPlan.Access.READ);
+        InvertedIndexPlan write = InvertedIndexPlan.compile(
+                admitted, site(), "x", InvertedIndexPlan.Access.WRITE);
+
+        try (var original = InvertedArray.fromClass(admitted, 1);
+             var impostor = InvertedArray.fromClass(lookalike, 1)) {
+            original.pushValues(1.0, 2.0, false);
+            impostor.pushValues(3.0, 4.0, true);
+            assertTrue(original.schema().representsDeclaration(admitted));
+            assertFalse(impostor.schema().representsDeclaration(admitted));
+            assertEquals(1.0, read.bind(original).read(0));
+            assertThrows(IllegalArgumentException.class, () -> read.bind(impostor));
+            assertThrows(IllegalArgumentException.class, () -> write.bind(impostor));
+            assertEquals(3.0, impostor.bindField("x").getAt(0));
+        }
+
+        Ast.ClassDecl immutableLookalike = declaration("""
+                define inverted class Particle as
+                    val f64 x;
+                    val f64 y;
+                    val bool ready;
+                end
+                """);
+        try (var immutable = InvertedArray.fromClass(immutableLookalike, 1)) {
+            immutable.pushValues(7.0, 8.0, false);
+            assertThrows(IllegalArgumentException.class, () -> write.bind(immutable),
+                    "a same-name physical layout must not launder immutable fields");
+            assertEquals(7.0, immutable.bindField("x").getAt(0));
+        }
+    }
+
+    @Test
     void fusedIndexedAccessTracksCurrentDenseRowAfterSwapDelete() {
         Ast.ClassDecl particle = particle();
         var read = InvertedIndexPlan.compile(
