@@ -59,6 +59,7 @@ CODEOWNERS_PATH = ".github/CODEOWNERS"
 SECURITY_CODEOWNER_PATHS = (
     "/.github/CODEOWNERS",
     "/.github/private-ci-approved-repositories.txt",
+    "/.github/private-ci-incident-dispositions.json",
     "/.github/private-ci-carrier-contracts.json",
     "/scripts/check-private-ci-destination.sh",
     "/scripts/run-in-private-ci-destination.sh",
