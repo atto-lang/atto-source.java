@@ -8243,6 +8243,18 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof FutureFactory) {
                 return switch (name) {
+                    case "from_task" -> (Invokable) args -> {
+                        requireOne(args, "Future.from_task");
+                        // TypeChecker admits only an inline task { } on this
+                        // source slice; the evaluator sees its already-created
+                        // OresFuture. Never re-execute it or leak its raw
+                        // producer cancellation authority across the adapter.
+                        if (!(args.getFirst() instanceof OresFuture<?> source)) {
+                            throw new IllegalArgumentException(
+                                    "Future.from_task requires one compiler-admitted task { } result");
+                        }
+                        return OresFuture.observe(source);
+                    };
                     case "all" -> (Invokable) args -> {
                         requireOne(args, "Future.all");
                         return OresFutures.all(asSequence(args.getFirst()));
