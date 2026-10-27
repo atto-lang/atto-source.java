@@ -14,141 +14,146 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Loads Oreslang-owned core-library source from packaged resources.
+ * Loads compiler-owned Oreslang library source from packaged resources.
  *
- * <p>The core library is intentionally source-first: semantics live in .ores
- * modules. This Java class is loader glue only and must never become an
- * implementation backdoor for stdlib behavior.</p>
+ * <p>Public library architecture has exactly two namespaces:
+ * {@code ores.core/*} is the freestanding/no-OS layer and
+ * {@code ores.std/*} is the hosted/platform layer. Legacy {@code std/*}
+ * imports remain a compatibility spelling for the hosted layer during
+ * migration; they never create a third capability layer.</p>
  */
 public final class CoreLibrarySources {
-    private static final String IMPORT_PREFIX = "std/";
-    private static final String UNIT_PREFIX = "@std/";
-    private static final String RESOURCE_PREFIX = "dev/oreslang/std/";
+    private static final String STD_IMPORT_PREFIX = "ores.std/";
+    private static final String LEGACY_STD_IMPORT_PREFIX = "std/";
+    private static final String STD_UNIT_PREFIX = "@std/";
+    private static final String STD_RESOURCE_PREFIX = "dev/oreslang/std/";
+
+    private static final String CORE_IMPORT_PREFIX = "ores.core/";
+    private static final String CORE_UNIT_PREFIX = "@ores.core/";
     private static final String CORE_RESOURCE_PREFIX = "dev/oreslang/core/";
-    private static final Set<String> FREESTANDING_CORE_SOURCES = Set.of("numeric.ores");
+
+    private static final Set<String> CORE_SOURCES = Set.of("numeric.ores");
+    private static final Set<String> PACKAGED_SOURCES =
+            Set.of("core.ores", "testing.ores", "assert.ores", "trace.ores", "http_wire.ores");
 
     private static final int MAX_SOURCE_BYTES = 1024 * 1024;
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
-    // Closed registry: a classpath resource must never create an unapproved
-    // stdlib module. Update deliberately when adding a new native .ores module.
-    private static final Set<String> PACKAGED_SOURCES = Set.of("core.ores", "testing.ores", "assert.ores", "trace.ores", "http_wire.ores");
 
     private CoreLibrarySources() { }
 
-    public static boolean isCoreImport(String importPath) {
-        // A Windows-style separator must never skip the trusted std/ loader
-        // and fall through to an application-owned std/core.ores path.
+    /** Canonical ores.std/* plus the temporary legacy std/* spelling. */
+    public static boolean isStdImport(String importPath) {
         return importPath != null
-                && (importPath.startsWith(IMPORT_PREFIX)
-                        || importPath.startsWith("std\\"));
+                && (importPath.startsWith(STD_IMPORT_PREFIX)
+                    || importPath.startsWith("ores.std\\")
+                    || importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)
+                    || importPath.startsWith("std\\"));
+    }
+
+    /** Canonical freestanding library namespace. */
+    public static boolean isOresCoreImport(String importPath) {
+        return importPath != null
+                && (importPath.startsWith(CORE_IMPORT_PREFIX)
+                    || importPath.startsWith("ores.core\\"));
     }
 
     /**
-     * Reserve future freestanding library import roots before any filesystem
-     * or ORESLANG_PATH lookup. A project file under core/ must never be
-     * mistaken for compiler-owned, heap-free core source.
-     *
-     * Only bare package paths are reserved; explicitly relative imports such
-     * as "./core/utility" remain ordinary application filesystem imports.
-     * This is an admission guard, not yet a freestanding module resolver.
+     * Reserve canonical Oreslang library roots before filesystem/ORESLANG_PATH
+     * fallback. Explicit relative imports such as ./ores.core/utility remain
+     * ordinary application paths.
      */
-    public static boolean isReservedFreestandingImport(String importPath) {
+    public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
-        // Filesystem resolution normalizes backslash to slash, so policy
-        // checks must classify the same path form *before* that resolution.
         String normalized = importPath.replace('\\', '/');
-        return normalized.startsWith("core/")
-                || normalized.startsWith("alloc/")
-                || normalized.startsWith("actor/")
-                || normalized.startsWith("otp/");
+        return normalized.startsWith(CORE_IMPORT_PREFIX)
+                || normalized.startsWith(STD_IMPORT_PREFIX);
     }
 
-    /** A closed canonical source registry; never search project roots. */
-    public static boolean isFreestandingCoreImport(String importPath) {
-        return importPath != null
-                && (importPath.startsWith("core/") || importPath.startsWith("core\\"));
+    public static Set<String> packagedCorePaths() {
+        return CORE_SOURCES;
     }
 
-    public static Set<String> packagedFreestandingCorePaths() {
-        return FREESTANDING_CORE_SOURCES;
+    public static String oresCoreUnitId(String importPath) {
+        return CORE_UNIT_PREFIX + canonicalCoreRelativePath(importPath);
     }
 
-    public static String freestandingCoreUnitId(String importPath) {
-        return "@core/" + canonicalFreestandingCorePath(importPath);
-    }
-
-    public static String freestandingCoreFileName(String importPath) {
-        String relative = canonicalFreestandingCorePath(importPath);
+    public static String oresCoreFileName(String importPath) {
+        String relative = canonicalCoreRelativePath(importPath);
         return relative.substring(relative.lastIndexOf('/') + 1);
     }
 
-    public static String freestandingCoreSource(String importPath) throws IOException {
-        String relative = canonicalFreestandingCorePath(importPath);
-        if (!FREESTANDING_CORE_SOURCES.contains(relative)) {
+    public static String oresCoreSource(String importPath) throws IOException {
+        String relative = canonicalCoreRelativePath(importPath);
+        if (!CORE_SOURCES.contains(relative)) {
             throw new IllegalArgumentException(
-                    "unknown compiler-owned core module: " + importPath);
+                    "unknown compiler-owned ores.core module: " + importPath);
         }
         return readPackagedSource(CORE_RESOURCE_PREFIX + relative, importPath);
     }
 
-    private static String canonicalFreestandingCorePath(String importPath) {
+    private static String canonicalCoreRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
-        if (!importPath.startsWith("core/")) {
+        if (!importPath.startsWith(CORE_IMPORT_PREFIX)) {
             throw new IllegalArgumentException(
-                    "canonical core imports must start with 'core/': " + importPath);
+                    "canonical core imports must start with 'ores.core/': " + importPath);
         }
-        return canonicalRelativePath("std/" + importPath.substring("core/".length()));
+        return canonicalPathBody(importPath, CORE_IMPORT_PREFIX);
     }
 
     public static Set<String> packagedSourcePaths() {
         return PACKAGED_SOURCES;
     }
 
+    /** Hosted std identity remains stable while public imports migrate to ores.std/*. */
     public static String unitId(String importPath) {
-        return UNIT_PREFIX + canonicalRelativePath(importPath);
+        return STD_UNIT_PREFIX + canonicalStdRelativePath(importPath);
     }
 
     public static String source(String importPath) throws IOException {
-        String relative = canonicalRelativePath(importPath);
+        String relative = canonicalStdRelativePath(importPath);
         if (!PACKAGED_SOURCES.contains(relative)) {
             throw new IllegalArgumentException(
-                    "unknown Oreslang core-library module: " + importPath);
+                    "unknown compiler-owned ores.std module: " + importPath);
         }
-        return readPackagedSource(RESOURCE_PREFIX + relative, importPath);
+        return readPackagedSource(STD_RESOURCE_PREFIX + relative, importPath);
+    }
+
+    private static String canonicalStdRelativePath(String importPath) {
+        Objects.requireNonNull(importPath, "importPath");
+        if (importPath.startsWith(STD_IMPORT_PREFIX)) {
+            return canonicalPathBody(importPath, STD_IMPORT_PREFIX);
+        }
+        if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
+            return canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX);
+        }
+        throw new IllegalArgumentException(
+                "standard-library imports must start with 'ores.std/': " + importPath);
     }
 
     /** Classpath identity and duplicate-resource protections shared by both registries. */
     private static String readPackagedSource(String resource, String importPath) throws IOException {
         ClassLoader loader = CoreLibrarySources.class.getClassLoader();
-        // Class-relative lookup retains the owning named module. A loader-wide
-        // enumeration cannot see non-open module resources in modular launchers.
         URL unique = CoreLibrarySources.class.getResource("/" + resource);
         if (unique == null) {
             throw new IllegalArgumentException(
-                    "unknown Oreslang core-library module: " + importPath);
+                    "unknown compiler-owned Oreslang library module: " + importPath);
         }
-        // Packaged stdlib is compiler authority, not ambient classpath policy.
-        // Ambiguous duplicate resource names must never silently select a
-        // user-controlled earlier classpath entry.
         Enumeration<URL> matches = loader.getResources(resource);
         while (matches.hasMoreElements()) {
             URL candidate = matches.nextElement();
             if (!candidate.toExternalForm().equals(unique.toExternalForm())) {
                 throw new SecurityException(
-                        "duplicate packaged Oreslang core-library resource: " + importPath);
+                        "duplicate packaged Oreslang library resource: " + importPath);
             }
         }
         try (InputStream input = unique.openStream()) {
             byte[] bytes = input.readNBytes(MAX_SOURCE_BYTES + 1);
             if (bytes.length > MAX_SOURCE_BYTES) {
                 throw new IllegalStateException(
-                        "Oreslang core-library module exceeds " + MAX_SOURCE_BYTES
+                        "Oreslang library module exceeds " + MAX_SOURCE_BYTES
                                 + " bytes: " + importPath);
             }
-
-            // The language parser must never see replacement characters created
-            // by silently decoding malformed UTF-8 in trusted packaged source.
             try {
                 return StandardCharsets.UTF_8.newDecoder()
                         .onMalformedInput(CodingErrorAction.REPORT)
@@ -157,54 +162,49 @@ public final class CoreLibrarySources {
                         .toString();
             } catch (CharacterCodingException invalidUtf8) {
                 throw new IllegalArgumentException(
-                        "packaged std/* module contains invalid UTF-8: " + importPath,
+                        "packaged Oreslang library module contains invalid UTF-8: " + importPath,
                         invalidUtf8);
             }
         }
     }
 
     public static String fileName(String importPath) {
-        String relative = canonicalRelativePath(importPath);
+        String relative = canonicalStdRelativePath(importPath);
         int slash = relative.lastIndexOf('/');
         return slash < 0 ? relative : relative.substring(slash + 1);
     }
 
-    private static String canonicalRelativePath(String importPath) {
-        Objects.requireNonNull(importPath, "importPath");
-        if (!importPath.startsWith(IMPORT_PREFIX)) {
-            throw new IllegalArgumentException(
-                    "core-library imports must start with 'std/': " + importPath);
-        }
+    private static String canonicalPathBody(String importPath, String prefix) {
         if (importPath.length() > MAX_IMPORT_PATH_CHARS) {
-            throw new IllegalArgumentException("Oreslang core-library import path is too long");
+            throw new IllegalArgumentException("Oreslang library import path is too long");
         }
         if (importPath.indexOf('\\') >= 0
                 || importPath.indexOf('\0') >= 0
                 || importPath.startsWith("/")
                 || importPath.contains("//")) {
             throw new IllegalArgumentException(
-                    "invalid Oreslang core-library import path: " + importPath);
+                    "invalid Oreslang library import path: " + importPath);
         }
 
-        String raw = importPath.substring(IMPORT_PREFIX.length());
+        String raw = importPath.substring(prefix.length());
         if (raw.endsWith(".ores")) raw = raw.substring(0, raw.length() - ".ores".length());
         if (raw.isBlank()) {
-            throw new IllegalArgumentException("core-library import must name a module");
+            throw new IllegalArgumentException("Oreslang library import must name a module");
         }
 
         String[] segments = raw.split("/");
         if (segments.length > MAX_MODULE_SEGMENTS) {
-            throw new IllegalArgumentException("Oreslang core-library import nesting is too deep");
+            throw new IllegalArgumentException("Oreslang library import nesting is too deep");
         }
         List<String> normalized = new ArrayList<>(segments.length);
         for (String segment : segments) {
             if (segment.isBlank() || segment.equals(".") || segment.equals("..")) {
                 throw new IllegalArgumentException(
-                        "core-library import may not traverse directories: " + importPath);
+                        "Oreslang library import may not traverse directories: " + importPath);
             }
             if (!segment.matches("[A-Za-z0-9][A-Za-z0-9_.-]*")) {
                 throw new IllegalArgumentException(
-                        "invalid core-library path segment '" + segment + "': " + importPath);
+                        "invalid Oreslang library path segment '" + segment + "': " + importPath);
             }
             normalized.add(segment);
         }
