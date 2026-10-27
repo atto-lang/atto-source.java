@@ -17,10 +17,10 @@ final class ActorMailTypeContractTest {
                     val int sequence = mail.sequence;
                     val ActorId recipient = mail.recipient;
                     val Option<ActorId> sender = mail.sender;
-                    stdio.println(value);
-                    stdio.println(sequence);
-                    stdio.println(recipient);
-                    stdio.println(sender);
+                    // The bindings above are the type contract under test.
+                    // Actor code no longer has process-level stdio authority;
+                    // keeping these values local proves the envelope members
+                    // without routing them through host stdout.
                     return;
                   }
                 end
