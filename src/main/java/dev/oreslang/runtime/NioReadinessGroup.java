@@ -1029,6 +1029,19 @@ public final class NioReadinessGroup implements AutoCloseable {
         return best;
     }
 
+    private final class ChannelRegistration {
+        final SelectableChannel channel;
+        final Reactor reactor;
+        final ConcurrentHashMap<Watch, Boolean> watches = new ConcurrentHashMap<>();
+        int claimedInterests; // lifecycle monitor only
+        SelectionKey key; // reactor-thread only
+
+        ChannelRegistration(SelectableChannel channel, Reactor reactor) {
+            this.channel = channel;
+            this.reactor = reactor;
+        }
+    }
+
     private final class Watch {
         final SelectableChannel channel;
         final int interests;
