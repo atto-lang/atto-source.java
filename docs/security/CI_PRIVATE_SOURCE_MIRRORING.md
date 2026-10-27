@@ -95,8 +95,14 @@ The caller does not choose the executable carrier branch. After proving the
 complete source Git tree, the dispatcher derives exactly
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
 the current head of the named open PR against source `main`, with the latest
-immutable security-owner review approving that exact head. V3 validates that
-authorization before reading source and again before **every source-bearing Git
+immutable security-owner review approving that exact head. Before reading
+private source bytes, V3 additionally requires the live protected-`main`
+authority commit to be an ancestor of that exact PR head; a stale or diverged
+head is denied even when the PR still targets `main`. The PR head and base
+repository are also bound to the immutable source repository ID, not only its
+`owner/name`. The ancestry authority is mandatory on every exact-PR
+revalidation, including per-write and pre-executable-ref checks. V3 validates
+that authorization before reading source and again before **every source-bearing Git
 object write**. Each per-write check also reattests the original protected-main
 authority and the reviewed control-plane/carrier-contract bytes. Weakening
 source protection, moving source `main`, changing the reviewed control plane or
