@@ -29,6 +29,66 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
+    void borrowedSelfResultCannotEscalateIntoOwnedReturn() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Foo as
+                          pub same(): self {
+                            return self;
+                          }
+                        end
+
+                        fnc bad(borrow Foo foo): Foo {
+                          return foo.same();
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("owned return type")
+                || error.getMessage().contains("borrow"),
+                error::getMessage);
+    }
+
+    @Test
+    void borrowedSelfResultKeepsLifetimeThroughLocalAliasAndClosureCapture() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Foo as
+                          pub val int value = 7;
+
+                          pub same(): self {
+                            return self;
+                          }
+                        end
+
+                        fnc bad(borrow Foo foo): (() => int) {
+                          val Foo alias = foo.same();
+                          return || -> alias.value;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("closure cannot capture borrowed value")
+                || error.getMessage().contains("borrow"),
+                error::getMessage);
+    }
+
+    @Test
+    void borrowedSelfResultMayBeUsedImmediatelyForCopyOnlyRead() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  pub val int value = 7;
+
+                  pub same(): self {
+                    return self;
+                  }
+                end
+
+                fnc read(borrow Foo foo): int {
+                  return foo.same().value;
+                }
+                """)));
+    }
+
+    @Test
     void selfReturnRejectsAFreshInstanceOfTheSameNominalClass() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
