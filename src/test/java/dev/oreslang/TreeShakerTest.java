@@ -51,7 +51,8 @@ final class TreeShakerTest {
                 assertInstanceOf(Ast.ReturnStmt.class, main.body().getFirst()).value());
         Ast.MemberExpr captured = assertInstanceOf(Ast.MemberExpr.class, call.callee());
         MacroIdentifierHygiene.CapturedFunction admitted =
-                assertNotNull(MacroIdentifierHygiene.authorizedCapturedFunction(captured));
+                MacroIdentifierHygiene.authorizedCapturedFunction(captured);
+        assertNotNull(admitted);
         assertEquals("helper", admitted.name());
         assertEquals(Parser.ROOT_MODULE, admitted.hygiene().callerModule());
     }
