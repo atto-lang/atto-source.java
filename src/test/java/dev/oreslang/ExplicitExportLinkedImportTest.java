@@ -89,6 +89,100 @@ final class ExplicitExportLinkedImportTest {
     }
 
     @Test
+    void explicitlyExportedDefaultPrivateSignatureInvalidatesImporter() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "lib.ores", """
+                        export class Internal as PublicBox;
+                        define class Internal as
+                          pub get(): int { return 1; }
+                        end
+                        """,
+                "main.ores", """
+                        import class PublicBox from "./lib.ores";
+                        pub fnc main(): void { return; }
+                        """);
+
+        compiler.compile(initial);
+
+        Map<String, String> changed = Map.of(
+                "lib.ores", """
+                        export class Internal as PublicBox;
+                        define class Internal as
+                          pub get(): String { return "one"; }
+                        end
+                        """,
+                "main.ores", initial.get("main.ores"));
+
+        var result = compiler.compile(changed);
+        assertTrue(result.rebuilt("lib.ores"));
+        assertTrue(result.rebuilt("main.ores"),
+                "signature changes behind an explicit export must invalidate importers");
+    }
+
+    @Test
+    void explicitExportAliasRenameInvalidatesWildcardImporter() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "lib.ores", """
+                        export class Internal as PublicBox;
+                        define class Internal as
+                        end
+                        """,
+                "main.ores", """
+                        import * as lib from "./lib.ores";
+                        pub fnc main(): void { return; }
+                        """);
+
+        compiler.compile(initial);
+
+        Map<String, String> changed = Map.of(
+                "lib.ores", """
+                        export class Internal as PublicCrate;
+                        define class Internal as
+                        end
+                        """,
+                "main.ores", initial.get("main.ores"));
+
+        var result = compiler.compile(changed);
+        assertTrue(result.rebuilt("lib.ores"));
+        assertTrue(result.rebuilt("main.ores"),
+                "external export names are source ABI and must invalidate wildcard importers");
+    }
+
+    @Test
+    void explicitExportImplementationOnlyEditKeepsImporterReusable() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "lib.ores", """
+                        export class Internal as PublicBox;
+                        define class Internal as
+                          pub get(): int { return 1; }
+                        end
+                        """,
+                "main.ores", """
+                        import class PublicBox from "./lib.ores";
+                        pub fnc main(): void { return; }
+                        """);
+
+        compiler.compile(initial);
+
+        Map<String, String> changed = Map.of(
+                "lib.ores", """
+                        export class Internal as PublicBox;
+                        define class Internal as
+                          pub get(): int { return 2; }
+                        end
+                        """,
+                "main.ores", initial.get("main.ores"));
+
+        var result = compiler.compile(changed);
+        assertTrue(result.rebuilt("lib.ores"));
+        assertTrue(result.reused("main.ores"),
+                "method body-only edits must not perturb the resolved source-interface digest");
+    }
+
+    @Test
     void fileAndPackageExportsDoNotWidenIntoCrossFilePublicImports() {
         for (String scope : new String[] {"file", "pkg"}) {
             IncrementalCompiler compiler = new IncrementalCompiler();

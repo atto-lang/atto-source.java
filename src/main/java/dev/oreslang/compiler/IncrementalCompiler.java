@@ -367,7 +367,70 @@ public final class IncrementalCompiler {
             }
             for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
         }
+
+        appendResolvedExportAbi(abi, program);
         return digest(abi.toString());
+    }
+
+    /**
+     * Explicit exports are part of the cross-unit source ABI even when the
+     * local declaration is default-private. Keep this projection separate from
+     * the legacy declaration-side public ABI so aliases, scopes, and exported
+     * private-local signatures invalidate importers without making source
+     * exports host/native symbols.
+     *
+     * Some pre-existing source interfaces (notably inferred bindings and const
+     * values) do not yet have canonical ExportAbiMetadata encodings. For those,
+     * fail safe for incremental reuse by hashing the complete parsed AST: this
+     * may rebuild more dependents, but can never reuse one across an unknown
+     * source-interface change.
+     */
+    private static void appendResolvedExportAbi(StringBuilder abi, Ast.Program program) {
+        ExportResolver.Result resolved = ExportResolver.resolve(program);
+        List<ExportResolver.ExportBinding> bindings = new ArrayList<>(resolved.bindings());
+        bindings.sort(java.util.Comparator
+                .comparing(ExportResolver.ExportBinding::ownerNamespaceId)
+                .thenComparing(ExportResolver.ExportBinding::externalName)
+                .thenComparing(binding -> binding.localKind().name())
+                .thenComparing(ExportResolver.ExportBinding::localSymbolId)
+                .thenComparing(binding -> binding.scope().name())
+                .thenComparing(binding -> binding.origin().name()));
+
+        abi.append("source-exports-v1\n");
+        for (ExportResolver.ExportBinding binding : bindings) {
+            abi.append(" export ")
+                    .append(binding.ownerNamespaceId()).append('|')
+                    .append(binding.localSymbolId()).append('|')
+                    .append(binding.localKind()).append('|')
+                    .append(binding.externalName()).append('|')
+                    .append(binding.scope()).append('|')
+                    .append(binding.origin()).append('\n');
+        }
+
+        try {
+            ExportAbiMetadata.Document metadata = ExportAbiMetadata.collect(program);
+            abi.append(" export-metadata-version=").append(metadata.version()).append('\n');
+            for (ExportAbiMetadata.Entry entry : metadata.entries()) {
+                abi.append(" export-signature ")
+                        .append(entry.ownerNamespaceId()).append('|')
+                        .append(entry.localSymbolId()).append('|')
+                        .append(entry.localKind()).append('|')
+                        .append(entry.externalName()).append('|')
+                        .append(entry.scope()).append('|')
+                        .append(entry.origin()).append('|')
+                        .append(entry.signatureDigest()).append('\n');
+            }
+        } catch (IllegalArgumentException unsupported) {
+            String message = unsupported.getMessage();
+            if (message == null
+                    || (!message.contains("EXPORT_CONST_ABI_VALUE_UNENCODED")
+                        && !message.contains("EXPORT_METADATA_UNRESOLVED_TYPE"))) {
+                throw unsupported;
+            }
+            abi.append(" export-signature-fallback=")
+                    .append(digest(program.toString()))
+                    .append('\n');
+        }
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
