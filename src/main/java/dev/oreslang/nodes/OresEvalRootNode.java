@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.compiler.ExportResolver;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -142,6 +143,7 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
+        private final List<ExportResolver.ExportBinding> sourceExports;
         private final OresContext context;
         private final String codeUnitId;
         private final long taskAdmissionEpoch;
@@ -232,6 +234,7 @@ public final class OresEvalRootNode extends RootNode {
                 String codeUnitId,
                 long taskAdmissionEpoch) {
             this.program = program;
+            this.sourceExports = ExportResolver.resolve(program).bindings();
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
@@ -8874,10 +8877,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
-            Ast.FunctionDecl fn = findFunction(name, args.size());
-            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+            ExportResolver.ExportBinding binding =
+                    publicExportBinding(null, kind, name, true);
+            if (binding == null) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export callable '" + name + "'");
+            }
+            String localName = exportLocalName(binding.localSymbolId());
+            Ast.FunctionDecl fn = findFunction(localName, args.size());
+            if (fn == null) {
+                throw new IllegalArgumentException("code unit '" + codeUnitId
+                        + "' does not export callable '" + name + "' at arity " + args.size());
             }
             if (kind == Ast.ImportKind.FUNCTION) {
                 if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE) {
@@ -8891,98 +8901,168 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return functionInvocation(fn, args);
             }
-            if (kind == Ast.ImportKind.ALL) {
-                return functionInvocation(fn, args);
-            }
+            if (kind == Ast.ImportKind.ALL) return functionInvocation(fn, args);
             throw new IllegalArgumentException("import namespace kind " + kind
                     + " does not expose direct callable '" + name + "'");
         }
 
-        private Object invokeImportedCallable(Ast.ImportKind kind, String name, List<Object> args) {
-            return invoke(prepareImportedInvocation(kind, name, args));
+        private Object exportValue(Ast.ImportKind kind, String name) {
+            if (kind == Ast.ImportKind.ACTOR || kind == Ast.ImportKind.INTERFACE
+                    || kind == Ast.ImportKind.CONTRACT || kind == Ast.ImportKind.TRAIT
+                    || kind == Ast.ImportKind.STRUCT || kind == Ast.ImportKind.TYPE
+                    || kind == Ast.ImportKind.TYPES) {
+                throw new IllegalArgumentException(
+                        "import " + kind.name().toLowerCase()
+                                + " is a type-only selector and cannot be evaluated as a runtime value");
+            }
+
+            ExportResolver.ExportBinding binding =
+                    publicExportBinding(null, kind, name, false);
+            if (binding == null) {
+                throw new IllegalArgumentException(
+                        "code unit '" + codeUnitId + "' does not export '" + name + "'");
+            }
+            return exportBindingValue(binding, name);
         }
 
-        private Object exportValue(Ast.ImportKind kind, String name) {
-            return switch (kind) {
+        private Object exportBindingValue(
+                ExportResolver.ExportBinding binding,
+                String externalName) {
+            String localName = exportLocalName(binding.localSymbolId());
+            return switch (binding.localKind()) {
                 case FUNCTION -> {
-                    Ast.FunctionDecl fn = findSingleFunction(name);
-                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
-                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export function '" + name + "'");
+                    Ast.FunctionDecl fn = findSingleFunction(localName);
+                    if (fn == null) {
+                        throw new IllegalArgumentException(
+                                "export binding for '" + externalName + "' has no local function");
                     }
                     if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException("import fnc requires a reifiable non-actor fnc; '" + name
-                                + "' is direct-call-only or actor-scheduled");
+                        throw new IllegalArgumentException("import fnc requires a reifiable non-actor fnc; '"
+                                + externalName + "' is direct-call-only or actor-scheduled");
                     }
                     if (!fn.genericParameters().isEmpty()) {
                         throw new IllegalArgumentException(
-                                "generic fnc '" + name
+                                "generic fnc '" + externalName
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
                     yield tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
                 }
-                case CLASS -> {
-                    Ast.ClassDecl klass = findClass(name);
-                    if (klass == null
-                            || klass.actorKind() != Ast.ActorKind.NONE
-                            || klass.visibility() != Ast.Visibility.PUBLIC) {
+                case ROUTINE -> throw new IllegalArgumentException(
+                        "routine '" + externalName
+                                + "' is direct-call-only and cannot be extracted as a value");
+                case CLASS, ACTOR -> {
+                    Ast.ClassDecl klass = findClass(localName);
+                    if (klass == null) {
                         throw new IllegalArgumentException(
-                                "code unit '" + codeUnitId
-                                        + "' does not export public ordinary class '" + name + "'");
+                                "export binding for '" + externalName + "' has no local class/actor");
                     }
                     yield new ClassFacade(this, klass);
                 }
-                case ACTOR, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES ->
-                        throw new IllegalArgumentException(
-                                "import " + kind.name().toLowerCase()
-                                        + " is a type-only selector and cannot be evaluated as a runtime value");
                 case MODULE -> {
-                    Ast.ModuleDecl module = modules.get(name);
-                    if (module == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    Ast.ModuleDecl module = modules.get(localName);
+                    if (module == null) {
+                        throw new IllegalArgumentException(
+                                "export binding for '" + externalName + "' has no local module");
+                    }
                     yield new ModuleFacade(this, module);
                 }
-                case ALL -> exportAny(name);
+                case CONST, VAL, LET -> {
+                    Ast.ModuleDecl owner = exportOwner(binding);
+                    Ast.FieldDecl field = owner.declarations().stream()
+                            .filter(Ast.FieldDecl.class::isInstance)
+                            .map(Ast.FieldDecl.class::cast)
+                            .filter(candidate -> candidate.name().equals(localName))
+                            .findFirst()
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "export binding for '" + externalName + "' has no local binding"));
+                    if (field.initializer() == null) {
+                        throw new IllegalArgumentException("exported binding has no initializer: " + externalName);
+                    }
+                    yield eval(field.initializer(), new Env(null));
+                }
+                case INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, SYMBOL ->
+                        throw new IllegalArgumentException(
+                                "source export '" + externalName + "' is type/identity metadata, not a runtime value");
             };
         }
 
-        private Object exportAny(String name) {
-            Ast.ModuleDecl module = modules.get(name);
-            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
-            Ast.ClassDecl klass = findClass(name);
-            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC) {
-                return new ClassFacade(this, klass);
-            }
-            Ast.FunctionDecl fn = findSingleFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
-                if (fn.kind() == Ast.CallableKind.ROUTINE) {
+        private ExportResolver.ExportBinding publicExportBinding(
+                String ownerNamespace,
+                Ast.ImportKind importKind,
+                String externalName,
+                boolean callableOnly) {
+            ExportResolver.ExportBinding match = null;
+            for (ExportResolver.ExportBinding binding : sourceExports) {
+                if (binding.scope() != Ast.ExportScope.PUBLIC
+                        || !binding.externalName().equals(externalName)
+                        || ownerNamespace != null && !binding.ownerNamespaceId().equals(ownerNamespace)
+                        || !runtimeImportKindMatches(importKind, binding.localKind())
+                        || callableOnly && binding.localKind() != Ast.ExportKind.FUNCTION
+                                && binding.localKind() != Ast.ExportKind.ROUTINE) {
+                    continue;
+                }
+                if (match != null && !match.localSymbolId().equals(binding.localSymbolId())) {
                     throw new IllegalArgumentException(
-                            "routine '" + name
-                                    + "' is direct-call-only and cannot be extracted through a wildcard import namespace");
+                            "ambiguous public export '" + externalName + "' in code unit '" + codeUnitId + "'");
                 }
-                if (fn.actorKind() != Ast.ActorKind.NONE) {
-                    throw new IllegalArgumentException(
-                            "actor callable '" + name
-                                    + "' is scheduler-dispatched and cannot be extracted as a first-class callable value");
-                }
-                if (!fn.genericParameters().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "generic fnc '" + name
-                                    + "' must be specialized by a direct call; "
-                                    + "polymorphic function values are not supported yet");
-                }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                match = binding;
             }
-            for (Ast.ModuleDecl candidate : program.modules()) {
-                for (Ast.Decl decl : candidate.declarations()) {
-                    if (decl instanceof Ast.FieldDecl field
-                            && field.visibility() == Ast.Visibility.PUBLIC
-                            && field.name().equals(name)) {
-                        if (field.initializer() == null) throw new IllegalArgumentException("exported binding has no initializer: " + name);
-                        return eval(field.initializer(), new Env(null));
-                    }
+            return match;
+        }
+
+        private static boolean runtimeImportKindMatches(
+                Ast.ImportKind imported,
+                Ast.ExportKind exported) {
+            return switch (imported) {
+                case MODULE -> exported == Ast.ExportKind.MODULE;
+                case ACTOR -> exported == Ast.ExportKind.ACTOR;
+                case CLASS -> exported == Ast.ExportKind.CLASS;
+                case FUNCTION -> exported == Ast.ExportKind.FUNCTION;
+                case INTERFACE -> exported == Ast.ExportKind.INTERFACE;
+                case CONTRACT -> exported == Ast.ExportKind.CONTRACT;
+                case TRAIT -> exported == Ast.ExportKind.TRAIT;
+                case STRUCT -> exported == Ast.ExportKind.STRUCT;
+                case TYPE -> exported == Ast.ExportKind.TYPE;
+                case TYPES -> exported == Ast.ExportKind.TYPE
+                        || exported == Ast.ExportKind.INTERFACE
+                        || exported == Ast.ExportKind.CONTRACT
+                        || exported == Ast.ExportKind.TRAIT
+                        || exported == Ast.ExportKind.STRUCT;
+                case ALL -> true;
+            };
+        }
+
+        private static String exportLocalName(String localSymbolId) {
+            int marker = localSymbolId.lastIndexOf("::");
+            if (marker < 0 || marker + 2 >= localSymbolId.length()) {
+                throw new IllegalArgumentException("malformed export local symbol id: " + localSymbolId);
+            }
+            return localSymbolId.substring(marker + 2);
+        }
+
+        private Ast.ModuleDecl exportOwner(ExportResolver.ExportBinding binding) {
+            Ast.ModuleDecl owner = modules.get(binding.ownerNamespaceId());
+            if (owner == null) {
+                throw new IllegalArgumentException(
+                        "export binding owner is missing: " + binding.ownerNamespaceId());
+            }
+            return owner;
+        }
+
+        private boolean isPubliclyExportedClass(Ast.ClassDecl klass) {
+            String owner = classModules.get(klass);
+            if (owner == null) return false;
+            for (ExportResolver.ExportBinding binding : sourceExports) {
+                if (binding.scope() == Ast.ExportScope.PUBLIC
+                        && binding.ownerNamespaceId().equals(owner)
+                        && binding.localKind() == (klass.actorKind() == Ast.ActorKind.NONE
+                                ? Ast.ExportKind.CLASS : Ast.ExportKind.ACTOR)
+                        && exportLocalName(binding.localSymbolId()).equals(klass.name())) {
+                    return true;
                 }
             }
-            throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export '" + name + "'");
+            return false;
         }
 
         private OresObject instantiate(
@@ -8993,9 +9073,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException("actor '" + klass.name()
                         + "' cannot be constructed with new; actor state must be initialized inside ActorRuntime");
             }
-            if (externalConstruction && klass.visibility() != Ast.Visibility.PUBLIC) {
+            if (externalConstruction && !isPubliclyExportedClass(klass)) {
                 throw new IllegalArgumentException(
-                        "class '" + klass.name() + "' is private and cannot be constructed outside its file/module");
+                        "class '" + klass.name() + "' is not publicly exported outside its file/module");
             }
 
             Ast.ConstructorDecl constructor = klass.constructor();
@@ -9137,55 +9217,31 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object moduleMember(Ast.ModuleDecl module, String name) {
-            List<Ast.FunctionDecl> callableFamily = module.declarations().stream()
-                    .filter(Ast.FunctionDecl.class::isInstance)
-                    .map(Ast.FunctionDecl.class::cast)
-                    .filter(fn -> fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC)
-                    .toList();
-            if (callableFamily.size() > 1) {
+            ExportResolver.ExportBinding binding =
+                    publicExportBinding(module.name(), Ast.ImportKind.ALL, name, false);
+            if (binding == null) {
                 throw new IllegalArgumentException(
-                        "overloaded callable '" + module.name() + "." + name
-                                + "' must be called so name + arity can select a slot");
+                        "module '" + module.name() + "' does not export '" + name + "'");
             }
-            if (callableFamily.size() == 1) {
-                Ast.FunctionDecl fn = callableFamily.getFirst();
-                if (fn.kind() == Ast.CallableKind.ROUTINE || fn.actorKind() != Ast.ActorKind.NONE) {
-                    throw new IllegalArgumentException("callable '" + module.name() + "." + name
-                            + "' is direct-call-only and cannot be extracted as a value");
-                }
-                if (!fn.genericParameters().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "generic fnc '" + module.name() + "." + name
-                                    + "' must be specialized by a direct call; "
-                                    + "polymorphic function values are not supported yet");
-                }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
-            }
-
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.ClassDecl klass
-                        && klass.name().equals(name)
-                        && klass.visibility() == Ast.Visibility.PUBLIC) {
-                    return new ClassFacade(this, klass);
-                }
-                if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
-                    if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
-                    return eval(field.initializer(), new Env(null));
-                }
-            }
-            throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+            return exportBindingValue(binding, name);
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
+            ExportResolver.ExportBinding binding =
+                    publicExportBinding(module.name(), Ast.ImportKind.ALL, name, true);
+            if (binding == null) {
+                throw new IllegalArgumentException(
+                        "module '" + module.name() + "' does not export callable '" + name + "'");
+            }
+            String localName = exportLocalName(binding.localSymbolId());
             Ast.FunctionDecl match = null;
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn
-                        && fn.name().equals(name)
-                        && fn.parameters().size() == args.size()
-                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                        && fn.name().equals(localName)
+                        && fn.parameters().size() == args.size()) {
                     if (match != null) {
                         throw new IllegalArgumentException(
-                                "duplicate callable slot '" + module.name() + "." + name
+                                "duplicate callable slot '" + module.name() + "." + localName
                                         + "' at arity " + args.size());
                     }
                     match = fn;
