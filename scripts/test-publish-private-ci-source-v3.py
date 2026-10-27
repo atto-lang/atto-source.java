@@ -1333,9 +1333,12 @@ class PrivateCiV3Test(unittest.TestCase):
                     return_value=SOURCE_TREE,
                 ),
                 patch.object(v3, "authorize_write") as authorize_write,
+                patch.object(v3, "live_ref_sha", return_value=None) as live_ref_sha,
+                patch.object(v3, "secrets") as secrets_module,
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
+                secrets_module.token_hex.return_value = "ab" * 16
                 result = v3.publish(
                     "trusted/ci",
                     source,
@@ -1392,12 +1395,19 @@ class PrivateCiV3Test(unittest.TestCase):
                 + str(v3.SOURCE_REPOSITORY_ID)
                 + "\nOreslang-CI-Receipt-SHA256: "
                 + digest
+                + "\nOreslang-CI-Handoff-Nonce: "
+                + "ab" * 16
             ),
         )
         self.assertIn(
             "Oreslang-CI-Receipt-SHA256: " + digest,
             commit_payload["message"].splitlines(),
         )
+        self.assertIn(
+            "Oreslang-CI-Handoff-Nonce: " + "ab" * 16,
+            commit_payload["message"].splitlines(),
+        )
+        self.assertEqual(live_ref_sha.call_count, 3)
         refs = [
             payload["ref"]
             for method, route, payload in writes
@@ -1478,6 +1488,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "live_ref_sha", return_value=None),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1542,6 +1553,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "live_ref_sha", return_value=None),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1611,6 +1623,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "live_ref_sha", return_value=None),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1683,6 +1696,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "live_ref_sha", return_value=None),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1755,6 +1769,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "live_ref_sha", return_value=None),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1827,6 +1842,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "live_ref_sha", return_value=None),
                 patch.object(
                     v3, "require_exact_ref",
                     side_effect=[None, RuntimeError("unexpected confirmation error")],
