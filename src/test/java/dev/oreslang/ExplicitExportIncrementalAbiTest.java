@@ -96,4 +96,30 @@ final class ExplicitExportIncrementalAbiTest {
         assertTrue(cached.reusedUnits().contains("main.ores"));
     }
 
+
+    @Test
+    void exportedClassWithPublicConstMemberUsesConservativeIncrementalFingerprint() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("lib.ores", """
+                export class Box;
+
+                define class Box as
+                  pub const int code = 7;
+                end
+                """);
+        sources.put("main.ores", """
+                import * as dep from "./lib.ores";
+                pub routine main(): void { return; }
+                """);
+
+        IncrementalCompiler.BuildResult first = compiler.compile(sources);
+        assertTrue(first.rebuilt("lib.ores"));
+        assertTrue(first.rebuilt("main.ores"));
+
+        IncrementalCompiler.BuildResult cached = compiler.compile(sources);
+        assertTrue(cached.reused("lib.ores"));
+        assertTrue(cached.reused("main.ores"));
+    }
+
 }
