@@ -5,6 +5,7 @@ import dev.oreslang.ast.Ast;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -15,16 +16,38 @@ import java.util.Objects;
  * One opaque fixed-size value per row of ONE inverted-class field column.
  *
  * The declaring field is SoA-separated from sibling fields; its structural
- * members stay packed AoS inside each element. This is a host reference codec,
- * not recursive source lowering or an interpreter-visible guest builtin.
+ * members stay packed AoS inside each element, including bounded nested
+ * immutable record values. A nested record NEVER creates child SoA columns.
+ * This is a host reference codec, not guest/source-level lowering.
  */
 public final class InvertedRecordLayout {
     // Host-reference admission caps. These are denial-of-service guards, not
     // a committed language/interop ABI limit.
     static final int MAX_RECORD_MEMBERS = 1024;
     static final int MAX_RECORD_BYTES = 64 * 1024;
+    static final int MAX_RECORD_DEPTH = 8;
 
-    public record Member(String name, InvertedColumnStore.Kind kind, int offset) { }
+    /** Nested immutable records are packed within their parent field stride. */
+    public record Member(
+            String name, InvertedColumnStore.Kind kind, int offset,
+            InvertedRecordLayout nested) {
+        public Member(String name, InvertedColumnStore.Kind kind, int offset) {
+            this(name, kind, offset, null);
+        }
+        public Member {
+            Objects.requireNonNull(name, "record member name");
+            Objects.requireNonNull(kind, "record member kind");
+            if ((kind == InvertedColumnStore.Kind.RECORD) != (nested != null)) {
+                throw new IllegalArgumentException(
+                        "nested record member requires a matching nested value codec");
+            }
+        }
+        public int stride() { return nested == null ? kind.bytes() : nested.bytes(); }
+    }
+
+    private static final class Budget {
+        private int members;
+    }
 
     private final List<Member> members;
     private final int bytes;
@@ -50,14 +73,23 @@ public final class InvertedRecordLayout {
     }
 
     public static InvertedRecordLayout fromType(Ast.TypeRef type) {
+        return fromType(type, 0, new Budget());
+    }
+
+    private static InvertedRecordLayout fromType(
+            Ast.TypeRef type, int depth, Budget budget) {
         Objects.requireNonNull(type, "record type");
         if (!type.isRecordType() || type.inferArguments()) {
-            throw new IllegalArgumentException("expected a fixed-layout structural record type");
+            throw new IllegalArgumentException("expected an immutable fixed-layout record type");
+        }
+        if (depth > MAX_RECORD_DEPTH) {
+            throw new IllegalArgumentException("inverted nested record exceeds depth limit");
         }
         Map<String, Ast.TypeRef> recordMembers = type.recordMembers();
-        if (recordMembers.size() > MAX_RECORD_MEMBERS) {
-            throw new IllegalArgumentException("inverted record has too many members");
+        if (recordMembers.size() > MAX_RECORD_MEMBERS - budget.members) {
+            throw new IllegalArgumentException("inverted record exceeds total member budget");
         }
+        budget.members += recordMembers.size();
         // Canonicalize again at the ABI boundary. Parser-built record types are
         // sorted already, but direct or rewritten ASTs must not be able to
         // perturb the byte layout of the same structural record.
@@ -72,17 +104,22 @@ public final class InvertedRecordLayout {
                 throw new IllegalArgumentException(
                         "invalid inverted record member name '" + entry.getKey() + "'");
             }
-            // A nested record is NOT implicitly expanded to grandchild
-            // columns. A future nested fixed-layout codec may support it as
-            // an opaque element, but this initial ABI deliberately fails closed.
-            InvertedColumnStore.Kind kind = scalarKind(entry.getValue());
+            // Recursion is into a packed immutable VALUE, never into
+            // independently owned child columns or a mutable struct.
+            Ast.TypeRef memberType = entry.getValue();
+            InvertedRecordLayout nested =
+                    memberType != null && memberType.isRecordType()
+                            ? fromType(memberType, depth + 1, budget) : null;
+            InvertedColumnStore.Kind kind = nested == null
+                    ? scalarKind(memberType) : InvertedColumnStore.Kind.RECORD;
             if (kind == null) {
                 throw new IllegalArgumentException("record field '" + entry.getKey()
-                        + "' has no verified fixed-width member ABI; no recursive SoA lowering");
+                        + "' has no pointer-free immutable value ABI; no nested struct/owner fallback");
             }
-            members.add(new Member(entry.getKey(), kind, offset));
+            Member member = new Member(entry.getKey(), kind, offset, nested);
+            members.add(member);
             try {
-                offset = Math.addExact(offset, kind.bytes());
+                offset = Math.addExact(offset, member.stride());
             } catch (ArithmeticException overflow) {
                 throw new IllegalArgumentException("inverted record byte width overflow", overflow);
             }
@@ -126,7 +163,13 @@ public final class InvertedRecordLayout {
                     if (!(scalar instanceof Boolean n)) throw invalid(member.name());
                     buffer.put(member.offset(), (byte) (n ? 1 : 0));
                 }
-                case RECORD -> throw new IllegalStateException("recursive member layout is not admitted");
+                case RECORD -> {
+                    // Copy out of a detached typed nested value and into the
+                    // parent byte buffer, never retaining user-owned maps.
+                    byte[] encoded = member.nested().encode(scalar);
+                    System.arraycopy(encoded, 0, buffer.array(),
+                            member.offset(), encoded.length);
+                }
             }
         }
         return buffer.array();
@@ -157,7 +200,8 @@ public final class InvertedRecordLayout {
                 case F32 -> buffer.getFloat(member.offset());
                 case F64 -> buffer.getDouble(member.offset());
                 case BOOL -> decodeCanonicalBool(buffer.get(member.offset()), member.name());
-                case RECORD -> throw new IllegalStateException("recursive member layout is not admitted");
+                case RECORD -> member.nested().decode(Arrays.copyOfRange(
+                        stored, member.offset(), member.offset() + member.stride()));
             };
             value.put(member.name(), decoded);
         }
