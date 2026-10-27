@@ -75,6 +75,11 @@ public final class InvertedArray implements AutoCloseable {
             this.className = declaration.name();
             this.requiresMethodPlan = requiresMethodPlan;
             if (fields.isEmpty()) throw new IllegalArgumentException("inverted class requires fields");
+            if (fields.size() > InvertedColumnStore.MAX_COLUMN_COUNT) {
+                throw new IllegalArgumentException(
+                        "inverted schema exceeds maximum top-level columns: "
+                                + InvertedColumnStore.MAX_COLUMN_COUNT);
+            }
             LinkedHashMap<String, Integer> mapped = new LinkedHashMap<>();
             for (int i = 0; i < fields.size(); i++) {
                 Field field = fields.get(i);
@@ -108,6 +113,11 @@ public final class InvertedArray implements AutoCloseable {
                     || !klass.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
                         "only non-generic, flat, non-actor inverted classes are supported");
+            }
+            if (klass.fields().size() > InvertedColumnStore.MAX_COLUMN_COUNT) {
+                throw new IllegalArgumentException(
+                        "inverted class exceeds maximum top-level columns: "
+                                + InvertedColumnStore.MAX_COLUMN_COUNT);
             }
             List<Field> ordered = new ArrayList<>();
             for (Ast.FieldDecl field : klass.fields()) {
