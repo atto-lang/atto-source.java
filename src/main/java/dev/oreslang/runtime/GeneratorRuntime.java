@@ -116,6 +116,7 @@ public final class GeneratorRuntime {
     public static final class AsyncGenerator<T> implements AutoCloseable {
         private final AsyncRuntime runtime;
         private final Engine<T> engine;
+        private OresFuture<Void> closeFuture;
         // Bound pull admission at one outstanding request. The Engine also
         // serializes execution, but admitting an unbounded number of runtime
         // tasks that merely wait on its monitor would turn concurrent next()
@@ -166,8 +167,27 @@ public final class GeneratorRuntime {
             }
         }
 
+        /**
+         * Nonblocking source-level close. Physical producer retirement runs on
+         * a runtime-owned async carrier and repeated closes share one Future.
+         */
+        public synchronized OresFuture<Void> closeAsync() {
+            if (closeFuture != null) return closeFuture;
+            try {
+                closeFuture = runtime.submit(() -> {
+                    engine.close();
+                    return null;
+                });
+            } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                closeFuture = OresFuture.failed(rejected);
+            }
+            return closeFuture;
+        }
+
         @Override
         public void close() {
+            // Host/AutoCloseable bridge. Guest AsyncIterator.close is wired to
+            // closeAsync() so actor/source carriers never park here.
             engine.close();
         }
     }
