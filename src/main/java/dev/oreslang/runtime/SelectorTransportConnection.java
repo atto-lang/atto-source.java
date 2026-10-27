@@ -63,14 +63,9 @@ final class SelectorTransportConnection implements AutoCloseable {
         this.overallDeadlineNanos = overallDeadlineNanos;
     }
 
-    static SelectorTransportConnection connect(
-            InetSocketAddress address,
-            Duration connectTimeout,
+    static SelectorTransportConnection open(
             long overallDeadlineNanos)
             throws IOException {
-        Objects.requireNonNull(address, "address");
-        Objects.requireNonNull(connectTimeout, "connectTimeout");
-
         SocketChannel channel = SocketChannel.open();
         Selector selector = null;
         try {
@@ -78,24 +73,11 @@ final class SelectorTransportConnection implements AutoCloseable {
             channel.setOption(StandardSocketOptions.TCP_NODELAY, true);
             selector = Selector.open();
             SelectionKey key = channel.register(selector, 0);
-            SelectorTransportConnection connection =
-                    new SelectorTransportConnection(
-                            channel,
-                            selector,
-                            key,
-                            overallDeadlineNanos);
-            long connectDeadline =
-                    connection.phaseDeadline(connectTimeout);
-            if (!channel.connect(address)) {
-                while (!channel.finishConnect()) {
-                    connection.waitForUntil(
-                            SelectionKey.OP_CONNECT,
-                            connectDeadline,
-                            "connect");
-                }
-            }
-            key.interestOps(0);
-            return connection;
+            return new SelectorTransportConnection(
+                    channel,
+                    selector,
+                    key,
+                    overallDeadlineNanos);
         } catch (Throwable failure) {
             try {
                 channel.close();
@@ -113,9 +95,29 @@ final class SelectorTransportConnection implements AutoCloseable {
             if (failure instanceof RuntimeException runtime) throw runtime;
             if (failure instanceof Error error) throw error;
             throw new IOException(
-                    "nonblocking TCP connect failed",
+                    "nonblocking TCP setup failed",
                     failure);
         }
+    }
+
+    void connect(
+            InetSocketAddress address,
+            Duration connectTimeout)
+            throws IOException {
+        Objects.requireNonNull(address, "address");
+        Objects.requireNonNull(connectTimeout, "connectTimeout");
+        requireOpen();
+        long connectDeadline =
+                phaseDeadline(connectTimeout);
+        if (!channel.connect(address)) {
+            while (!channel.finishConnect()) {
+                waitForUntil(
+                        SelectionKey.OP_CONNECT,
+                        connectDeadline,
+                        "connect");
+            }
+        }
+        key.interestOps(0);
     }
 
     void startTls(
