@@ -89,8 +89,27 @@ public final class TypeclassRegistry {
             list.add(instance);
         }
 
+        /**
+         * Compiler-owned static witness and variable substitution evidence.
+         * Bound variables are never inferred at runtime or from a mutable registry.
+         */
+        public record Resolution(Instance instance, Map<String, TypeRef> bindings) {
+            public Resolution {
+                Objects.requireNonNull(instance, "instance");
+                bindings = Map.copyOf(bindings);
+                if (bindings.values().stream().anyMatch(value -> !value.isGround())) {
+                    throw new IllegalArgumentException("witness resolution requires ground substitutions");
+                }
+            }
+        }
+
         /** Resolution never invents a dictionary; missing evidence is an error. */
         public Instance resolve(Typeclass typeclass, List<TypeRef> groundArguments) {
+            return resolveWithBindings(typeclass, groundArguments).instance();
+        }
+
+        /** Preserve the unique witness's generic substitutions for associated types. */
+        public Resolution resolveWithBindings(Typeclass typeclass, List<TypeRef> groundArguments) {
             if (!typeclass.equals(definitions.get(typeclass.qualifiedName())))
                 throw new IllegalArgumentException("unknown typeclass: " + typeclass.qualifiedName());
             if (groundArguments.size() != typeclass.arity()
@@ -98,6 +117,7 @@ public final class TypeclassRegistry {
                 throw new IllegalArgumentException("typeclass resolution needs concrete, correctly-arity-checked types");
             }
             Instance selected = null;
+            Map<String, TypeRef> selectedBindings = null;
             for (Instance candidate : instances.getOrDefault(typeclass.qualifiedName(), List.of())) {
                 Map<String, TypeRef> variables = new HashMap<>();
                 boolean match = true;
@@ -110,11 +130,12 @@ public final class TypeclassRegistry {
                 if (match) {
                     if (selected != null) throw new IllegalStateException("ambiguous typeclass dictionary");
                     selected = candidate;
+                    selectedBindings = Map.copyOf(variables);
                 }
             }
             if (selected == null) throw new IllegalArgumentException("missing typeclass instance: "
                     + typeclass.qualifiedName() + groundArguments);
-            return selected;
+            return new Resolution(selected, selectedBindings);
         }
     }
 
