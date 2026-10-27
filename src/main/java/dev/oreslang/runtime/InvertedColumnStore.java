@@ -400,6 +400,39 @@ public final class InvertedColumnStore implements AutoCloseable {
     }
 
     /**
+     * Primitive-only, allocation-free checked lowering target for
+     * `rows[index].f64Field += delta`. Row resolution, loan checks and RMW
+     * execute under ONE store lock, with no guest callback/closure.
+     * Arbitrary arithmetic/effect lowering must not route through this hook.
+     */
+    public synchronized void addF64At(long index, int field, double delta) {
+        int row = checkedDenseRow(index);
+        int i = column(field);
+        requireAddableF64(i);
+        store(i, row, (Double) load(i, row) + delta);
+    }
+
+    /**
+     * The stable-handle variant of the same f64-only operation.
+     * Unlike positional indexing it follows the logical row over swap-delete.
+     */
+    public synchronized void addF64(Handle handle, int field, double delta) {
+        int row = resolve(handle);
+        int i = column(field);
+        requireAddableF64(i);
+        store(i, row, (Double) load(i, row) + delta);
+    }
+
+    private void requireAddableF64(int field) {
+        if (kinds[field] != Kind.F64) {
+            throw new IllegalArgumentException("atomic f64 add requires a f64 column");
+        }
+        if (readers[field] != 0 || writers[field]) {
+            throw new IllegalStateException("borrowed column");
+        }
+    }
+
+    /**
      * Internal checked lowering hook for a compiler-verified pure row update.
      * The callback sees a detached scalar snapshot, not the physical columns.
      * Validation and commit occur under the same store lock so concurrent
