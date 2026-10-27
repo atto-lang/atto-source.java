@@ -207,7 +207,7 @@ object_rest_item= [ binding_kind ] "..." IDENT ;
    identities and are deliberately forbidden after the first executable stmt.
    Nested-block, generic and non-record local type declarations remain gated. *)
 callable_body   = "{" { local_record_type_decl } { statement } "}" ;
-local_record_type_decl = "type" IDENT "=" "record"
+local_record_type_decl = "type" IDENT "=" ( "record" | "struct" )
                          "{" [ record_type_field { "," record_type_field } ] "}"
                          stmt_terminator ;
 block           = "{" { statement } "}" ;
@@ -426,6 +426,7 @@ type_ref        = type_atom { "|" type_atom } ;
 type_atom       = borrow_type
                 | tuple_type
                 | record_type
+                | struct_type
                 | alias_marker
                 | callable_generic_type
                 | named_type
@@ -438,12 +439,13 @@ type_atom       = borrow_type
 
 borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
-(* A record or struct prefix in type position is a type-shape marker.
-   At a declaration initializer / return-expression site the same prefix
-   instead introduces a value literal; never inspect field payload spelling
-   to decide which grammar applies. *)
-record_type     = [ "record" | "struct" ]
+(* 'record' denotes a readonly structural shape; 'struct' denotes an exact
+   closed struct shape in a type position. The enclosing grammar selects
+   type versus value expressions, not the payload spelling. Neither kind
+   grants nominal local struct identity or T{...} constructor syntax. *)
+record_type     = [ "record" ]
                   "{" [ record_type_field { "," record_type_field } ] "}" ;
+struct_type     = "struct" "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
 alias_marker    = "type" named_type ;
