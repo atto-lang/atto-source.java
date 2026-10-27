@@ -122,8 +122,14 @@ Java host `fnc` imports still require their original host capability
 and allowlist. No private export or implicit actor same-file dependency
 is authorized. Imported function signatures remain opaque to the
 per-code-unit typechecker unless independently linked; this is **not**
-proof of end-to-end type or effect safety. Every argument must at least
-cross the normal type and ownership passes.
+proof of end-to-end type or effect safety. Opaque `imports::` calls reject
+borrowed argument values, borrow-backed projections, and live mutex guards
+rather than silently exporting unknown lifetimes. The linker and runtime
+reject `import fnc` of a suspending declaration: the current first-class
+function type cannot safely represent its suspension effect. Ordinary
+owned arguments still pass through the type and ownership analyses.
+Proof of linked parameter/return types, scheduler effects and backend parity
+remains pending; no ABI correctness claim is made by this draft.
 
 ## Receiver binding and performance
 
