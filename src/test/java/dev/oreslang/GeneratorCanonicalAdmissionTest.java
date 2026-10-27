@@ -20,4 +20,20 @@ final class GeneratorCanonicalAdmissionTest {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
                 "pub suspend gen* values(): Iterator<int> { yield 1; return; }"));
     }
+
+    @Test
+    void qualifiedSuspendGeneratorCannotEraseSuspensionAsFunctionValue() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module streams as
+                  pub suspend gen* values(): AsyncIterator<int> {
+                    yield 1;
+                    return;
+                  }
+                end
+                pub async fnc main(): void {
+                  streams.values;
+                  return;
+                }
+                """));
+    }
 }
