@@ -431,14 +431,60 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
-    void symbolSyntaxFailsClosedUntilJavaHasSymbolDeclarationAst() {
+    void symbolExportRequiresALocalDeclaration() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> ExportResolver.resolve(Parser.parse("""
                         export symbol #ready;
                         fnc main(): void { return; }
                         """)));
-        assertTrue(failure.getMessage().contains("EXPORT_SYMBOL_DECLARATION_UNAVAILABLE"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("EXPORT_UNKNOWN_TARGET"), failure.getMessage());
+    }
+
+    @Test
+    void symbolDeclarationResolvesSelfIdentityExport() {
+        ExportResolver.ExportBinding binding = ExportResolver.resolve(Parser.parse("""
+                export symbol #ready as #ready;
+                define symbol #ready;
+                """)).bindings().getFirst();
+
+        assertEquals(Ast.ExportKind.SYMBOL, binding.localKind());
+        assertEquals("#ready", binding.externalName());
+        assertTrue(binding.localSymbolId().endsWith("::symbol::#ready"), binding.localSymbolId());
+    }
+
+    @Test
+    void explicitPrivateSymbolCannotBeExported() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ExportResolver.resolve(Parser.parse("""
+                        private define symbol #ready;
+                        export symbol #ready;
+                        """)));
+        assertTrue(failure.getMessage().contains("EXPORT_EXPLICIT_PRIVATE"), failure.getMessage());
+    }
+
+    @Test
+    void publicSymbolParticipatesInSourceMetadataWithoutHostExposure() {
+        ExportAbiMetadata.Document metadata = OresCompiler.emitExportMetadata("""
+                define pub symbol #ready;
+                """);
+
+        assertEquals(1, metadata.entries().size());
+        assertEquals(Ast.ExportKind.SYMBOL, metadata.entries().getFirst().localKind());
+        assertEquals("#ready", metadata.entries().getFirst().externalName());
+    }
+
+    @Test
+    void explicitlyExportedSymbolIsATreeShakerLibraryRoot() {
+        var result = OresCompiler.compileForBuild("""
+                export symbol #ready;
+                define symbol #ready;
+                fnc unused(): int { return 1; }
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(result.retainedSymbols().contains(Parser.ROOT_MODULE + ".#ready"));
+        assertFalse(result.retainedSymbols().contains(Parser.ROOT_MODULE + ".unused"));
     }
 
     private static void assertExportParses(String exportSource) {

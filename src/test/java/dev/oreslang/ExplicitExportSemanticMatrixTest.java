@@ -457,13 +457,12 @@ final class ExplicitExportSemanticMatrixTest {
         assertTrue(bindings.stream().anyMatch(b -> b.externalName().equals("use")));
     }
 
-    @Disabled("Java AST still lacks first-class Symbol declarations; syntax remains fail-closed")
     @Test
     void c46_symbolSelfIdentityResolvesLocalDeclaration() {
-        assertExportError("EXPORT_SYMBOL_DECLARATION_UNAVAILABLE", """
+        assertOne(resolve("""
                 export symbol #ready as #ready;
-                fnc main(): void { return; }
-                """);
+                define symbol #ready;
+                """), "::symbol::#ready", "#ready", Ast.ExportScope.PUBLIC);
     }
 
     private static List<ExportResolver.ExportBinding> resolve(String source) {
