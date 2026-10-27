@@ -509,6 +509,14 @@ final class SelectorTransportConnection implements AutoCloseable {
             throws IOException {
         while (true) {
             netIn.compact();
+            if (!netIn.hasRemaining()) {
+                netIn = grow(
+                        netIn,
+                        engine == null
+                                ? netIn.capacity() + 1
+                                : engine.getSession()
+                                        .getPacketBufferSize());
+            }
             int read;
             try {
                 read = channel.read(netIn);
