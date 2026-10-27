@@ -36,6 +36,21 @@ final class GeneratorCanonicalAdmissionTest {
     }
 
     @Test
+    void sourceAsyncIteratorCloseIsAwaitableAndDoesNotRequireBlockingClose() {
+        OresCompiler.parseAndTypeCheck("""
+                pub async gen* values(): AsyncIterator<int> {
+                  yield 1;
+                  return;
+                }
+                pub async fnc main(): void {
+                  val AsyncIterator<int> iterator = values();
+                  await iterator.close();
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void qualifiedSuspendGeneratorCannotEraseSuspensionAsFunctionValue() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define module streams as
