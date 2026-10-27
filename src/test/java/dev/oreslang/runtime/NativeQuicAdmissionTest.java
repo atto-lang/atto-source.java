@@ -3,12 +3,13 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeQuicAdmissionTest {
-    private static InetAddress loopback() throws Exception {
+    private static InetAddress loopback() throws UnknownHostException {
         return InetAddress.getByAddress(new byte[] { 127, 0, 0, 1 });
     }
 
