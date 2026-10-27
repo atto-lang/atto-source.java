@@ -131,7 +131,7 @@ public final class OresProjectConfig {
         if (Files.exists(modern, LinkOption.NOFOLLOW_LINKS)) return modern;
 
         Path legacy = directory.resolve(MANIFEST_NAME);
-        return Files.exists(legacy, LinkOption.NOFOLLOW_LINKS) ? legacy : null;
+        return Files.isRegularFile(legacy) ? legacy : null;
     }
 
     private static boolean isPackageManifest(Path manifest) {
@@ -186,22 +186,30 @@ public final class OresProjectConfig {
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
-        BasicFileAttributes manifestAttributes;
-        try {
-            manifestAttributes = Files.readAttributes(
-                    absoluteManifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-        } catch (NoSuchFileException missing) {
-            throw new IllegalArgumentException(
-                    "project manifest does not exist: " + absoluteManifest, missing);
-        }
-        if (manifestAttributes.isSymbolicLink() || !manifestAttributes.isRegularFile()) {
-            throw new IllegalArgumentException(
-                    "project manifest must be a regular non-symlink file: " + absoluteManifest);
-        }
-
+        boolean modernPackage = isPackageManifest(absoluteManifest);
         String manifestName = absoluteManifest.getFileName().toString();
-        String manifestContents = readManifestSnapshot(absoluteManifest);
-        TomlParseResult toml = Toml.parse(manifestContents);
+        TomlParseResult toml;
+        if (modernPackage) {
+            BasicFileAttributes manifestAttributes;
+            try {
+                manifestAttributes = Files.readAttributes(
+                        absoluteManifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            } catch (NoSuchFileException missing) {
+                throw new IllegalArgumentException(
+                        "project manifest does not exist: " + absoluteManifest, missing);
+            }
+            if (manifestAttributes.isSymbolicLink() || !manifestAttributes.isRegularFile()) {
+                throw new IllegalArgumentException(
+                        "project manifest must be a regular non-symlink file: " + absoluteManifest);
+            }
+            toml = Toml.parse(readManifestSnapshot(absoluteManifest));
+        } else {
+            if (!Files.isRegularFile(absoluteManifest)) {
+                throw new IllegalArgumentException(
+                        "not an Oreslang project manifest: " + absoluteManifest);
+            }
+            toml = Toml.parse(absoluteManifest);
+        }
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
                     "invalid " + manifestName + ": " + toml.errors().getFirst());
@@ -230,7 +238,6 @@ public final class OresProjectConfig {
                 buildTable == null ? null : buildTable.get("library_profile"));
 
         Path manifestDir = absoluteManifest.getParent();
-        boolean modernPackage = isPackageManifest(absoluteManifest);
         String rootText = defaultString(toml.getString("project.root"), ".");
         Path projectRoot;
         if (modernPackage) {
@@ -809,7 +816,8 @@ public final class OresProjectConfig {
         for (int i = 0; i < array.size(); i++) {
             Object value = array.get(i);
             if (!(value instanceof String text)) {
-                throw new IllegalArgumentException(MANIFEST_NAME + " key '" + key + "' must be an array of strings");
+                throw new IllegalArgumentException(
+                        "project manifest key '" + key + "' must be an array of strings");
             }
             result.add(text);
         }
