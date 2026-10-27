@@ -131,6 +131,20 @@ final class StaticGeneratorFunctionTest {
     }
 
     @Test
+    void syncStaticGeneratorRejectsStructuralParameterThatWouldEscapeAcrossYield() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define class Payload as
+                end
+                define class Sequences as
+                  pub static gen* values(structural Payload value): Iterator<int> {
+                    yield 42;
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
     void staticGeneratorFunctionValuesRemainDirectCallOnly() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define class Sequences as
