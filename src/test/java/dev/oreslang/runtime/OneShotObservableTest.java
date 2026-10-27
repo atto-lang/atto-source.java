@@ -98,6 +98,17 @@ final class OneShotObservableTest {
     }
 
     @Test
+    void rejectedSchedulerAdmissionDoesNotLeakObservableSubscription() {
+        OresScheduler scheduler = new OresScheduler(1);
+        scheduler.close();
+        OresFuture<Integer> source = new OresFuture<>();
+        OneShotObservable<Integer> observable = OneShotObservable.fromFuture(source);
+        assertThrows(IllegalStateException.class, () -> observable.toTaskSingle(scheduler));
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+        assertFalse(source.isDone());
+    }
+
+    @Test
     void taskOriginCannotBeCancelledBySubscriber() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> upstream = new OresFuture<>();
