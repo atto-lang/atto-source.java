@@ -193,6 +193,22 @@ public final class InvertedArray implements AutoCloseable {
     private final Schema schema;
     private final InvertedColumnStore store;
     private final Map<String, InvertedRowMethod> methods;
+    // Package-private deterministic regression seam: a failed wrapper
+    // allocation must release the already-acquired physical column loan.
+    private final java.util.concurrent.atomic.AtomicBoolean failNextFieldLoanWrap =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    void armFieldLoanWrapperFailureForTest() {
+        if (!failNextFieldLoanWrap.compareAndSet(false, true)) {
+            throw new IllegalStateException("field loan wrapper failure is already armed");
+        }
+    }
+
+    private void failFieldLoanWrapOnceForTest() {
+        if (failNextFieldLoanWrap.compareAndSet(true, false)) {
+            throw new OutOfMemoryError("injected inverted FieldLoan wrapper allocation failure");
+        }
+    }
 
     public InvertedArray(Schema schema, int initialCapacity) {
         this(schema, initialCapacity, Map.of());
@@ -451,12 +467,33 @@ public final class InvertedArray implements AutoCloseable {
     /** Capability-bound column loans, no raw backing array escapes. */
     public FieldLoan borrowRead(String field) {
         int index = schema.index(field);
-        return new FieldLoan(store.borrowRead(index), index, false);
+        InvertedColumnStore.ColumnLoan acquired = store.borrowRead(index);
+        boolean published = false;
+        try {
+            failFieldLoanWrapOnceForTest();
+            FieldLoan wrapper = new FieldLoan(acquired, index, false);
+            published = true;
+            return wrapper;
+        } finally {
+            // The store loan itself was issued successfully; if the facade
+            // allocation throws (including OOME), revoke that loan before
+            // returning the exception to the caller.
+            if (!published) acquired.close();
+        }
     }
 
     public FieldLoan borrowWrite(String field) {
         int index = schema.index(field);
-        return new FieldLoan(store.borrowWrite(index), index, true);
+        InvertedColumnStore.ColumnLoan acquired = store.borrowWrite(index);
+        boolean published = false;
+        try {
+            failFieldLoanWrapOnceForTest();
+            FieldLoan wrapper = new FieldLoan(acquired, index, true);
+            published = true;
+            return wrapper;
+        } finally {
+            if (!published) acquired.close();
+        }
     }
 
     public final class FieldLoan implements AutoCloseable {
