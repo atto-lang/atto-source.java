@@ -160,6 +160,22 @@ final class LocalStructShapeTypeTest {
     }
 
     @Test
+    void aliasCannotShadowBuiltinWidthOrContextualAggregateKeyword() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): void {
+                    type i64 = struct { foo: int };
+                    return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): void {
+                    type record = struct { foo: int };
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void structAliasMayNotCaptureGenericOrRecursiveUnverifiedIdentity() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc invalid(): T {
