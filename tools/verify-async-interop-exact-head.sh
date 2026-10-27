@@ -57,6 +57,14 @@ mvn -B -o -ntp \
 # Require 42 distinct, actually-recorded non-skipped JUnit method results.
 python3 tools/verify_async_interop_junit.py target/surefire-reports
 
+# Revalidate the same source commit and clean tracked/untracked worktree after
+# the build. A test that modifies input source/config cannot claim exact-head
+# execution merely because the checkout was clean before running Maven.
+[[ "$(git rev-parse HEAD)" == "$expected" ]] ||
+  die 'source HEAD moved while focused tests ran'
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] ||
+  die 'focused tests changed the source worktree; exact-head proof denied'
+
 echo "ASYNC_INTEROP_JVM_PROOF_COMPLETE_HEAD=$expected"
 echo 'ASYNC_INTEROP_JVM_PROOF_ONLY=true'
 echo 'ASYNC_INTEROP_GRAAL_NATIVE_IMAGE_NOT_RUN=true'
