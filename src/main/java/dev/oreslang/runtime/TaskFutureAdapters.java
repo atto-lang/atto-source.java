@@ -27,7 +27,16 @@ public final class TaskFutureAdapters {
      */
     static <T> TaskHandle<T> fromOwnedObservation(
             OresScheduler scheduler, OresFuture<T> observation) {
-        return fromFuture(scheduler, observation, true);
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(observation, "observation");
+        try {
+            return fromFuture(scheduler, observation, true);
+        } catch (RuntimeException | Error admissionFailure) {
+            // The reduction is privately owned by this bridge. An exhausted
+            // or closed scheduler must not strand its upstream subscription.
+            observation.cancel(false);
+            throw admissionFailure;
+        }
     }
 
     private static <T> TaskHandle<T> fromFuture(
