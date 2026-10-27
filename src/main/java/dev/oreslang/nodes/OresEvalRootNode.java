@@ -9079,6 +9079,10 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("import fnc requires a reifiable non-actor fnc; '" + name
                             + "' is direct-call-only or actor-scheduled");
                 }
+                if (fn.suspends()) {
+                    throw new IllegalArgumentException("import fnc '" + name
+                            + "' cannot erase a suspends effect at the linked ABI boundary");
+                }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "import fnc requires a reifiable non-generic fnc; '" + name
@@ -9107,6 +9111,10 @@ public final class OresEvalRootNode extends RootNode {
                     if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException("import fnc requires a reifiable non-actor fnc; '" + name
                                 + "' is direct-call-only or actor-scheduled");
+                    }
+                    if (fn.suspends()) {
+                        throw new IllegalArgumentException("import fnc '" + name
+                                + "' cannot erase a suspends effect at the linked ABI boundary");
                     }
                     if (!fn.genericParameters().isEmpty()) {
                         throw new IllegalArgumentException(
@@ -9158,6 +9166,10 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "actor callable '" + name
                                     + "' is scheduler-dispatched and cannot be extracted as a first-class callable value");
+                }
+                if (fn.suspends()) {
+                    throw new IllegalArgumentException("suspends fnc '" + name
+                            + "' cannot be extracted as a function value");
                 }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
