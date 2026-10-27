@@ -5173,6 +5173,34 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Check owned SourceTask admission before invoking user source. A
+         * synchronous helper can hide a CPU loop and thus require a child
+         * continuation even though the call does not spell await. Guarding
+         * only the returned pending Future is too late: dispatch may have
+         * already committed guest effects or captured guard-owned storage.
+         *
+         * INVOKABLE is deliberately not guessed to be a source callable:
+         * extracted source methods are resolved to METHOD/STATIC_FUNCTION
+         * in invokableInvocation, and dedicated task { } admission checks
+         * live guards independently. Other host invokables retain their
+         * established runtime contracts.
+         */
+        private boolean invocationMayLaunchSourceTask(Invocation invocation) {
+            Evaluator owner = invocation.owner();
+            return switch (invocation.kind()) {
+                case FUNCTION, FUNCTION_BODY -> {
+                    Ast.FunctionDecl function = (Ast.FunctionDecl) invocation.target();
+                    yield function.async() || owner.functionContainsPotentialSuspension(function);
+                }
+                case METHOD, STATIC_FUNCTION, STATIC_FUNCTION_BODY -> {
+                    Ast.MethodDecl method = (Ast.MethodDecl) invocation.target();
+                    yield method.async() || owner.methodContainsPotentialSuspension(method);
+                }
+                case INVOKABLE -> false;
+            };
+        }
+
         private void completeSourceInvocation(
                 SourceTask task,
                 Invocation invocation,
@@ -5180,6 +5208,13 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             try {
+                // Admission must precede invoke(): a newly launched source
+                // child may execute before the parent sees its Future.
+                if (env.hasLiveMutexGuards()
+                        && invocationMayLaunchSourceTask(invocation)) {
+                    throw new IllegalStateException(
+                            "cannot launch or suspend a source callable while holding a live MutexGuard");
+                }
                 Object result = invoke(invocation);
                 if (result instanceof OresFuture<?> future
                         && !declaredFuture) {
