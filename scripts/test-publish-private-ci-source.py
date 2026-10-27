@@ -592,7 +592,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             fork=False, default_branch="main"):
         routes = []
         if contexts is None:
-            contexts = ["private-ci-gate"]
+            contexts = sorted(pub.SOURCE_REQUIRED_STATUS_CONTEXTS)
         if named_checks is None:
             named_checks = []
         if source_id is None:
@@ -754,6 +754,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaisesRegex(pub.Denied, "strict required CI"):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
+    def test_origin_requires_private_ci_governance_status_checks(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        for contexts, missing in (
+            (["preflight-regressions"], "policy-negative-tests"),
+            (["policy-negative-tests"], "preflight-regressions"),
+            (["unrelated-lint"], "policy-negative-tests"),
+        ):
+            with self.subTest(contexts=contexts):
+                api, _ = self.verified_origin_api(contexts=contexts)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "governance checks"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
     def test_origin_requires_last_push_and_conversation_resolution(self):
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         for options, message in (
@@ -794,8 +807,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         api, _ = self.verified_origin_api(
             contexts=[],
             named_checks=[
-                {"context": "private-ci-gate", "app_id": None},
-                {"context": "private-ci-gate", "app_id": 15368},
+                {"context": "preflight-regressions", "app_id": None},
+                {"context": "preflight-regressions", "app_id": 15368},
+                {"context": "policy-negative-tests", "app_id": None},
             ],
         )
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
