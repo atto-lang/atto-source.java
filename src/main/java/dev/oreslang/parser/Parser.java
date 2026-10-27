@@ -1239,6 +1239,7 @@ public final class Parser {
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
+        rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
@@ -2923,12 +2924,27 @@ public final class Parser {
         return check(DONE) && !reservedCallableNameFollowedByInvocation(current);
     }
 
+    /**
+     * 'type' in a binding's type position is a legal named-alias marker, e.g.
+     * 'const type T value = ...'. Only 'const type T = ...' attempts to
+     * re-declare a compile-time type as a value binding.
+     */
+    private void rejectConstTypeDeclaration(Ast.BindingKind kind) {
+        if (kind == Ast.BindingKind.CONST && check(TYPE)
+                && current + 2 < tokens.size()
+                && isIdentifierLikeToken(tokens.get(current + 1).type())
+                && tokens.get(current + 2).type() == EQUAL) {
+            throw error(peek(), "'const type' is not a declaration: types are immutable; use 'type T = ...;'");
+        }
+    }
+
     private Ast.BindingStmt parseBindingStatement() {
         return parseBindingStatement(List.of());
     }
 
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
+        rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
