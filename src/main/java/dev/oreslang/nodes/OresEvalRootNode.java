@@ -3569,19 +3569,36 @@ public final class OresEvalRootNode extends RootNode {
          * asynchronous; both await the SAME physical producer finalizer.
          */
         private final class SourceOwnedClose {
-            private final Runnable release;
+            private final java.util.function.Supplier<OresFuture<Void>> releaseAsync;
             private OresFuture<Void> closing;
 
             SourceOwnedClose(Runnable release) {
-                this.release = Objects.requireNonNull(release, "release");
+                Objects.requireNonNull(release, "release");
+                this.releaseAsync = () -> {
+                    try {
+                        return context.asyncRuntime().submit(() -> {
+                            release.run();
+                            return null;
+                        });
+                    } catch (RuntimeException | Error failure) {
+                        return OresFuture.failed(failure);
+                    }
+                };
+            }
+
+            SourceOwnedClose(java.util.function.Supplier<OresFuture<Void>> releaseAsync) {
+                this.releaseAsync = Objects.requireNonNull(releaseAsync, "releaseAsync");
             }
 
             synchronized OresFuture<Void> closeOnce() {
                 if (closing == null) {
-                    closing = context.asyncRuntime().submit(() -> {
-                        release.run();
-                        return null;
-                    });
+                    try {
+                        closing = Objects.requireNonNull(
+                                releaseAsync.get(),
+                                "async iterator close returned null Future");
+                    } catch (RuntimeException | Error failure) {
+                        closing = OresFuture.failed(failure);
+                    }
                 }
                 return closing;
             }
@@ -3591,7 +3608,7 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
             GeneratorRuntime.AsyncGenerator<?> generator = sourceAsyncGenerator(value, env);
-            SourceOwnedClose closer = new SourceOwnedClose(generator::close);
+            SourceOwnedClose closer = new SourceOwnedClose(generator::closeAsync);
             SourceCleanupFrame registered = task.registerSourceCleanup(
                     (owner, completed) -> finishAsyncForOf(owner, closer,
                             SourceFlow.throwing(owner.cancellationCause), completed));
