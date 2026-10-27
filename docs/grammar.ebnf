@@ -45,8 +45,8 @@ callable_modifier = "abstract" | "async" | "suspend" | "suspends" | "nlex" | "st
 method_modifier   = "abstract" | "async" | "suspend" | "suspends" | "structural" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
-                  ( "(" [ param_list ] ")" return_spec block
-                  | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
+                  ( "(" [ param_list ] ")" return_spec callable_body
+                  | "=" "|" [ param_list ] "|" "->" [ type_ref ] callable_body ) ;
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
@@ -201,6 +201,15 @@ object_destructure_item
                 = [ binding_kind ] IDENT ;
 object_rest_item= [ binding_kind ] "..." IDENT ;
 
+(* A direct fnc/routine body may start with transparent type-only record aliases.
+   These are erased by the parser into structural TypeRefs, including the
+   return signature. They do not create executable statements or nominal
+   identities and are deliberately forbidden after the first executable stmt.
+   Nested-block, generic and non-record local type declarations remain gated. *)
+callable_body   = "{" { local_record_type_decl } { statement } "}" ;
+local_record_type_decl = "type" IDENT "=" "record"
+                         "{" [ record_type_field { "," record_type_field } ] "}"
+                         stmt_terminator ;
 block           = "{" { statement } "}" ;
 statement       = binding_decl
                 | destructure_stmt
