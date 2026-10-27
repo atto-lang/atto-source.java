@@ -1277,6 +1277,11 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                if (valueKind != ValueKind.COPY && isBorrowValue(receiverValue)) {
+                    throw error("cannot extract move-only field '" + member.member()
+                            + "' through a borrowed receiver; use an explicit rt borrow projection "
+                            + "until projected ownership lifetimes are represented in the type");
+                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -1287,6 +1292,11 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
+                    if (fieldKind != ValueKind.COPY && isBorrowValue(receiverValue)) {
+                        throw error("cannot extract move-only field '" + member.member()
+                                + "' through a borrowed receiver; use an explicit rt borrow projection "
+                                + "until projected ownership lifetimes are represented in the type");
+                    }
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
@@ -1306,6 +1316,11 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
+            if (elementKind != ValueKind.COPY && isBorrowValue(receiver)) {
+                throw error("cannot extract a move-only indexed value through a borrowed receiver; "
+                        + "use an explicit rt borrow projection until projected ownership lifetimes "
+                        + "are represented in the type");
+            }
             if (consuming && elementKind != ValueKind.COPY
                     && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
