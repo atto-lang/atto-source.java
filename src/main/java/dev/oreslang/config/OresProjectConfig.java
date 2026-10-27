@@ -246,10 +246,45 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException(
                         "bare import '" + importPath + "' escapes configured search root '" + normalizedRoot + "'");
             }
-            Optional<Path> resolved = existingSource(candidate);
+            Optional<Path> resolved = existingSourceWithinRoot(candidate, normalizedRoot, importPath);
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
+    }
+
+    /**
+     * Bare-import roots may themselves be symlinked (for developer/package
+     * layouts), but a child path must remain inside that root after physical
+     * resolution. This preserves an explicitly configured symlink root while
+     * preventing an in-root file/directory alias from escaping to unrelated
+     * source.
+     */
+    private static Optional<Path> existingSourceWithinRoot(
+            Path candidate,
+            Path configuredRoot,
+            String importPath) {
+        Optional<Path> resolved = existingSource(candidate);
+        if (resolved.isEmpty()) return Optional.empty();
+
+        try {
+            // Missing configured search roots remain ordinary misses. Once a
+            // candidate exists, however, its physical ownership must be
+            // provable before it can become source identity.
+            if (!Files.exists(configuredRoot)) return Optional.empty();
+            Path physicalRoot = configuredRoot.toRealPath();
+            if (!Files.isDirectory(physicalRoot)) return Optional.empty();
+
+            Path physicalSource = resolved.get().toRealPath();
+            if (!physicalSource.startsWith(physicalRoot)) {
+                throw new IllegalArgumentException(
+                        "bare import '" + importPath
+                                + "' escapes physical configured search root '" + physicalRoot + "'");
+            }
+            return Optional.of(physicalSource);
+        } catch (IOException failure) {
+            throw new IllegalArgumentException(
+                    "cannot verify physical source path for bare import '" + importPath + "'", failure);
+        }
     }
 
     private static Optional<Path> existingSource(Path candidate) {
