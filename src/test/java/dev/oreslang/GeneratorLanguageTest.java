@@ -100,7 +100,7 @@ final class GeneratorLanguageTest {
                   val IteratorResult<int> pulled = await asynchronous.next();
                   stdio.stdout.write(pulled.value.unwrap());
                   stdio.stdout.write(":");
-                  asynchronous.close();
+                  await asynchronous.close();
                   val IteratorResult<int> closed = await asynchronous.next();
                   stdio.stdout.write(closed.done);
                   stdio.stdout.write(":");
