@@ -61,13 +61,18 @@ public final class InvertedArray implements AutoCloseable {
             }
         }
         private final String className;
+        // Nominal authority is the exact checked class declaration, not a
+        // forgeable name plus a layout-compatible physical fingerprint.
+        private final Ast.ClassDecl declaration;
         private final List<Field> fields;
         private final Map<String, Integer> indices;
         private final List<FieldBinding> generatedBindings;
         private final boolean requiresMethodPlan;
 
-        private Schema(String className, List<Field> fields, boolean requiresMethodPlan) {
-            this.className = Objects.requireNonNull(className, "class name");
+        private Schema(Ast.ClassDecl declaration, List<Field> fields,
+                       boolean requiresMethodPlan) {
+            this.declaration = Objects.requireNonNull(declaration, "nominal inverted declaration");
+            this.className = declaration.name();
             this.requiresMethodPlan = requiresMethodPlan;
             if (fields.isEmpty()) throw new IllegalArgumentException("inverted class requires fields");
             LinkedHashMap<String, Integer> mapped = new LinkedHashMap<>();
@@ -137,10 +142,14 @@ public final class InvertedArray implements AutoCloseable {
                     ordered.add(new Field(field.name(), kind));
                 }
             }
-            return new Schema(klass.name(), ordered, !klass.methods().isEmpty());
+            return new Schema(klass, ordered, !klass.methods().isEmpty());
         }
 
         public String className() { return className; }
+        /** Exact nominal declaration gate for generated compiler plans. */
+        public boolean representsDeclaration(Ast.ClassDecl checkedDeclaration) {
+            return declaration == checkedDeclaration;
+        }
         public List<Field> fields() { return fields; }
         public int fieldCount() { return fields.size(); }
         public int index(String name) {
