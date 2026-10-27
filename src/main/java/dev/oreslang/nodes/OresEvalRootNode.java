@@ -6977,7 +6977,15 @@ public final class OresEvalRootNode extends RootNode {
 
         private Ast.FunctionDecl pkgRootCallable(String name, int arity, Env env) {
             requireExplicitClassCallableImport(env, name);
+            if (name.equals("init")) {
+                throw new IllegalArgumentException(
+                        "pkg::init is a lifecycle hook and cannot be called directly");
+            }
             Ast.FunctionDecl fn = findQualifiedFunction(Parser.ROOT_MODULE + "." + name, arity);
+            if (fn != null && fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "pkg::" + name + " cannot invoke an actor entry point");
+            }
             if (fn == null) {
                 throw new IllegalArgumentException(
                         "pkg::" + name + " has no file-root function/routine at arity " + arity);
@@ -6987,6 +6995,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object pkgRootFunctionValue(String name, Env env) {
             requireExplicitClassCallableImport(env, name);
+            if (name.equals("init")) {
+                throw new IllegalArgumentException(
+                        "pkg::init is a lifecycle hook and cannot be used as a value");
+            }
             Ast.FunctionDecl fn = singleFunction(
                     functions.get(Parser.ROOT_MODULE + "." + name), "pkg::" + name);
             if (fn == null || fn.kind() != Ast.CallableKind.FNC
