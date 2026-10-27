@@ -370,6 +370,19 @@ public final class InvertedArray implements AutoCloseable {
             store.setAt(denseIndex, column, encoded(column, value));
         }
 
+        /**
+         * Package-private compiler target for a PROVEN pure, bounded,
+         * non-suspending compound expression. The callback is not a public
+         * guest extension point. Resolve dense row + field and read/modify/
+         * write once under the underlying store's transaction fence.
+         */
+        void transformAt(
+                long denseIndex, java.util.function.UnaryOperator<Object> verifiedTransform) {
+            Objects.requireNonNull(verifiedTransform, "verified column transform");
+            store.transformAt(denseIndex, column,
+                    bytes -> encoded(column, verifiedTransform.apply(decoded(column, bytes))));
+        }
+
         public Object get(InvertedColumnStore.Handle handle) {
             return decoded(column, store.get(handle, column));
         }
