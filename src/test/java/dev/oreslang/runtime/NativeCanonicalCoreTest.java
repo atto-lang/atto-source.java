@@ -7,7 +7,6 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -16,21 +15,22 @@ final class NativeCanonicalCoreTest {
 
     @Test
     void packagedCoreIdentityAndClosedRegistry() throws Exception {
-        assertEquals(Set.of("numeric.ores"), CoreLibrarySources.packagedFreestandingCorePaths());
-        assertEquals("@core/numeric.ores", CoreLibrarySources.freestandingCoreUnitId("core/numeric"));
-        String src = CoreLibrarySources.freestandingCoreSource("core/numeric");
+        assertEquals(Set.of("numeric.ores"), CoreLibrarySources.packagedCorePaths());
+        assertEquals("@ores.core/numeric.ores",
+                CoreLibrarySources.oresCoreUnitId("ores.core/numeric"));
+        String src = CoreLibrarySources.oresCoreSource("ores.core/numeric");
         assertTrue(src.contains("define module numeric"));
         assertThrows(IllegalArgumentException.class,
-                () -> CoreLibrarySources.freestandingCoreSource("core/missing"));
+                () -> CoreLibrarySources.oresCoreSource("ores.core/missing"));
         assertThrows(IllegalArgumentException.class,
-                () -> CoreLibrarySources.freestandingCoreUnitId("core/../numeric"));
+                () -> CoreLibrarySources.oresCoreUnitId("ores.core/../numeric"));
     }
 
     @Test
-    void hostedCompilerExecutesNumericCoreWithoutJavaSourceInterop() throws Exception {
+    void hostedCompilerCanLinkCoreSourceWithoutChangingItsCapabilityLayer() throws Exception {
         Path entry = temp.resolve("run.ores");
         Files.writeString(entry, """
-                import module numeric from "core/numeric";
+                import module numeric from "ores.core/numeric";
                 pub routine main(): void {
                     stdio.println(numeric.min_int(9, 4));
                     stdio.println(numeric.clamp_int(15, 0, 10));
@@ -41,7 +41,7 @@ final class NativeCanonicalCoreTest {
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         var build = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), out, err);
-        assertTrue(build.units().containsKey("@core/numeric.ores"));
+        assertTrue(build.units().containsKey("@ores.core/numeric.ores"));
         String stdout = out.toString(StandardCharsets.UTF_8);
         assertEquals("4\n10",
                 stdout.replace("\r\n", "\n").trim(),
@@ -51,12 +51,12 @@ final class NativeCanonicalCoreTest {
 
     @Test
     void canonicalCoreCannotBeShadowedByProjectFile() throws Exception {
-        Path dir = Files.createDirectories(temp.resolve("core"));
+        Path dir = Files.createDirectories(temp.resolve("ores.core"));
         Files.writeString(dir.resolve("numeric.ores"),
                 "define module numeric as pub fnc min_int(int a, int b): int { return 999; } end");
         Path entry = temp.resolve("entry.ores");
         Files.writeString(entry, """
-                import module numeric from "core/numeric";
+                import module numeric from "ores.core/numeric";
                 pub routine main(): void {
                     stdio.println(numeric.min_int(9, 4));
                     return;
@@ -65,8 +65,8 @@ final class NativeCanonicalCoreTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         var build = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), out, new ByteArrayOutputStream());
-        assertTrue(build.units().containsKey("@core/numeric.ores"));
+        assertTrue(build.units().containsKey("@ores.core/numeric.ores"));
         assertEquals("4", out.toString(StandardCharsets.UTF_8).trim(),
-                "project-local core/numeric.ores must never shadow trusted core");
+                "project-local ores.core/numeric.ores must never shadow trusted core");
     }
 }
