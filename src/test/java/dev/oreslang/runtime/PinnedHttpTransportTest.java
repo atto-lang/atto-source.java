@@ -864,6 +864,71 @@ final class PinnedHttpTransportTest {
         nativeIo.close();
     }
 
+    @Test
+    void workerInterruptRetiresSelectorHeaderWait()
+            throws Exception {
+        try (ServerSocket server = listen()) {
+            CountDownLatch requestSeen = new CountDownLatch(1);
+            CountDownLatch releasePeer = new CountDownLatch(1);
+            Thread peer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    readRequestHead(socket.getInputStream());
+                    requestSeen.countDown();
+                    releasePeer.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                } catch (IOException ignored) {
+                    // Interrupted client closes the physical connection.
+                }
+            });
+
+            OutboundEgressPolicy.Resolver resolver = host ->
+                    List.of(InetAddress.getByName("127.0.0.1"));
+            PinnedHttpTransport transport = new PinnedHttpTransport(
+                    OutboundEgressPolicy.Purpose.GENERAL_HTTP,
+                    OutboundEgressPolicy.Policy.loopbackOnly(),
+                    resolver,
+                    SSLContext.getDefault(),
+                    1024);
+            AtomicReference<Throwable> requestFailure =
+                    new AtomicReference<>();
+            Thread request = Thread.ofVirtual().start(() -> {
+                try {
+                    transport.request(
+                            URI.create(
+                                    "http://origin.example:"
+                                            + server.getLocalPort()
+                                            + "/"),
+                            "GET",
+                            List.of());
+                } catch (Throwable failure) {
+                    requestFailure.set(failure);
+                }
+            });
+
+            try {
+                assertTrue(requestSeen.await(2, TimeUnit.SECONDS));
+                request.interrupt();
+                request.join(2000);
+                assertFalse(
+                        request.isAlive(),
+                        "native worker interruption must retire a selector wait");
+                assertNotNull(requestFailure.get());
+                assertEquals(0, transport.activeSockets());
+                assertEquals(0, transport.activeOrigins());
+                assertEquals(
+                        PinnedHttpTransport.PhysicalPhase.RETIRED,
+                        transport.phase());
+            } finally {
+                transport.close();
+                releasePeer.countDown();
+                request.interrupt();
+                request.join(2000);
+                peer.join();
+            }
+        }
+    }
+
     private static ServerSocket listen() throws IOException {
         ServerSocket server = new ServerSocket();
         server.bind(new InetSocketAddress("127.0.0.1", 0));
