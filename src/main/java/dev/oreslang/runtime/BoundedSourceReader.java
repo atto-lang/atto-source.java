@@ -11,6 +11,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Objects;
 import java.util.Set;
 
 /** Single bounded, strict UTF-8 source admission boundary for the CLI and file loader. */
@@ -52,6 +53,10 @@ public final class BoundedSourceReader {
             if (beforeSize < 0 || beforeSize > MAX_BYTES) {
                 throw new IllegalArgumentException("Oreslang source exceeds 16 MiB source limit");
             }
+            if (beforeSize != attributes.size()) {
+                throw new IllegalArgumentException(
+                        "Oreslang source changed before bounded snapshot");
+            }
 
             ByteArrayOutputStream snapshot = new ByteArrayOutputStream(
                     (int) Math.min(beforeSize, READ_CHUNK_BYTES));
@@ -71,7 +76,16 @@ public final class BoundedSourceReader {
             }
 
             long afterSize = channel.size();
-            if (afterSize != beforeSize || total != beforeSize) {
+            BasicFileAttributes after = Files.readAttributes(
+                    physical, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            boolean sameKey = attributes.fileKey() == null && after.fileKey() == null
+                    || Objects.equals(attributes.fileKey(), after.fileKey());
+            if (!after.isRegularFile()
+                    || !sameKey
+                    || after.size() != attributes.size()
+                    || !after.lastModifiedTime().equals(attributes.lastModifiedTime())
+                    || afterSize != beforeSize
+                    || total != beforeSize) {
                 throw new IllegalArgumentException(
                         "Oreslang source changed during bounded snapshot");
             }
