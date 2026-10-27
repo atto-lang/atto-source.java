@@ -55,6 +55,43 @@ public final class AotFiniteGenericClosure {
         }
     }
 
+    /**
+     * Shared concrete-type substitution for the strict planner and specialized
+     * IR emitter. There is deliberately no unresolved nominal/generic fallback.
+     */
+    static Ast.TypeRef specializeType(
+            Ast.TypeRef source, Map<String, Ast.TypeRef> bindings) {
+        Objects.requireNonNull(bindings, "AOT type bindings");
+        return specializeType(source, bindings, 0);
+    }
+
+    private static Ast.TypeRef specializeType(
+            Ast.TypeRef source, Map<String, Ast.TypeRef> bindings, int depth) {
+        if (source == null || depth > MAX_TYPE_DEPTH
+                || source.inferArguments() || source.name().startsWith("$")) {
+            throw new IllegalArgumentException(
+                    "AOT-FINITE-GENERICS: incomplete or unbounded specialized type");
+        }
+        Ast.TypeRef bound = bindings.get(source.name());
+        if (bound != null) {
+            if (!source.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "AOT-FINITE-GENERICS: type formal used as constructor");
+            }
+            return specializeType(bound, Map.of(), depth + 1);
+        }
+        if (!ADMITTED_TYPES.contains(source.name())) {
+            throw new IllegalArgumentException(
+                    "AOT-FINITE-GENERICS: unknown nominal or unbound generic '"
+                            + source.name() + "'; layout proof required");
+        }
+        List<Ast.TypeRef> concrete = new ArrayList<>(source.arguments().size());
+        for (Ast.TypeRef item : source.arguments()) {
+            concrete.add(specializeType(item, bindings, depth + 1));
+        }
+        return new Ast.TypeRef(source.name(), concrete, false);
+    }
+
     private record Symbol(String module, String name, int arity) { }
     private record Work(Instance instance, int depth) { }
 
