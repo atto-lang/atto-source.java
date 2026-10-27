@@ -157,6 +157,123 @@ final class ImplicitSelfMethodCallTest {
                 || failure.getMessage().contains("partially initialized"), failure.getMessage());
     }
 
+
+    @Test
+    void pkgQualifierSelectsPrivateFileRootOverInstanceAndLexicalNames() throws Exception {
+        assertEquals("7|99|99", run("""
+                fnc roodles(): int { return 99; }
+                define class Foo as
+                  pub roodles(): int { return 7; }
+                  pub park_it(): void {
+                    val pkg = 123;
+                    val (() => int) roodles = || -> 11;
+                    stdio.stdout.write(self.roodles());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(pkg::roodles());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(roodles() + pkg::roodles() - 11);
+                  }
+                end
+                pub routine main(): void { new Foo().park_it(); }
+                """));
+    }
+
+    @Test
+    void pkgQualifierIsDistinctFromAUserDefinedModuleNamedPkg() throws Exception {
+        assertEquals("7|12|99", run("""
+                fnc roodles(): int { return 99; }
+                define module pkg as
+                  pub fnc roodles(): int { return 12; }
+                end
+                define class Foo as
+                  pub roodles(): int { return 7; }
+                  pub park_it(): void {
+                    stdio.stdout.write(roodles());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(pkg.roodles());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(pkg::roodles());
+                  }
+                end
+                pub routine main(): void { new Foo().park_it(); }
+                """));
+    }
+
+    @Test
+    void pkgQualifierCanReifyAnEligibleFileRootFunctionWithoutBindingSelf() throws Exception {
+        assertEquals("42", run("""
+                fnc roodles(int x): int { return x + 1; }
+                define class Foo as
+                  pub roodles(int x): int { return x + 100; }
+                  pub park_it(): int {
+                    val r = pkg::roodles;
+                    return r(41);
+                  }
+                end
+                pub routine main(): void { stdio.stdout.write(new Foo().park_it()); }
+                """));
+    }
+
+    @Test
+    void pkgQualifierNeverFallsBackOnArityMismatch() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc roodles(int value): int { return value; }
+                        define class Foo as
+                          pub roodles(): int { return 7; }
+                          pub park_it(): int { return pkg::roodles(); }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("pkg::roodles"), failure.getMessage());
+    }
+
+    @Test
+    void pkgQualifierRejectsModuleOnlyFunctionAndUnrelatedRootClass() {
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module helpers as
+                          pub fnc roodles(): int { return 1; }
+                        end
+                        define class Foo as
+                          pub park_it(): int { return pkg::roodles(); }
+                        end
+                        """)));
+        assertTrue(missing.getMessage().contains("pkg"), missing.getMessage());
+
+        IllegalArgumentException nonCallable = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Widget as
+                        end
+                        fnc test(): void {
+                          val x = pkg::Widget;
+                        }
+                        """)));
+        assertTrue(nonCallable.getMessage().contains("pkg::Widget"), nonCallable.getMessage());
+    }
+
+    @Test
+    void pkgQualifierDoesNotTurnRoutinesIntoValues() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        routine roodles(): void { return; }
+                        fnc test(): void { val r = pkg::roodles; }
+                        """)));
+        assertTrue(failure.getMessage().contains("direct-call-only"), failure.getMessage());
+    }
+
+    @Test
+    void actorCannotUsePkgQualifierToBypassExplicitDependencyRule() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc roodles(): void { return; }
+                        pub shared actor Worker {
+                          pub fnc work(): void { pkg::roodles(); }
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("actor")
+                && failure.getMessage().contains("module"), failure.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "implicit-self-method-call.ores")
