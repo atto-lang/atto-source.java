@@ -2918,6 +2918,29 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
+            // Only a nonlocal *call* may acquire the implicit self receiver.
+            // Lookup the complete method family before free functions: a
+            // wrong-arity call must not silently dispatch a global function.
+            // Lambda scopes without a captured self cannot use this sugar.
+            if (call.callee() instanceof Ast.NameExpr implicit
+                    && env.lookup(implicit.name()) == null) {
+                Env.Binding receiverBinding = env.lookup("self");
+                if (receiverBinding != null) {
+                    Type ownerType = receiverDispatchType(deref(receiverBinding.type()));
+                    if (ownerType instanceof Named owner) {
+                        Ast.ClassDecl ownerClass = findClass(owner.name());
+                        if (ownerClass != null
+                                && !findMethodsByName(
+                                        ownerClass, implicit.name(), new LinkedHashSet<>()).isEmpty()) {
+                            return typeOf(
+                                    call.rewrite(
+                                            new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                                            call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                                    env, generics, self);
+                        }
+                    }
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
                 int arity = fixedCallArity(
