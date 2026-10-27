@@ -42,9 +42,11 @@ final class VerifyNioFocusedReports {
                             "refusedConnectRetiresLeaseAndDoesNotPoisonLaterConnect"),
                     "VmNioTcpConnectionTest", java.util.Set.of(
                             "closeAsyncWaitsForPendingReadRetirementAndRunsTerminalHookOnce",
+                            "connectionAllowsOneReadAndOneWriteButRejectsDuplicateRead",
                             "closedOutboundConnectionFailsFurtherIoWithoutReadinessAdmission"),
                     "NativeNetStdlibTest", java.util.Set.of(
-                            "realGuestOutboundConnectReadWriteThroughNonblockingKernel"),
+                            "realGuestOutboundConnectReadWriteThroughNonblockingKernel",
+                            "realGuestDuplexReadAndWriteOverlapOnOneConnection"),
                     "StrictNonblockingStdlibIoTest", java.util.Set.of(
                             "hostnameConnectFailsClosedBeforeBlockingDns"));
 
