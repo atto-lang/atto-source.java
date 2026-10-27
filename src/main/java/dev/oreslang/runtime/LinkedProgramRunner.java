@@ -63,11 +63,15 @@ public final class LinkedProgramRunner {
             throw new IllegalArgumentException("not a regular physical file: " + entry);
         }
 
+        java.nio.file.attribute.BasicFileAttributes entryIdentity = Files.readAttributes(
+                entry,
+                java.nio.file.attribute.BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS);
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions,
+        collectImportClosure(entry, entryIdentity, units, projectConfig, importResolutions,
                 new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
 
@@ -182,11 +186,15 @@ public final class LinkedProgramRunner {
             throw new IllegalArgumentException("not a regular physical file: " + entry);
         }
 
+        java.nio.file.attribute.BasicFileAttributes entryIdentity = Files.readAttributes(
+                entry,
+                java.nio.file.attribute.BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS);
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions,
+        collectImportClosure(entry, entryIdentity, units, projectConfig, importResolutions,
                 new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
@@ -378,6 +386,7 @@ public final class LinkedProgramRunner {
 
     private static void collectImportClosure(
             Path unit,
+            java.nio.file.attribute.BasicFileAttributes expectedIdentity,
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
             Map<String, Map<String, String>> importResolutions,
@@ -390,7 +399,7 @@ public final class LinkedProgramRunner {
         budget.checkCanAdmitUnit(depth);
 
         BoundedSourceReader.ReadResult source =
-                BoundedSourceReader.readPhysicalWithByteCount(normalized);
+                BoundedSourceReader.readPhysicalWithByteCount(normalized, expectedIdentity);
         budget.admit(source.byteCount(), depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, source.text());
         units.put(id, mixed);
@@ -424,7 +433,8 @@ public final class LinkedProgramRunner {
             }
 
             String raw = imported.path().replace('\\', '/');
-            java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
+            java.util.Optional<OresProjectConfig.ResolvedSource> target =
+                    projectConfig.resolveImportSource(normalized, imported.path());
             if (target.isEmpty()) {
                 if (raw.startsWith(".") || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
@@ -435,7 +445,8 @@ public final class LinkedProgramRunner {
                 continue;
             }
 
-            Path resolvedTarget = target.get().toAbsolutePath().normalize();
+            OresProjectConfig.ResolvedSource resolved = target.get();
+            Path resolvedTarget = resolved.path().toAbsolutePath().normalize();
             if (Files.isSameFile(normalized, resolvedTarget)) {
                 throw new IllegalArgumentException(
                         "source unit '" + id + "' cannot import itself via '" + imported.path() + "'");
@@ -443,8 +454,14 @@ public final class LinkedProgramRunner {
 
             String targetId = unitId(resolvedTarget);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
-                    budget, depth + 1);
+            collectImportClosure(
+                    resolvedTarget,
+                    resolved.attributes(),
+                    units,
+                    projectConfig,
+                    importResolutions,
+                    budget,
+                    depth + 1);
         }
     }
 
