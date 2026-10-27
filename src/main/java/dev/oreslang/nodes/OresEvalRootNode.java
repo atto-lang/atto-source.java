@@ -5056,6 +5056,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
+            if (implicit != null) {
+                evalSuspendableCall(task, implicit, env, continuation);
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -6933,7 +6938,25 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        // Reuse the explicit receiver invocation path. Only the invocation
+        // itself introduces the receiver; a bare method value is still illegal.
+        // Local callable bindings win over class members, and a class method
+        // family wins over same-named file/module callables.
+        private Ast.CallExpr implicitSelfMethodCall(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.NameExpr name)
+                    || env.lookup(name.name()) != Env.MISSING) return null;
+            Object receiver = env.lookup("self");
+            if (!(receiver instanceof OresObject object)
+                    || !object.owner.hasInstanceMethodNamed(
+                            object.klass, name.name(), new LinkedHashSet<>())) return null;
+            return call.rewrite(
+                    new Ast.MemberExpr(new Ast.NameExpr("self"), name.name()),
+                    call.typeArguments(), call.typeArgumentsPresent(), call.arguments());
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
+            if (implicit != null) return prepareInvocation(implicit, env);
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -8335,7 +8358,9 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
-                    return new BoundMethod(object, name, env == null ? null : env.accessClass());
+                    throw new IllegalArgumentException(
+                            "instance method '" + object.klass.name() + "." + name
+                                    + "' is direct-call-only; invoke it or use an explicit, checked lambda");
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
@@ -8733,15 +8758,6 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
-        private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
-            CallableSelector selector = CallableSelector.instance(name, args.size());
-            Ast.MethodDecl method = findMethod(receiver.klass, selector);
-            if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
-            if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
-            return methodInvocation(receiver, method, args);
-        }
-
         private Invocation prepareStaticValueInvocation(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.staticFunction(name, args.size());
             Ast.MethodDecl fn = findStaticFunction(klass, selector);
@@ -8794,18 +8810,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
-         * Go-style method value: method code remains shared in the class method
-         * table.  Extraction materializes only the receiver identity plus the
-         * statically known method-name family; callback arity selects the same
-         * closed-world CallableSelector slot used by direct calls.
-         *
-         * <p>Direct receiver.method(...) calls bypass this object entirely, so
-         * ordinary method invocation has no bound-method allocation.  An AOT
-         * backend may lower a non-escaping value to a register/stack "fat
-         * pointer" (receiver + resolved slot) instead of heap allocating it.
-         */
-        /**
-         * First-class static callable counterpart to BoundMethod.  No receiver
+         * First-class static class callable value.  No receiver
          * is captured; only the owning class and shared static slot family are
          * retained.  Invocation arity selects the closed-world static selector.
          */
@@ -8824,22 +8829,6 @@ public final class OresEvalRootNode extends RootNode {
 
             @Override public Object call(List<Object> arguments) {
                 return owner.invoke(owner.prepareStaticValueInvocation(klass, functionName, arguments, accessClass));
-            }
-        }
-
-        private static final class BoundMethod implements Invokable {
-            private final OresObject receiver;
-            private final String methodName;
-            private final Ast.ClassDecl accessClass;
-
-            private BoundMethod(OresObject receiver, String methodName, Ast.ClassDecl accessClass) {
-                this.receiver = receiver;
-                this.methodName = methodName;
-                this.accessClass = accessClass;
-            }
-
-            @Override public Object call(List<Object> arguments) {
-                return receiver.owner.invoke(receiver.owner.prepareBoundMethodInvocation(receiver, methodName, arguments, accessClass));
             }
         }
 
