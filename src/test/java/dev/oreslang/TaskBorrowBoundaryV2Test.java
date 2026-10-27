@@ -102,6 +102,27 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void castsCannotLaunderBorrowLifetimeIntoOwnedOrOptionalValues() {
+        rejectsWith("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val loan = rt borrow owner;
+                  val same = loan as Box;
+                  return;
+                }
+                """, "borrowed references", "cast", "loan");
+
+        rejectsWith("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val loan = rt borrow owner;
+                  val maybe = loan as? Box;
+                  return;
+                }
+                """, "borrowed references", "cast", "loan");
+    }
+
+    @Test
     void futurePayloadTypesCannotHideLexicalBorrows() {
         rejectsWith("""
                 pub fnc bad(borrow Box view): Future<borrow Box> {
