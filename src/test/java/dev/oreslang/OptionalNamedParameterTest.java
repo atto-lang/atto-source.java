@@ -527,6 +527,42 @@ final class OptionalNamedParameterTest {
     }
 
     @Test
+    void optionAliasOmissionRequiresExplicitCheckedNoneDefault() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type MaybeInt = Option<int>;
+
+                        fnc absent(MaybeInt value?): bool {
+                            return value.is_none();
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("DefaultArgVals")
+                        || failure.getMessage().contains("implicit None"),
+                failure.getMessage());
+    }
+
+    @Test
+    void optionAliasMayOmitWithExplicitNoneDefault() throws Exception {
+        String code = """
+                type MaybeInt = Option<int>;
+
+                @DefaultArgVals(value: None)
+                fnc absent(MaybeInt value?): bool {
+                    return value.is_none();
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(absent());
+                    return;
+                }
+                """;
+
+        assertEquals("true", checkedExecution(code));
+    }
+
+    @Test
     void omittableMethodAndConstructorSurfacesRemainFailClosed() {
         IllegalArgumentException method = assertThrows(
                 IllegalArgumentException.class,
