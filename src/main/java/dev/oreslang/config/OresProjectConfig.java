@@ -463,10 +463,10 @@ public final class OresProjectConfig {
             }
 
             Path legacy = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(legacy)) {
+            if (Files.exists(legacy, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException(
-                        "project-root import requires nearest package authority to use "
-                                + PACKAGE_MANIFEST_NAME + ": " + importPath);
+                        "project-root import is blocked by nearer legacy package authority at '"
+                                + cursor + "': " + importPath);
             }
         }
 
@@ -788,16 +788,22 @@ public final class OresProjectConfig {
                                 + "' escapes the physical package root: " + candidate);
             }
 
+            boolean existingDirectory =
+                    Files.isDirectory(physicalExisting, LinkOption.NOFOLLOW_LINKS);
             if (existing.equals(candidate)
                     && requireDirectoryWhenPresent
-                    && !Files.isDirectory(physicalExisting, LinkOption.NOFOLLOW_LINKS)) {
+                    && !existingDirectory) {
                 throw new IllegalArgumentException(
                         PACKAGE_MANIFEST_NAME + " key '" + key
                                 + "' must resolve to a directory when present: " + candidate);
             }
+            if (!existing.equals(candidate) && !existingDirectory) {
+                throw new IllegalArgumentException(
+                        PACKAGE_MANIFEST_NAME + " key '" + key
+                                + "' is blocked by a non-directory ancestor: " + existing);
+            }
 
-            Path boundaryCursor = Files.isDirectory(
-                            physicalExisting, LinkOption.NOFOLLOW_LINKS)
+            Path boundaryCursor = existingDirectory
                     ? physicalExisting
                     : physicalExisting.getParent();
             for (Path cursor = boundaryCursor;
