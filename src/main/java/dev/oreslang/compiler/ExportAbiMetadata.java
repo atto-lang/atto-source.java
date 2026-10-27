@@ -220,6 +220,7 @@ public final class ExportAbiMetadata {
             };
         }
         if (declaration instanceof Ast.TypeAliasDecl) return Ast.ExportKind.TYPE;
+        if (declaration instanceof Ast.SymbolDecl) return Ast.ExportKind.SYMBOL;
         if (declaration instanceof Ast.FieldDecl field) {
             return switch (field.bindingKind()) {
                 case CONST -> Ast.ExportKind.CONST;
@@ -235,6 +236,7 @@ public final class ExportAbiMetadata {
         if (declaration instanceof Ast.ClassDecl cls) return cls.name();
         if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
         if (declaration instanceof Ast.TypeAliasDecl alias) return alias.name();
+        if (declaration instanceof Ast.SymbolDecl symbol) return symbol.name();
         if (declaration instanceof Ast.FieldDecl field) return field.name();
         throw new IllegalArgumentException("unsupported export declaration " + declaration.getClass().getName());
     }

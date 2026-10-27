@@ -347,6 +347,7 @@ public final class TypeChecker {
                 }
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
+                else if (declaration instanceof Ast.SymbolDecl symbol) localNames.add(symbol.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     if (alias.name().equals("HttpResponse")) {
                         throw new IllegalArgumentException(
@@ -510,7 +511,15 @@ public final class TypeChecker {
 
     private void validateModuleValueNamespace(Ast.ModuleDecl module) {
         Map<String, String> categories = new LinkedHashMap<>();
+        Set<String> symbolIdentities = new LinkedHashSet<>();
         for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.SymbolDecl symbol) {
+                if (!symbolIdentities.add(symbol.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate Symbol declaration '" + module.name() + "." + symbol.name() + "'");
+                }
+                continue;
+            }
             String name;
             String category;
             if (decl instanceof Ast.FunctionDecl fn) {

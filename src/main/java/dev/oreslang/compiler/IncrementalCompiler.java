@@ -445,6 +445,11 @@ public final class IncrementalCompiler {
             memberEntries.stream().sorted().forEach(abi::append);
             return;
         }
+        if (decl instanceof Ast.SymbolDecl symbol) {
+            if (symbol.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append("pub symbol ").append(symbol.name()).append('\n');
+            return;
+        }
         if (decl instanceof Ast.TypeAliasDecl alias) {
             if (alias.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append("pub type ").append(alias.name());

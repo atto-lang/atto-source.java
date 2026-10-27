@@ -1078,7 +1078,7 @@ public final class TreeShaker {
                             if (export.kind() == Ast.ExportKind.MODULE
                                     && module.name().equals(Parser.ROOT_MODULE)) {
                                 markRuntimeModuleMembers(item.localName());
-                            } else if (!item.symbol()) {
+                            } else {
                                 markRoot(qualify(module.name(), item.localName()));
                             }
                         }
@@ -1109,6 +1109,9 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 return klass.visibility() == Ast.Visibility.PUBLIC;
             }
+            if (declaration instanceof Ast.SymbolDecl symbol) {
+                return symbol.visibility() == Ast.Visibility.PUBLIC;
+            }
             return declaration instanceof Ast.TypeAliasDecl alias
                     && alias.visibility() == Ast.Visibility.PUBLIC;
         }
@@ -1131,7 +1134,9 @@ public final class TreeShaker {
                             || declaration instanceof Ast.FunctionDecl fn
                                     && fn.visibility() == Ast.Visibility.PUBLIC
                             || declaration instanceof Ast.FieldDecl field
-                                    && field.visibility() == Ast.Visibility.PUBLIC;
+                                    && field.visibility() == Ast.Visibility.PUBLIC
+                            || declaration instanceof Ast.SymbolDecl symbol
+                                    && symbol.visibility() == Ast.Visibility.PUBLIC;
                     if (!exposed) continue;
                     String name = declarationName(declaration);
                     if (name != null) mark(qualify(module.name(), name));
@@ -1611,6 +1616,7 @@ public final class TreeShaker {
             if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
             if (declaration instanceof Ast.FieldDecl field) return field.name();
             if (declaration instanceof Ast.TypeAliasDecl alias) return alias.name();
+            if (declaration instanceof Ast.SymbolDecl symbol) return symbol.name();
             return null;
         }
 
