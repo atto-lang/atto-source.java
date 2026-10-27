@@ -208,6 +208,9 @@ final class MixedSourceInteropTest {
                             || ((Number) aliased).longValue() != 4L) {
                       throw new AssertionError("explicit export alias was not linked");
                     }
+                    if (Ores.aliased(4L) != 5) {
+                      throw new AssertionError("typed facade did not project export alias");
+                    }
                     boolean localNameBlocked = false;
                     try {
                       Ores.call("private_impl", 3L);
