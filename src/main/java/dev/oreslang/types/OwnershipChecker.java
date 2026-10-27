@@ -757,7 +757,12 @@ public final class OwnershipChecker {
                 // Ownership must follow the actual event's source type, not
                 // the user's annotation. TypeChecker validates assignability,
                 // but an ownership-only pass must not let a forged/widened
-                // bindingType erase borrow, MutexGuard, or move-only semantics.
+                // bindingType erase borrow, MutexGuard, move-only, or inverted
+                // storage semantics.
+                if (arm.operation() != Ast.ChannelOperation.AWAIT
+                        && containsInvertedArrayStorage(element)) {
+                    throw error("select channel cannot carry InvertedArray storage across a transport boundary");
+                }
                 // Treat the annotation as a naming/typechecking constraint;
                 // never as proof that the source value is copyable.
                 elementTypes.add(element);
@@ -1604,6 +1609,9 @@ public final class OwnershipChecker {
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
             Ast.TypeRef element = channelElementType(channel.type);
+            if (containsInvertedArrayStorage(element)) {
+                throw error("channel cannot carry InvertedArray storage across a transport boundary");
+            }
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
                 // Channel enqueue/registration takes ownership of move-only payloads.
@@ -1612,6 +1620,9 @@ public final class OwnershipChecker {
                 ValueInfo payload = checkExpr(channelOp.value(), scope, true);
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
+                }
+                if (containsInvertedArrayStorage(payload.type)) {
+                    throw error("writech cannot transport InvertedArray storage across a channel boundary");
                 }
                 if (isBorrowValue(payload)) {
                     throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
@@ -4399,6 +4410,8 @@ public final class OwnershipChecker {
     private Ast.TypeRef channelElementType(Ast.TypeRef type) {
         if (type == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        concrete = expandInvertedReceiverAliases(concrete);
+        if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
         if (concrete.name().equals("Channel") && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
