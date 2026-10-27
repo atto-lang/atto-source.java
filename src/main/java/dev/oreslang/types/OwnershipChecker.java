@@ -342,6 +342,22 @@ public final class OwnershipChecker {
         }
     }
 
+    private VarState stateForLambdaParam(Ast.Param param) {
+        VarState ordinary = stateForParam(param);
+        if (param.type().isBorrow() || param.structural() || isCopyType(param.type())) {
+            return ordinary;
+        }
+        if (param.mutable()) {
+            throw error("first-class Fnc non-copy parameters are temporary read borrows; "
+                    + "mutable/owning lambda parameters require an explicit consuming callable contract");
+        }
+        return new VarState(
+                param.type(),
+                false,
+                ValueKind.IMM_BORROW,
+                Origin.PARAM);
+    }
+
     private void defineImplicitArguments(Scope scope, List<Ast.Param> parameters) {
         List<Ast.TypeRef> elementTypes = parameters.stream().map(Ast.Param::type).toList();
         Ast.TypeRef tupleType = Ast.TypeRef.tupleType(elementTypes);
@@ -501,6 +517,11 @@ public final class OwnershipChecker {
                 throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
             }
             ValueInfo value = checkExpr(yielded.value(), scope, true);
+            if (isBorrowValue(value)) {
+                throw error(yielded.delegated()
+                        ? "borrowed values cannot cross a yield* delegation boundary"
+                        : "borrowed values cannot be yielded from a suspended generator frame");
+            }
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
@@ -1234,6 +1255,25 @@ public final class OwnershipChecker {
 
             mergeBranchState(base, List.of(leftExit, rightExit));
             Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
+            boolean leftBorrow = isBorrowValue(left);
+            boolean rightBorrow = isBorrowValue(right);
+            if (leftBorrow || rightBorrow) {
+                if (!leftBorrow || !rightBorrow) {
+                    throw error("conditional expression cannot merge borrowed and owned values; "
+                            + "materialize owned data or keep both branches within one lexical loan");
+                }
+                VarState leftSource = left.borrowSource == null
+                        ? null : ownershipRoot(left.borrowSource);
+                VarState rightSource = right.borrowSource == null
+                        ? null : ownershipRoot(right.borrowSource);
+                if (leftSource == null || rightSource == null || leftSource != rightSource) {
+                    throw error("conditional expression cannot merge borrowed values with ambiguous lifetime provenance");
+                }
+                ValueKind joinedKind = joinedType.isBorrow()
+                        ? kindOfType(joinedType)
+                        : ValueKind.MOVE_ONLY;
+                return new ValueInfo(joinedType, joinedKind, leftSource);
+            }
             return new ValueInfo(
                     joinedType,
                     left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
@@ -1425,6 +1465,9 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            if (isBorrowValue(awaitedValue)) {
+                throw error("cannot await a borrowed Future/value; suspension requires an owned Future handle");
+            }
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -2948,7 +2991,9 @@ public final class OwnershipChecker {
             }
         }
 
-        for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
+        for (Ast.Param param : lambda.parameters()) {
+            closure.define(param.name(), stateForLambdaParam(param));
+        }
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;

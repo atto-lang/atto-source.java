@@ -183,6 +183,66 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void conditionalBorrowedSelfResultCannotLoseProvenance() {
+        rejectsWith("""
+                define class FluentBox as
+                  pub val int value = 7;
+
+                  pub same(): self {
+                    return self;
+                  }
+                end
+
+                fnc bad(borrow FluentBox box, bool flag): FluentBox {
+                  return flag ? box.same() : box.same();
+                }
+                """, "owned return type", "borrow");
+
+        rejectsWith("""
+                define class FluentBox as
+                  pub val int value = 7;
+
+                  pub same(): self {
+                    return self;
+                  }
+                end
+
+                fnc bad(borrow FluentBox left, borrow FluentBox right, bool flag): void {
+                  val FluentBox chosen = flag ? left.same() : right.same();
+                  return;
+                }
+                """, "ambiguous lifetime provenance", "conditional expression");
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BOX + """
+                define class FluentBox as
+                  pub val int value = 7;
+
+                  pub same(): self {
+                    return self;
+                  }
+                end
+
+                fnc ok(borrow FluentBox box, bool flag): int {
+                  return (flag ? box.same() : box.same()).value;
+                }
+                """));
+    }
+
+    @Test
+    void awaitCannotCreateFreshBorrowAtSuspensionExpression() {
+        rejectsWith("""
+                async fnc later(): int {
+                  return 42;
+                }
+
+                async fnc bad(): int {
+                  let Future<int> pending = later();
+                  return await (rt borrow pending);
+                }
+                """, "cannot await a borrowed", "borrow", "future");
+    }
+
+    @Test
     void ordinaryImmutableBorrowCannotEscapeIntoEagerTask() {
         rejectsWith("""
                 pub async fnc main(): void {

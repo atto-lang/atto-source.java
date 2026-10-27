@@ -34,6 +34,49 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void firstClassFncCannotStealOrMutateMoveOnlyCallBorrow() {
+        IllegalArgumentException returned = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        fnc bad(): void {
+                          val Fnc<Box, Box> steal = |Box value| -> {
+                            return value;
+                          };
+                          let Box owner = new Box();
+                          val Box stolen = steal(owner);
+                          stdio.println(owner.value);
+                          return;
+                        }
+                        """)));
+        assertTrue(returned.getMessage().contains("borrow")
+                || returned.getMessage().contains("owned return type"),
+                returned::getMessage);
+
+        IllegalArgumentException mutated = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        fnc bad(): void {
+                          val Fnc<Box, void> mutate = |Box mut value| -> {
+                            value.value = 9;
+                            return;
+                          };
+                          return;
+                        }
+                        """)));
+        assertTrue(mutated.getMessage().contains("temporary read borrows")
+                || mutated.getMessage().contains("mutable"),
+                mutated::getMessage);
+    }
+
+    @Test
     void storedRtBorrowBlocksMutationUntilItsScopeEnds() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
