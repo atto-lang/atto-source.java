@@ -2240,31 +2240,23 @@ class PrivateCiV3Test(unittest.TestCase):
             digest, hashlib.sha256(v3.canonical_bytes(rows)).hexdigest()
         )
 
-    def test_checked_in_contract_pins_pr616_private_carrier_exactly(self):
+    def test_checked_in_contract_excludes_quarantined_incident_carrier(self):
         path = SCRIPT.parent.parent / ".github" / "private-ci-carrier-contracts.json"
         doc = json.loads(path.read_text())
-        carrier = doc["carriers"][
-            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
-        ]
-        self.assertEqual(carrier["repository_id"], 1412142815)
+        carriers = doc["carriers"]
+        self.assertNotIn(
+            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+            carriers,
+        )
+        carrier = carriers["opto-sync-test/go-java-validation"]
+        self.assertEqual(carrier["repository_id"], 1323598177)
         self.assertEqual(
             carrier["base_sha"],
-            "90ab94fc768be6b2acae313b5537f642f63321cf",
-        )
-        self.assertEqual(
-            carrier["workflow_path"],
-            ".github/workflows/private-oreslang-exact-tree.yml",
+            "f8e9f99f6c1be2a20350fe65d1a553e342fe4266",
         )
         self.assertEqual(
             carrier["workflow_blob_sha"],
-            "3107feea0215ae9874ff35a2249c69ab6b9e7ffe",
-        )
-        self.assertEqual(
-            carrier["test_plans"]["ci/test-plans/java-pr616.json"],
-            {
-                "blob_sha": "4728c2ecb583a809f6978db7a0235cef771a89f7",
-                "allowed_prs": [616],
-            },
+            "a071ba75b75b3a6c784a3e0e9c6e1817a111f139",
         )
 
 
