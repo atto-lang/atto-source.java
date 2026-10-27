@@ -539,20 +539,54 @@ final class InvertedArrayLanguageTest {
         }
     }
 
+
+    @Test
+    void genericEvaluatorIndexDispatchNeverExposesHostRowProjection()
+            throws ReflectiveOperationException {
+        Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.IndexExpr bareIndex = (Ast.IndexExpr) returnedMember(typed).receiver();
+        Ast.ClassDecl checkedRow = typed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+        try (InvertedArray array = InvertedArray.fromClass(checkedRow, 0)) {
+            var row = array.pushValues(1.5, 2.5, true);
+
+            java.lang.reflect.InvocationTargetException read = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> evaluateCheckedInvertedField(typed, bareIndex, array));
+            IllegalStateException readFailure = assertInstanceOf(
+                    IllegalStateException.class, read.getCause());
+            assertTrue(readFailure.getMessage().contains(
+                    "InvertedArray indexing requires an admitted"));
+
+            java.lang.reflect.InvocationTargetException write = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> assignCheckedInvertedField(typed, bareIndex, array, 9.25));
+            IllegalStateException writeFailure = assertInstanceOf(
+                    IllegalStateException.class, write.getCause());
+            assertTrue(writeFailure.getMessage().contains(
+                    "InvertedArray indexed writes require an admitted"));
+
+            assertEquals(1.5, array.read(row, "x"));
+            assertEquals(1, array.size());
+        }
+    }
+
     private static Object assignCheckedInvertedField(
-            Ast.Program typed, Ast.MemberExpr site, InvertedArray array, Object value)
+            Ast.Program typed, Ast.Expr site, InvertedArray array, Object value)
             throws ReflectiveOperationException {
         return executeCheckedInvertedField(typed, site, array, value, true);
     }
 
     private static Object evaluateCheckedInvertedField(
-            Ast.Program typed, Ast.MemberExpr site, InvertedArray array)
+            Ast.Program typed, Ast.Expr site, InvertedArray array)
             throws ReflectiveOperationException {
         return executeCheckedInvertedField(typed, site, array, null, false);
     }
 
     private static Object executeCheckedInvertedField(
-            Ast.Program typed, Ast.MemberExpr site, InvertedArray array,
+            Ast.Program typed, Ast.Expr site, InvertedArray array,
             Object value, boolean writing)
             throws ReflectiveOperationException {
         Class<?> evaluatorClass = Class.forName(
