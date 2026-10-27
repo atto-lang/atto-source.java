@@ -113,6 +113,25 @@ unset MOCK_EXTRA_LINE
 export MOCK_EXTRA_LINE=$'\r'
 expect_fail trusted/ci
 unset MOCK_EXTRA_LINE
+# Deterministic 120-case metadata mutation matrix (20 per distinct field).
+# Tests the actual Bash/JQ output parsing; does not authorize export.
+printf 'trusted/ci 246810\n' > "$policy"
+for mutation in $(seq 1 120); do
+  case $((mutation % 6)) in
+    0) export MOCK_NAME="trusted/ci${mutation}" ;;
+    1) export MOCK_REPOSITORY_ID="$((246810 + mutation))" ;;
+    2) export MOCK_VISIBILITY="private${mutation}" ;;
+    3) export MOCK_PRIVATE_FLAG="true${mutation}" ;;
+    4) export MOCK_FORK="invalid${mutation}" ;;
+    5) export MOCK_EXTRA_LINE=$'\t'"${mutation}" ;;
+  esac
+  expect_fail trusted/ci
+  if (( mutation % 10 == 0 )); then
+    expect_wrapper_reject trusted/ci
+  fi
+  unset MOCK_NAME MOCK_REPOSITORY_ID MOCK_VISIBILITY MOCK_PRIVATE_FLAG
+  unset MOCK_FORK MOCK_EXTRA_LINE
+done
 printf 'other/repo 246810\n' > "$policy"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
