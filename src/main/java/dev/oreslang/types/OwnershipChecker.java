@@ -2337,8 +2337,10 @@ public final class OwnershipChecker {
         // (&Option<Box>).unwrap() could duplicate the borrowed Box owner.
         // Read-only queries and extraction from a wholly copyable sum remain
         // valid, since neither transfers any owned state.
-        if (receiverType != null && receiverType.isBorrow()) {
-            Ast.TypeRef target = receiverType.borrowedTarget();
+        if (receiverType != null && isBorrowValue(receiver)) {
+            Ast.TypeRef target = receiverType.isBorrow()
+                    ? receiverType.borrowedTarget()
+                    : receiverType;
             if (member.member().equals("flatten")
                     && target.name().equals("Future")
                     && target.arguments().size() == 1) {

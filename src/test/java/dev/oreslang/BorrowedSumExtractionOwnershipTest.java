@@ -61,6 +61,17 @@ final class BorrowedSumExtractionOwnershipTest {
     }
 
     @Test
+    void destructuredBorrowedSumKeepsAffineLoanProvenance() {
+        reject(BOX + """
+                fnc bad(borrow [Option<Box>, int] pair): Box {
+                  const [owner, marker] = pair;
+                  stdio.println(marker);
+                  return owner.unwrap();
+                }
+                """, "affine Option/Result through a borrow");
+    }
+
+    @Test
     void borrowedResultCanPerformReadOnlyQuery() {
         accept(BOX + """
                 fnc query(borrow Result<Box, String> owner): bool {
