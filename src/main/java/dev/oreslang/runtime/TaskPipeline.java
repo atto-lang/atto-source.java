@@ -356,9 +356,12 @@ public final class TaskPipeline {
                         }
                         try {
                             armPipelineAwait(exposedRef.get(), child);
-                        } catch (RuntimeException failure) {
+                        } catch (RuntimeException | Error admissionFailure) {
+                            // If graph admission fails catastrophically, the
+                            // just-created owned child must not escape without
+                            // its cancellation authority being retired.
                             if (ownedStage.compareAndSet(child, null)) child.cancel(false);
-                            throw failure;
+                            throw admissionFailure;
                         }
                         awaited = child;
                         return OresScheduler.await(child);
