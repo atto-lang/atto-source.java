@@ -604,9 +604,20 @@ A local alias can also refer to an exact struct shape:
 ```ores
 pub fnc make_struct(): T {
     type T = struct { foo: int };
-    return struct { foo: int } { foo: 5 };
+    return T{5};
+}
+
+pub fnc make_larger_struct(): T {
+    type T = struct { foo: int, label: string };
+    return T{ label: "hello", foo: 5 };
 }
 ```
+
+A local exact struct alias may be constructed with `T{5}` when the
+shape has exactly one field, or with `T{ field: value, ... }` for larger
+shapes. The constructor lowers to the existing checked explicit-struct
+initializer. Multi-field positional initialization is deliberately forbidden
+because the canonical type representation does not preserve source field order.
 
 The parser substitutes the appropriate closed aggregate type throughout later
 type positions in the callable and its return signature. Public callers see
