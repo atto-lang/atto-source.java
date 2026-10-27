@@ -5121,17 +5121,25 @@ public final class OresEvalRootNode extends RootNode {
                             // expressions. The latter may have observable
                             // side effects even though the call itself is
                             // inadmissible inside a no-yield region.
-                            if (env.hasLiveMutexGuards()
-                                    && receiver instanceof OresObject object) {
-                                Ast.MethodDecl selected =
-                                        object.owner.findMethod(
-                                                object.klass,
-                                                CallableSelector.instance(
-                                                        member.member(),
-                                                        call.arguments().size()));
-                                if (selected != null
+                            if (env.hasLiveMutexGuards()) {
+                                Ast.MethodDecl selected = null;
+                                Evaluator selectedOwner = null;
+                                if (receiver instanceof OresObject object) {
+                                    selectedOwner = object.owner;
+                                    selected = object.owner.findMethod(
+                                            object.klass,
+                                            CallableSelector.instance(
+                                                    member.member(), call.arguments().size()));
+                                } else if (receiver instanceof ClassFacade klass) {
+                                    selectedOwner = klass.owner();
+                                    selected = klass.owner().findStaticFunction(
+                                            klass.klass(),
+                                            CallableSelector.staticFunction(
+                                                    member.member(), call.arguments().size()));
+                                }
+                                if (selected != null && selectedOwner != null
                                         && (selected.async()
-                                                || object.owner.methodContainsPotentialSuspension(selected))) {
+                                                || selectedOwner.methodContainsPotentialSuspension(selected))) {
                                     continuation.accept(
                                             t, null,
                                             new IllegalStateException(
