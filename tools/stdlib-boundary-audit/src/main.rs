@@ -143,40 +143,42 @@ fn dotted_name(tokens: &[Token], start: usize, parts: &[&str]) -> bool {
 }
 
 const FORBIDDEN_BLOCKING_IO: &[&[&str]] = &[
-    &["stdio", "print"],
-    &["stdio", "println"],
-    &["stdio", "stdout", "write"],
-    &["stdio", "stdout", "println"],
-    &["stdio", "stdout", "log"],
-    &["stdio", "stdout", "logList"],
-    &["stdio", "stdin", "read_line"],
-    &["fs", "read_text"],
-    &["fs", "write_text"],
-    &["fs", "write_text_atomic"],
-    &["fs", "append_text"],
-    &["fs", "list_dir"],
-    &["fs", "is_dir"],
-    &["fs", "is_symlink"],
-    &["fs", "exists"],
-    &["fs", "remove"],
-    &["fs", "mkdir_all"],
-    &["File", "read_text"],
-    &["File", "write_text"],
-    &["File", "write_text_atomic"],
-    &["File", "append_text"],
-    &["File", "list_dir"],
-    &["File", "is_dir"],
-    &["File", "is_symlink"],
-    &["File", "exists"],
-    &["File", "remove"],
-    &["File", "mkdir_all"],
-    &["network", "connect"],
-    &["net", "connect"],
-    &["http", "listen"],
+    // Canonical guest names are async-default. Reject only legacy suffixes and
+    // explicitly blocking spellings at the native Oreslang stdlib boundary.
+    &["stdio", "print_async"],
+    &["stdio", "println_async"],
+    &["stdio", "stdout", "write_async"],
+    &["stdio", "stdout", "println_async"],
+    &["stdio", "stdout", "log_async"],
+    &["stdio", "stdout", "log_list_async"],
+    &["stdio", "stdin", "read_line_async"],
+    &["fs", "read_text_async"],
+    &["fs", "write_text_async"],
+    &["fs", "append_text_async"],
+    &["fs", "exists_async"],
+    &["fs", "remove_async"],
+    &["fs", "mkdir_all_async"],
+    &["network", "connect_async"],
+    &["net", "connect_async"],
+    &["http", "listen_async"],
+    &["http", "get_text_async"],
+    &["http", "post_text_async"],
+    &["fs", "read_text_sync"],
+    &["fs", "read_text_blocking"],
+    &["fs", "write_text_sync"],
+    &["fs", "write_text_blocking"],
+    &["network", "connect_sync"],
+    &["network", "connect_blocking"],
+    &["net", "connect_sync"],
+    &["net", "connect_blocking"],
+    &["http", "get_text_sync"],
+    &["http", "get_text_blocking"],
+    &["http", "post_text_sync"],
+    &["http", "post_text_blocking"],
+    // These legacy transport controls remain unavailable until their async
+    // capability/lifetime model is specified.
     &["http", "handler"],
     &["http", "claim"],
-    &["http", "get_text"],
-    &["http", "post_text"],
 ];
 
 
@@ -218,26 +220,25 @@ const EVAL_FORBIDDEN_CODE: &[&str] = &[
 ];
 
 const TYPECHECKER_FORBIDDEN_SURFACE: &[&str] = &[
-    "\"read_text\"",
-    "\"write_text\"",
-    "\"write_text_atomic\"",
-    "\"append_text\"",
-    "\"list_dir\"",
-    "\"is_dir\"",
-    "\"is_symlink\"",
-    "\"exists\"",
-    "\"remove\"",
-    "\"mkdir_all\"",
-    "\"listen\"",
-    "\"get_text\"",
-    "\"post_text\"",
-    "member().equals(\"print\")",
-    "member().equals(\"println\")",
-    "member().equals(\"read_line\")",
-    "member().equals(\"write\")",
-    "member().equals(\"log\")",
-    "member().equals(\"logList\")",
-    "name.name().equals(\"print\")",
+    "\"read_text_async\"",
+    "\"write_text_async\"",
+    "\"append_text_async\"",
+    "\"exists_async\"",
+    "\"remove_async\"",
+    "\"mkdir_all_async\"",
+    "\"connect_async\"",
+    "\"read_line_async\"",
+    "\"close_async\"",
+    "\"listen_async\"",
+    "\"get_text_async\"",
+    "\"post_text_async\"",
+    "\"write_async\"",
+    "\"print_async\"",
+    "\"println_async\"",
+    "\"log_async\"",
+    "\"log_list_async\"",
+    "\"read_text_sync\"",
+    "\"read_text_blocking\"",
 ];
 
 fn contains_java_unicode_escape(source: &str) -> bool {
@@ -570,40 +571,34 @@ mod tests {
         assert!(inspect("let s = 'π';").is_ok());
     }
     #[test]
-    fn rejects_sync_stdio_write() {
-        assert!(inspect("fnc f(): void { stdio.stdout.write(\"x\"); }").is_err());
+    fn canonical_async_default_io_names_are_admitted_by_source_gate() {
+        assert!(inspect("fnc f(): void { fs.read_text(\"x\"); stdio.stdout.write(\"x\"); net.connect(\"x\", 80); }").is_ok());
     }
     #[test]
-    fn rejects_sync_filesystem_read() {
-        assert!(inspect("fnc f(): void { fs.read_text(\"x\"); }").is_err());
+    fn rejects_legacy_async_suffixes() {
+        assert!(inspect("fnc f(): void { fs.read_text_async(\"x\"); }").is_err());
+        assert!(inspect("fnc f(): void { stdio.stdout.write_async(\"x\"); }").is_err());
+        assert!(inspect("fnc f(): void { net.connect_async(\"x\", 80); }").is_err());
     }
     #[test]
-    fn rejects_sync_network_connect_alias() {
-        assert!(inspect("fnc f(): void { net.connect(\"x\", 80); }").is_err());
+    fn rejects_explicit_sync_and_blocking_suffixes() {
+        assert!(inspect("fnc f(): void { fs.read_text_sync(\"x\"); }").is_err());
+        assert!(inspect("fnc f(): void { fs.read_text_blocking(\"x\"); }").is_err());
+        assert!(inspect("fnc f(): void { network.connect_blocking(\"x\", 80); }").is_err());
     }
     #[test]
     fn rejects_legacy_http_transport_controls() {
         assert!(inspect("fnc f(): void { http.handler(\"H\"); }").is_err());
         assert!(inspect("fnc f(): void { http.claim(\"token\"); }").is_err());
     }
-    #[test]
-    fn accepts_async_io_names() {
-        assert!(inspect(
-            "fnc f(): void { fs.read_text_async(\"x\"); stdio.stdout.write_async(\"x\"); }"
-        )
-        .is_ok());
-    }
-    #[test]
-    fn accepts_logically_blocking_name_only_when_canonical_suffix_is_explicit() {
-        assert!(inspect("fnc f(): void { fs.read_text_blocking(\"x\"); }").is_ok());
-    }
+
     #[test]
     fn java_normalizer_ignores_comments_and_literals_for_code_edges() {
         let source = r#"
             // context.nativeIo().submit(
             String sample = "context.http()";
             /* NativeIo.readText( */
-            strictNonblockingIoFuture("fs.read_text_async");
+            strictNonblockingIoFuture("fs.read_text");
         "#;
         let normalized = normalize_java(source, true).unwrap();
         assert!(!EVAL_FORBIDDEN_CODE.iter().any(|needle| normalized.contains(*needle)));
@@ -634,19 +629,19 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn typechecker_surface_guard_distinguishes_async_names() {
-        let async_only = r#"case "read_text_async" -> future;"#;
+    fn typechecker_surface_guard_requires_canonical_async_default_names() {
+        let canonical = r#"case "read_text" -> future;"#;
         assert!(reject_needles(
             Path::new("TypeChecker.java"),
-            async_only,
+            canonical,
             TYPECHECKER_FORBIDDEN_SURFACE,
             false
         )
         .is_ok());
-        let sync = r#"case "read_text" -> string;"#;
+        let legacy = r#"case "read_text_async" -> future;"#;
         assert!(reject_needles(
             Path::new("TypeChecker.java"),
-            sync,
+            legacy,
             TYPECHECKER_FORBIDDEN_SURFACE,
             false
         )
