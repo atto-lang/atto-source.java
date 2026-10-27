@@ -1594,28 +1594,6 @@ public final class OwnershipChecker {
             return new ValueInfo(mutexType, factory.name().equals("SharedMutex") ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
 
-        if (call.callee() instanceof Ast.NameExpr name
-                && (name.name().equals("Some") || name.name().equals("Ok") || name.name().equals("Err"))) {
-            if (call.arguments().size() != 1) {
-                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
-            }
-            ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
-            if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
-                    || (payload.type != null && payload.type.isBorrow())) {
-                throw error(name.name()
-                        + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
-            }
-            if (name.name().equals("Some")) {
-                Ast.TypeRef type = new Ast.TypeRef("Option", List.of(payload.type), false);
-                return new ValueInfo(type, kindOfType(type), null);
-            }
-            Ast.TypeRef unknown = Ast.TypeRef.inferred();
-            Ast.TypeRef type = name.name().equals("Ok")
-                    ? new Ast.TypeRef("Result", List.of(payload.type, unknown), false)
-                    : new Ast.TypeRef("Result", List.of(unknown, payload.type), false);
-            return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
-        }
-
         // Match type checking: unqualified class/actor method *calls* borrow
         // the lexical receiver, but names used as values never bind self.
         // Re-run the ordinary explicit receiver ownership path, including
@@ -1637,6 +1615,28 @@ public final class OwnershipChecker {
                             scope);
                 }
             }
+        }
+
+        if (call.callee() instanceof Ast.NameExpr name
+                && (name.name().equals("Some") || name.name().equals("Ok") || name.name().equals("Err"))) {
+            if (call.arguments().size() != 1) {
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            }
+            ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
+            if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
+                    || (payload.type != null && payload.type.isBorrow())) {
+                throw error(name.name()
+                        + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
+            }
+            if (name.name().equals("Some")) {
+                Ast.TypeRef type = new Ast.TypeRef("Option", List.of(payload.type), false);
+                return new ValueInfo(type, kindOfType(type), null);
+            }
+            Ast.TypeRef unknown = Ast.TypeRef.inferred();
+            Ast.TypeRef type = name.name().equals("Ok")
+                    ? new Ast.TypeRef("Result", List.of(payload.type, unknown), false)
+                    : new Ast.TypeRef("Result", List.of(unknown, payload.type), false);
+            return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
 
         if (call.callee() instanceof Ast.NameExpr name
