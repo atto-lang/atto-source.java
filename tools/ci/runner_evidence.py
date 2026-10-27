@@ -19,6 +19,7 @@ from pathlib import Path
 OWNER = "ores-truffle-oreslang"
 BACKENDS = ("java", "llvm", "net", "wasm", "forge")
 HOUSEKEEPING = {"set up job", "complete job"}
+EXECUTED_CONCLUSIONS = {"success", "failure", "timed_out"}
 API = "https://api.github.com"
 SHA40 = re.compile(r"[a-fA-F0-9]{40}")
 
@@ -30,7 +31,8 @@ def meaningful(step):
         and low not in HOUSEKEEPING
         and not low.startswith("post ")
         and step.get("status") == "completed"
-        and step.get("conclusion") is not None
+        # Skipped/neutral steps cannot establish that code actually ran.
+        and step.get("conclusion") in EXECUTED_CONCLUSIONS
     )
 
 def runner_allocated(job):
@@ -51,17 +53,17 @@ def qualified(job):
     )
 
 def classify(job):
-    """Conservative evidence classification; never implies backend parity."""
+    """Step-name hints, not semantic results or proof of backend parity."""
+    # Job names are declarations of intent, not proof those steps executed.
     text = " ".join(
-        [str(job.get("name") or "")]
-        + [str(s.get("name") or "") for s in (job.get("steps") or []) if meaningful(s)]
+        str(s.get("name") or "") for s in (job.get("steps") or []) if meaningful(s)
     ).lower()
     labels = []
     if any(x in text for x in ("native image", "native-image", "nativeaot", "native aot", " aot", "aot ")):
         labels.append("aot")
     if any(x in text for x in ("runtime", "execute", "execution", "run guest", "guest run")):
         labels.append("runtime")
-    if any(x in text for x in ("compiler", "compile ores", "compile guest", "source compile")):
+    if any(x in text for x in ("compiler", "compile ores", "compile guest", "source compile")) or re.search(r"\bcompile\b", text):
         labels.append("compiler")
     if any(x in text for x in ("contract", "lint", "format", "schema", "static check", "static-check")):
         labels.append("contract/static")
@@ -124,7 +126,9 @@ def inspect_attempt(repo, run, attempt, token):
                     "runner_id": job["runner_id"],
                     "runner_name": job["runner_name"],
                     "classification": classify(job),
+                    "classification_basis": "executed_step_names_only",
                     "meaningful_steps": steps,
+                    "semantic_pass_claim": False,
                 }
             )
     if not good:
@@ -207,6 +211,18 @@ def save_state(path, state):
     tmp.write_text(json.dumps(sorted(state), indent=2) + "\n")
     tmp.replace(path)
 
+def emit_then_commit(reports, path, state, output=None):
+    """Never suppress evidence before successfully writing/flushing it.
+
+    This is at-least-once best effort for stdout consumers, not an atomic
+    delivery acknowledgment. A crash may cause duplicates but not an early
+    state update that suppresses output.
+    """
+    stream = output if output is not None else sys.stdout
+    stream.write(json.dumps(reports, indent=2) + "\n")
+    stream.flush()
+    save_state(path, state)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", type=Path, required=True)
@@ -218,8 +234,8 @@ def main():
     reports, updated = collect(token, reported)
     # State is committed only after every repository, run, attempt, job page,
     # and artifact page completes successfully.
-    save_state(args.state, updated)
-    print(json.dumps(reports, indent=2))
+    # If printing or flushing fails, the state must not swallow unreported runs.
+    emit_then_commit(reports, args.state, updated)
 
 if __name__ == "__main__":
     main()
