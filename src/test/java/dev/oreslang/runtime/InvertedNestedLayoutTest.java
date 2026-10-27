@@ -48,7 +48,6 @@ final class InvertedNestedLayoutTest {
 
         for (String nested : new String[]{
                 "Inner", "InvertedArray<Inner>",
-                "record{inner: record{x: i64}}",
                 "record{inner: struct{x: i64}}"
         }) {
             String source = "define inverted class Inner as id: i64; end "
@@ -60,6 +59,65 @@ final class InvertedNestedLayoutTest {
             assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(source)), nested);
         }
+    }
+
+    @Test
+    void nestedImmutableRecordsArePackedOneColumnWithDetachedDeepSnapshots() {
+        Ast.ClassDecl packet = inverted("""
+                pose: record{location: record{x: i64, y: f64}, ready: bool};
+                tag: i64;
+                """);
+        var schema = InvertedArray.Schema.fromClass(packet);
+        assertEquals(2, schema.fieldCount(),
+                "nested immutable values never become additional physical columns");
+        var layout = schema.fields().getFirst().recordLayout();
+        assertEquals(InvertedColumnStore.Kind.RECORD, layout.members().get(1).kind());
+        assertEquals(17, layout.bytes());
+        try (var array = InvertedArray.fromClass(packet, 1)) {
+            var location = new java.util.LinkedHashMap<String, Object>();
+            location.put("x", 42L);
+            location.put("y", -0.0);
+            var pose = new java.util.LinkedHashMap<String, Object>();
+            pose.put("location", location);
+            pose.put("ready", true);
+            var handle = array.pushValues(pose, 5L);
+            location.put("x", 77L);
+            pose.put("ready", false);
+            @SuppressWarnings("unchecked")
+            Map<String,Object> read = (Map<String,Object>) array.read(handle, "pose");
+            assertEquals(true, read.get("ready"));
+            @SuppressWarnings("unchecked")
+            Map<String,Object> readLocation = (Map<String,Object>) read.get("location");
+            assertEquals(42L, readLocation.get("x"));
+            assertEquals(Double.doubleToRawLongBits(-0.0),
+                    Double.doubleToRawLongBits((Double) readLocation.get("y")));
+            assertThrows(UnsupportedOperationException.class,
+                    () -> readLocation.put("x", 1L));
+            assertThrows(IllegalArgumentException.class,
+                    () -> array.write(handle, "pose",
+                            Map.of("ready", true, "location", Map.of("x", "bad", "y", 1.0))));
+            assertEquals(42L, ((Map<?, ?>) ((Map<?, ?>) array.read(handle, "pose"))
+                    .get("location")).get("x"));
+            array.write(handle, "pose", Map.of("ready", false,
+                    "location", Map.of("x", 100L, "y", 2.0)));
+            assertEquals(100L, ((Map<?, ?>) ((Map<?, ?>) array.read(handle, "pose"))
+                    .get("location")).get("x"));
+        }
+    }
+
+    @Test
+    void nestedValueRecordsRemainUnadmittedToGuestWithoutOwnershipProof() {
+        String source = """
+                define inverted class Packet as
+                    pose: record{location: record{x: i64}, ready: bool};
+                end
+                """;
+        assertDoesNotThrow(() -> InvertedArray.Schema.fromClass(
+                (Ast.ClassDecl) Parser.parse(source).modules().getFirst()
+                        .declarations().getFirst()));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)),
+                "host record encoding does not constitute guest nested record lowering");
     }
 
     @Test
@@ -155,7 +213,7 @@ final class InvertedNestedLayoutTest {
     }
 
     @Test
-    void directRecordAliasIsExplicitAndNestedAliasesRemainClosed() {
+    void directRecordAliasesSupportPackedNestedValuesButNotImplicitNamedAliases() {
         Ast.Program program = Parser.parse("""
                 type Position = record{x: i64, y: f64};
                 define inverted class Packet as pose: Position; end
@@ -173,9 +231,16 @@ final class InvertedNestedLayoutTest {
             var row = array.pushValues(Map.of("x", 10L, "y", 2.0));
             assertEquals(10L, ((Map<?, ?>) array.read(row, "pose")).get("x"));
         }
+        var inlineNested = InvertedRecordLayout.fromType(Ast.TypeRef.recordType(
+                Map.of("child", alias.target())));
+        assertEquals(16, inlineNested.bytes());
+        assertEquals(10L, ((Map<?, ?>) inlineNested.decode(
+                inlineNested.encode(Map.of("child", Map.of("x", 10L, "y", 2.0))))
+                .get("child")).get("x"));
+        // The nested NAME itself is not recursively alias-expanded.
         assertThrows(IllegalArgumentException.class,
                 () -> InvertedRecordLayout.fromType(Ast.TypeRef.recordType(
-                        Map.of("child", alias.target()))));
+                        Map.of("child", Ast.TypeRef.simple("Position")))));
         assertThrows(IllegalArgumentException.class,
                 () -> InvertedArray.Schema.fromClass(packet,
                         Map.of("Position", Ast.TypeRef.structType(
@@ -183,7 +248,7 @@ final class InvertedNestedLayoutTest {
     }
 
     @Test
-    void oversizedRecordShapesAndNestedRecordCodecsFailClosed() {
+    void oversizedRecordShapesAndExcessiveRecordNestingFailClosed() {
         var tooMany = new java.util.LinkedHashMap<String, Ast.TypeRef>();
         for (int i = 0; i <= InvertedRecordLayout.MAX_RECORD_MEMBERS; i++) {
             tooMany.put("field_" + i, Ast.TypeRef.simple("i64"));
@@ -193,8 +258,20 @@ final class InvertedNestedLayoutTest {
         var twoLevels = Ast.TypeRef.recordType(Map.of(
                 "inner", Ast.TypeRef.recordType(Map.of(
                         "x", Ast.TypeRef.simple("i64")))));
+        assertEquals(8, InvertedRecordLayout.fromType(twoLevels).bytes());
+        Ast.TypeRef deeper = Ast.TypeRef.recordType(
+                Map.of("x", Ast.TypeRef.simple("i64")));
+        for (int depth = 0; depth <= InvertedRecordLayout.MAX_RECORD_DEPTH; depth++) {
+            deeper = Ast.TypeRef.recordType(Map.of("inner", deeper));
+        }
+        final Ast.TypeRef tooDeep = deeper;
         assertThrows(IllegalArgumentException.class,
-                () -> InvertedRecordLayout.fromType(twoLevels));
+                () -> InvertedRecordLayout.fromType(tooDeep));
+        Ast.TypeRef nestedStruct = Ast.TypeRef.recordType(Map.of("inner",
+                Ast.TypeRef.structType(Map.of(
+                        "x", Ast.TypeRef.simple("i64")))));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedRecordLayout.fromType(nestedStruct));
     }
 
     @Test
