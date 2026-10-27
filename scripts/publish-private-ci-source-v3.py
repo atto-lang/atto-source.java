@@ -1208,12 +1208,12 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     authorization = "ci/authorized-" + commit_sha
     if live_ref_sha(repository, branch, contract["repository_id"]) is not None:
         raise Denied(
-            "carrier payload ref appeared before publication; refusing rollback"
+            "carrier payload ref appeared before publication; refusing to claim pre-existing ref"
         )
     if live_ref_sha(
             repository, authorization, contract["repository_id"]) is not None:
         raise Denied(
-            "carrier authorization ref already exists; refusing rollback"
+            "carrier authorization ref already exists; refusing to claim pre-existing ref"
         )
     payload_attempted = False
     authorization_attempted = False
@@ -1292,7 +1292,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                 rollback_error = rollback_error or rollback_exc
         if rollback_error is not None:
             raise Denied(
-                "private CI handoff failed and carrier ref rollback was incomplete"
+                "private CI handoff failed and carrier ref cleanup was incomplete; Git objects may remain retained"
             ) from rollback_error
         raise
 
