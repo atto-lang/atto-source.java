@@ -843,16 +843,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            Invocation current = initial;
-            int tailHops = 0;
-            while (true) {
-                Object result = current.owner().executeRaw(current);
-                if (!(result instanceof TailCall tail)) return result;
-                current = tail.invocation();
-                tailHops++;
-                if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
-                    current.owner().context.schedulerSafepoint();
+            // A generator's implicit quantum is statically checked only for
+            // lexical loops in that generator body. Ordinary helper methods,
+            // lambdas and callbacks have independent ownership scopes: do not
+            // dynamically lend them the generator's cooperative preemption
+            // permit or borrow-lifetime checks become unsound.
+            SourceCooperationQuantum generatorQuantum = activeGeneratorQuantum.get();
+            if (generatorQuantum != null) activeGeneratorQuantum.remove();
+            try {
+                Invocation current = initial;
+                int tailHops = 0;
+                while (true) {
+                    Object result = current.owner().executeRaw(current);
+                    if (!(result instanceof TailCall tail)) return result;
+                    current = tail.invocation();
+                    tailHops++;
+                    if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
+                        current.owner().context.schedulerSafepoint();
+                    }
                 }
+            } finally {
+                if (generatorQuantum != null) activeGeneratorQuantum.set(generatorQuantum);
             }
         }
 
