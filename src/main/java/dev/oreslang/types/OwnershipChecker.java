@@ -584,6 +584,10 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
+                if (containsInvertedArrayStorage(returned.type)) {
+                    throw error("InvertedArray storage is lexical in v1 and cannot be returned "
+                            + "from a function/routine or task result");
+                }
                 validateReturnedBorrow(ret.value(), returned, returnType);
             }
             return;
@@ -608,6 +612,11 @@ public final class OwnershipChecker {
                 throw error(yielded.delegated()
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
                         : "MutexGuard values cannot be yielded from a generator");
+            }
+            if (containsInvertedArrayStorage(exposed)) {
+                throw error(yielded.delegated()
+                        ? "InvertedArray storage cannot cross a yield* delegation boundary"
+                        : "InvertedArray storage cannot be yielded from a suspended generator frame");
             }
             return;
         }
@@ -757,7 +766,12 @@ public final class OwnershipChecker {
                 // Ownership must follow the actual event's source type, not
                 // the user's annotation. TypeChecker validates assignability,
                 // but an ownership-only pass must not let a forged/widened
-                // bindingType erase borrow, MutexGuard, or move-only semantics.
+                // bindingType erase borrow, MutexGuard, move-only, or inverted
+                // storage semantics.
+                if (arm.operation() != Ast.ChannelOperation.AWAIT
+                        && containsInvertedArrayStorage(element)) {
+                    throw error("select channel cannot transport InvertedArray storage across a transport boundary");
+                }
                 // Treat the annotation as a naming/typechecking constraint;
                 // never as proof that the source value is copyable.
                 elementTypes.add(element);
@@ -1604,6 +1618,9 @@ public final class OwnershipChecker {
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
             Ast.TypeRef element = channelElementType(channel.type);
+            if (containsInvertedArrayStorage(element)) {
+                throw error("channel cannot carry InvertedArray storage across a transport boundary");
+            }
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
                 // Channel enqueue/registration takes ownership of move-only payloads.
@@ -1612,6 +1629,9 @@ public final class OwnershipChecker {
                 ValueInfo payload = checkExpr(channelOp.value(), scope, true);
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
+                }
+                if (containsInvertedArrayStorage(payload.type)) {
+                    throw error("writech cannot transport InvertedArray storage across a channel boundary");
                 }
                 if (isBorrowValue(payload)) {
                     throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
@@ -2185,6 +2205,10 @@ public final class OwnershipChecker {
             ValueInfo argument = checkExpr(arg, scope, true);
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
+            }
+            if (containsInvertedArrayStorage(argument.type)) {
+                throw error("InvertedArray storage cannot cross an arbitrary or actor-capability "
+                        + "call boundary; use bracket-field access in the owning lexical scope");
             }
             if (isBorrowValue(argument)) {
                 throw error("borrowed/provenance-tracked values cannot cross an arbitrary "
@@ -4399,6 +4423,8 @@ public final class OwnershipChecker {
     private Ast.TypeRef channelElementType(Ast.TypeRef type) {
         if (type == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        concrete = expandInvertedReceiverAliases(concrete);
+        if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
         if (concrete.name().equals("Channel") && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
