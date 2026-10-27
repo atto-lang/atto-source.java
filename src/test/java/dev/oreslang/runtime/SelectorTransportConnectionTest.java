@@ -17,6 +17,82 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(15)
 final class SelectorTransportConnectionTest {
     @Test
+    void concurrentCloseDuringConnectNeverLeaksUncheckedNioFailure()
+            throws Exception {
+        for (int iteration = 0; iteration < 64; iteration++) {
+            exerciseCloseDuringConnect();
+        }
+    }
+
+    private static void exerciseCloseDuringConnect()
+            throws Exception {
+        CountDownLatch accepted = new CountDownLatch(1);
+        CountDownLatch releasePeer = new CountDownLatch(1);
+        AtomicReference<Throwable> peerFailure =
+                new AtomicReference<>();
+
+        try (ServerSocket server = new ServerSocket(
+                0,
+                50,
+                InetAddress.getLoopbackAddress())) {
+            Thread peer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    accepted.countDown();
+                    releasePeer.await();
+                } catch (Throwable failure) {
+                    peerFailure.set(failure);
+                }
+            });
+
+            long overallDeadline =
+                    System.nanoTime()
+                            + TimeUnit.SECONDS.toNanos(5);
+            SelectorTransportConnection connection =
+                    SelectorTransportConnection.open(overallDeadline);
+            AtomicReference<Throwable> connectorFailure =
+                    new AtomicReference<>();
+            Thread connector = Thread.ofVirtual().start(() -> {
+                try {
+                    connection.connect(
+                            new InetSocketAddress(
+                                    InetAddress.getLoopbackAddress(),
+                                    server.getLocalPort()),
+                            Duration.ofSeconds(2));
+                } catch (Throwable failure) {
+                    connectorFailure.set(failure);
+                }
+            });
+
+            try {
+                assertTrue(accepted.await(2, TimeUnit.SECONDS));
+                connection.close();
+                connector.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(
+                        connector.isAlive(),
+                        "connect waiter must retire promptly on close");
+                Throwable failure = connectorFailure.get();
+                if (failure != null) {
+                    assertInstanceOf(
+                            IOException.class,
+                            failure,
+                            "connect close race must stay on the checked I/O path");
+                }
+            } finally {
+                connection.close();
+                releasePeer.countDown();
+                connector.join(TimeUnit.SECONDS.toMillis(2));
+                peer.join(TimeUnit.SECONDS.toMillis(2));
+            }
+
+            Throwable failure = peerFailure.get();
+            if (failure != null
+                    && !(failure instanceof InterruptedException)) {
+                fail("loopback peer failed", failure);
+            }
+        }
+    }
+
+    @Test
     void concurrentCloseDuringSelectorReadNeverLeaksUncheckedNioFailure()
             throws Exception {
         for (int iteration = 0; iteration < 16; iteration++) {
