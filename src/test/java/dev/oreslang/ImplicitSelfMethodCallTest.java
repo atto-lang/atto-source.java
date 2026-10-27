@@ -274,6 +274,35 @@ final class ImplicitSelfMethodCallTest {
                 && failure.getMessage().contains("module"), failure.getMessage());
     }
 
+    @Test
+    void fileRootRoutineRemainsDirectCallableThroughPkgQualifier() throws Exception {
+        assertEquals("12", run("""
+                routine roodles(int value): int { return value + 2; }
+                define class Foo as
+                  pub roodles(int value): int { return value + 100; }
+                  pub park_it(): int { return pkg::roodles(10); }
+                end
+                pub routine main(): void { stdio.stdout.write(new Foo().park_it()); }
+                """));
+    }
+
+    @Test
+    void pkgQualifierCannotReenterTheFileInitializationHook() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc init(): void { return; }
+                        fnc test(): void { pkg::init(); }
+                        """)));
+        assertTrue(failure.getMessage().contains("pkg::init"), failure.getMessage());
+
+        IllegalArgumentException extracted = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc init(): void { return; }
+                        fnc test(): void { val r = pkg::init; }
+                        """)));
+        assertTrue(extracted.getMessage().contains("pkg::init"), extracted.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "implicit-self-method-call.ores")
