@@ -7331,7 +7331,15 @@ public final class OresEvalRootNode extends RootNode {
             long row = integralLong(key);
             InvertedArray.ColumnAccess field =
                     array.bindField(admission.fieldName());
-            return field.get(array.index(row).handle());
+            try {
+                // Positional select and column read share one physical-store
+                // lock. A separate index() -> RowView -> handle conversion
+                // could race with a concurrent swap-delete.
+                return field.getAt(row);
+            } catch (IndexOutOfBoundsException outside) {
+                throw new IllegalArgumentException(
+                        "inverted row index out of bounds: " + row, outside);
+            }
         }
 
         private Object writeInvertedMember(
@@ -7350,7 +7358,14 @@ public final class OresEvalRootNode extends RootNode {
             long row = integralLong(key);
             InvertedArray.ColumnAccess field =
                     array.bindField(admission.fieldName());
-            field.set(array.index(row).handle(), value);
+            try {
+                // Atomic dense row selection + checked field write; no
+                // intermediate row projection or issued handle allocation.
+                field.setAt(row, value);
+            } catch (IndexOutOfBoundsException outside) {
+                throw new IllegalArgumentException(
+                        "inverted row index out of bounds: " + row, outside);
+            }
             return value;
         }
 
