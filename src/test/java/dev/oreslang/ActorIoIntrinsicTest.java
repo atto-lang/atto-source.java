@@ -63,6 +63,25 @@ final class ActorIoIntrinsicTest {
     }
 
     @Test
+    void actorIoOutWriteCannotBeCapturedAsFunctionValue() {
+        PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                check("""
+                        pub actor fnc worker(string value) -> void {
+                          val writer = io.out.write;
+                          return;
+                        }
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-io-write-capture.ores"));
+        assertTrue(
+                failure.getMessage().contains("actor execution intrinsic")
+                        && failure.getMessage().contains("invoke it directly"),
+                failure::getMessage);
+    }
+
+    @Test
     void actorIoOutFutureCannotBeSilentlyDiscarded() {
         PolyglotException failure = assertThrows(PolyglotException.class, () ->
                 check("""
