@@ -1395,9 +1395,11 @@ public final class OwnershipChecker {
                 }
                 VarState owner = requireState(scope, ownerName.name());
                 requireUsable(owner, ownerName.name(), false);
-                if (!owner.type.name().equals("InvertedArray")
-                        || owner.type.arguments().size() != 1
-                        || !owner.type.arguments().getFirst().name().equals(invertedEvidence.className())) {
+                Ast.TypeRef ownerType = expandInvertedReceiverAliases(owner.type);
+                if (ownerType.isBorrow()) ownerType = ownerType.borrowedTarget();
+                if (!ownerType.name().equals("InvertedArray")
+                        || ownerType.arguments().size() != 1
+                        || !ownerType.arguments().getFirst().name().equals(invertedEvidence.className())) {
                     throw error("inverted bracket-field ownership root does not match "
                             + invertedEvidence.className());
                 }
@@ -1848,6 +1850,7 @@ public final class OwnershipChecker {
             if (invertedReceiverType != null) {
                 Ast.TypeRef concrete = invertedReceiverType.isBorrow()
                         ? invertedReceiverType.borrowedTarget() : invertedReceiverType;
+                concrete = expandInvertedReceiverAliases(concrete);
                 if (concrete.name().equals("InvertedArray")) {
                     if (!member.member().equals("push")) {
                         throw error("InvertedArray exposes only push(...) and immediate [i].field access in v1");
@@ -2831,9 +2834,11 @@ public final class OwnershipChecker {
                     throw error("inverted bracket-field write requires a direct named ownership root");
                 }
                 VarState owner = requireState(scope, ownerName.name());
-                if (!owner.type.name().equals("InvertedArray")
-                        || owner.type.arguments().size() != 1
-                        || !owner.type.arguments().getFirst().name().equals(invertedEvidence.className())) {
+                Ast.TypeRef ownerType = expandInvertedReceiverAliases(owner.type);
+                if (ownerType.isBorrow()) ownerType = ownerType.borrowedTarget();
+                if (!ownerType.name().equals("InvertedArray")
+                        || ownerType.arguments().size() != 1
+                        || !ownerType.arguments().getFirst().name().equals(invertedEvidence.className())) {
                     throw error("inverted bracket-field write root does not match "
                             + invertedEvidence.className());
                 }
@@ -4186,6 +4191,34 @@ public final class OwnershipChecker {
                     + "' while proving InvertedArray storage provenance");
         }
         return typeAliases.get(name);
+    }
+
+    private Ast.TypeRef expandInvertedReceiverAliases(Ast.TypeRef type) {
+        if (type == null) return null;
+        Ast.TypeRef current = type;
+        Set<Ast.TypeAliasDecl> visiting =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        while (true) {
+            if (current.isBorrow()) {
+                Ast.TypeRef expanded = expandInvertedReceiverAliases(
+                        current.borrowedTarget());
+                return Ast.TypeRef.borrowed(expanded, current.mutableBorrow());
+            }
+            Ast.TypeAliasDecl alias = findTypeAlias(current.name());
+            if (alias == null) return current;
+            if (current.inferArguments()
+                    || alias.genericParameters().size() != current.arguments().size()) {
+                throw error("type alias '" + alias.name()
+                        + "' has invalid generic arity while resolving InvertedArray receiver");
+            }
+            if (!visiting.add(alias)) {
+                throw error("cyclic type alias involving '" + alias.name()
+                        + "' while resolving InvertedArray receiver");
+            }
+            current = substituteType(
+                    alias.target(),
+                    genericBindings(alias.genericParameters(), current.arguments()));
+        }
     }
 
     private VarState ownershipRoot(VarState state) {
