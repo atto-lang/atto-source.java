@@ -180,7 +180,7 @@ final class SourceLoopSoftPreemptionTest {
                   pub let int value = 0;
                 end
                 define class Calculator as
-                  count_in_helper(n: int): int {
+                  pub count_in_helper(n: int): int {
                     let count = 0;
                     for (let i = 0; i < n; i = i + 1) do
                       count = count + 1;
@@ -212,7 +212,7 @@ final class SourceLoopSoftPreemptionTest {
                   pub let int value = 0;
                 end
                 define class Calculator as
-                  static fnc count_in_helper(n: int): int {
+                  pub static fnc count_in_helper(n: int): int {
                     let count = 0;
                     for (let i = 0; i < n; i = i + 1) do
                       count = count + 1;
