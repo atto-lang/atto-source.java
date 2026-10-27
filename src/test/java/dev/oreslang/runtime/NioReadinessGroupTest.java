@@ -15,6 +15,66 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
+    @Test void stalledTcpReadDoesNotOccupyTheOnlyCompletionCarrierAndCancelRearms()
+            throws Exception {
+        var carrier = java.util.concurrent.Executors.newSingleThreadExecutor(
+                runnable -> new Thread(runnable, "test-single-nio-completion-carrier"));
+        try (var group = new NioReadinessGroup(1, 16, 8);
+             var listener = ServerSocketChannel.open();
+             var peer = new Socket()) {
+            // Warm the exact one-carrier completion lane before selector
+            // callbacks can submit to it. The readiness wait itself must never
+            // park this carrier.
+            var warm = new java.util.concurrent.CountDownLatch(1);
+            carrier.execute(warm::countDown);
+            assertTrue(warm.await(2, TimeUnit.SECONDS));
+            group.bindVmCompletionExecutor(carrier, false);
+
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0));
+            var pendingAccept = group.acceptAsync(listener);
+            peer.connect(listener.getLocalAddress());
+            var channel = pendingAccept.get(3, TimeUnit.SECONDS);
+            try {
+                var stalled = group.readAsync(channel, 8);
+                assertFalse(stalled.isDone(), "peer has not sent any bytes");
+
+                var unrelatedProgress = new java.util.concurrent.CountDownLatch(1);
+                carrier.execute(unrelatedProgress::countDown);
+                assertTrue(unrelatedProgress.await(2, TimeUnit.SECONDS),
+                        "stalled socket readiness must consume zero completion-carrier time");
+                assertFalse(stalled.isDone());
+
+                assertTrue(stalled.cancel(false),
+                        "read is still pre-consumption and must remain revocable");
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while ((group.pendingCount() != 0 || group.activeReadLeases() != 0)
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertEquals(0, group.pendingCount());
+                assertEquals(0, group.activeReadLeases(),
+                        "cancelled watch must retire before the channel is reused");
+
+                // Re-arm the exact same channel after cancellation. A stale
+                // key/generation must neither consume the byte nor reject the
+                // fresh operation.
+                var fresh = group.readAsync(channel, 8);
+                peer.getOutputStream().write(0x5a);
+                assertArrayEquals(new byte[] {(byte)0x5a},
+                        fresh.get(3, TimeUnit.SECONDS));
+            } finally {
+                channel.close();
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingNotifications());
+        } finally {
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void cancelledSelectionKeyNeedsSelectorSweepBeforeReregistration() throws Exception {
         // JDK selector contract behind the reactor command-batch fence:
         // cancel() is lazy; same-channel register() before selectNow() fails.
