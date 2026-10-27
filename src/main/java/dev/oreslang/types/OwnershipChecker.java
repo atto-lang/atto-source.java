@@ -51,6 +51,10 @@ public final class OwnershipChecker {
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
+    // Runtime generator loops now insert bounded virtual-carrier cooperation
+    // at backedges. The ownership checker must not allow those potential
+    // handoffs to carry ordinary lexical borrows.
+    private boolean currentCooperativeGenerator;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
     /**
@@ -203,11 +207,14 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
+        boolean previousCooperativeGenerator = currentCooperativeGenerator;
         currentAsyncGenerator = fn.generator() && fn.async();
+        currentCooperativeGenerator = fn.generator();
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
+            currentCooperativeGenerator = previousCooperativeGenerator;
             scope.close();
         }
     }
@@ -757,6 +764,7 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            checkGeneratorBackedgeBorrows(scope);
             if (loop.asyncIteration()
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
@@ -782,6 +790,7 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
+            checkGeneratorBackedgeBorrows(scope);
             if (loop.asyncIteration()
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
@@ -804,6 +813,7 @@ public final class OwnershipChecker {
         if (stmt instanceof Ast.ForStmt loop) {
             Scope loopScope = new Scope(scope);
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopScope, returnType);
+            checkGeneratorBackedgeBorrows(loopScope);
             if (loop.condition() != null) checkExpr(loop.condition(), loopScope, false);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), loopScope, returnType);
@@ -813,6 +823,7 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DoWhileStmt loop) {
+            checkGeneratorBackedgeBorrows(scope);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), scope, returnType);
             checkExpr(loop.condition(), scope, false);
@@ -820,9 +831,23 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.LoopStmt loop) {
+            checkGeneratorBackedgeBorrows(scope);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), scope, returnType);
             rejectLoopMoves(before, scope);
+        }
+    }
+
+    /**
+     * Compiler-inserted generator backedge cooperation is a potential carrier
+     * handoff even if the source contains no explicit rt cooperate. Active
+     * ordinary borrows must not be captured into that frame; a MutexGuard is
+     * different: the runtime defers automatic cooperation until release.
+     */
+    private void checkGeneratorBackedgeBorrows(Scope scope) {
+        if (currentCooperativeGenerator && scope.hasLiveBorrow()) {
+            throw error("generator cooperative loop cannot cross a live borrow; "
+                    + "end the lexical borrow before the loop");
         }
     }
 
