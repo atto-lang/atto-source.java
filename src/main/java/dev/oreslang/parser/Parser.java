@@ -2265,10 +2265,19 @@ public final class Parser {
                             : parsedFields;
                     consumeStatementTerminator("expected ';' after local record alias");
                     if (specs.stream().anyMatch(spec -> spec.name().equals(aliasName))
-                            || java.util.Set.of("int", "string", "String", "float", "bool",
-                                    "any", "unknown", "void", "self", "Object", "Error",
+                            || java.util.Set.of(
+                                    "int", "i8", "i16", "i32", "i64",
+                                    "u8", "u16", "u32", "u64", "uint", "bigint",
+                                    "float", "f32", "f64", "decimal", "complex",
+                                    "complex64", "complex128", "bool", "Bool",
+                                    "string", "String", "any", "unknown",
+                                    "void", "self", "Object", "Error",
                                     "Symbol", "Type", "Option", "Result", "Array",
-                                    "List", "Map", "Ref", "WeakRef", "Future").contains(aliasName)) {
+                                    "List", "Map", "Ref", "WeakRef", "Future",
+                                    "FixedArray", "FixedList", "Vector", "Slice",
+                                    "Tuple", "Generator", "Iterator", "AsyncIterator",
+                                    "AsyncGenerator", "record", "tuple", "infer",
+                                    "using", "DynamicStruct").contains(aliasName)) {
                         throw error(previous(), "local record alias conflicts with reserved or generic type '"
                                 + aliasName + "'");
                     }
