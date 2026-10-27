@@ -281,6 +281,28 @@ public final class InvertedArray implements AutoCloseable {
     }
 
     /**
+     * Runtime target for a compiler-admitted bracket projection.
+     */
+    public RowView index(int rowIndex) {
+        return new RowView(store.handleAt(rowIndex));
+    }
+
+    /**
+     * Generated code must range-check before narrowing a guest integral index.
+     */
+    public RowView index(long rowIndex) {
+        final int narrowed;
+        try {
+            narrowed = Math.toIntExact(rowIndex);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    "inverted row index outside supported signed 32-bit range: " + rowIndex,
+                    overflow);
+        }
+        return index(narrowed);
+    }
+
+    /**
      * Compile-time name resolution target. A guest field site will bind one
      * accessor once and use its fixed column index thereafter; every access
      * still validates the opaque row handle and active borrow permissions.
