@@ -21,8 +21,7 @@ final class ExplicitVisibilityContractTest {
     void classAndAliasDeclarationsDefaultPrivateWithOrWithoutDefine() {
         for (String text : new String[] {
                 "class Hidden as end",
-                "define class Hidden as end",
-                "private class Hidden as end"
+                "define class Hidden as end"
         }) {
             Ast.ClassDecl decl = assertInstanceOf(Ast.ClassDecl.class, onlyDeclaration(text));
             assertEquals(Ast.Visibility.PRIVATE, decl.visibility(), text);
@@ -53,6 +52,58 @@ final class ExplicitVisibilityContractTest {
             Ast.TypeAliasDecl decl = assertInstanceOf(Ast.TypeAliasDecl.class, onlyDeclaration(text));
             assertEquals(Ast.Visibility.PUBLIC, decl.visibility(), text);
         }
+    }
+
+    @Test
+    void scopedVisibilityAliasesNormalizeInTheAst() {
+        for (String text : new String[] {
+                "pub[file] define class Local as end",
+                "pub(file) define class Local as end"
+        }) {
+            assertEquals(Ast.Visibility.FILE,
+                    assertInstanceOf(Ast.ClassDecl.class, onlyDeclaration(text)).visibility(), text);
+        }
+        for (String text : new String[] {
+                "pub[pkg] define class PackageType as end",
+                "pub[package] define class PackageType as end",
+                "pub(pkg) define class PackageType as end",
+                "pub(package) define class PackageType as end"
+        }) {
+            assertEquals(Ast.Visibility.PACKAGE,
+                    assertInstanceOf(Ast.ClassDecl.class, onlyDeclaration(text)).visibility(), text);
+        }
+    }
+
+    @Test
+    void scopedModuleVisibilityIsRetainedForOwnerCapping() {
+        Ast.Program file = Parser.parse("define pub[file] module Local as end");
+        assertEquals(Ast.Visibility.FILE, file.modules().getFirst().visibility());
+
+        Ast.Program pkg = Parser.parse("pub[pkg] define module PackageApi as end");
+        assertEquals(Ast.Visibility.PACKAGE, pkg.modules().getFirst().visibility());
+    }
+
+    @Test
+    void scopedVisibilityCannotAccidentallyWidenClassOrActorMembers() {
+        for (String source : new String[] {
+                "define class C as pub[pkg] val int x = 1; end",
+                "define class C as pub[file] get(): int { return 1; } end",
+                "define actor A as pub[pkg] val int x = 1; end",
+                "define actor A as pub[file] get(): int { return 1; } end"
+        }) {
+            IllegalArgumentException error =
+                    assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("VISIBILITY_MEMBER_SCOPE_UNSUPPORTED")
+                    || error.getMessage().contains("actor state fields are private"), error.getMessage());
+        }
+    }
+
+    @Test
+    void duplicateVisibilityHasStableDiagnosticCategory() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("pub define pub class Vault as end"));
+        assertTrue(error.getMessage().contains("DUPLICATE_VISIBILITY"), error.getMessage());
     }
 
     @Test
@@ -142,17 +193,17 @@ final class ExplicitVisibilityContractTest {
     }
 
     @Test
-    void explicitPrivateMeansExactlyTheSameAsOmittedVisibility() {
+    void explicitPrivateProvenanceIsPreservedWithoutChangingAccessSemantics() {
         Ast.TypeAliasDecl alias = assertInstanceOf(Ast.TypeAliasDecl.class,
                 onlyDeclaration("private type SecretId = int;"));
-        assertEquals(Ast.Visibility.PRIVATE, alias.visibility());
+        assertEquals(Ast.Visibility.EXPLICIT_PRIVATE, alias.visibility());
         Ast.TypeAliasDecl definedAlias = assertInstanceOf(Ast.TypeAliasDecl.class,
                 onlyDeclaration("define private type SecretId = int;"));
-        assertEquals(Ast.Visibility.PRIVATE, definedAlias.visibility());
+        assertEquals(Ast.Visibility.EXPLICIT_PRIVATE, definedAlias.visibility());
 
         Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
                 onlyDeclaration("private fnc helper(): int { return 1; }"));
-        assertEquals(Ast.Visibility.PRIVATE, fn.visibility());
+        assertEquals(Ast.Visibility.EXPLICIT_PRIVATE, fn.visibility());
 
         Ast.Program parsed = Parser.parse("""
                 define module internal as
@@ -160,10 +211,10 @@ final class ExplicitVisibilityContractTest {
                   private fnc helper(): int { return secret; }
                 end
                 """);
-        assertEquals(Ast.Visibility.PRIVATE,
+        assertEquals(Ast.Visibility.EXPLICIT_PRIVATE,
                 assertInstanceOf(Ast.FieldDecl.class, parsed.modules().getFirst()
                         .declarations().get(0)).visibility());
-        assertEquals(Ast.Visibility.PRIVATE,
+        assertEquals(Ast.Visibility.EXPLICIT_PRIVATE,
                 assertInstanceOf(Ast.FunctionDecl.class, parsed.modules().getFirst()
                         .declarations().get(1)).visibility());
 
@@ -174,9 +225,9 @@ final class ExplicitVisibilityContractTest {
                   private static fnc seed(): int { return 4; }
                 end
                 """));
-        assertEquals(Ast.Visibility.PRIVATE, klass.fields().getFirst().visibility());
-        assertEquals(Ast.Visibility.PRIVATE, klass.methods().get(0).visibility());
-        assertEquals(Ast.Visibility.PRIVATE, klass.methods().get(1).visibility());
+        assertEquals(Ast.Visibility.EXPLICIT_PRIVATE, klass.fields().getFirst().visibility());
+        assertEquals(Ast.Visibility.EXPLICIT_PRIVATE, klass.methods().get(0).visibility());
+        assertEquals(Ast.Visibility.EXPLICIT_PRIVATE, klass.methods().get(1).visibility());
     }
 
     @Test
