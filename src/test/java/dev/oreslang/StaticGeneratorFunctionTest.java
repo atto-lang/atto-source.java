@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -111,6 +112,22 @@ final class StaticGeneratorFunctionTest {
                   return Sequences.cooperative();
                 }
                 """);
+    }
+
+    @Test
+    void asyncStaticGeneratorYieldStarUsesAsyncOwnershipProtocol() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub async gen* upstream(): AsyncIterator<int> {
+                  yield 42;
+                  return;
+                }
+                define class Sequences as
+                  pub static async gen* values(): AsyncIterator<int> {
+                    yield* upstream();
+                    return;
+                  }
+                end
+                """));
     }
 
     @Test
