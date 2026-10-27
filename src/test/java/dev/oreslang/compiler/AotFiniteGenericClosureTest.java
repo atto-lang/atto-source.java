@@ -239,6 +239,58 @@ final class AotFiniteGenericClosureTest {
     }
 
     @Test
+    void indexingBudgetFailsBeforeUnboundedModuleIndexing() {
+        java.util.ArrayList<Ast.ModuleDecl> modules = new java.util.ArrayList<>();
+        for (int i = 0; i < 257; i++) {
+            modules.add(new Ast.ModuleDecl("module_" + i, List.of()));
+        }
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> AotFiniteGenericClosure.plan(new Ast.Program(modules),
+                        BuildOptions.executable()));
+        assertTrue(error.getMessage().contains("module indexing budget"),
+                error::toString);
+    }
+
+    @Test
+    void oversizedFunctionSignatureFailsBeforeGraphTraversal() {
+        java.util.ArrayList<Ast.Param> parameters = new java.util.ArrayList<>();
+        for (int i = 0; i < 129; i++) {
+            parameters.add(new Ast.Param(type("int"), "param_" + i));
+        }
+        Ast.FunctionDecl oversized = new Ast.FunctionDecl(
+                "main", Ast.Visibility.PUBLIC, false, List.of(),
+                parameters, type("int"), List.of(),
+                List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(1L))));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> AotFiniteGenericClosure.plan(program(oversized),
+                        BuildOptions.executable()));
+        assertTrue(error.getMessage().contains("function signature budget"),
+                error::toString);
+    }
+
+    @Test
+    void specializedLocalVariableTypesMustBeConcrete() {
+        Ast.FunctionDecl source = fn("main", List.of(), null,
+                type("int"), new Ast.LiteralExpr(7L));
+        Ast.FunctionDecl unresolved = new Ast.FunctionDecl(
+                source.name(), source.kind(), source.visibility(),
+                source.async(), source.suspends(), source.generator(),
+                source.structural(), source.nonLexical(), source.trapped(),
+                source.actorKind(), source.genericParameters(),
+                source.parameters(), source.returnType(), source.annotations(),
+                List.of(new Ast.BindingStmt(Ast.BindingKind.CONST,
+                                Ast.TypeRef.inferred(), "local",
+                                new Ast.LiteralExpr(5L)),
+                        new Ast.ReturnStmt(new Ast.LiteralExpr(7L))),
+                source.genericSpecs(), source.effects());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> AotFiniteGenericClosure.plan(program(unresolved),
+                        BuildOptions.executable()));
+        assertTrue(error.getMessage().contains("unresolved/inferred type"),
+                error::toString);
+    }
+
+    @Test
     void uncheckedMacroDeclarationsNeverAppearAsExecutableClosure() {
         Ast.Program source = Parser.parse("""
                 define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
