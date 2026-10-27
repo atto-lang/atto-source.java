@@ -237,8 +237,8 @@ public final class AsyncNativeIo implements AutoCloseable {
     }
 
     public <T> OresFuture<T> submitClose(OresContext context, Callable<T> work) {
-        context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close_async");
-        return submitControl("socket.close_async", work);
+        context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close");
+        return submitControl("socket.close", work);
     }
 
     synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
