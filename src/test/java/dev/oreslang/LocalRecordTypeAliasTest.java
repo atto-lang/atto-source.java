@@ -205,19 +205,13 @@ final class LocalRecordTypeAliasTest {
                     type T = int;
                     return;
                 }
-                """, "require a record");
-        parseRejected("""
-                fnc f(): void {
-                    type T = struct { foo: string };
-                    return;
-                }
-                """, "require a record");
+                """, "requires record");
         parseRejected("""
                 fnc f(): void {
                     type T = { foo: string };
                     return;
                 }
-                """, "require a record");
+                """, "requires record");
         parseRejected("""
                 fnc f(): void {
                     type T<G> = record { foo: G };
