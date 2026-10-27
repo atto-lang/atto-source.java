@@ -17,13 +17,17 @@ listeners in one `OresVM` share its `NioReadinessGroup`.
 
 Current source-level constraints are deliberately conservative:
 
-- listener creation and accept authority are supervisor/host-owned;
+- listener creation, outbound connect and connection authority are supervisor/host-owned;
 - only loopback listen is admitted by this staged API;
-- accepted connections are not transferable into actor state yet;
-- one accepted kernel operation owns a channel lease at a time;
-- accept/read/write/close settle through `OresFuture`;
-- reads/writes are bounded and use nonblocking `SocketChannel` operations;
-- cancellation races readiness/close through explicit ownership retirement;
+- outbound connect accepts canonical numeric IPv4 only; hostname/DNS resolution
+  fails closed until a separate async DNS provider exists;
+- accepted/outbound connections are not transferable into actor state yet;
+- one kernel operation owns a channel lease at a time;
+- connect/accept/read/write/close settle through `OresFuture`;
+- connect uses nonblocking `SocketChannel.connect` + `OP_CONNECT` +
+  `finishConnect`; reads/writes are bounded and nonblocking;
+- cancellation races readiness/kernel claims/close through explicit ownership
+  retirement;
 - listener and connection operations are context-owner checked.
 
 There is no per-listener compatibility reactor in this branch. The canonical
@@ -104,9 +108,9 @@ In that mode:
 - the staged nonblocking TCP path remains available where capability and owner
   checks admit it.
 
-The default remains compatibility mode until nonblocking replacements exist
-for every legacy FS/network/HTTP path. Virtual-thread offload is not equivalent
-to NIO-only semantics.
+The strict integration branch does not expose a guest compatibility mode for
+legacy blocking FS/network/HTTP/stdio transport. Unsupported operations fail
+closed. Virtual-thread or worker offload is not equivalent to NIO-only semantics.
 
 ## 5. Actor physical-turn tiers
 
@@ -154,12 +158,13 @@ run unsafely.
 
 The required order is:
 
-1. fence new listener admission;
-2. close context-owned TCP listeners;
-3. stop and drain VM NIO readiness/completion delivery while actor carriers
+1. fence new listener/connect admission;
+2. cancel pending outbound connects and close context-owned outbound connections;
+3. close context-owned TCP listeners;
+4. stop and drain VM NIO readiness/completion delivery while actor carriers
    remain available;
-4. stop async/actor runtime domains;
-5. close the VM root/CONTROL domain.
+5. stop async/actor runtime domains;
+6. close the VM root/CONTROL domain.
 
 `OresVM.close()` rejects self-join from actor, scheduler, CONTROL or NIO
 worker execution. Teardown aggregates NIO/root/CONTROL failures so one failure
@@ -175,7 +180,9 @@ Java merge qualification requires executed exact-head evidence for:
 
 - parser/typechecker fixtures for `MaxActorThreads`;
 - strict NIO denial;
-- shared-selector accept/read/write/close and cancellation races;
+- shared-selector connect/accept/read/write/close and cancellation races;
+- connect refusal, unresolved-address fail-closed behavior, and post-failure
+  descriptor/watch retirement;
 - no selector execution of guest callbacks;
 - cold handoff followed by no-growth warm-carrier delivery;
 - affine and non-affine Java carrier paths;
