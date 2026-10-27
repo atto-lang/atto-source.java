@@ -41,18 +41,12 @@ metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibi
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* && "$metadata" != *$'\r'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=
+IFS=$'\t' read -r actual_name visibility private_flag actual_id archived_flag disabled_flag fork_flag unexpected_field <<< "$metadata"
+[[ -z "${unexpected_field:-}" ]] || fail 'unexpected repository metadata columns'
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
 [[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
   fail 'GitHub numeric repository ID differs from independently reviewed approval'
 [[ "$archived_flag" == false && "$disabled_flag" == false && "$fork_flag" == false ]] ||
   fail 'destination must be active, enabled, and not a fork'
-printf 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY: %s (private id=%s)\n' "$target" "$approved_id"
-\t' read -r actual_name visibility private_flag actual_id archived_flag disabled_flag fork_flag unexpected_field <<< "$metadata"
-[[ -z "${unexpected_field:-}" ]] || fail 'unexpected repository metadata columns'
-[[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
-[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
-  fail 'GitHub numeric repository ID differs from independently reviewed approval'
 printf 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY: %s (private id=%s)\n' "$target" "$approved_id"
