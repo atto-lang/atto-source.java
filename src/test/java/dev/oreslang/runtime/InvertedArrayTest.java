@@ -48,7 +48,7 @@ final class InvertedArrayTest {
             // while an overlapping loan excludes direct compound mutation.
             try (var writeOther = array.borrowWrite("ready")) {
                 x.addF64At(0, 3.0);
-                assertThrows(IllegalStateException.class,
+                assertThrows(IllegalArgumentException.class,
                         () -> ready.addF64At(0, 1.0));
             }
             try (var readX = array.borrowRead("x")) {
