@@ -259,7 +259,6 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
-        Ast.Program original = program;
         Ast.CheckedInvertedIndexes.revokeForTypeRecheck(program);
         rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
@@ -275,11 +274,6 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        // Expansion can change identity. Do not authorize the original AST
-        // using type evidence produced for a different post-expansion tree.
-        if (program == original) {
-            Ast.CheckedInvertedIndexes.typeRecheckSucceeded(program);
-        }
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -407,9 +401,6 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        if (program == original) {
-            Ast.CheckedInvertedIndexes.typeRecheckSucceeded(program);
-        }
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
