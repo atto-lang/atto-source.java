@@ -44,9 +44,17 @@ public final class ExportResolver {
         }
     }
 
-    private record Candidate(String name, Ast.ExportKind kind, List<Ast.Decl> declarations) {
+    private record Candidate(
+            String name,
+            Ast.ExportKind kind,
+            List<Ast.Decl> declarations,
+            Ast.Visibility namespaceVisibility) {
         Candidate {
             declarations = List.copyOf(declarations);
+        }
+
+        Candidate(String name, Ast.ExportKind kind, List<Ast.Decl> declarations) {
+            this(name, kind, declarations, null);
         }
 
         Ast.Decl representative() {
@@ -102,6 +110,9 @@ public final class ExportResolver {
                 }
                 return effective;
             }
+            if (kind == Ast.ExportKind.MODULE && namespaceVisibility != null) {
+                return namespaceVisibility;
+            }
             Ast.Decl representative = representative();
             return representative == null ? Ast.Visibility.PRIVATE : visibilityOf(representative);
         }
@@ -154,14 +165,6 @@ public final class ExportResolver {
                     .add(decl);
         }
 
-        if (root) {
-            for (Ast.ModuleDecl child : program.modules()) {
-                if (child.name().equals(Parser.ROOT_MODULE)) continue;
-                grouped.computeIfAbsent(child.name(), ignored -> new LinkedHashMap<>())
-                        .computeIfAbsent(Ast.ExportKind.MODULE, ignored -> new ArrayList<>());
-            }
-        }
-
         Map<String, List<Candidate>> result = new LinkedHashMap<>();
         for (var nameEntry : grouped.entrySet()) {
             List<Candidate> candidates = new ArrayList<>();
@@ -169,6 +172,16 @@ public final class ExportResolver {
                 candidates.add(new Candidate(nameEntry.getKey(), kindEntry.getKey(), kindEntry.getValue()));
             }
             result.put(nameEntry.getKey(), List.copyOf(candidates));
+        }
+        if (root) {
+            for (Ast.ModuleDecl child : program.modules()) {
+                if (child.name().equals(Parser.ROOT_MODULE)) continue;
+                List<Candidate> candidates = new ArrayList<>(
+                        result.getOrDefault(child.name(), List.of()));
+                candidates.add(new Candidate(
+                        child.name(), Ast.ExportKind.MODULE, List.of(), child.visibility()));
+                result.put(child.name(), List.copyOf(candidates));
+            }
         }
         return result;
     }
