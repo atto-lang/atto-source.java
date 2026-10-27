@@ -108,6 +108,7 @@ public final class GeneratorRuntime {
         // tasks that merely wait on its monitor would turn concurrent next()
         // calls into a resource-amplification path.
         private final AtomicBoolean pullInFlight = new AtomicBoolean();
+        private OresFuture<Void> closeFuture;
 
         private AsyncGenerator(AsyncRuntime runtime, Engine<T> engine) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -153,8 +154,40 @@ public final class GeneratorRuntime {
             }
         }
 
+        /**
+         * Source-level async close. The physical producer-exit wait runs on a
+         * runtime-owned virtual carrier, never on the caller's actor carrier.
+         * Repeated closes share the same completion and cannot amplify tasks.
+         */
+        public synchronized OresFuture<Void> closeAsync() {
+            if (closeFuture != null) return closeFuture;
+            if (engine.isTerminalReady()) {
+                try {
+                    engine.close();
+                    closeFuture = OresFuture.completed(null);
+                } catch (Throwable failure) {
+                    closeFuture = OresFuture.failed(failure);
+                }
+                return closeFuture;
+            }
+            try {
+                closeFuture = runtime.submit(() -> {
+                    engine.close();
+                    return null;
+                });
+            } catch (RuntimeException | Error failure) {
+                closeFuture = OresFuture.failed(failure);
+            }
+            return closeFuture;
+        }
+
         @Override
         public void close() {
+            if (ActorRuntime.inActorExecution() && !engine.isTerminalReady()) {
+                throw new IllegalStateException(
+                        "synchronous AsyncIterator.close() would park an actor carrier; "
+                                + "use/await the asynchronous close operation");
+            }
             engine.close();
         }
     }
