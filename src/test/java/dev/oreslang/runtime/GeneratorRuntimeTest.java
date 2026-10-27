@@ -176,6 +176,35 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void overlappingSyncPullFailsInsteadOfQueueingBlockedCallers() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>generator(runtime, emitter -> {
+                 entered.countDown();
+                 release.await();
+                 emitter.emit(11);
+             })) {
+            java.util.concurrent.FutureTask<GeneratorRuntime.Step<Integer>> first =
+                    new java.util.concurrent.FutureTask<>(generator::nextStep);
+            Thread consumer = Thread.ofVirtual().start(first);
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                IllegalStateException overlap = assertThrows(
+                        IllegalStateException.class, generator::nextStep);
+                assertEquals("generator already has an active pull", overlap.getMessage());
+            } finally {
+                release.countDown();
+            }
+            assertEquals(11, first.get(2, TimeUnit.SECONDS).value());
+            consumer.join();
+            assertTrue(generator.nextStep().done());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void overlappingAsyncPullFailsWithoutStartingAnotherSchedulerTask() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
