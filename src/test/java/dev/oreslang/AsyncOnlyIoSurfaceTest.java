@@ -84,7 +84,7 @@ final class AsyncOnlyIoSurfaceTest {
                 Path.of("src/main/java/dev/oreslang/types/TypeChecker.java"))) {
             String source = Files.readString(path);
             for (String name : LEGACY_IO_NAMES) {
-                assertFalse(source.contains("\\\"" + name + "\\\""),
+                assertFalse(source.contains("\"" + name + "\""),
                         () -> path + " reintroduced legacy guest I/O alias " + name);
             }
         }
