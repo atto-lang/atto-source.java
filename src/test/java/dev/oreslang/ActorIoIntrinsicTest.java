@@ -247,6 +247,27 @@ final class ActorIoIntrinsicTest {
     }
 
     @Test
+    void reservedActorChannelsCannotBeAccessedOrAliased() {
+        // Reserved means inaccessible, not a movable placeholder capability.
+        for (String channel : new String[] {"in", "err", "events", "meta"}) {
+            PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                    check("""
+                            pub actor fnc worker(string value) -> void {
+                              val unavailable = io.%s;
+                              return;
+                            }
+
+                            pub routine main(): void {
+                              return;
+                            }
+                            """.formatted(channel), "actor-io-reserved-" + channel + ".ores"));
+            assertTrue(
+                    failure.getMessage().contains("reserved but not implemented"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
     void unimplementedActorChannelsFailClosedAtTypecheck() {
         PolyglotException failure = assertThrows(PolyglotException.class, () ->
                 check("""
