@@ -215,7 +215,15 @@ public final class InvertedIndexPlan {
                 throw new IllegalStateException(
                         "write-only inverted plan used for read");
             }
-            return field.get(array.index(index).handle());
+            try {
+                // Resolve dense row and field under one store monitor.
+                // Do not allocate a temporary RowView/Handle: swap-delete
+                // between index selection and field read changes the row.
+                return field.getAt(index);
+            } catch (IndexOutOfBoundsException outside) {
+                throw new IllegalArgumentException(
+                        "inverted row index out of bounds: " + index, outside);
+            }
         }
 
         public void write(long index, Object value) {
@@ -223,7 +231,13 @@ public final class InvertedIndexPlan {
                 throw new IllegalStateException(
                         "read-only inverted plan used for write");
             }
-            field.set(array.index(index).handle(), value);
+            try {
+                // Check dense row, field loan and write as one transaction.
+                field.setAt(index, value);
+            } catch (IndexOutOfBoundsException outside) {
+                throw new IllegalArgumentException(
+                        "inverted row index out of bounds: " + index, outside);
+            }
         }
     }
 
