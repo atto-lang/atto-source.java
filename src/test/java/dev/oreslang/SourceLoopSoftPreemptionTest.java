@@ -85,6 +85,64 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void synchronousReceiveHelperLoopPreservesOneLogicalMessageAndCooperates()
+            throws Exception {
+        // A nested plain synchronous function must carry its heap-owned
+        // call/loop continuation through the same actor SourceTask trampoline.
+        // This tests a transitive loop, rather than a loop directly in receive.
+        String output = run("""
+                fnc count_in_helper(n: int): int {
+                  let count = 0;
+                  for (let i = 0; i < n; i = i + 1) do
+                    count = count + 1;
+                  done
+                  return count;
+                }
+
+                define actor Worker as
+                  let int count;
+                  on_start(): void {
+                    self.count = 0;
+                    return;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    if mail.value == "first"; do
+                      self.count = count_in_helper(4096);
+                      self.send(self.count);
+                      return;
+                    fi
+                    if mail.value == "second"; do
+                      self.send(self.count + 1);
+                      self.end();
+                    fi
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("first");
+                  worker.send("second");
+                  val first = (await worker.outputs.next()).value.unwrap();
+                  val second = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(first.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.value);
+                  await worker.get_done();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("4096|4097|"),
+                "nested synchronous call replayed or admitted a newer message: " + output);
+        long cooperates = Long.parseLong(output.substring("4096|4097|".length()));
+        assertTrue(cooperates > 0,
+                "a nested synchronous helper loop must release the carrier without explicit await");
+    }
+
+    @Test
     void synchronousReceiveLoopAutoPreemptsWithoutOvertakingLaterMailboxMessages()
             throws Exception {
         String output = run("""
