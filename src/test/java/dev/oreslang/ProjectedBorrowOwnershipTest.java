@@ -73,6 +73,51 @@ final class ProjectedBorrowOwnershipTest {
     }
 
     @Test
+    void borrowedAggregateDestructureAndIterationKeepProvenance() {
+        IllegalArgumentException destructured = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Item as
+                          pub val int number;
+                        end
+
+                        fnc bad(borrow [Item, int] pair): void {
+                          val [item, number] = pair;
+                          val moved = rt take item;
+                          return;
+                        }
+                        """)));
+        assertTrue(destructured.getMessage().contains("owned data")
+                || destructured.getMessage().contains("borrow"),
+                destructured::getMessage);
+
+        IllegalArgumentException iterated = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Item as
+                          pub val int number;
+                        end
+
+                        fnc bad(borrow List<Item> items): void {
+                          for val item of items do
+                            val moved = rt take item;
+                          done
+                          return;
+                        }
+                        """)));
+        assertTrue(iterated.getMessage().contains("owned data")
+                || iterated.getMessage().contains("borrow"),
+                iterated::getMessage);
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(borrow [int, int] pair): int {
+                  const [left, right] = pair;
+                  return left + right;
+                }
+                """)));
+    }
+
+    @Test
     void storedProjectionGuardsEntireOwnerAgainstMove() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(TYPES + """
