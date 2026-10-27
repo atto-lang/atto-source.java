@@ -2907,7 +2907,8 @@ public final class TypeChecker {
                             env, generics, self);
                 }
             }
-            if (call.callee() instanceof Ast.MemberExpr console
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && call.callee() instanceof Ast.MemberExpr console
                     && console.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("stdio") && env.lookup("stdio") == null
                     && (console.member().equals("print") || console.member().equals("println"))) {
@@ -2924,7 +2925,8 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "log", env)) {
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -2937,7 +2939,8 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "logList", env)) {
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && isBuiltinStdoutCall(call, "logList", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.logList does not accept call-site type arguments");
                 }
@@ -3857,7 +3860,8 @@ public final class TypeChecker {
                     && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
                 return new Function(List.of(), Primitive.INT);
             }
-            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
@@ -5896,7 +5900,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+        if (named.name().startsWith("$ActorIO")
+                || named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")
                 || named.name().equals("RefCell") || named.name().equals("RwLock")
