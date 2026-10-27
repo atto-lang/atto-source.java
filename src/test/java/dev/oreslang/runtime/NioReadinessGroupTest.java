@@ -15,6 +15,94 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
+    @Test void outboundConnectUsesSelectorAndTransfersNonblockingChannel()
+            throws Exception {
+        try (var group = new NioReadinessGroup(1, 32, 16);
+             var listener = ServerSocketChannel.open()) {
+            listener.bind(new InetSocketAddress(
+                    InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 0));
+            int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+
+            var connected = group.connectAsync(new InetSocketAddress(
+                    InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), port));
+            try (var accepted = listener.accept();
+                 var client = connected.get(3, TimeUnit.SECONDS)) {
+                assertTrue(client.isConnected());
+                assertFalse(client.isBlocking(),
+                        "strict outbound connection must remain nonblocking");
+                assertTrue(accepted.isOpen());
+            }
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (group.activeConnectLeases() != 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(0, group.activeConnectLeases(),
+                    "terminal connect must retire its descriptor lease");
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void unresolvedConnectFailsClosedBeforeReactorOrDnsAdmission()
+            throws Exception {
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            var unresolved = InetSocketAddress.createUnresolved(
+                    "must-not-resolve.example", 443);
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class,
+                    () -> group.connectAsync(unresolved).get());
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("pre-resolved"));
+            assertEquals(0, group.reactorCount());
+            assertEquals(0, group.pendingCount());
+            assertEquals(0, group.activeConnectLeases());
+        }
+    }
+
+    @Test void refusedConnectRetiresLeaseAndDoesNotPoisonLaterConnect()
+            throws Exception {
+        int refusedPort;
+        try (var reservation = new java.net.ServerSocket(
+                0, 1, InetAddress.getByAddress(new byte[] {127, 0, 0, 1}))) {
+            refusedPort = reservation.getLocalPort();
+        }
+
+        try (var group = new NioReadinessGroup(1, 32, 16)) {
+            var refused = group.connectAsync(new InetSocketAddress(
+                    InetAddress.getByAddress(new byte[] {127, 0, 0, 1}),
+                    refusedPort));
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class,
+                    () -> refused.get(3, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof java.io.IOException,
+                    () -> "expected connect I/O failure, got " + failure.getCause());
+
+            long retired = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while ((group.activeConnectLeases() != 0 || group.pendingCount() != 0)
+                    && System.nanoTime() < retired) {
+                Thread.sleep(1);
+            }
+            assertEquals(0, group.activeConnectLeases());
+            assertEquals(0, group.pendingCount());
+
+            try (var listener = ServerSocketChannel.open()) {
+                listener.bind(new InetSocketAddress(
+                        InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 0));
+                int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+                var retried = group.connectAsync(new InetSocketAddress(
+                        InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), port));
+                try (var accepted = listener.accept();
+                     var client = retried.get(3, TimeUnit.SECONDS)) {
+                    assertTrue(client.isConnected());
+                }
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void stalledTcpReadDoesNotOccupyTheOnlyCompletionCarrierAndCancelRearms()
             throws Exception {
         var carrier = java.util.concurrent.Executors.newSingleThreadExecutor(
