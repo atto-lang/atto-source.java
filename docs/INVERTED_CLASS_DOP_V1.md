@@ -354,6 +354,53 @@ These tests are committed against the source and the publication ordering
 can be statically inspected, but **no actual JDK 25/JUnit/GraalVM execution
 receipt exists** while source-hosted Actions jobs fail with zero steps.
 
+## Nested inverted classes, structs and records: precise V1 layout boundary
+
+**`define inverted class` is the only currently admitted inverted declaration
+form.** Both `define inverted struct` and `define inverted record` fail
+at parsing rather than silently becoming inverted classes or changing their
+value semantics. The parser must also preserve the distinction between the
+mutable structural type `struct{...}` and the immutable structural type
+`record{...}` (including bare `{...}` record type syntax). They must not
+collapse to the same `Ast.TypeRef` marker.
+
+| Field type inside `InvertedArray<Outer>` | V1 physical layout | Admission |
+| --- | --- | --- |
+| `i64`, `f64`, `bool` | Independent scalar columns | Narrow guest support |
+| `record{x:i64,y:f64}` | **One packed, copied record column** | Host codec; guest only with full type/ownership proof |
+| Direct alias to such a `record{...}` | Same single packed column | Host API requires explicit direct alias map |
+| `struct{x:i64,y:f64}` | Not silently reinterpreted as a record | Reject until value mutability/copy semantics are proven |
+| `record{child:record{...}}` or `record{child:struct{...}}` | No recursive AoS encoding/column flattening | Reject |
+| Nominal `Inner` inverted class, `InvertedArray<Inner>`, or `Array<Inner>` | No embedded nested owner/pointer graph | Reject |
+| `define inverted struct` / `define inverted record` | No V1 declaration or collection ABI | Parse-time rejection |
+
+A **one-level record** is a value, not a nested store. Its fields are
+canonicalized by name and packed little-endian into the *single* record
+column at a checked width (host limit 64 KiB). Encoding must reject missing,
+extra and wrongly typed members. The field-level `Map` input is copied to
+bytes, and decoding returns an independent, immutable map, not an alias of
+physical storage. Boolean bytes are strictly canonical (0/1).
+Swap-delete may move its physical record element while issued generational
+row handles retain logical identity.
+
+**Nested inverted classes** need an explicit lifetime model: either a
+separately owned `InvertedArray<Inner>` with a controlled owning/reference
+relationship, or an independently specified flattened multi-level SoA
+schema with offsets/cardinalities and migration/reclamation rules. Do not
+implicitly flatten `Outer.Inner` or grant a guest a pointer to an actor's
+nested store. Recursive records need independently verified bounded layouts
+and ownership/transport proofs. Mutable structs need a separate copy-in/
+copy-out or borrowed-view contract to preserve mutability without exposing
+interior aliases. This is not automatic simply because a record codec exists.
+
+**Testing:** `InvertedNestedLayoutTest` checks real parsed `struct` versus
+`record` types, record column roundtrip and swap-delete, canonical
+little-endian encoding and invalid bool rejection, direct aliases, and
+fail-closed nested named/aggregate/inverted declarations. These are checked-in
+JUnit fixtures, **not an executed source-runner pass** while CI remains
+zero-step. Require the same admission/negative matrices across Java/Graal
+(full native AOT) and LLVM (full AOT) before claiming backend parity.
+
 ## Borrow and concurrency rules
 
 A column view is zero-copy and tied to its owning store; compiler-enforced, nonescaping lifetime is mandatory. Read loans on a field may coexist; a write loan excludes all other same-field access. Disjoint columns may have independent write loans. Structural changes (push, erase, reorder, reserve/reallocate, close, ownership transfer) require quiescence across *all* columns; no suspension or `await` may extend an unsafe exclusive loan without an explicit proof. A raw host-language `span` must not escape its loan; the compiler is responsible for enforcing this when lowered to Oreslang.
