@@ -73,6 +73,7 @@ final class StrictAsyncStdlibIoCurrentMainTest {
                   val Future<HttpServer> listener = http.listen("127.0.0.1", 0, 1, 1024, 1000);
                   val Future<void> out = stdio.stdout.write("x");
                   val Future<Option<String>> input = stdio.stdin.read_line();
+                  val String processId = process.unique_id();
                   return;
                 }
                 """);
