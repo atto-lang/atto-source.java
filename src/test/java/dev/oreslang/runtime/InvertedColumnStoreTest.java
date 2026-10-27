@@ -56,7 +56,7 @@ final class InvertedColumnStoreTest {
             assertThrows(IllegalArgumentException.class,
                     () -> store.push((Object) new byte[]{5, 6, 7, 8}));
             assertEquals(count, store.size());
-            assertArrayEquals(new Object[]{11L}, new Object[]{store.get(handle, 1)});
+            assertEquals(11L, store.get(handle, 1));
             assertArrayEquals(new byte[]{1, 2, 3, 4},
                     (byte[]) store.get(handle, 0));
             var next = store.push(new byte[]{8, 7, 6, 5}, 22L);
