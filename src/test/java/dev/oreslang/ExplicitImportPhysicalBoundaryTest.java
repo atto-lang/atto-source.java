@@ -183,6 +183,45 @@ final class ExplicitImportPhysicalBoundaryTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void dotHiddenBareImportUsesConfiguredSearchRoot() throws Exception {
+        Path project = manifestProject("dot-hidden-bare");
+        Path src = Files.createDirectories(project.resolve("src"));
+        Path importer = src.resolve("main.ores");
+        Files.writeString(importer, "pub fnc main(): void { return; }\n");
+
+        Path ambient = Files.createDirectories(temp.resolve("dot-hidden-ambient/.hidden"));
+        Path target = ambient.resolve("util.ores");
+        Files.writeString(target, "pub fnc util(): int { return 42; }\n");
+
+        OresProjectConfig config = OresProjectConfig.discover(
+                importer,
+                Map.of(OresProjectConfig.ENV_ORESLANG_PATH,
+                        temp.resolve("dot-hidden-ambient").toString()));
+        assertEquals(target.toRealPath(),
+                config.resolveImport(importer, ".hidden/util").orElseThrow());
+    }
+
+    @Test
+    void dotDotPrefixedBareImportUsesConfiguredSearchRoot() throws Exception {
+        Path project = manifestProject("dotdot-prefixed-bare");
+        Path src = Files.createDirectories(project.resolve("src"));
+        Path importer = src.resolve("main.ores");
+        Files.writeString(importer, "pub fnc main(): void { return; }\n");
+
+        Path ambientRoot = temp.resolve("dotdot-prefixed-ambient");
+        Path ambient = Files.createDirectories(ambientRoot.resolve("..backup"));
+        Path target = ambient.resolve("util.ores");
+        Files.writeString(target, "pub fnc util(): int { return 42; }\n");
+
+        OresProjectConfig config = OresProjectConfig.discover(
+                importer,
+                Map.of(OresProjectConfig.ENV_ORESLANG_PATH, ambientRoot.toString()));
+        assertEquals(target.toRealPath(),
+                config.resolveImport(importer, "..backup/util").orElseThrow());
+    }
+
     private Path manifestProject(String name) throws IOException {
         Path project = Files.createDirectories(temp.resolve(name));
         Files.writeString(project.resolve(OresProjectConfig.MANIFEST_NAME),
