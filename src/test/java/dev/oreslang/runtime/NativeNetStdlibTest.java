@@ -152,10 +152,10 @@ final class NativeNetStdlibTest {
                 }
             }
             assertNotNull(socket, "guest loopback listener did not become ready");
-            try (socket) {
-                socket.setSoTimeout(2000);
-                socket.getOutputStream().write("PING".getBytes(StandardCharsets.US_ASCII));
-                assertEquals("PING", new String(socket.getInputStream().readNBytes(4),
+            try (Socket connected = socket) {
+                connected.setSoTimeout(2000);
+                connected.getOutputStream().write("PING".getBytes(StandardCharsets.US_ASCII));
+                assertEquals("PING", new String(connected.getInputStream().readNBytes(4),
                         StandardCharsets.US_ASCII));
             }
             program.get(20, TimeUnit.SECONDS);
@@ -164,4 +164,5 @@ final class NativeNetStdlibTest {
             assertTrue(runner.awaitTermination(3, TimeUnit.SECONDS));
             Files.deleteIfExists(entry);
         }
-    }}
+    }
+}
