@@ -189,6 +189,27 @@ final class ImportPhysicalContainmentTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void danglingOresCandidateCannotFallThroughToJavaExtension() throws Exception {
+        Path app = temp.resolve("relative-extension-shadow");
+        Files.createDirectories(app);
+        Path main = app.resolve("main.ores");
+        Files.writeString(main, "pub fnc main(): void { return; }\n");
+
+        requireSymlink(app.resolve("choice.ores"), app.resolve("missing-choice.ores"));
+        Files.writeString(
+                app.resolve("choice.java"),
+                "final class Choice { static int value() { return 42; } }\n");
+
+        OresProjectConfig config = OresProjectConfig.discover(main, Map.of());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(main, "./choice"));
+        assertTrue(failure.getMessage().contains("cannot establish canonical physical source identity"),
+                failure.getMessage());
+    }
+
     private static void requireSymlink(Path link, Path target) throws IOException {
         try {
             Files.createSymbolicLink(link, target);
