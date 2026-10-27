@@ -397,4 +397,53 @@ final class InvertedArrayLanguageTest {
                 failure::getMessage);
     }
 
+
+    @Test
+    void liveInvertedStorageCannotCrossSuspensionInV1() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define inverted class Particle as
+                          val f64 x;
+                        end
+
+                        async fnc ready(): int {
+                          return 1;
+                        }
+
+                        async fnc bad(): f64 {
+                          let mut InvertedArray<Particle> particles =
+                              new InvertedArray<Particle>();
+                          particles.push(1.0);
+                          val int value = await ready();
+                          return particles[0].x + value;
+                        }
+                        """));
+        assertTrue(
+                failure.getMessage().contains("InvertedArray storage is live")
+                        || failure.getMessage().contains("suspension"),
+                failure::getMessage);
+    }
+
+    @Test
+    void futureAndIteratorTypesCannotHideInvertedOwnership() {
+        for (String wrapper : new String[] {
+                "Future", "Iterator", "AsyncIterator", "IteratorResult"
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck("""
+                            define inverted class Particle as
+                              val f64 x;
+                            end
+
+                            fnc bad(%s<InvertedArray<Particle>> value): void {
+                              return;
+                            }
+                            """.formatted(wrapper)));
+            assertTrue(failure.getMessage().contains("InvertedArray"),
+                    failure::getMessage);
+        }
+    }
+
 }
