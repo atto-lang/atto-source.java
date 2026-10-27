@@ -119,7 +119,7 @@ final class SelectorTransportConnection implements AutoCloseable {
                         "connect");
             }
         }
-        key.interestOps(0);
+        clearInterestOpsAfterConnect();
     }
 
     void startTls(
@@ -544,6 +544,27 @@ final class SelectorTransportConnection implements AutoCloseable {
                         deadline,
                         what);
             }
+        }
+    }
+
+    private void clearInterestOpsAfterConnect()
+            throws IOException {
+        try {
+            key.interestOps(0);
+        } catch (ClosedSelectorException
+                | CancelledKeyException closedRace) {
+            if (closed.get()
+                    || !channel.isOpen()
+                    || !selector.isOpen()
+                    || !key.isValid()) {
+                ClosedChannelException failure =
+                        new ClosedChannelException();
+                failure.addSuppressed(closedRace);
+                throw failure;
+            }
+            throw new IOException(
+                    "pinned HTTP selector state invalid after connect",
+                    closedRace);
         }
     }
 
