@@ -63,6 +63,59 @@ final class InvertedNestedLayoutTest {
     }
 
     @Test
+    void packedRecordCodecIsDeterministicAndRejectsCorruptBoolOrWrongShapes() {
+        Ast.TypeRef shape = Ast.TypeRef.recordType(Map.of(
+                "x", Ast.TypeRef.simple("i64"),
+                "ready", Ast.TypeRef.simple("bool"),
+                "y", Ast.TypeRef.simple("f64")));
+        var codec = InvertedRecordLayout.fromType(shape);
+        assertEquals(17, codec.bytes());
+        assertEquals("ready", codec.members().getFirst().name());
+        byte[] encoded = codec.encode(Map.of("y", 1.25,
+                "ready", true, "x", 0x0102030405060708L));
+        var view = java.nio.ByteBuffer.wrap(encoded)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        assertEquals(1, encoded[0]);
+        assertEquals(0x0102030405060708L, view.getLong(1));
+        assertEquals(1.25, view.getDouble(9));
+        assertEquals(0x0102030405060708L, codec.decode(encoded).get("x"));
+        encoded[0] = 2;
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(encoded));
+        assertThrows(IllegalArgumentException.class,
+                () -> codec.encode(Map.of("ready", true, "x", 1, "y", 1.25)));
+        assertThrows(IllegalArgumentException.class,
+                () -> codec.encode(Map.of("ready", true, "x", 1L)));
+    }
+
+    @Test
+    void directRecordAliasIsExplicitAndNestedAliasesRemainClosed() {
+        Ast.Program program = Parser.parse("""
+                type Position = record{x: i64, y: f64};
+                define inverted class Packet as pose: Position; end
+                """);
+        var alias = (Ast.TypeAliasDecl) program.modules().getFirst()
+                .declarations().getFirst();
+        var packet = (Ast.ClassDecl) program.modules().getFirst()
+                .declarations().get(1);
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedArray.Schema.fromClass(packet));
+        var aliases = Map.of("Position", alias.target());
+        var schema = InvertedArray.Schema.fromClass(packet, aliases);
+        assertEquals(InvertedColumnStore.Kind.RECORD, schema.fields().getFirst().kind());
+        try (var array = InvertedArray.fromClass(packet, 0, aliases)) {
+            var row = array.pushValues(Map.of("x", 10L, "y", 2.0));
+            assertEquals(10L, ((Map<?, ?>) array.read(row, "pose")).get("x"));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedRecordLayout.fromType(Ast.TypeRef.recordType(
+                        Map.of("child", alias.target()))));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedArray.Schema.fromClass(packet,
+                        Map.of("Position", Ast.TypeRef.structType(
+                                Map.of("x", Ast.TypeRef.simple("i64"))))));
+    }
+
+    @Test
     void noImplicitInvertedStructOrRecordDeclarationDesugaring() {
         for (String source : new String[]{
                 "define inverted struct Packet as x: i64; end",
