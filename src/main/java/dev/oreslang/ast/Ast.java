@@ -1395,6 +1395,272 @@ public final class Ast {
         }
     }
 
+    public enum InvertedIndexAccess { READ, WRITE }
+
+    /**
+     * Type-checker-only evidence for an exact a[i].field AST site.
+     *
+     * <p>This is not runtime execution authority. It is intentionally absent
+     * from copyCheckedMetadata: rewritten/cloned sites must be typechecked and
+     * ownership-checked again.
+     */
+    public record InvertedIndexTypeEvidence(
+            IndexExpr index,
+            String className,
+            String fieldName,
+            TypeRef fieldType,
+            InvertedIndexAccess access) {
+        public InvertedIndexTypeEvidence {
+            java.util.Objects.requireNonNull(index, "inverted index expression");
+            java.util.Objects.requireNonNull(className, "inverted class name");
+            java.util.Objects.requireNonNull(fieldName, "inverted field name");
+            java.util.Objects.requireNonNull(fieldType, "inverted field type");
+            java.util.Objects.requireNonNull(access, "inverted index access");
+        }
+    }
+
+    public static final class CheckedInvertedIndexTypes {
+        private CheckedInvertedIndexTypes() { }
+
+        private static final java.lang.ref.ReferenceQueue<MemberExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, InvertedIndexTypeEvidence> EVIDENCE =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey
+                extends java.lang.ref.WeakReference<MemberExpr> {
+            private final int hash;
+            private IdentityKey(
+                    MemberExpr member,
+                    java.lang.ref.ReferenceQueue<MemberExpr> queue) {
+                super(java.util.Objects.requireNonNull(
+                        member, "inverted member site"), queue);
+                hash = System.identityHashCode(member);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                MemberExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends MemberExpr> cleared;
+            while ((cleared = CLEARED.poll()) != null) EVIDENCE.remove(cleared);
+        }
+
+        public static synchronized void record(
+                MemberExpr member,
+                IndexExpr index,
+                String className,
+                String fieldName,
+                TypeRef fieldType,
+                InvertedIndexAccess access) {
+            if (member.receiver() != index) {
+                throw new IllegalArgumentException(
+                        "inverted field evidence must bind the exact member receiver index");
+            }
+            InvertedIndexTypeEvidence evidence = new InvertedIndexTypeEvidence(
+                    index, className, fieldName, fieldType, access);
+            expunge();
+            IdentityKey key = new IdentityKey(member, CLEARED);
+            InvertedIndexTypeEvidence previous = EVIDENCE.putIfAbsent(key, evidence);
+            if (previous != null && !previous.equals(evidence)) {
+                throw new IllegalStateException(
+                        "same inverted member site received inconsistent type evidence");
+            }
+        }
+
+        public static synchronized InvertedIndexTypeEvidence lookup(MemberExpr member) {
+            java.util.Objects.requireNonNull(member, "inverted member site");
+            expunge();
+            return EVIDENCE.get(new IdentityKey(member, null));
+        }
+    }
+
+    /** Whole-program ownership admission for one exact inverted bracket-field site. */
+    public record InvertedIndexAdmission(
+            long checkEpoch,
+            String className,
+            String fieldName,
+            TypeRef fieldType,
+            InvertedIndexAccess access) {
+        public InvertedIndexAdmission {
+            if (checkEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "inverted index ownership epoch must be positive");
+            }
+            java.util.Objects.requireNonNull(className, "inverted class name");
+            java.util.Objects.requireNonNull(fieldName, "inverted field name");
+            java.util.Objects.requireNonNull(fieldType, "inverted field type");
+            java.util.Objects.requireNonNull(access, "inverted index access");
+        }
+    }
+
+    /**
+     * Identity-bound executable authority for inverted a[i].field lowering.
+     *
+     * <p>Like Task capture authority, this is keyed by exact Program and exact
+     * MemberExpr identity and is revoked before every ownership recheck. It is
+     * deliberately not transferable through copyCheckedMetadata.
+     */
+    public static final class CheckedInvertedIndexes {
+        private CheckedInvertedIndexes() { }
+
+        private static final java.lang.ref.ReferenceQueue<MemberExpr> CLEARED_SITES =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.lang.ref.ReferenceQueue<Program> CLEARED_PROGRAMS =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<PairIdentityKey, InvertedIndexAdmission> ADMISSIONS =
+                new java.util.HashMap<>();
+        private static final java.util.Map<ProgramIdentityKey, Long> PROGRAM_EPOCHS =
+                new java.util.HashMap<>();
+
+        private static final class PairIdentityKey
+                extends java.lang.ref.WeakReference<MemberExpr> {
+            private final java.lang.ref.WeakReference<Program> program;
+            private final int hash;
+
+            private PairIdentityKey(
+                    Program program,
+                    MemberExpr member,
+                    java.lang.ref.ReferenceQueue<MemberExpr> queue) {
+                super(java.util.Objects.requireNonNull(
+                        member, "checked inverted member"), queue);
+                this.program = new java.lang.ref.WeakReference<>(
+                        java.util.Objects.requireNonNull(
+                                program, "checked inverted program"));
+                hash = 31 * System.identityHashCode(program)
+                        + System.identityHashCode(member);
+            }
+
+            private Program program() { return program.get(); }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof PairIdentityKey key)) return false;
+                Program leftProgram = program();
+                Program rightProgram = key.program();
+                MemberExpr left = get();
+                MemberExpr right = key.get();
+                return leftProgram != null && leftProgram == rightProgram
+                        && left != null && left == right;
+            }
+        }
+
+        private static final class ProgramIdentityKey
+                extends java.lang.ref.WeakReference<Program> {
+            private final int hash;
+            private ProgramIdentityKey(
+                    Program program,
+                    java.lang.ref.ReferenceQueue<Program> queue) {
+                super(java.util.Objects.requireNonNull(
+                        program, "checked inverted program"), queue);
+                hash = System.identityHashCode(program);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof ProgramIdentityKey key)) return false;
+                Program value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends MemberExpr> site;
+            while ((site = CLEARED_SITES.poll()) != null) ADMISSIONS.remove(site);
+            java.lang.ref.Reference<? extends Program> program;
+            while ((program = CLEARED_PROGRAMS.poll()) != null) PROGRAM_EPOCHS.remove(program);
+            ADMISSIONS.keySet().removeIf(key ->
+                    key.program() == null || key.get() == null);
+        }
+
+        public static synchronized void beginCheck(Program program, long checkEpoch) {
+            if (checkEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "inverted index ownership epoch must be positive");
+            }
+            expunge();
+            Long existing = PROGRAM_EPOCHS.get(new ProgramIdentityKey(program, null));
+            if (existing != null && Math.abs(existing) >= checkEpoch) {
+                throw new IllegalStateException(
+                        "inverted index ownership epoch is not newer than the latest attempt");
+            }
+            ADMISSIONS.keySet().removeIf(key -> key.program() == program);
+            PROGRAM_EPOCHS.put(
+                    new ProgramIdentityKey(program, CLEARED_PROGRAMS), -checkEpoch);
+        }
+
+        public static synchronized void publish(
+                Program program,
+                long checkEpoch,
+                java.util.Map<MemberExpr, InvertedIndexTypeEvidence> staged) {
+            java.util.Objects.requireNonNull(staged, "staged inverted index admissions");
+            expunge();
+            Long current = PROGRAM_EPOCHS.get(new ProgramIdentityKey(program, null));
+            if (current == null || current.longValue() != -checkEpoch) {
+                throw new IllegalStateException(
+                        "inverted index ownership check was superseded before publication");
+            }
+            ADMISSIONS.keySet().removeIf(key -> key.program() == program);
+            for (java.util.Map.Entry<MemberExpr, InvertedIndexTypeEvidence> entry
+                    : staged.entrySet()) {
+                MemberExpr member = entry.getKey();
+                InvertedIndexTypeEvidence evidence = entry.getValue();
+                if (member.receiver() != evidence.index()
+                        || !member.member().equals(evidence.fieldName())) {
+                    throw new IllegalArgumentException(
+                            "staged inverted admission does not match its exact AST site");
+                }
+                ADMISSIONS.put(
+                        new PairIdentityKey(program, member, CLEARED_SITES),
+                        new InvertedIndexAdmission(
+                                checkEpoch,
+                                evidence.className(),
+                                evidence.fieldName(),
+                                evidence.fieldType(),
+                                evidence.access()));
+            }
+            PROGRAM_EPOCHS.put(
+                    new ProgramIdentityKey(program, CLEARED_PROGRAMS), checkEpoch);
+        }
+
+        public static synchronized long requireProgramEpoch(Program program) {
+            expunge();
+            Long epoch = PROGRAM_EPOCHS.get(new ProgramIdentityKey(program, null));
+            if (epoch == null || epoch <= 0) {
+                throw new IllegalStateException(
+                        "program has no successful inverted-index ownership admission");
+            }
+            return epoch;
+        }
+
+        public static synchronized InvertedIndexAdmission require(
+                Program program,
+                MemberExpr member,
+                long checkEpoch,
+                InvertedIndexAccess access) {
+            expunge();
+            Long current = PROGRAM_EPOCHS.get(new ProgramIdentityKey(program, null));
+            if (current == null || current.longValue() != checkEpoch || checkEpoch <= 0) {
+                throw new IllegalStateException(
+                        "stale or missing inverted-index ownership epoch");
+            }
+            InvertedIndexAdmission admission = ADMISSIONS.get(
+                    new PairIdentityKey(program, member, null));
+            if (admission == null
+                    || admission.checkEpoch() != checkEpoch
+                    || admission.access() != access) {
+                throw new IllegalStateException(
+                        "inverted bracket-field site lacks exact ownership admission");
+            }
+            return admission;
+        }
+    }
+
     /**
      * Central preservation policy for checker-owned, identity-bound AST metadata.
      *
