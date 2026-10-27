@@ -18,6 +18,10 @@
 /integration/ @ORESoftware
 /.oreslang/ @ORESoftware
 
+# Exact-tree verification is a source-integrity trust boundary.
+/tools/verify-exact-source-tree.sh @ORESoftware
+/tools/test-verify-exact-source-tree.sh @ORESoftware
+
 # Must remain the final CODEOWNERS rules: privileged private-source exporter
 # verifies this exact order and sole independent @ORESoftware ownership.
 # GitHub applies last matching CODEOWNERS rule, so keep these after broad rules.
