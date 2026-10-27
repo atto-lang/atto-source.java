@@ -34,7 +34,10 @@ transport inside the same context.
 
 ## Bounded DNS and physical retirement
 
-Production guest requests use `BoundedDnsResolver`.
+Production guest requests in one Oreslang context share one
+`BoundedDnsResolver` pool. The system pool has 8 resolver workers and a
+32-entry queue; the outer native-I/O and HTTP connection budgets remain
+additional admission bounds.
 
 Each admitted hostname lookup:
 
@@ -141,12 +144,14 @@ capacity exactly once.
 
 ## Shutdown
 
-The request owns a revocable transport instance. Closing it:
+The request owns a revocable transport instance while the bounded resolver is
+context-owned. Closing one request transport:
 
-- revokes its bounded resolver;
+- flips that request's cancellation token so any in-flight shared-pool DNS
+  lookup is revoked without closing the pool for sibling/later requests;
 - wakes/closes any selector/channel in connect/TLS/write/read;
 - closes published responses and releases their connection leases;
-- prevents new admission.
+- prevents new admission on that request transport.
 
 The enclosing `AsyncNativeIo` operation remains the authoritative physical
 worker receipt. DNS adds a nested native-I/O loan so a late system-resolver
@@ -166,6 +171,7 @@ arbitrary egress.
 - DNS timeout/cancellation with a deliberately late resolver result;
 - bounded DNS queue rejection and physical-loan retirement;
 - cancel-vs-DNS without stale authorization;
+- request cancellation leaving the context-shared DNS pool reusable;
 - selector retirement on native worker interruption;
 - pinned-IP HTTPS with original-host SNI and hostname verification;
 - hostname mismatch rejection after pinned TCP connect;
