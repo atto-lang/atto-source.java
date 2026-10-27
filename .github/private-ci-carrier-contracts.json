@@ -31,10 +31,10 @@
     },
     "ClaimGraph-test/claimgraph-e2e": {
       "repository_id": 1350751074,
-      "base_sha": "42adc69714283625b7222efb8733c85ab8e66ef2",
+      "base_sha": "099f63f6161dcb1a424831bfc219377947ce1e66",
       "review_pr": 11,
       "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
-      "workflow_blob_sha": "c8f0c573d8b47067280638df9dcf0557bce8cfaf",
+      "workflow_blob_sha": "207cbfe67d3c945baf692abb195281a5d1a476c6",
       "test_plans": {
         "ci/test-plans/java-pr2170.json": {
           "blob_sha": "2de3fa3272cae4d123b7dce02189e0648e3cb7f9",
