@@ -1405,6 +1405,11 @@ public final class OwnershipChecker {
             // to affine Future<T> MOVE and synchronized Channel<T> handles;
             // guards, Rc and foreign/scheduler authority remain non-Send.
             for (Capture capture : captured.values.values()) {
+                if (capture.source.type.name().equals("InvertedArray")) {
+                    throw error(
+                            "independent task cannot capture InvertedArray storage; "
+                                    + "perform bracket-field access in the owning lexical turn");
+                }
                 if (!capture.source.type.isBorrow()
                         && forbiddenTaskCapability(capture.source.type)) {
                     throw error("independent task capture '" + capture.name
@@ -1709,6 +1714,30 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            Ast.TypeRef invertedReceiverType = receiverType(member.receiver(), scope);
+            if (invertedReceiverType != null) {
+                Ast.TypeRef concrete = invertedReceiverType.isBorrow()
+                        ? invertedReceiverType.borrowedTarget()
+                        : invertedReceiverType;
+                if (concrete.name().equals("InvertedArray")) {
+                    if (!member.member().equals("push")) {
+                        throw error(
+                                "InvertedArray exposes only push(...) and immediate [i].field access in v1");
+                    }
+                    ensureMutableReceiver(
+                            member.receiver(), scope, "InvertedArray.push");
+                    for (Ast.Expr argument : call.arguments()) {
+                        ValueInfo value = checkExpr(argument, scope, true);
+                        if (isBorrowValue(value) || containsMutexGuardType(value.type)) {
+                            throw error(
+                                    "InvertedArray.push requires owned/copy field values; "
+                                            + "borrows and guards cannot become column storage");
+                        }
+                    }
+                    return new ValueInfo(
+                            Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
+            }
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
@@ -2907,6 +2936,11 @@ public final class OwnershipChecker {
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
+            if (source.type.name().equals("InvertedArray")) {
+                throw error(
+                        "closure cannot capture InvertedArray storage; "
+                                + "perform bracket-field access in the owning lexical scope");
+            }
             if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
                 if (allowActorSelfCapture
                         && capture.name.equals("self")
