@@ -37,6 +37,7 @@ public final class InvertedIndexPlan {
             int recordBytes) { }
 
     private final Ast.IndexExpr site;
+    private final Ast.ClassDecl declaration;
     private final String className;
     private final String fieldName;
     private final int column;
@@ -45,12 +46,14 @@ public final class InvertedIndexPlan {
 
     private InvertedIndexPlan(
             Ast.IndexExpr site,
+            Ast.ClassDecl declaration,
             String className,
             String fieldName,
             int column,
             Access access,
             List<PhysicalField> schema) {
         this.site = Objects.requireNonNull(site, "inverted index site");
+        this.declaration = Objects.requireNonNull(declaration, "inverted nominal declaration");
         this.className = Objects.requireNonNull(className, "inverted class name");
         this.fieldName = Objects.requireNonNull(fieldName, "inverted field name");
         this.column = column;
@@ -110,7 +113,8 @@ public final class InvertedIndexPlan {
                     field.name(), field.kind(), recordBytes));
         }
         return new InvertedIndexPlan(
-                site, physical.className(), fieldName, column, access, fingerprint);
+                site, invertedClass, physical.className(), fieldName,
+                column, access, fingerprint);
     }
 
     public String className() { return className; }
@@ -134,7 +138,8 @@ public final class InvertedIndexPlan {
     public Bound bind(InvertedArray array) {
         Objects.requireNonNull(array, "inverted array");
         InvertedArray.Schema actual = array.schema();
-        if (!actual.className().equals(className)
+        if (!actual.representsDeclaration(declaration)
+                || !actual.className().equals(className)
                 || actual.fields().size() != schema.size()) {
             throw new IllegalArgumentException(
                     "inverted index plan/runtime schema mismatch");
