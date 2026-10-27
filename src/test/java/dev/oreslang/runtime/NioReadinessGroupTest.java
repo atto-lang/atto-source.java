@@ -7,6 +7,7 @@ import java.net.Socket;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
@@ -186,6 +187,73 @@ final class NioReadinessGroupTest {
         } finally {
             carrier.shutdownNow();
             assertTrue(carrier.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void concurrentReadAndWriteShareOneRegistrationAndRetireIndependently()
+            throws Exception {
+        try (var group = new NioReadinessGroup(1, 32, 16);
+             var listener = ServerSocketChannel.open();
+             var peer = new Socket()) {
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(
+                    InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 0));
+            var pendingAccept = group.acceptAsync(listener);
+            peer.connect(listener.getLocalAddress());
+            peer.setSoTimeout(3000);
+            var channel = pendingAccept.get(3, TimeUnit.SECONDS);
+            try {
+                var stalledRead = group.readAsync(channel, 4);
+                assertFalse(stalledRead.isDone(),
+                        "silent peer must keep OP_READ pending");
+
+                var duplicateRead = group.readAsync(channel, 1);
+                ExecutionException duplicateFailure = assertThrows(
+                        ExecutionException.class, duplicateRead::get);
+                assertInstanceOf(IllegalStateException.class,
+                        duplicateFailure.getCause());
+                assertTrue(duplicateFailure.getCause().getMessage()
+                                .contains("outstanding TCP read"),
+                        duplicateFailure.getCause().getMessage());
+
+                byte[] ping = "PING".getBytes(StandardCharsets.US_ASCII);
+                var concurrentWrite = group.writeAsync(channel, ping);
+                assertEquals(ping.length,
+                        concurrentWrite.get(3, TimeUnit.SECONDS));
+                assertArrayEquals(ping,
+                        peer.getInputStream().readNBytes(ping.length));
+
+                assertFalse(stalledRead.isDone(),
+                        "OP_WRITE completion must not retire the sibling OP_READ");
+                assertEquals(1, group.activeReadLeases());
+
+                long writeRetired = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (group.activeWriteLeases() != 0
+                        && System.nanoTime() < writeRetired) {
+                    Thread.sleep(1);
+                }
+                assertEquals(0, group.activeWriteLeases());
+
+                assertTrue(stalledRead.cancel(false),
+                        "pre-consumption read must remain independently cancellable");
+                long readRetired = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while ((group.activeReadLeases() != 0 || group.pendingCount() != 0)
+                        && System.nanoTime() < readRetired) {
+                    Thread.sleep(1);
+                }
+                assertEquals(0, group.activeReadLeases());
+                assertEquals(0, group.pendingCount());
+
+                var freshRead = group.readAsync(channel, 1);
+                peer.getOutputStream().write(0x5a);
+                assertArrayEquals(new byte[] {(byte) 0x5a},
+                        freshRead.get(3, TimeUnit.SECONDS),
+                        "same channel must re-arm after sibling write + read cancellation");
+            } finally {
+                channel.close();
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
         }
     }
 
