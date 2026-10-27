@@ -17,6 +17,7 @@ import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 /** Single bounded, strict UTF-8 source admission boundary for the CLI and file loader. */
@@ -52,6 +53,17 @@ public final class BoundedSourceReader {
      * a symlink or non-regular source is observed.
      */
     public static ReadResult readPhysicalWithByteCount(Path physicalPath) throws IOException {
+        return readPhysicalWithByteCount(physicalPath, null);
+    }
+
+    /**
+     * Reads an already-canonical physical source and, when supplied, requires
+     * it to match the resolver's earlier identity snapshot before any bytes
+     * are accepted.
+     */
+    public static ReadResult readPhysicalWithByteCount(
+            Path physicalPath,
+            BasicFileAttributes expectedIdentity) throws IOException {
         if (physicalPath == null) throw new IllegalArgumentException("source path cannot be null");
         Path absolute = physicalPath.toAbsolutePath().normalize();
         Path root = absolute.getRoot();
@@ -63,15 +75,16 @@ public final class BoundedSourceReader {
             if (rootStream instanceof SecureDirectoryStream<?> rawSecure) {
                 @SuppressWarnings("unchecked")
                 SecureDirectoryStream<Path> secureRoot = (SecureDirectoryStream<Path>) rawSecure;
-                return readSecure(secureRoot, absolute);
+                return readSecure(secureRoot, absolute, expectedIdentity);
             }
         }
-        return readPortableNoFollow(absolute);
+        return readPortableNoFollow(absolute, expectedIdentity);
     }
 
     private static ReadResult readSecure(
             SecureDirectoryStream<Path> secureRoot,
-            Path absolute) throws IOException {
+            Path absolute,
+            BasicFileAttributes expectedIdentity) throws IOException {
         List<SecureDirectoryStream<Path>> opened = new ArrayList<>();
         opened.add(secureRoot);
         SecureDirectoryStream<Path> current = secureRoot;
@@ -92,6 +105,7 @@ public final class BoundedSourceReader {
             }
             BasicFileAttributes before = view.readAttributes();
             requireRegularBounded(before, absolute);
+            requireExpectedIdentity(expectedIdentity, before, absolute);
 
             byte[] bytes;
             try (SeekableByteChannel channel = current.newByteChannel(leaf, READ_NOFOLLOW)) {
@@ -109,11 +123,14 @@ public final class BoundedSourceReader {
         }
     }
 
-    private static ReadResult readPortableNoFollow(Path absolute) throws IOException {
+    private static ReadResult readPortableNoFollow(
+            Path absolute,
+            BasicFileAttributes expectedIdentity) throws IOException {
         requireNoSymlinkComponents(absolute);
         BasicFileAttributes before = Files.readAttributes(
                 absolute, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         requireRegularBounded(before, absolute);
+        requireExpectedIdentity(expectedIdentity, before, absolute);
 
         byte[] bytes;
         try (SeekableByteChannel channel = Files.newByteChannel(absolute, READ_NOFOLLOW)) {
@@ -174,6 +191,21 @@ public final class BoundedSourceReader {
             buffer.clear();
         }
         return output.toByteArray();
+    }
+
+    private static void requireExpectedIdentity(
+            BasicFileAttributes expected,
+            BasicFileAttributes observed,
+            Path path) {
+        if (expected == null) return;
+        requireRegularBounded(expected, path);
+        if (!Objects.equals(expected.fileKey(), observed.fileKey())
+                || expected.size() != observed.size()
+                || !expected.lastModifiedTime().equals(observed.lastModifiedTime())
+                || !expected.creationTime().equals(observed.creationTime())) {
+            throw new IllegalArgumentException(
+                    "Oreslang source identity changed between resolution and snapshot: " + path);
+        }
     }
 
     private static void requireStableSnapshot(
