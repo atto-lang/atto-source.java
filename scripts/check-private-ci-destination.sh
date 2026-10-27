@@ -31,8 +31,11 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   if [[ "$key" == "${target,,}" ]]; then approved_id="$numeric_id"; fi
 done < "$policy"
 [[ -n "$approved_id" ]] || fail 'destination is absent from reviewed repository policy'
-[[ "$approved_id" != 1323575966 ]] ||
-  fail 'destination repository ID is quarantined by private-source incident policy'
+case "$approved_id" in
+  1323575966|1370782550|1324139596)
+    fail 'destination repository ID is quarantined by private-source incident policy'
+    ;;
+esac
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
 metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
