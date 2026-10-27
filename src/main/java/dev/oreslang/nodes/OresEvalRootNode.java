@@ -16,6 +16,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
+import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -7989,6 +7990,75 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
                 };
             }
+            if (receiver instanceof OutboundHttpRequest.Response response) {
+                return switch (name) {
+                    case "status" -> response.status();
+                    case "header_count" -> response.headerCount();
+                    case "header_name_at" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number index)
+                                || !isIntegral(index)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientResponse.header_name_at requires one integral index");
+                        }
+                        long value = index.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException("HTTP header index is outside int range");
+                        }
+                        return response.headerNameAt((int) value);
+                    };
+                    case "header_value_at" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number index)
+                                || !isIntegral(index)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientResponse.header_value_at requires one integral index");
+                        }
+                        long value = index.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException("HTTP header index is outside int range");
+                        }
+                        return response.headerValueAt((int) value);
+                    };
+                    case "header_values" -> (Invokable) args ->
+                            response.headerValues(
+                                    requireStringArg(
+                                            args,
+                                            "HttpClientResponse.header_values"));
+                    case "take_body" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientResponse.take_body");
+                        return response.takeBody();
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientResponse.close");
+                        return response.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown HttpClientResponse member " + name);
+                };
+            }
+            if (receiver instanceof OutboundHttpRequest.Body body) {
+                return switch (name) {
+                    case "closed" -> body.closed();
+                    case "read_chunk" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number limit)
+                                || !isIntegral(limit)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientBody.read_chunk requires one integral byte limit");
+                        }
+                        long value = limit.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException(
+                                    "HTTP body read limit is outside int range");
+                        }
+                        return body.readChunk((int) value);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientBody.close");
+                        return body.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown HttpClientBody member " + name);
+                };
+            }
             if (receiver instanceof HttpFacade http) {
                 return switch (name) {
                     case "handler" -> (Invokable) args -> {
@@ -8026,6 +8096,17 @@ public final class OresEvalRootNode extends RootNode {
                         String body = requireString(args.get(2), "body");
                         return HttpResponseDraft.text(body, (int) code,
                                 List.of(Map.entry("Content-Type", contentType)));
+                    };
+                    case "request" -> (Invokable) args -> {
+                        if (args.size() != 3 || !(args.get(2) instanceof List<?> headers)) {
+                            throw new IllegalArgumentException(
+                                    "http.request requires method, URL and List<(String,String)> headers");
+                        }
+                        return OutboundHttpRequest.request(
+                                context,
+                                requireString(args.get(0), "HTTP method"),
+                                requireString(args.get(1), "HTTP URL"),
+                                headers);
                     };
                     case "get_text", "get_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
@@ -9715,6 +9796,10 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
+            if (name.equals("HttpClientResponse"))
+                return value instanceof OutboundHttpRequest.Response;
+            if (name.equals("HttpClientBody"))
+                return value instanceof OutboundHttpRequest.Body;
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
@@ -9744,6 +9829,8 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
+            if (value instanceof OutboundHttpRequest.Response) return "HttpClientResponse";
+            if (value instanceof OutboundHttpRequest.Body) return "HttpClientBody";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
             if (value instanceof Boolean) return "bool";

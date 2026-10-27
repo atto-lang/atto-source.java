@@ -4,9 +4,11 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/ProxyOutboundLoopback.java'
       - 'src/main/java/dev/oreslang/runtime/ProxyLoopbackBridge.java'
+      - 'src/main/java/dev/oreslang/runtime/OutboundHttpRequest.java'
       - 'src/test/java/dev/oreslang/runtime/Proxy*Check.java'
       - 'src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackSuiteTest.java'
       - 'src/test/java/dev/oreslang/runtime/ProxyLoopbackBridgeContractTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OutboundHttpRequestGuestTest.java'
       - 'scripts/test-proxy-outbound-loopback.sh'
       - '.github/workflows/proxy-outbound-loopback.yml'
   workflow_dispatch:
@@ -40,8 +42,8 @@ jobs:
           java -version
           javac -version
           javac -version 2>&1 | grep -Eq '^javac 25([.]|$)'
-      - name: Maven real-socket transport suite
-        run: mvn -B -ntp -Dtest=ProxyOutboundLoopbackSuiteTest test
+      - name: Maven real-socket transport and guest-client suite
+        run: mvn -B -ntp -Dtest=ProxyOutboundLoopbackSuiteTest,OutboundHttpRequestGuestTest test
       - name: Compile current-runtime bridge contract
         run: mvn -B -ntp -Dtest=ProxyLoopbackBridgeContractTest test
       - name: Real loopback socket/race regression
