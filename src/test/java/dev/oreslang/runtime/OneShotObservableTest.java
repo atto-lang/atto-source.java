@@ -49,6 +49,37 @@ final class OneShotObservableTest {
     }
 
     @Test
+    void terminalAndConsumerCancellationRacesDetachWithoutCancellingSource()
+            throws Exception {
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 128; i++) {
+                OresFuture<Integer> source = new OresFuture<>();
+                OresFuture<Optional<Integer>> first =
+                        OneShotObservable.fromFuture(source).first();
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var cancel = pool.submit(() -> {
+                    start.await();
+                    first.cancel(false);
+                    return null;
+                });
+                final int value = i;
+                var complete = pool.submit(() -> {
+                    start.await();
+                    source.completeFromRuntime(value);
+                    return null;
+                });
+                start.countDown();
+                cancel.get(3, TimeUnit.SECONDS);
+                complete.get(3, TimeUnit.SECONDS);
+                assertEquals(0, source.pendingRuntimeWaiterCount());
+                assertFalse(source.isCancelled());
+                assertEquals(value, source.join());
+                assertTrue(first.isDone());
+            }
+        }
+    }
+
+    @Test
     void moveOnlyUnprovenSecondSubscriberIsDeniedEvenIfFirstSettled() {
         OneShotObservable<Integer> observable =
                 OneShotObservable.fromFuture(OresFuture.completed(13));
