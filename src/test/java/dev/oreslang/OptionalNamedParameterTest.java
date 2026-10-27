@@ -39,6 +39,30 @@ final class OptionalNamedParameterTest {
     }
 
     @Test
+    void omittableLambdaSyntaxFailsClosedInBothLambdaSpellings() {
+        for (String source : java.util.List.of(
+                """
+                pub routine main(): void {
+                    val f = (int value?) -> value;
+                    return;
+                }
+                """,
+                """
+                pub routine main(): void {
+                    val f = |int value?| -> value;
+                    return;
+                }
+                """)) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source));
+            assertTrue(
+                    failure.getMessage().contains("omittable lambda"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
     void scalarDefaultCanFillNonTrailingNamedHole() throws Exception {
         String code = """
                 @DefaultArgVals(b: 2)
