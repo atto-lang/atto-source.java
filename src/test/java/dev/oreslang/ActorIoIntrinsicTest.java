@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
@@ -28,6 +30,38 @@ final class ActorIoIntrinsicTest {
                   return;
                 }
                 """, "actor-io-out.ores");
+    }
+
+    @Test
+    void actorIoOutExecutesThroughActorContinuationWithoutProcessStdout() throws Exception {
+        var out = new ByteArrayOutputStream();
+        String code = """
+                define actor Worker as
+                  suspends receive(ActorMail<String> mail): void {
+                    await io.out.write(mail.value);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub suspends routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("hello");
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(out)
+                .build()) {
+            context.eval(Source.newBuilder(
+                    OresLanguage.ID, code, "actor-io-runtime.ores").build());
+        }
+        assertEquals(
+                "",
+                out.toString(StandardCharsets.UTF_8),
+                "actor io.out must not be routed to process stdout");
     }
 
     @Test
