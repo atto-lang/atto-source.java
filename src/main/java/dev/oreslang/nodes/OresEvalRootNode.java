@@ -7790,9 +7790,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof FileSystemFacade fs) {
                 return switch (name) {
-                    // Plain stdlib names are asynchronous. Legacy *_async spellings
-                    // remain aliases during migration; neither path performs I/O
-                    // on the guest/actor execution carrier.
+                    // Plain stdlib names are the only guest I/O surface.
+                    // Every operation returns a Future and performs host I/O
+                    // away from the guest/actor execution carrier.
                     case "read_text" -> (Invokable) fs::readText;
                     case "write_text" -> (Invokable) fs::writeText;
                     case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
