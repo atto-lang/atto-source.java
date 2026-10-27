@@ -72,6 +72,33 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
+    void borrowedSelfResultCannotCrossByValueCallBoundary() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Foo as
+                          pub val int value = 7;
+
+                          pub same(): self {
+                            return self;
+                          }
+                        end
+
+                        fnc consume(Foo value): void {
+                          return;
+                        }
+
+                        fnc bad(borrow Foo foo): void {
+                          consume(foo.same());
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("requires owned data")
+                || error.getMessage().contains("borrow"),
+                error::getMessage);
+    }
+
+    @Test
     void borrowedSelfResultMayBeUsedImmediatelyForCopyOnlyRead() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Foo as

@@ -1149,6 +1149,9 @@ public final class OwnershipChecker {
                                         + ownerClass.name() + "." + member.member() + "'");
                             }
                         }
+                        throw error("rt take cannot move a member projection until projection-level "
+                                + "move tracking can invalidate exactly that field slot; move the containing "
+                                + "owner or replace the field explicitly");
                     }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (isBorrowValue(taken)) {
@@ -2627,6 +2630,11 @@ public final class OwnershipChecker {
         ValueInfo argument = checkExpr(arg, scope, true);
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
+        }
+        if (isBorrowValue(argument)) {
+            throw error(callable + " argument " + position
+                    + " requires owned data; pass an explicit borrow parameter "
+                    + "instead of laundering a lexical loan through a by-value call");
         }
     }
 

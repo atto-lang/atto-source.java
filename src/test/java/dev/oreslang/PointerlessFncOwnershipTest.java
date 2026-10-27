@@ -117,6 +117,36 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void rtTakeMemberProjectionFailsClosedWithoutSlotInvalidation() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        define class Holder as
+                          pub let Box child;
+
+                          constructor(Box child) {
+                            self.child = child;
+                          }
+                        end
+
+                        fnc bad(): void {
+                          let Holder holder = new Holder(new Box());
+                          val Box moved = rt take holder.child;
+                          stdio.println(holder.child.value);
+                          stdio.println(moved.value);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("projection-level")
+                || error.getMessage().contains("field slot"),
+                error::getMessage);
+    }
+
+    @Test
     void rtCopyAndRtShareAreSafeForCopyValues() throws Exception {
         String output = run("""
                 pub routine main(): void {

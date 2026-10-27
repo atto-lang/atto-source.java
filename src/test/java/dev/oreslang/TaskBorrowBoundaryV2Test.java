@@ -223,7 +223,8 @@ final class TaskBorrowBoundaryV2Test {
                 end
 
                 fnc ok(borrow FluentBox box, bool flag): int {
-                  return (flag ? box.same() : box.same()).value;
+                  val FluentBox chosen = flag ? box.same() : box.same();
+                  return chosen.value;
                 }
                 """));
     }
