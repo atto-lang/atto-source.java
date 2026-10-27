@@ -48,9 +48,10 @@ public final class OresCompiler {
     }
 
     /**
-     * Build a backend-neutral, exact-AST lowering proof for one direct
-     * inverted-array field access. This does not enable guest inverted classes;
-     * callers must still pass the normal program admission gates.
+     * Build a backend-neutral, exact-AST lowering candidate for one direct
+     * inverted-array field access. This is a compiler staging API, not runtime
+     * authorization: guest inverted classes remain fail-closed until the
+     * whole-program type/ownership pipeline publishes lifetime admission.
      */
     public static InvertedIndexPlan planInvertedIndex(
             Ast.ClassDecl invertedClass,
