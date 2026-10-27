@@ -81,7 +81,12 @@ public final class MacroExpander {
             modules.add(new Ast.ModuleDecl(
                     module.name(), module.annotations(), module.contracts(), declarations));
         }
-        return new Ast.Program(program.namespace(), program.imports(), modules);
+        // Preserve the logical compile-time source identity on the *new* AST.
+        // Losing it here makes later hygiene/provenance consumers treat
+        // incremental file units as unrelated <memory> compilations.
+        return MacroSourceUnitIdentity.attach(
+                new Ast.Program(program.namespace(), program.imports(), modules),
+                expander.sourceUnitId);
     }
 
     private void index(Ast.Program program) {
