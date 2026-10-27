@@ -101,10 +101,23 @@ public final class SourceExportTable {
     public static ExportResolver.ExportBinding resolvePublicCallable(
             Ast.Program program,
             String externalName) {
+        return resolvePublicCallable(program, null, externalName);
+    }
+
+    /**
+     * Direct-call lookup for source call sites that intentionally admit both
+     * fnc and routine. This is distinct from import fnc, which remains
+     * first-class/reifiable and therefore fnc-only.
+     */
+    public static ExportResolver.ExportBinding resolvePublicCallable(
+            Ast.Program program,
+            String ownerNamespace,
+            String externalName) {
         Objects.requireNonNull(program, "program");
         ArrayList<ExportResolver.ExportBinding> matches = new ArrayList<>();
-        for (var namespace : ExportResolver.resolve(program).namespaces().values()) {
-            for (ExportResolver.ExportBinding binding : namespace) {
+        for (var namespace : ExportResolver.resolve(program).namespaces().entrySet()) {
+            if (ownerNamespace != null && !ownerNamespace.equals(namespace.getKey())) continue;
+            for (ExportResolver.ExportBinding binding : namespace.getValue()) {
                 if (binding.scope() != Ast.ExportScope.PUBLIC
                         || !binding.externalName().equals(externalName)
                         || (binding.localKind() != Ast.ExportKind.FNC
