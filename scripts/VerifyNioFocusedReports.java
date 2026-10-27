@@ -8,8 +8,17 @@ import org.w3c.dom.Element;
 
 /** Reject empty, incomplete or skipped-only focused JUnit qualification. */
 final class VerifyNioFocusedReports {
-    private static final String STALLED_READ =
-            "stalledTcpReadDoesNotOccupyTheOnlyCompletionCarrierAndCancelRearms";
+    private static final java.util.Map<String, java.util.Set<String>> REQUIRED_CASES =
+            java.util.Map.of(
+                    "NioReadinessGroupTest", java.util.Set.of(
+                            "stalledTcpReadDoesNotOccupyTheOnlyCompletionCarrierAndCancelRearms",
+                            "outboundConnectUsesSelectorAndTransfersNonblockingChannel",
+                            "unresolvedConnectFailsClosedBeforeReactorOrDnsAdmission",
+                            "refusedConnectRetiresLeaseAndDoesNotPoisonLaterConnect"),
+                    "NativeNetStdlibTest", java.util.Set.of(
+                            "realGuestOutboundConnectReadWriteThroughNonblockingKernel"),
+                    "StrictNonblockingStdlibIoTest", java.util.Set.of(
+                            "hostnameConnectFailsClosedBeforeBlockingDns"));
 
     public static void main(String[] args) throws Exception {
         if (args.length != 2) {
@@ -57,16 +66,21 @@ final class VerifyNioFocusedReports {
                     && failures == 0 && errors == 0
                     && root.getElementsByTagName("failure").getLength() == 0
                     && root.getElementsByTagName("error").getLength() == 0;
-            if (suite.equals("NioReadinessGroupTest")) {
-                int stalledReadCases = 0;
-                for (int i = 0; i < cases.getLength(); i++) {
-                    Element test = (Element) cases.item(i);
-                    if (test.getAttribute("name").equals(STALLED_READ)
-                            && test.getElementsByTagName("skipped").getLength() == 0) {
-                        stalledReadCases++;
-                    }
+            var requiredCases = REQUIRED_CASES.getOrDefault(suite, java.util.Set.of());
+            var observedRequired = new java.util.HashSet<String>();
+            for (int i = 0; i < cases.getLength(); i++) {
+                Element test = (Element) cases.item(i);
+                String name = test.getAttribute("name");
+                if (requiredCases.contains(name)
+                        && test.getElementsByTagName("skipped").getLength() == 0) {
+                    observedRequired.add(name);
                 }
-                valid &= stalledReadCases == 1;
+            }
+            if (!observedRequired.equals(requiredCases)) {
+                var missing = new java.util.HashSet<>(requiredCases);
+                missing.removeAll(observedRequired);
+                problems.add(suite + ": missing required executed case(s) " + missing);
+                valid = false;
             }
             System.out.printf("%s tests=%d executed=%d skipped=%d failures=%d errors=%d%n",
                     suite, tests, tests - skipped, skipped, failures, errors);
