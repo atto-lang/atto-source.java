@@ -12,11 +12,14 @@ import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
- * Backend-neutral lowering proof for one direct field access rooted at an
+ * Backend-neutral lowering candidate for one direct field access rooted at an
  * inverted-array bracket expression.
  *
- * <p>The plan is bound to the exact {@link Ast.IndexExpr} instance admitted by
- * the compiler. It never exposes a row handle or row view to guest code:
+ * <p>This object is deliberately <em>not</em> program-level execution
+ * authority: executable guest inverted classes remain fail-closed until the
+ * type/ownership pipeline can publish a whole-program lifetime proof. The plan
+ * is bound to the exact {@link Ast.IndexExpr} instance supplied by the compiler
+ * staging API and never exposes a row handle or row view to guest code:
  * bracket selection is immediately fused with a statically resolved field
  * read/write. Rewritten or reconstructed AST nodes must be re-planned.
  *
@@ -55,7 +58,7 @@ public final class InvertedIndexPlan {
         this.schema = List.copyOf(schema);
     }
 
-    public static InvertedIndexPlan compile(
+    static InvertedIndexPlan compile(
             Ast.ClassDecl invertedClass,
             Ast.IndexExpr site,
             String fieldName,
@@ -63,7 +66,7 @@ public final class InvertedIndexPlan {
         return compile(invertedClass, Map.of(), site, fieldName, access);
     }
 
-    public static InvertedIndexPlan compile(
+    static InvertedIndexPlan compile(
             Ast.ClassDecl invertedClass,
             Map<String, Ast.TypeRef> aliases,
             Ast.IndexExpr site,
@@ -115,7 +118,7 @@ public final class InvertedIndexPlan {
     public int column() { return column; }
     public Access access() { return access; }
 
-    /** Identity check: structural equality is not lowering authority. */
+    /** Identity check: structural equality is not a valid staging-site match. */
     public void requireExactSite(Ast.IndexExpr candidate) {
         if (candidate != site) {
             throw new IllegalStateException(
