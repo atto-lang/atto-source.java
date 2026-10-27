@@ -16,6 +16,9 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class InvertedColumnStore implements AutoCloseable {
     private static final int MAX_RECORD_BYTES = 64 * 1024;
+    // Keep schema metadata and per-column allocations bounded before
+    // constructing buffers, loan vectors or generational row metadata.
+    static final int MAX_COLUMN_COUNT = 1024;
     // Preallocated empty backing for allocation-free teardown. No subsequent
     // store operation may reach these arrays after closed=true is published.
     private static final byte[] EMPTY_COLUMN = new byte[0];
@@ -146,6 +149,10 @@ public final class InvertedColumnStore implements AutoCloseable {
     public InvertedColumnStore(ColumnSpec... types) {
         if (types == null || types.length == 0) {
             throw new IllegalArgumentException("inverted store requires at least one field");
+        }
+        if (types.length > MAX_COLUMN_COUNT) {
+            throw new IllegalArgumentException(
+                    "inverted store exceeds maximum column count: " + MAX_COLUMN_COUNT);
         }
         specs = types.clone();
         kinds = new Kind[specs.length];
