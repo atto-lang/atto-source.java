@@ -785,7 +785,7 @@ class PrivateCiV3Test(unittest.TestCase):
             raise AssertionError(route)
 
         with patch.object(v3.legacy, "gh_api", side_effect=weak_api):
-            with self.assertRaisesRegex(v3.Denied, "bypasses"):
+            with self.assertRaisesRegex(v3.Denied, "bypass policy"):
                 v3.checked_carrier_main("trusted/ci", carrier)
 
         no_checks = json.loads(json.dumps(protection))
@@ -805,6 +805,66 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3.legacy, "gh_api", side_effect=no_checks_api):
             with self.assertRaisesRegex(v3.Denied, "strict required CI"):
                 v3.checked_carrier_main("trusted/ci", carrier)
+
+    def test_carrier_requires_exact_review_bypass_policy(self):
+        carrier = contract()
+        protection = {
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["verifier-tests"],
+                "checks": [{
+                    "context": "verifier-tests",
+                    "app_id": v3.legacy.GITHUB_ACTIONS_APP_ID,
+                }],
+            },
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
+                "required_approving_review_count": 1,
+                "bypass_pull_request_allowances": {
+                    "users": [], "teams": [], "apps": [],
+                },
+            },
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+            "required_conversation_resolution": {"enabled": True},
+        }
+
+        def run(current):
+            def api(route, method="GET", payload=None):
+                if route == "repos/trusted/ci/branches/main":
+                    return {
+                        "name": "main",
+                        "protected": True,
+                        "commit": {"sha": BASE},
+                    }
+                if route == "repos/trusted/ci/branches/main/protection":
+                    return current
+                raise AssertionError(route)
+            with patch.object(v3.legacy, "gh_api", side_effect=api):
+                return v3.checked_carrier_main("trusted/ci", carrier)
+
+        variants = []
+        missing = json.loads(json.dumps(protection))
+        del missing["required_pull_request_reviews"]["bypass_pull_request_allowances"]
+        variants.append(missing)
+        for value in (
+            [],
+            {"users": [], "teams": []},
+            {"users": [], "teams": [], "apps": [], "future": []},
+            {"users": None, "teams": [], "apps": []},
+            {"users": [{"login": "bypass"}], "teams": [], "apps": []},
+        ):
+            current = json.loads(json.dumps(protection))
+            current["required_pull_request_reviews"]["bypass_pull_request_allowances"] = value
+            variants.append(current)
+
+        for current in variants:
+            with self.subTest(current=current):
+                with self.assertRaisesRegex(v3.Denied, "bypass policy"):
+                    run(current)
 
     def test_carrier_requires_last_push_approval_and_conversation_resolution(self):
         carrier = contract()
