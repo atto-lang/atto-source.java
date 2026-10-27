@@ -156,8 +156,6 @@ final class SelectorTransportConnection implements AutoCloseable {
         driveHandshake(
                 created.getHandshakeStatus(),
                 phaseDeadline(handshakeTimeout));
-        appIn.clear();
-        appIn.flip();
     }
 
     InputStream input() {
@@ -323,12 +321,12 @@ final class SelectorTransportConnection implements AutoCloseable {
                 }
             }
 
-            appIn.clear();
+            appIn.compact();
             SSLEngineResult result =
                     engine.unwrap(netIn, appIn);
+            appIn.flip();
             switch (result.getStatus()) {
                 case OK -> {
-                    appIn.flip();
                     driveHandshakeIfNeeded(
                             result.getHandshakeStatus(),
                             deadline);
@@ -355,14 +353,12 @@ final class SelectorTransportConnection implements AutoCloseable {
                     }
                 }
                 case BUFFER_OVERFLOW -> {
-                    appIn = grow(
+                    appIn = growReadBuffer(
                             appIn,
                             engine.getSession()
                                     .getApplicationBufferSize());
-                    appIn.flip();
                 }
                 case CLOSED -> {
-                    appIn.flip();
                     if (appIn.hasRemaining()) {
                         return copy(appIn, destination);
                     }
@@ -441,12 +437,12 @@ final class SelectorTransportConnection implements AutoCloseable {
                         }
                     }
 
-                    appIn.clear();
+                    appIn.compact();
                     SSLEngineResult result =
                             engine.unwrap(netIn, appIn);
+                    appIn.flip();
                     switch (result.getStatus()) {
                         case OK -> {
-                            appIn.flip();
                             status = result.getHandshakeStatus();
                         }
                         case BUFFER_UNDERFLOW -> {
@@ -459,11 +455,10 @@ final class SelectorTransportConnection implements AutoCloseable {
                             }
                         }
                         case BUFFER_OVERFLOW -> {
-                            appIn = grow(
+                            appIn = growReadBuffer(
                                     appIn,
                                     engine.getSession()
                                             .getApplicationBufferSize());
-                            appIn.flip();
                         }
                         case CLOSED ->
                             throw new SSLException(
@@ -471,16 +466,16 @@ final class SelectorTransportConnection implements AutoCloseable {
                     }
                 }
                 case NEED_UNWRAP_AGAIN -> {
-                    appIn.clear();
+                    appIn.compact();
                     SSLEngineResult result =
                             engine.unwrap(netIn, appIn);
+                    appIn.flip();
                     if (result.getStatus()
                             == SSLEngineResult.Status.BUFFER_OVERFLOW) {
-                        appIn = grow(
+                        appIn = growReadBuffer(
                                 appIn,
                                 engine.getSession()
                                         .getApplicationBufferSize());
-                        appIn.flip();
                         continue;
                     }
                     if (result.getStatus()
@@ -500,7 +495,6 @@ final class SelectorTransportConnection implements AutoCloseable {
                         throw new SSLException(
                                 "TLS engine closed during handshake unwrap");
                     }
-                    appIn.flip();
                     status = result.getHandshakeStatus();
                 }
             }
@@ -656,6 +650,21 @@ final class SelectorTransportConnection implements AutoCloseable {
                 ByteBuffer.allocate(capacity);
         original.flip();
         replacement.put(original);
+        return replacement;
+    }
+
+    private static ByteBuffer growReadBuffer(
+            ByteBuffer original,
+            int suggestedCapacity) {
+        int capacity = Math.max(
+                suggestedCapacity,
+                Math.max(
+                        original.capacity() + 1,
+                        original.capacity() * 2));
+        ByteBuffer replacement =
+                ByteBuffer.allocate(capacity);
+        replacement.put(original);
+        replacement.flip();
         return replacement;
     }
 
