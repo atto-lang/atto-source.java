@@ -1484,7 +1484,7 @@ public final class OwnershipChecker {
             // to affine Future<T> MOVE and synchronized Channel<T> handles;
             // guards, Rc and foreign/scheduler authority remain non-Send.
             for (Capture capture : captured.values.values()) {
-                if (capture.containsInvertedArrayStorage(source.type)) {
+                if (containsInvertedArrayStorage(capture.source.type)) {
                     throw error(
                             "independent task cannot capture InvertedArray storage; "
                                     + "perform bracket-field access in the owning lexical turn");
