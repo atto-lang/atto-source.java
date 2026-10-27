@@ -632,7 +632,7 @@ final class GeneratorLanguageTest {
     }
 
     @Test
-    void structuralParameterCannotSurvivePlainSuspendCallable() {
+    void structuralParameterCannotSurvivePlainSuspendCallableOrMethod() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define class Box as
                   pub val int value = 1;
@@ -641,6 +641,18 @@ final class GeneratorLanguageTest {
                   rt cooperate;
                   return box.value;
                 }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                  pub val int value = 1;
+                end
+                define class Worker as
+                  pub suspend use(structural Box box): int {
+                    rt cooperate;
+                    return box.value;
+                  }
+                end
                 """));
     }
 
