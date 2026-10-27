@@ -68,3 +68,8 @@ mvn verify
 Private-source cross-repository CI remains subject to
 `docs/security/CI_PRIVATE_SOURCE_MIRRORING.md`: an unapproved funded runner
 is **not** authorization to export private Git objects.
+
+- The recursive borrowed-type proof also expands local named type aliases,
+  including chained aliases and substituted generic arguments, before an
+  owned field/call/binding is admitted. Unresolved or cyclic aliases fail
+  closed. Imported opaque aliases still require linked type evidence.

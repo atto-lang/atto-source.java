@@ -4794,15 +4794,39 @@ public final class OwnershipChecker {
     }
 
     /**
-     * Compile-time-only transitive loan test. All structural product fields,
-     * tuples, unions and generic arguments are encoded as TypeRef children.
-     * This must not be delegated to interpreter/runtime borrow counters.
+     * Source-only transitive loan proof. A generic alias does not make its
+     * borrowed target owned: substitute and recursively inspect the target.
+     * Unresolved alias arity and recursive aliases fail closed.
      */
-    private static boolean containsBorrowType(Ast.TypeRef type) {
+    private boolean containsBorrowType(Ast.TypeRef type) {
+        return containsBorrowType(type, new HashSet<>());
+    }
+
+    private boolean containsBorrowType(Ast.TypeRef type, Set<String> visitingAliases) {
         if (type == null) return false;
         if (type.isBorrow()) return true;
         for (Ast.TypeRef child : type.arguments()) {
-            if (containsBorrowType(child)) return true;
+            if (containsBorrowType(child, visitingAliases)) return true;
+        }
+        for (Ast.ModuleDecl module : checkedProgram.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.TypeAliasDecl alias)
+                        || !alias.name().equals(type.name())) continue;
+                if (type.inferArguments()
+                        || type.arguments().size() != alias.genericParameters().size()) {
+                    return true;
+                }
+                String identity = module.name() + "." + alias.name();
+                if (!visitingAliases.add(identity)) return true;
+                try {
+                    Ast.TypeRef expanded = substituteType(
+                            alias.target(),
+                            genericBindings(alias.genericParameters(), type.arguments()));
+                    if (containsBorrowType(expanded, visitingAliases)) return true;
+                } finally {
+                    visitingAliases.remove(identity);
+                }
+            }
         }
         return false;
     }

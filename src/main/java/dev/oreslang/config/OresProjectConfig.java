@@ -4,6 +4,7 @@ import dev.oreslang.imports.ImportRules;
 import org.tomlj.Toml;
 import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
+import org.tomlj.TomlTable;
 
 import java.io.File;
 import java.io.IOException;
@@ -28,6 +29,38 @@ public final class OresProjectConfig {
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
+    /**
+     * Oreslang exposes exactly two public library layers.
+     * CORE is freestanding/no-OS; STD is the hosted/platform layer.
+     * Java/Graal is a hosted backend, so it executes STD builds only.
+     */
+    public enum LibraryProfile {
+        STD("std"),
+        CORE("core");
+
+        private final String manifestValue;
+
+        LibraryProfile(String manifestValue) {
+            this.manifestValue = manifestValue;
+        }
+
+        public String manifestValue() {
+            return manifestValue;
+        }
+
+        static LibraryProfile parse(Object value) {
+            if (value == null) return STD;
+            if (!(value instanceof String name)) {
+                throw new IllegalArgumentException("build.library_profile must be a string");
+            }
+            for (LibraryProfile profile : values()) {
+                if (profile.manifestValue.equals(name)) return profile;
+            }
+            throw new IllegalArgumentException(
+                    "unsupported build.library_profile: " + name + " (expected core or std)");
+        }
+    }
+
     private final Path manifestPath;
     private final Path projectRoot;
     private final String projectName;
@@ -36,6 +69,7 @@ public final class OresProjectConfig {
     private final List<Path> importPaths;
     private final List<Path> environmentPaths;
     private final Path mainEntrypoint;
+    private final LibraryProfile libraryProfile;
 
     private OresProjectConfig(
             Path manifestPath,
@@ -45,7 +79,8 @@ public final class OresProjectConfig {
             List<Path> sourceRoots,
             List<Path> importPaths,
             List<Path> environmentPaths,
-            Path mainEntrypoint) {
+            Path mainEntrypoint,
+            LibraryProfile libraryProfile) {
         this.manifestPath = manifestPath;
         this.projectRoot = projectRoot;
         this.projectName = projectName;
@@ -54,6 +89,7 @@ public final class OresProjectConfig {
         this.importPaths = List.copyOf(importPaths);
         this.environmentPaths = List.copyOf(environmentPaths);
         this.mainEntrypoint = mainEntrypoint;
+        this.libraryProfile = java.util.Objects.requireNonNull(libraryProfile, "libraryProfile");
     }
 
     public static OresProjectConfig discover(Path start, Map<String, String> environment) throws IOException {
@@ -75,7 +111,8 @@ public final class OresProjectConfig {
                 List.of(root),
                 List.of(),
                 parseEnvironmentPaths(environment),
-                null);
+                null,
+                LibraryProfile.STD);
     }
 
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
@@ -99,6 +136,22 @@ public final class OresProjectConfig {
                     MANIFEST_NAME + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
 
+        Object rawBuild = toml.get("build");
+        if (rawBuild != null && !(rawBuild instanceof TomlTable)) {
+            throw new IllegalArgumentException("[build] must be a table");
+        }
+        TomlTable buildTable = (TomlTable) rawBuild;
+        if (buildTable != null) {
+            for (String key : buildTable.keySet()) {
+                if (!"library_profile".equals(key)) {
+                    throw new IllegalArgumentException(
+                            "unknown build configuration key: " + key);
+                }
+            }
+        }
+        LibraryProfile libraryProfile = LibraryProfile.parse(
+                buildTable == null ? null : buildTable.get("library_profile"));
+
         Path manifestDir = absoluteManifest.getParent();
         String rootText = defaultString(toml.getString("project.root"), ".");
         Path projectRoot = resolvePath(manifestDir, rootText);
@@ -119,7 +172,8 @@ public final class OresProjectConfig {
                 sourceRoots,
                 importPaths,
                 parseEnvironmentPaths(environment),
-                mainEntrypoint);
+                mainEntrypoint,
+                libraryProfile);
     }
 
     public Optional<Path> manifestPath() { return Optional.ofNullable(manifestPath); }
@@ -130,6 +184,21 @@ public final class OresProjectConfig {
     public List<Path> importPaths() { return importPaths; }
     public List<Path> environmentPaths() { return environmentPaths; }
     public Optional<Path> mainEntrypoint() { return Optional.ofNullable(mainEntrypoint); }
+    public LibraryProfile libraryProfile() { return libraryProfile; }
+
+    /**
+     * Java/Graal is hosted. A core build must fail before import traversal,
+     * parsing, compiler emission or guest execution rather than being
+     * mislabeled as a freestanding artifact.
+     */
+    public void requireStdJavaBackend() {
+        if (libraryProfile != LibraryProfile.STD) {
+            throw new IllegalArgumentException(
+                    "build.library_profile = \"" + libraryProfile.manifestValue()
+                            + "\" requests ores.core freestanding execution, which is not yet "
+                            + "supported by the hosted Java/Graal backend; no freestanding code was compiled");
+        }
+    }
 
     /**
      * Ordered import search roots. Project-local paths intentionally win over

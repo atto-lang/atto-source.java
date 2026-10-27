@@ -275,6 +275,43 @@ final class StaticBorrowEscapeBoundaryTest {
     }
 
     @Test
+    void nominalAndChainedAliasesCannotHideBorrowedClassFields() {
+        rejects("""
+                type Loan = Option<borrow int>;
+                define class Unsafe as
+                  pub let Loan member;
+                end
+                """, "nested borrow");
+        rejects("""
+                type Loan = Option<borrow int>;
+                type Indirect = Loan;
+                define class Unsafe as
+                  pub let Indirect member;
+                end
+                """, "nested borrow");
+    }
+
+    @Test
+    void genericAliasSubstitutionCannotHideBorrowedFields() {
+        rejects("""
+                type Holder<T> = Option<borrow T>;
+                define class Unsafe as
+                  pub let Holder<int> member;
+                end
+                """, "nested borrow");
+    }
+
+    @Test
+    void ownedAliasDoesNotGetRejectedByBorrowChecker() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                type Holder<T> = Option<T>;
+                define class Safe as
+                  pub let Holder<int> member;
+                end
+                """)));
+    }
+
+    @Test
     void compilerEntrypointRejectsFreshLoanYieldBeforeExecution() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 fnc gen* leaked(): Iterator<int> {
