@@ -6943,7 +6943,8 @@ public final class OresEvalRootNode extends RootNode {
         // Local callable bindings win over class members, and a class method
         // family wins over same-named file/module callables.
         private Ast.CallExpr implicitSelfMethodCall(Ast.CallExpr call, Env env) {
-            if (!(call.callee() instanceof Ast.NameExpr name)
+            if (call.origin() != Ast.CallOrigin.DIRECT
+                    || !(call.callee() instanceof Ast.NameExpr name)
                     || env.lookup(name.name()) != Env.MISSING) return null;
             Object receiver = env.lookup("self");
             if (!(receiver instanceof OresObject object)
