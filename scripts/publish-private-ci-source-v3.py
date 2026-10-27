@@ -507,27 +507,13 @@ def checked_carrier_main(repository, contract):
         return review_attested_carrier_main(repository, contract, branch)
 
     protection = legacy.gh_api(f"repos/{repository}/branches/main/protection")
-    reviews = protection.get("required_pull_request_reviews")
-    if (not isinstance(reviews, dict)
-            or reviews.get("require_code_owner_reviews") is not True
-            or reviews.get("dismiss_stale_reviews") is not True
-            or not isinstance(reviews.get("required_approving_review_count"), int)
-            or isinstance(reviews.get("required_approving_review_count"), bool)
-            or reviews.get("required_approving_review_count", 0) < 1):
-        raise Denied("carrier main does not enforce independent CODEOWNER review")
-    admins = protection.get("enforce_admins")
-    force = protection.get("allow_force_pushes")
-    delete = protection.get("allow_deletions")
-    if (not isinstance(admins, dict) or admins.get("enabled") is not True
-            or not isinstance(force, dict) or force.get("enabled") is not False
-            or not isinstance(delete, dict) or delete.get("enabled") is not False):
-        raise Denied("carrier main admin/force/delete protection incomplete")
-    bypasses = reviews.get("bypass_pull_request_allowances")
-    if bypasses is not None:
-        if (not isinstance(bypasses, dict)
-                or any(not isinstance(bypasses.get(key, []), list)
-                       or bypasses.get(key) for key in ("users", "teams", "apps"))):
-            raise Denied("carrier main has pull-request review bypasses")
+    try:
+        # A protected carrier executes source-bearing CI. Keep its live
+        # branch-protection contract at least as strict as the source authority,
+        # including last-push independence and strict nonempty required checks.
+        legacy._require_strict_source_protection(protection)
+    except legacy.Denied as exc:
+        raise Denied("carrier main protection contract is not strict enough") from exc
 
     codeowners, _ = remote_carrier_file(
         repository, legacy.CODEOWNERS_PATH, base_sha, MAX_GOVERNANCE_FILE
