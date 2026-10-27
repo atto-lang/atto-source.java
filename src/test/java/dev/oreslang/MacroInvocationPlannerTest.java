@@ -1482,6 +1482,55 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void typedQuoteLiteralNodesHaveDistinctIdentitiesAndInvocationOrigins() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro add_one(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote(unquote(value) + 1);
+                        }
+                        fnc first() -> int {
+                            return add_one!(syntax expr 40);
+                        }
+                        fnc second() -> int {
+                            return add_one!(syntax expr 41);
+                        }
+                        """));
+
+        Ast.FunctionDecl firstFn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().get(0));
+        Ast.FunctionDecl secondFn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().get(1));
+        Ast.BinaryExpr first = assertInstanceOf(
+                Ast.BinaryExpr.class,
+                assertInstanceOf(Ast.ReturnStmt.class, firstFn.body().getFirst()).value());
+        Ast.BinaryExpr second = assertInstanceOf(
+                Ast.BinaryExpr.class,
+                assertInstanceOf(Ast.ReturnStmt.class, secondFn.body().getFirst()).value());
+
+        assertEquals(1L, assertInstanceOf(Ast.LiteralExpr.class, first.right()).value());
+        assertEquals(1L, assertInstanceOf(Ast.LiteralExpr.class, second.right()).value());
+        assertNotSame(first.right(), second.right(),
+                "separate macro invocations must not share compiler AST node identities");
+
+        List<MacroSyntaxProvenance.Origin> firstOrigins =
+                MacroSyntaxProvenance.lookup(first.right());
+        List<MacroSyntaxProvenance.Origin> secondOrigins =
+                MacroSyntaxProvenance.lookup(second.right());
+        assertEquals(1, firstOrigins.size(),
+                "the first generated literal has only its own invocation origin");
+        assertEquals(1, secondOrigins.size(),
+                "the second generated literal has only its own invocation origin");
+        assertEquals(MacroSyntaxProvenance.EmissionKind.TEMPLATE_QUOTE,
+                firstOrigins.getFirst().emissionKind());
+        assertEquals(MacroSyntaxProvenance.EmissionKind.TEMPLATE_QUOTE,
+                secondOrigins.getFirst().emissionKind());
+        assertNotEquals(firstOrigins.getFirst().hygiene().invocationSite(),
+                secondOrigins.getFirst().hygiene().invocationSite());
+    }
+
+    @Test
     void duplicatedUnquoteCannotCloneEffectsOrOwnershipTransfers() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
