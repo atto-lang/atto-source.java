@@ -7958,10 +7958,23 @@ public final class OresEvalRootNode extends RootNode {
                         return context.http().handler(this, type, kind);
                     };
                     case "listen" -> (Invokable) args -> {
-                        if (args.size() != 5) throw new IllegalArgumentException("http.listen(host, port, capacity, body_limit, deadline_ms)");
-                        return context.http().listen(requireString(args.get(0), "host"),
-                            ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue(),
-                            ((Number) args.get(3)).intValue(), ((Number) args.get(4)).intValue());
+                        if (ActorRuntime.inActorExecution())
+                            throw new SecurityException("HTTP listeners belong to the supervisor");
+                        if (args.size() != 5)
+                            throw new IllegalArgumentException("http.listen(host, port, capacity, body_limit, deadline_ms)");
+                        String host = requireString(args.get(0), "host");
+                        if (!(args.get(1) instanceof Number port) || !isIntegral(port)
+                                || !(args.get(2) instanceof Number capacity) || !isIntegral(capacity)
+                                || !(args.get(3) instanceof Number bodyLimit) || !isIntegral(bodyLimit)
+                                || !(args.get(4) instanceof Number deadline) || !isIntegral(deadline))
+                            throw new IllegalArgumentException("http.listen numeric limits must be integers");
+                        int portValue = port.intValue();
+                        int capacityValue = capacity.intValue();
+                        int bodyLimitValue = bodyLimit.intValue();
+                        int deadlineValue = deadline.intValue();
+                        return context.nativeIo().submit(context, RuntimePermissions.Permission.NET,
+                                "http.listen", () -> context.http().listen(host, portValue,
+                                        capacityValue, bodyLimitValue, deadlineValue));
                     };
                     case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
                     case "response_empty" -> (Invokable) args -> {
