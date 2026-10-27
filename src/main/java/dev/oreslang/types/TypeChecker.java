@@ -3859,6 +3859,17 @@ public final class TypeChecker {
             if (ioMember != null) return ioMember;
             Type httpMember = builtinHttpMember(sumReceiver, member.member());
             if (httpMember != null) return httpMember;
+            if (sumReceiver instanceof Named builtinIo
+                    && (builtinIo.name().equals("fs")
+                        || builtinIo.name().equals("File")
+                        || builtinIo.name().equals("network")
+                        || builtinIo.name().equals("net")
+                        || builtinIo.name().equals("http")
+                        || builtinIo.name().equals("env")
+                        || builtinIo.name().equals("TcpConnection"))) {
+                throw new IllegalArgumentException(
+                        "unknown " + builtinIo.name() + " I/O member '" + member.member() + "'");
+            }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
             if (sumReceiver instanceof Named actorRef
@@ -4016,12 +4027,7 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("process")
                         || name.name().equals("actor")
-                        || name.name().equals("fs")
-                        || name.name().equals("File")
-                        || name.name().equals("network")
-                        || name.name().equals("net")
-                        || name.name().equals("http")
-                        || name.name().equals("env"))) return Unknown.INSTANCE;
+                        )) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
