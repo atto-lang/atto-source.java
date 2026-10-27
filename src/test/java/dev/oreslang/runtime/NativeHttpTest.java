@@ -40,7 +40,7 @@ class NativeHttpTest {
                   }
                 end
                 pub async routine main(): void {
-                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val server = await http.listen("127.0.0.1", 0, 1, 1024, 5000);
                   val handler = http.handler("Worker").pooled(1);
                   stdio.println(server.port);
                   for (let int i = 0; i < 8; i = i + 1) {
@@ -84,7 +84,7 @@ class NativeHttpTest {
                   }
                 end
                 pub async routine main(): void {
-                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val server = await http.listen("127.0.0.1", 0, 1, 1024, 5000);
                   val handler = http.handler("Worker").pooled(1);
                   stdio.println(server.port);
                   for (let int i = 0; i < 3; i = i + 1) {
@@ -127,7 +127,7 @@ class NativeHttpTest {
                   }
                 end
                 pub async routine main(): void {
-                  val server = http.listen("127.0.0.1", 0, 32, 1024, 5000);
+                  val server = await http.listen("127.0.0.1", 0, 32, 1024, 5000);
                   val handler = http.handler("Worker").pooled(2);
                   stdio.println(server.port);
                   for (let int i = 0; i < 32; i = i + 1) {
@@ -188,7 +188,7 @@ class NativeHttpTest {
               }
             end
             pub async routine main(): void {
-              val server = http.listen("127.0.0.1", 0, 4, 1024, 5000);
+              val server = await http.listen("127.0.0.1", 0, 4, 1024, 5000);
               stdio.println(server.port);
               val request = await server.accept();
               val worker = spawn Owner();
@@ -227,7 +227,7 @@ class NativeHttpTest {
               }
             end
             pub async routine main(): void {
-              val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+              val server = await http.listen("127.0.0.1", 0, 1, 1024, 5000);
               stdio.println(server.port);
               val request = await server.accept();
               val completion = request.completion;
@@ -249,7 +249,7 @@ class NativeHttpTest {
     @Test void completionReportsDeadlineWithoutAnActor() throws Exception {
         String output = run("""
             pub async routine main(): void {
-              val server = http.listen("127.0.0.1", 0, 1, 1024, 100);
+              val server = await http.listen("127.0.0.1", 0, 1, 1024, 100);
               stdio.println(server.port);
               val request = await server.accept();
               val completion = request.completion;
@@ -280,7 +280,7 @@ class NativeHttpTest {
                   }
                 end
                 pub async routine main(): void {
-                  val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                  val server = await http.listen("127.0.0.1", 0, 2, 1024, 5000);
                   stdio.println(server.port);
                   val request = await server.accept();
                   val done = request.completion;
@@ -322,7 +322,7 @@ class NativeHttpTest {
               }
             end
             pub async routine main(): void {
-              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              val server = await http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               for (let int i = 0; i < 3; i = i + 1) {
                 val request = await server.accept();
@@ -408,7 +408,7 @@ class NativeHttpTest {
               }
             end
             pub async routine main(): void {
-              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              val server = await http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               val request = await server.accept();
               val worker = spawn Stream();
