@@ -43,7 +43,12 @@ def runner_allocated(job):
     )
 
 def qualified(job):
-    return runner_allocated(job) and any(meaningful(s) for s in (job.get("steps") or []))
+    return (
+        job.get("status") == "completed"
+        and job.get("conclusion") is not None
+        and runner_allocated(job)
+        and any(meaningful(s) for s in (job.get("steps") or []))
+    )
 
 def classify(job):
     """Conservative evidence classification; never implies backend parity."""
@@ -165,6 +170,10 @@ def collect(token, reported):
         repo = f"{OWNER}/oreslang-source.{backend}"
         runs = pages(f"/repos/{repo}/actions/runs", token, "workflow_runs")
         for run in runs:
+            # Wait for the workflow run to settle. This avoids emitting a
+            # partial attempt while other jobs/artifacts are still changing.
+            if run.get("status") != "completed":
+                continue
             latest = run.get("run_attempt")
             if not isinstance(latest, int) or isinstance(latest, bool) or latest < 1:
                 raise ValueError(f"missing/invalid run_attempt for {repo} run {run.get('id')}")
