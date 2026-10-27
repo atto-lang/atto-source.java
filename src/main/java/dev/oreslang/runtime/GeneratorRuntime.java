@@ -6,6 +6,7 @@ import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -152,8 +153,32 @@ public final class GeneratorRuntime {
             // An async pull always returns an OresFuture, including when
             // scheduler admission itself rejects before any guest work starts.
             try {
-                OresFuture<Step<T>> pull = runtime.submit(engine::next);
-                pull.whenCompleteRuntime((value, failure) -> pullInFlight.set(false));
+                // Future cancellation settles before AsyncRuntime's backing task
+                // necessarily leaves engine.next(). Arbitrate task entry against
+                // early completion so cancellation cannot reopen pull admission
+                // while the cancelled consumer still owns the activation.
+                AtomicInteger pullState = new AtomicInteger(); // 0=pending, 1=inside engine.next, 2=released
+                OresFuture<Step<T>> pull = runtime.submit(() -> {
+                    if (!pullState.compareAndSet(0, 1)) {
+                        throw new CancellationException(
+                                "async generator pull cancelled before engine admission");
+                    }
+                    try {
+                        return engine.next();
+                    } finally {
+                        pullState.set(2);
+                        pullInFlight.set(false);
+                    }
+                });
+                pull.whenCompleteRuntime((value, failure) -> {
+                    // Admission/turn failure or cancellation before the task
+                    // entered engine.next() has no physical pull to unwind.
+                    // If engine.next() is already running, its finally owns the
+                    // release and this callback must leave the gate closed.
+                    if (pullState.compareAndSet(0, 2)) {
+                        pullInFlight.set(false);
+                    }
+                });
                 return pull;
             } catch (java.util.concurrent.RejectedExecutionException rejected) {
                 pullInFlight.set(false);
