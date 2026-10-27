@@ -2552,6 +2552,12 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(aggregate.type)) {
                         throw error(callable + " spread cannot consume a guard-bearing tuple");
                     }
+                    if (isBorrowValue(aggregate)
+                            && spreadType.arguments().stream().anyMatch(type -> !isCopyType(type))) {
+                        throw error(callable
+                                + " spread cannot expand affine values from a borrowed tuple; "
+                                + "only all-Copy tuple views may be spread into by-value parameters");
+                    }
                     parameterIndex += width;
                     continue;
                 }
