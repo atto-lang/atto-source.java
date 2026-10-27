@@ -163,6 +163,33 @@ final class AotFiniteGenericClosureTest {
     }
 
     @Test
+    void unresolvedGenericFormalCannotMasqueradeAsConcreteType() {
+        Ast.FunctionDecl identity = fn("identity", List.of("T"),
+                type("T"), type("T"), new Ast.NameExpr("value"));
+        Ast.FunctionDecl main = fn("main", List.of(), null, type("int"),
+                new Ast.CallExpr(new Ast.NameExpr("identity"),
+                        List.of(type("T")), List.of(new Ast.LiteralExpr(7L))));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> AotFiniteGenericClosure.plan(
+                        program(identity, main), BuildOptions.executable()))
+                .getMessage().contains("unbound generic formal"));
+    }
+
+    @Test
+    void manifestOrderingIsStableAcrossRootSetIteration() {
+        Ast.FunctionDecl alpha = fn("alpha", List.of(), null,
+                type("int"), new Ast.LiteralExpr(1L));
+        Ast.FunctionDecl zeta = fn("zeta", List.of(), null,
+                type("int"), new Ast.LiteralExpr(2L));
+        BuildOptions options = new BuildOptions(Map.of(),
+                java.util.Set.of("zeta", "alpha"), false);
+        AotFiniteGenericClosure.Plan plan = AotFiniteGenericClosure.plan(
+                program(zeta, alpha), options);
+        assertEquals(List.of("alpha", "zeta"),
+                plan.reachable().stream().map(AotFiniteGenericClosure.Instance::name).toList());
+    }
+
+    @Test
     void uncheckedMacroDeclarationsNeverAppearAsExecutableClosure() {
         Ast.Program source = Parser.parse("""
                 define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
