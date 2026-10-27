@@ -277,6 +277,29 @@ final class CheckedCallPlanTest {
         });
         assertNull(CheckedCallPlan.lookup(source));
         assertEquals(proof, CheckedCallPlan.require(independent));
+
+        // Standalone OwnershipChecker.check() must also fail closed. It uses
+        // an existing TypeChecker proof rather than beginning a fresh check.
+        CheckedCallPlan.record(source, proof);
+        assertThrows(IllegalArgumentException.class, () -> {
+            try (CheckedCallPlan.ValidationScope ownership =
+                    CheckedCallPlan.beginValidation()) {
+                CheckedCallPlan.trackValidationSite(source);
+                assertSame(proof, CheckedCallPlan.require(source));
+                throw new IllegalArgumentException("ownership rejected loan");
+            }
+        });
+        assertNull(CheckedCallPlan.lookup(source));
+        assertEquals(proof, CheckedCallPlan.require(independent));
+
+        // Ownership success preserves the type proof for runtime lowering.
+        CheckedCallPlan.record(source, proof);
+        try (CheckedCallPlan.ValidationScope ownership =
+                CheckedCallPlan.beginValidation()) {
+            CheckedCallPlan.trackValidationSite(source);
+            ownership.commit();
+        }
+        assertSame(proof, CheckedCallPlan.require(source));
     }
 
     @Test
