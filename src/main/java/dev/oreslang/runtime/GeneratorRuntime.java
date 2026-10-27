@@ -205,15 +205,30 @@ public final class GeneratorRuntime {
                 }
                 return closeFuture;
             }
+            // Closing is a one-way cleanup operation, not cancellable work.
+            // Exposing runtime.submit() directly would let a caller cancel the
+            // Future before its carrier enters engine.close(), permanently
+            // memoizing a cancelled receipt while leaving the activation open.
+            // Keep the cleanup task private and expose an uncancellable receipt
+            // that settles only from that task's terminal result.
+            OresFuture<Void> receipt = new OresFuture<>(() -> false, () -> { });
+            closeFuture = receipt;
             try {
-                closeFuture = runtime.submit(() -> {
+                OresFuture<Void> cleanup = runtime.submit(() -> {
                     engine.close();
                     return null;
                 });
+                cleanup.whenCompleteRuntime((value, failure) -> {
+                    if (failure == null) {
+                        receipt.completeFromRuntime(null);
+                    } else {
+                        receipt.failFromRuntime(OresFuture.unwrap(failure));
+                    }
+                });
             } catch (RuntimeException | Error failure) {
-                closeFuture = OresFuture.failed(failure);
+                receipt.failFromRuntime(failure);
             }
-            return closeFuture;
+            return receipt;
         }
 
         @Override
