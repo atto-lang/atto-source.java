@@ -176,6 +176,35 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void overlappingAsyncPullFailsWithoutStartingAnotherSchedulerTask() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+                 entered.countDown();
+                 release.await();
+                 emitter.emit(7);
+             })) {
+            OresFuture<GeneratorRuntime.Step<Integer>> first = generator.nextStep();
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            OresFuture<GeneratorRuntime.Step<Integer>> overlapping = generator.nextStep();
+            java.util.concurrent.ExecutionException rejected = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> overlapping.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, rejected.getCause());
+            assertEquals("async generator already has an active pull",
+                    rejected.getCause().getMessage());
+
+            release.countDown();
+            assertEquals(7, first.get(2, TimeUnit.SECONDS).value());
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void asyncPullsUseOresFutureIncludingTerminalPulls() throws Exception {
         try (AsyncRuntime runtime = new AsyncRuntime();
              var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {
