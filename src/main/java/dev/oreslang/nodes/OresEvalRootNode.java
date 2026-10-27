@@ -7793,28 +7793,28 @@ public final class OresEvalRootNode extends RootNode {
                     // Plain stdlib names are asynchronous. Legacy *_async spellings
                     // remain aliases during migration; neither path performs I/O
                     // on the guest/actor execution carrier.
-                    case "read_text", "read_text_async" -> (Invokable) fs::readText;
-                    case "write_text", "write_text_async" -> (Invokable) fs::writeText;
+                    case "read_text" -> (Invokable) fs::readText;
+                    case "write_text" -> (Invokable) fs::writeText;
                     case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
-                    case "append_text", "append_text_async" -> (Invokable) fs::appendText;
+                    case "append_text" -> (Invokable) fs::appendText;
                     case "list_dir" -> (Invokable) fs::listDir;
                     case "is_dir" -> (Invokable) fs::isDir;
                     case "is_symlink" -> (Invokable) fs::isSymlink;
-                    case "exists", "exists_async" -> (Invokable) fs::exists;
-                    case "remove", "remove_async" -> (Invokable) fs::remove;
-                    case "mkdir_all", "mkdir_all_async" -> (Invokable) fs::mkdirAll;
+                    case "exists" -> (Invokable) fs::exists;
+                    case "remove" -> (Invokable) fs::remove;
+                    case "mkdir_all" -> (Invokable) fs::mkdirAll;
                     default -> throw new IllegalArgumentException("unknown filesystem member " + name);
                 };
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
-                    case "connect", "connect_async" -> (Invokable) network::connect;
+                    case "connect" -> (Invokable) network::connect;
                     default -> throw new IllegalArgumentException("unknown network member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
                 return switch (name) {
-                    case "read_line", "read_line_async" -> (Invokable) args -> {
+                    case "read_line" -> (Invokable) args -> {
                         requireZero(args, "socket.read_line");
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
                                 "socket.read_line", () -> {
@@ -7822,12 +7822,12 @@ public final class OresEvalRootNode extends RootNode {
                                     return new OptionValue(value != null, value);
                                 });
                     };
-                    case "write_text", "write_text_async" -> (Invokable) args -> {
+                    case "write_text" -> (Invokable) args -> {
                         String value = requireStringArg(args, "socket.write_text");
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
                                 "socket.write_text", () -> { socket.writeText(value); return null; });
                     };
-                    case "close", "close_async" -> (Invokable) args -> {
+                    case "close" -> (Invokable) args -> {
                         requireZero(args, "socket.close");
                         return context.nativeIo().submitClose(context, () -> { socket.close(); return null; });
                     };
@@ -7994,8 +7994,8 @@ public final class OresEvalRootNode extends RootNode {
                         return HttpResponseDraft.text(body, (int) code,
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
-                    case "get_text", "get_text_async" -> (Invokable) http::getText;
-                    case "post_text", "post_text_async" -> (Invokable) http::postText;
+                    case "get_text" -> (Invokable) http::getText;
+                    case "post_text" -> (Invokable) http::postText;
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
             }
