@@ -144,6 +144,46 @@ final class AotSpecializedIrTest {
     }
 
     @Test
+    void syntheticManifestCannotSmuggleTypeMismatchedStaticCallIntoHir() {
+        Ast.FunctionDecl identity = new Ast.FunctionDecl(
+                "identity", Ast.Visibility.PUBLIC, false, List.of(),
+                List.of(new Ast.Param(Ast.TypeRef.simple("int"), "value")),
+                Ast.TypeRef.simple("int"), List.of(),
+                List.of(new Ast.ReturnStmt(new Ast.NameExpr("value"))));
+        Ast.FunctionDecl main = new Ast.FunctionDecl(
+                "main", Ast.Visibility.PUBLIC, false, List.of(), List.of(),
+                Ast.TypeRef.simple("int"), List.of(),
+                List.of(new Ast.ReturnStmt(new Ast.CallExpr(
+                        new Ast.NameExpr("identity"),
+                        List.of(new Ast.LiteralExpr(true))))));
+        Ast.Program raw = new Ast.Program(List.of(new Ast.ModuleDecl(
+                dev.oreslang.parser.Parser.ROOT_MODULE, List.of(identity, main))));
+        AotFiniteGenericClosure.Plan plan =
+                AotFiniteGenericClosure.plan(raw, BuildOptions.executable());
+        IllegalArgumentException err = assertThrows(IllegalArgumentException.class,
+                () -> AotSpecializedIr.lower(raw, plan));
+        assertTrue(err.getMessage().contains("specialized call argument type mismatch"),
+                err::toString);
+    }
+
+    @Test
+    void malformedBinaryOperandFailsClosedWithoutNullDereference() {
+        Ast.FunctionDecl main = new Ast.FunctionDecl(
+                "main", Ast.Visibility.PUBLIC, false, List.of(), List.of(),
+                Ast.TypeRef.simple("int"), List.of(),
+                List.of(new Ast.ReturnStmt(new Ast.BinaryExpr("+", null,
+                        new Ast.LiteralExpr(7L)))));
+        Ast.Program raw = new Ast.Program(List.of(new Ast.ModuleDecl(
+                dev.oreslang.parser.Parser.ROOT_MODULE, List.of(main))));
+        AotFiniteGenericClosure.Plan plan =
+                AotFiniteGenericClosure.plan(raw, BuildOptions.executable());
+        IllegalArgumentException err = assertThrows(IllegalArgumentException.class,
+                () -> AotSpecializedIr.lower(raw, plan));
+        assertTrue(err.getMessage().contains("operator lacks proven scalar lowering semantics"),
+                err::toString);
+    }
+
+    @Test
     void copiedManifestFromAnotherLogicalSourceUnitFails() {
         Ast.Program source = OresCompiler.parseAndTypeCheck(
                 "fnc main(): int { return 42; }");
