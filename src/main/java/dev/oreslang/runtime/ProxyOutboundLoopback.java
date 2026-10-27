@@ -220,6 +220,21 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         Objects.requireNonNull(target, "target");
         if (!("GET".equals(method) || "HEAD".equals(method)))
             throw new IllegalArgumentException("loopback harness only supports GET or HEAD");
+
+        // The current proof transport uses a literal address, so its physical
+        // HttpClient connection cannot re-resolve behind this pin. Keep this
+        // as the first consumer of the shared egress policy without widening
+        // the loopback-only ABI. Hostname egress remains disabled until the
+        // production transport can connect to a pinned InetAddress directly.
+        OutboundEgressPolicy.resolveForConnection(
+                target,
+                OutboundEgressPolicy.Purpose.GENERAL_HTTP,
+                OutboundEgressPolicy.Policy.loopbackOnly(),
+                host -> {
+                    throw new AssertionError(
+                            "literal loopback target unexpectedly reached DNS: " + host);
+                });
+
         if (!"http".equals(target.getScheme()) || !"127.0.0.1".equals(target.getHost())
                 || target.getPort() < 1 || target.getPort() > 65535
                 || target.getRawUserInfo() != null || target.getRawFragment() != null
