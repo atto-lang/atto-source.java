@@ -1499,6 +1499,9 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a constructed object");
                 }
+                if (containsInvertedArrayType(info.type)) {
+                    throw error("InvertedArray ownership cannot be stored in a constructed object in v1");
+                }
                 argumentTypes.add(info.type);
             }
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
@@ -1663,6 +1666,9 @@ public final class OwnershipChecker {
             for (Ast.Expr item : list.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
+                if (containsInvertedArrayType(info.type)) {
+                    throw error("InvertedArray ownership cannot be stored in an array/list in v1");
+                }
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
                 elementType = elementType == null
                         ? info.type
@@ -1680,6 +1686,9 @@ public final class OwnershipChecker {
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
+                if (containsInvertedArrayType(info.type)) {
+                    throw error("InvertedArray ownership cannot be stored in a tuple in v1");
+                }
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
                 copy &= info.kind == ValueKind.COPY;
                 slots.add(info.type);
@@ -1699,6 +1708,9 @@ public final class OwnershipChecker {
                 ValueInfo info = checkExpr(field.value(), scope, true);
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
+                }
+                if (containsInvertedArrayType(info.type)) {
+                    throw error("InvertedArray ownership cannot be stored in an object/struct field in v1");
                 }
                 if (isBorrowValue(info)) {
                     throw error("borrowed references cannot be stored in an owned struct until explicit container lifetimes are supported");
