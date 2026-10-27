@@ -216,6 +216,29 @@ final class InvertedArrayLanguageTest {
     }
 
     @Test
+    void freshTypecheckRevokesPriorInvertedExecutionAuthorityUntilOwnershipRepublishes() {
+        Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.MemberExpr member = returnedMember(typed);
+        long first = Ast.CheckedInvertedIndexes.requireProgramEpoch(typed);
+
+        TypeChecker.TypeCheckResult rechecked =
+                TypeChecker.checkTypesWithDiagnostics(typed);
+        assertSame(typed, rechecked.program());
+        assertThrows(IllegalStateException.class, () ->
+                Ast.CheckedInvertedIndexes.requireProgramEpoch(typed));
+        assertThrows(IllegalStateException.class, () ->
+                Ast.CheckedInvertedIndexes.require(
+                        typed, member, first, Ast.InvertedIndexAccess.READ));
+
+        OwnershipChecker.check(
+                rechecked.program(), rechecked.shortInferredAliases());
+        long second = Ast.CheckedInvertedIndexes.requireProgramEpoch(typed);
+        assertTrue(second > first);
+        assertDoesNotThrow(() -> Ast.CheckedInvertedIndexes.require(
+                typed, member, second, Ast.InvertedIndexAccess.READ));
+    }
+
+    @Test
     void ownershipRecheckRevokesOlderInvertedExecutionEpoch() {
         Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
         Ast.MemberExpr member = returnedMember(typed);
