@@ -1616,6 +1616,28 @@ public final class OwnershipChecker {
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
 
+        // Match type checking: unqualified class/actor method *calls* borrow
+        // the lexical receiver, but names used as values never bind self.
+        // Re-run the ordinary explicit receiver ownership path, including
+        // mutable loans, constructor restrictions and actor isolation.
+        if (call.callee() instanceof Ast.NameExpr implicit
+                && scope.lookup(implicit.name()) == null) {
+            VarState receiver = scope.lookup("self");
+            if (receiver != null) {
+                Ast.TypeRef receiverType = receiver.type.isBorrow()
+                        ? receiver.type.borrowedTarget() : receiver.type;
+                Ast.ClassDecl owner = findClass(receiverType.name());
+                if (owner != null
+                        && hasMethodNamed(owner, implicit.name(), new LinkedHashSet<>())) {
+                    return checkCall(
+                            call.rewrite(
+                                    new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                                    call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                            scope);
+                }
+            }
+        }
+
         if (call.callee() instanceof Ast.NameExpr name
                 && scope.lookup(name.name()) == null) {
             Ast.FunctionDecl fn = findFunction(
