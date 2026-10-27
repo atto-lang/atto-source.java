@@ -92,8 +92,8 @@ final class ExplicitExportIncrementalAbiTest {
 
         assertTrue(compiler.compile(sources).rebuilt("main.ores"));
         IncrementalCompiler.BuildResult cached = compiler.compile(sources);
-        assertTrue(cached.reused().contains("lib.ores"));
-        assertTrue(cached.reused().contains("main.ores"));
+        assertTrue(cached.reusedUnits().contains("lib.ores"));
+        assertTrue(cached.reusedUnits().contains("main.ores"));
     }
 
 }
