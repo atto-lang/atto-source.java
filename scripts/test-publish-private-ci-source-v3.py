@@ -1939,8 +1939,9 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
                 with self.assertRaisesRegex(
-                    v3.Denied, "authorization ref already exists"
-                ):
+                    v3.Denied,
+                    "dangling private-source objects may remain retained",
+                ) as caught:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
@@ -1948,6 +1949,11 @@ class PrivateCiV3Test(unittest.TestCase):
                             2026, 10, 20, tzinfo=dt.timezone.utc
                         ),
                     )
+                self.assertIsInstance(caught.exception.__cause__, v3.Denied)
+                self.assertIn(
+                    "authorization ref already exists",
+                    str(caught.exception.__cause__),
+                )
         self.assertEqual(ref_posts, [])
         delete_ref.assert_not_called()
 
@@ -2006,12 +2012,17 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(v3.Denied, "protection revoked"):
+                with self.assertRaisesRegex(
+                    v3.Denied,
+                    "dangling private-source objects may remain retained",
+                ) as caught:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
+                self.assertIsInstance(caught.exception.__cause__, v3.Denied)
+                self.assertIn("protection revoked", str(caught.exception.__cause__))
 
         delete_ref.assert_called_once_with(
             "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
@@ -2072,12 +2083,17 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(v3.Denied, "PR head moved"):
+                with self.assertRaisesRegex(
+                    v3.Denied,
+                    "dangling private-source objects may remain retained",
+                ) as caught:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
+                self.assertIsInstance(caught.exception.__cause__, v3.Denied)
+                self.assertIn("PR head moved", str(caught.exception.__cause__))
 
         delete_ref.assert_called_once_with(
             "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
@@ -2143,12 +2159,20 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(v3.Denied, "authorization creation failed"):
+                with self.assertRaisesRegex(
+                    v3.Denied,
+                    "dangling private-source objects may remain retained",
+                ) as caught:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
+                self.assertIsInstance(caught.exception.__cause__, v3.Denied)
+                self.assertIn(
+                    "authorization creation failed",
+                    str(caught.exception.__cause__),
+                )
 
         self.assertEqual(
             [call.args for call in delete_ref.call_args_list],
@@ -2217,12 +2241,18 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaises(KeyboardInterrupt):
+                with self.assertRaisesRegex(
+                    v3.Denied,
+                    "dangling private-source objects may remain retained",
+                ) as caught:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
+                self.assertIsInstance(
+                    caught.exception.__cause__, KeyboardInterrupt
+                )
 
         self.assertEqual(
             [call.args for call in delete_ref.call_args_list],
@@ -2291,12 +2321,20 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(v3.Denied, "dispatcher authorization ref"):
+                with self.assertRaisesRegex(
+                    v3.Denied,
+                    "dangling private-source objects may remain retained",
+                ) as caught:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
+                self.assertIsInstance(caught.exception.__cause__, v3.Denied)
+                self.assertIn(
+                    "dispatcher authorization ref",
+                    str(caught.exception.__cause__),
+                )
 
         self.assertEqual(
             [call.args for call in delete_ref.call_args_list],
@@ -2368,12 +2406,20 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(RuntimeError, "unexpected confirmation error"):
+                with self.assertRaisesRegex(
+                    v3.Denied,
+                    "dangling private-source objects may remain retained",
+                ) as caught:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
+                self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+                self.assertIn(
+                    "unexpected confirmation error",
+                    str(caught.exception.__cause__),
+                )
 
         self.assertEqual(
             ref_posts,
