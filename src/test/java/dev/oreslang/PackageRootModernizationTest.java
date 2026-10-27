@@ -78,6 +78,22 @@ final class PackageRootModernizationTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void legacyManifestSymlinkRemainsSupportedDuringMigration() throws Exception {
+        Path root = Files.createDirectories(temp.resolve("legacy-symlink"));
+        Path source = root.resolve("main.ores");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+
+        Path actual = temp.resolve("legacy-config.toml");
+        Files.writeString(actual, "schema_version = \"1\"\n");
+        requireSymlink(root.resolve(OresProjectConfig.MANIFEST_NAME), actual);
+
+        OresProjectConfig config = OresProjectConfig.discover(source, Map.of());
+        assertEquals(root.resolve(OresProjectConfig.MANIFEST_NAME),
+                config.manifestPath().orElseThrow());
+    }
+
     @Test
     void modernPackageRootIsManifestDirectoryNotProjectRootRedirect() throws Exception {
         Path root = Files.createDirectories(temp.resolve("modern-root-fixed"));
