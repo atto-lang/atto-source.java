@@ -9934,6 +9934,11 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Future<T> requires owned payload data; borrowed values cannot cross a future/suspension boundary");
                 }
+                if (typeContainsInvertedArray(element)) {
+                    throw new IllegalArgumentException(
+                            "Future<T> cannot store InvertedArray ownership in v1; "
+                                    + "inverted storage is lexical and may not cross suspension");
+                }
                 // Future<void> is the canonical completion type for nb writech.
                 // OresFuture supports a null terminal payload, so void is valid here.
                 yield new Named("Future", List.of(element));
@@ -9950,6 +9955,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             ref.name() + "<T> requires owned element data until iterator-bound "
                                     + "lifetimes are explicit; borrowed values cannot survive iterator storage/pulls");
+                }
+                if (typeContainsInvertedArray(element)) {
+                    throw new IllegalArgumentException(
+                            ref.name() + "<T> cannot store InvertedArray ownership in v1");
                 }
                 yield new Named(ref.name().equals("Generator") ? "Iterator" : ref.name().equals("AsyncGenerator") ? "AsyncIterator" : ref.name(), List.of(element));
             }
