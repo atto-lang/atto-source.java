@@ -159,6 +159,31 @@ final class StaticGeneratorFunctionTest {
     }
 
     @Test
+    void staticBareGeneratorRequiresStarButLegacyGeneratorFncRemainsAccepted() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Bad as
+                  pub static generator values(): Iterator<int> {
+                    yield 1;
+                    return;
+                  }
+                end
+                """));
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define class Good as
+                  pub static generator* values(): Iterator<int> {
+                    yield 1;
+                    return;
+                  }
+                  pub static generator fnc legacy(): int {
+                    yield 2;
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
     void instanceGeneratorMethodsRemainRejected() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define class Bad as
