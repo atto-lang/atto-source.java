@@ -67,6 +67,7 @@ SECURITY_CODEOWNER_PATHS = (
     "/scripts/publish-private-ci-source-v3.py",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
+SOURCE_REQUIRED_STATUS_CONTEXTS = frozenset({"preflight-regressions", "policy-negative-tests"})
 
 
 class Denied(RuntimeError):
@@ -443,6 +444,14 @@ def _require_strict_source_protection(protection):
                        or bypasses.get(category)
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
+    required_contexts = set(contexts)
+    required_contexts.update(item["context"] for item in named_checks)
+    missing_required = SOURCE_REQUIRED_STATUS_CONTEXTS - required_contexts
+    if missing_required:
+        raise Denied(
+            "origin main required CI is missing private-CI governance checks: "
+            + ",".join(sorted(missing_required))
+        )
     named_contract = tuple(sorted(
         (item["context"], json.dumps(item.get("app_id"), sort_keys=True,
                                      separators=(",", ":")))
