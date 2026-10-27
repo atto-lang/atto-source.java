@@ -29,6 +29,15 @@ public final class AotFiniteGenericClosure {
     private static final int MAX_FORMALS_PER_FUNCTION = 64;
     private static final int MAX_PARAMETERS_PER_FUNCTION = 128;
     private static final int MAX_ENTRY_POINTS = 256;
+    // Phase-two planning admits only built-in type constructors. Nominal
+    // classes/traits need a separately proven layout and witness manifest.
+    // Unknown type names must not be mistaken for concrete specializations.
+    private static final Set<String> ADMITTED_TYPES = Set.of(
+            "void", "bool", "int", "i8", "i16", "i32", "i64",
+            "u8", "u16", "u32", "u64", "uint",
+            "float", "f32", "f64", "double", "decimal",
+            "string", "String", "char",
+            "List", "Array", "Option", "Result");
 
     private AotFiniteGenericClosure() { }
 
@@ -61,7 +70,6 @@ public final class AotFiniteGenericClosure {
         private final Ast.Program program;
         private final BuildOptions options;
         private final Map<Symbol, Ast.FunctionDecl> functions = new LinkedHashMap<>();
-        private final Set<String> formalTypeNames = new HashSet<>();
         private final ArrayDeque<Work> queue = new ArrayDeque<>();
         private final LinkedHashSet<Instance> visited = new LinkedHashSet<>();
         private int nodes;
@@ -92,7 +100,6 @@ public final class AotFiniteGenericClosure {
                             || fn.parameters().size() > MAX_PARAMETERS_PER_FUNCTION) {
                         throw fail("function signature budget exceeded");
                     }
-                    formalTypeNames.addAll(fn.genericParameters());
                     Symbol key = new Symbol(module.name(), fn.name(), fn.parameters().size());
                     if (functions.putIfAbsent(key, fn) != null) {
                         throw fail("ambiguous overload " + key.module() + "." + key.name()
@@ -192,8 +199,9 @@ public final class AotFiniteGenericClosure {
                 }
                 return resolveType(parameter, Map.of(), depth + 1);
             }
-            if (formalTypeNames.contains(type.name())) {
-                throw fail("unbound generic formal type '" + type.name() + "' in AOT instance");
+            if (!ADMITTED_TYPES.contains(type.name())) {
+                throw fail("unbound generic formal or unproven nominal type '"
+                        + type.name() + "' in AOT instance");
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             for (Ast.TypeRef arg : type.arguments()) {
