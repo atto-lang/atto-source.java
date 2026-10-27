@@ -813,6 +813,129 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "bypasses"):
                 v3.checked_carrier_main("trusted/ci", carrier)
 
+    def test_incident_disposition_registry_blocks_hold_and_pins_independent_comment(self):
+        def registry(resolved):
+            incidents = {}
+            for number in v3.legacy.BLOCKING_INCIDENTS:
+                issue_id = v3.legacy.BLOCKING_INCIDENT_IDS[number]
+                if not resolved:
+                    incidents[str(number)] = {
+                        "issue_id": issue_id,
+                        "status": "hold",
+                    }
+                    continue
+                body = (
+                    "PRIVATE_CI_INCIDENT_DISPOSITION_RESOLVED issue=#"
+                    + str(number)
+                    + "\nclassification=completed\n"
+                )
+                incidents[str(number)] = {
+                    "issue_id": issue_id,
+                    "status": "resolved",
+                    "comment_id": 9000000 + number,
+                    "comment_body_sha256": hashlib.sha256(
+                        body.encode("utf-8")
+                    ).hexdigest(),
+                    "comment_updated_at": "2026-10-27T04:00:00Z",
+                    "reviewer_id": v3.CARRIER_REVIEW_USER_ID,
+                    "reviewer_login": v3.CARRIER_REVIEW_LOGIN,
+                }
+            return (
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "incident_repository": v3.legacy.BLOCKING_INCIDENT_REPO,
+                        "incident_repository_id":
+                            v3.legacy.BLOCKING_INCIDENT_REPOSITORY_ID,
+                        "incidents": incidents,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode()
+
+        hold = registry(False)
+        with (
+            patch.object(
+                v3, "read_local_protected_file", return_value=hold
+            ),
+            patch.object(
+                v3, "remote_file_at_source_main",
+                return_value=(hold, "1" * 40),
+            ),
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(
+                v3.Denied, "lacks protected independent disposition"
+            ):
+                v3.checked_incident_dispositions(Path("."), PROTECTED)
+        api.assert_not_called()
+
+        resolved = registry(True)
+        parsed = v3.parse_incident_dispositions(resolved)
+
+        def comment_api(route, method="GET", payload=None):
+            comment_id = int(route.rsplit("/", 1)[1])
+            number = comment_id - 9000000
+            body = (
+                "PRIVATE_CI_INCIDENT_DISPOSITION_RESOLVED issue=#"
+                + str(number)
+                + "\nclassification=completed\n"
+            )
+            return {
+                "id": comment_id,
+                "issue_url": (
+                    "https://api.github.com/repos/"
+                    + v3.legacy.BLOCKING_INCIDENT_REPO
+                    + "/issues/"
+                    + str(number)
+                ),
+                "updated_at": "2026-10-27T04:00:00Z",
+                "body": body,
+                "user": {
+                    "id": v3.CARRIER_REVIEW_USER_ID,
+                    "login": v3.CARRIER_REVIEW_LOGIN,
+                },
+            }
+
+        with (
+            patch.object(
+                v3, "read_local_protected_file", return_value=resolved
+            ),
+            patch.object(
+                v3, "remote_file_at_source_main",
+                return_value=(resolved, "1" * 40),
+            ),
+            patch.object(v3.legacy, "gh_api", side_effect=comment_api),
+        ):
+            self.assertTrue(
+                v3.checked_incident_dispositions(Path("."), PROTECTED)
+            )
+
+        first = v3.legacy.BLOCKING_INCIDENTS[0]
+        tampered = dict(parsed[first])
+        tampered["comment_body_sha256"] = "0" * 64
+        doc = json.loads(resolved)
+        doc["incidents"][str(first)] = tampered
+        tampered_raw = (
+            json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        with (
+            patch.object(
+                v3, "read_local_protected_file", return_value=tampered_raw
+            ),
+            patch.object(
+                v3, "remote_file_at_source_main",
+                return_value=(tampered_raw, "1" * 40),
+            ),
+            patch.object(v3.legacy, "gh_api", side_effect=comment_api),
+        ):
+            with self.assertRaisesRegex(
+                v3.Denied, "comment body changed"
+            ):
+                v3.checked_incident_dispositions(Path("."), PROTECTED)
+
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
             '{"schema":1,"schema":1,"carriers":{"trusted/ci":{'
