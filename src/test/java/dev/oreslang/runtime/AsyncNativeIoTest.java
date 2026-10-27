@@ -24,6 +24,18 @@ class AsyncNativeIoTest {
         return output.toString();
     }
 
+    @Test void stdoutAndGlobalPrintUseOrderedAsyncLane() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              stdio.stdout.write("A");
+              print("B");
+              await stdio.stdout.println("C");
+              return;
+            }
+            """, RuntimePermissions.denyAll(), new ByteArrayOutputStream());
+        assertEquals("ABC\n", output.replace("\r", ""));
+    }
+
     @Test void filesystemAwaitsReturnValuesAndPropagatePermissionFailures() throws Exception {
         String path = root.resolve("item.txt").toString();
         String output = run("""
