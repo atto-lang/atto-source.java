@@ -1,0 +1,23 @@
+package dev.oreslang;
+
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+final class GeneratorCanonicalAdmissionTest {
+    @Test
+    void actorKindModifiersCannotBypassBareGeneratorAdmission() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "shared gen* values(): Iterator<int> { yield 1; return; }"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "untrusted gen* values(): Iterator<int> { yield 1; return; }"));
+    }
+
+    @Test
+    void suspendGeneratorCannotExposeSyncIteratorProtocol() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub suspend gen* values(): Iterator<int> { yield 1; return; }"));
+    }
+}
