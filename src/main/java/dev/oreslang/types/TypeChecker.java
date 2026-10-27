@@ -47,7 +47,8 @@ public final class TypeChecker {
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
             "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
-            "Channel", "Future", "Fnc", "Function");
+            "Channel", "Future", "Fnc", "Function",
+            "HttpClientResponse", "HttpClientBody");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -329,6 +330,7 @@ public final class TypeChecker {
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
+                "HttpClientResponse", "HttpClientBody",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
@@ -339,9 +341,10 @@ public final class TypeChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
                 else if (declaration instanceof Ast.ClassDecl klass) {
-                    if (klass.name().equals("HttpResponse")) {
+                    if (Set.of("HttpResponse", "HttpClientResponse", "HttpClientBody")
+                            .contains(klass.name())) {
                         throw new IllegalArgumentException(
-                                "HttpResponse is a sealed transport response type; user classes cannot shadow it");
+                                klass.name() + " is a sealed HTTP transport type; user classes cannot shadow it");
                     }
                     localNames.add(klass.name());
                 }
@@ -5635,6 +5638,16 @@ public final class TypeChecker {
                     case "post_text", "post_text_blocking" -> {
                         result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING);
                     }
+                    case "request" -> {
+                        result = new Named("HttpClientResponse", List.of());
+                        Type header = new Tuple(
+                                List.of(Primitive.STRING, Primitive.STRING),
+                                TupleKind.TUPLE);
+                        parameters = List.of(
+                                Primitive.STRING,
+                                Primitive.STRING,
+                                new ListType(header));
+                    }
                     default -> { return null; }
                 }
             }
@@ -5669,6 +5682,34 @@ public final class TypeChecker {
                 case "accept" -> new Function(List.of(), new Named("Future", List.of(exchange)));
                 case "shutdown" -> new Function(List.of(Primitive.INT), voidFuture);
                 default -> throw new IllegalArgumentException("unknown HTTP server member " + name);
+            };
+            case "HttpClientResponse" -> switch (name) {
+                case "status", "header_count" -> Primitive.INT;
+                case "header_name_at", "header_value_at" ->
+                        new Function(List.of(Primitive.INT), Primitive.STRING);
+                case "header_values" ->
+                        new Function(
+                                List.of(Primitive.STRING),
+                                new ListType(Primitive.STRING));
+                case "take_body" ->
+                        new Function(
+                                List.of(),
+                                new Named("HttpClientBody", List.of()));
+                case "close" -> new Function(List.of(), voidFuture);
+                default -> throw new IllegalArgumentException(
+                        "unknown HttpClientResponse member " + name);
+            };
+            case "HttpClientBody" -> switch (name) {
+                case "closed" -> Primitive.BOOL;
+                case "read_chunk" ->
+                        new Function(
+                                List.of(Primitive.INT),
+                                new Named(
+                                        "Future",
+                                        List.of(new ListType(Primitive.INT))));
+                case "close" -> new Function(List.of(), voidFuture);
+                default -> throw new IllegalArgumentException(
+                        "unknown HttpClientBody member " + name);
             };
             case "HttpExchange" -> switch (name) {
                 case "can_respond" -> Primitive.BOOL;
@@ -5833,6 +5874,7 @@ public final class TypeChecker {
         }
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+                || named.name().equals("HttpClientResponse") || named.name().equals("HttpClientBody")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")
                 || named.name().equals("RefCell") || named.name().equals("RwLock")

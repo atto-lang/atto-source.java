@@ -37,6 +37,10 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
             "proxy-connection", "transfer-encoding", "te", "trailer", "upgrade",
             "content-length", "proxy-authenticate", "proxy-authorization",
             "host", "http2-settings");
+    private static final Set<String> REQUEST_CONTROL = Set.of(
+            "connection", "keep-alive", "proxy-connection", "transfer-encoding",
+            "te", "trailer", "upgrade", "content-length", "host", "expect",
+            "proxy-authenticate", "proxy-authorization", "http2-settings");
     private static final long DEFAULT_MAX_RESPONSE_BYTES = 64L * 1024 * 1024;
     private final Semaphore capacity;
     private final long maxResponseBytes;
@@ -94,8 +98,19 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
 
     /** A nonblocking start; consumption of Response must run on an I/O worker. */
     public CompletableFuture<Response> request(URI target, String method) {
-        try { validateTarget(target, method); }
-        catch (RuntimeException badTarget) { return CompletableFuture.failedFuture(badTarget); }
+        return request(target, method, List.of());
+    }
+
+    CompletableFuture<Response> request(
+            URI target,
+            String method,
+            List<Map.Entry<String, String>> requestHeaders) {
+        try {
+            validateTarget(target, method);
+            validateRequestHeaders(requestHeaders);
+        } catch (RuntimeException badTarget) {
+            return CompletableFuture.failedFuture(badTarget);
+        }
         Call call;
         synchronized (this) {
             if (closed) return CompletableFuture.failedFuture(
@@ -109,8 +124,12 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         try {
             // The scope may close between admission and launch; cancellation
             // must still join any in-flight response and close the body.
-            HttpRequest request = HttpRequest.newBuilder(target)
-                    .timeout(Duration.ofSeconds(15))
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(target)
+                    .timeout(Duration.ofSeconds(15));
+            for (Map.Entry<String, String> field : requestHeaders) {
+                requestBuilder.header(field.getKey(), field.getValue());
+            }
+            HttpRequest request = requestBuilder
                     .method(method, HttpRequest.BodyPublishers.noBody()).build();
             if (isClosed()) {
                 call.abort();
@@ -213,11 +232,45 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
                 || path.endsWith("/.") || path.endsWith("/..")
                 || path.contains("\\") || path.contains("%") || target.getRawQuery() != null)
             throw new IllegalArgumentException("unsafe loopback test request path");
-        for (int i = 0; i < path.length(); i++) {
-            char ch = path.charAt(i);
-            if (ch < 0x21 || ch > 0x7e)
+    }
+
+    static void validateRequestHeader(String name, String value) {
+        Objects.requireNonNull(name, "header name");
+        Objects.requireNonNull(value, "header value");
+        if (!HEADER_NAME.matcher(name).matches()) {
+            throw new IllegalArgumentException("invalid outbound request header name");
+        }
+        if (REQUEST_CONTROL.contains(name.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException(
+                    "outbound framing/control header is transport-owned: " + name);
+        }
+        for (int i = 0; i < value.length(); i++) {
+            int ch = value.charAt(i);
+            if (ch < 32 || ch == 127 || ch > 255) {
                 throw new IllegalArgumentException(
-                        "loopback test request path must be canonical visible ASCII");
+                        "invalid outbound request header value");
+            }
+        }
+    }
+
+    private static void validateRequestHeaders(
+            List<Map.Entry<String, String>> headers) {
+        Objects.requireNonNull(headers, "request headers");
+        if (headers.size() > 100) {
+            throw new IllegalArgumentException(
+                    "outbound request header count exceeds 100");
+        }
+        long bytes = 0;
+        for (Map.Entry<String, String> field : headers) {
+            Objects.requireNonNull(field, "request header");
+            validateRequestHeader(field.getKey(), field.getValue());
+            long fieldBytes = (long) field.getKey().length()
+                    + field.getValue().length() + 4L;
+            if (fieldBytes > 32_768L - bytes) {
+                throw new IllegalArgumentException(
+                        "outbound request header byte budget exceeded");
+            }
+            bytes += fieldBytes;
         }
     }
 
@@ -251,12 +304,8 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
             }
         }
         Set<String> excluded = new HashSet<>(HOP);
-        int connectionTokens = 0;
         for (String value : headers.allValues("connection")) {
             for (String item : value.split(",", -1)) {
-                if (++connectionTokens > 100)
-                    throw new IllegalArgumentException(
-                            "too many upstream Connection options");
                 String token = item.trim();
                 if (!HEADER_NAME.matcher(token).matches())
                     throw new IllegalArgumentException("invalid upstream Connection token");
