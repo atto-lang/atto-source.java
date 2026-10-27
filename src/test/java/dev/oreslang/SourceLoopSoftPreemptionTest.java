@@ -91,23 +91,22 @@ final class SourceLoopSoftPreemptionTest {
         // call/loop continuation through the same actor SourceTask trampoline.
         // This tests a transitive loop, rather than a loop directly in receive.
         String output = run("""
-                fnc count_in_helper(n: int): int {
-                  let count = 0;
-                  for (let i = 0; i < n; i = i + 1) do
-                    count = count + 1;
-                  done
-                  return count;
-                }
-
                 define actor Worker as
                   let int count;
+                  count_in_helper(n: int): int {
+                    let result = 0;
+                    for (let i = 0; i < n; i = i + 1) do
+                      result = result + 1;
+                    done
+                    return result;
+                  }
                   on_start(): void {
                     self.count = 0;
                     return;
                   }
                   receive(ActorMail<String> mail): void {
                     if mail.value == "first"; do
-                      self.count = count_in_helper(4096);
+                      self.count = self.count_in_helper(4096);
                       self.send(self.count);
                       return;
                     fi
