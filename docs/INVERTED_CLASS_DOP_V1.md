@@ -189,6 +189,27 @@ diagnostics rather than risking compiler stack exhaustion or unbounded staging
 work. JUnit fixtures cover both deep chains and repeatedly shared binary
 subtrees; they remain unverified until a real Java test runner executes.
 
+### Exact nominal identity for compiled indexed-field authority
+
+A column-layout fingerprint (class spelling, ordered field names, physical
+scalar kinds, fixed record widths) is a representation compatibility check,
+**not** nominal type identity. It cannot grant an already-checked write to a
+second declaration that happens to have the same name/layout but different
+mutability, module origin, or visibility. The Java runtime `Schema` retains
+the exact immutable checked `Ast.ClassDecl` as a private nominal token.
+`InvertedIndexPlan.bind` and the guest indexed-field evaluator must require
+this exact declaration identity **as well as** physical shape compatibility
+before touching columns. Equivalent source text from a separately parsed AST
+is deliberately not an authority token. Compiler rewrites must re-type-check
+and issue new plans scoped to the replacement AST.
+
+The negative matrix includes two independent declarations with identical
+spelling and physical layouts, and a lookalike whose fields are `val` rather
+than mutable `let`. Host `ColumnAccess` remains a lower-level storage
+primitive; only a checked source plan can authorize guest operations. These
+cases are committed as JUnit regressions but are **not tested** until
+exact-source JVM jobs execute real steps.
+
 ### Recheck revocation across type and ownership entry points
 
 An exact-Program inverted-index execution epoch is revoked **at the start**
