@@ -28,20 +28,20 @@ final class BoundedSourceReaderSnapshotTest {
     }
 
     @Test
-    void leafSymlinkIsNotFollowedByReader() throws Exception {
+    void symlinkAliasCanonicalizesBeforeDescriptorRead() throws Exception {
         Path target = temp.resolve("target.ores");
         Files.writeString(target, "pub fnc target(): int { return 42; }\n");
         Path alias = temp.resolve("alias.ores");
-        try {
-            Files.createSymbolicLink(alias, target);
-        } catch (UnsupportedOperationException | SecurityException unsupported) {
-            assumeTrue(false, "symlinks unavailable: " + unsupported);
-        } catch (IOException failure) {
-            if (System.getProperty("os.name", "").toLowerCase().contains("win")) {
-                assumeTrue(false, "symlinks unavailable: " + failure);
-            }
-            throw failure;
-        }
+        requireSymlink(alias, target);
+
+        BoundedSourceReader.ReadResult result = BoundedSourceReader.readWithByteCount(alias);
+        assertEquals("pub fnc target(): int { return 42; }\n", result.text());
+    }
+
+    @Test
+    void danglingSymlinkRejectsBeforeRead() throws Exception {
+        Path alias = temp.resolve("dangling.ores");
+        requireSymlink(alias, temp.resolve("missing.ores"));
 
         assertThrows(IOException.class, () -> BoundedSourceReader.readWithByteCount(alias));
     }
@@ -63,6 +63,19 @@ final class BoundedSourceReaderSnapshotTest {
         StableChannel channel = new StableChannel(bytes);
 
         assertArrayEquals(bytes, BoundedSourceReader.snapshotChannel(channel));
+    }
+
+    private static void requireSymlink(Path link, Path target) throws IOException {
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (UnsupportedOperationException | SecurityException unsupported) {
+            assumeTrue(false, "symlinks unavailable: " + unsupported);
+        } catch (IOException failure) {
+            if (System.getProperty("os.name", "").toLowerCase().contains("win")) {
+                assumeTrue(false, "symlinks unavailable: " + failure);
+            }
+            throw failure;
+        }
     }
 
     private static class StableChannel implements SeekableByteChannel {
