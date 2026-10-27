@@ -2251,12 +2251,18 @@ public final class Parser {
                                 "generic local record aliases require specialized signature lowering");
                     }
                     consume(EQUAL, "expected '=' after local record alias name");
-                    consumeContextualIdentifier("record",
-                            "local type declarations currently require a record { ... } type");
-                    if (!check(LBRACE)) {
-                        throw error(peek(), "local record alias requires a closed record { ... } type");
+                    boolean exactStruct = match(STRUCT);
+                    if (!exactStruct) {
+                        consumeContextualIdentifier("record",
+                                "local type declaration requires record { ... } or struct { ... }");
                     }
-                    Ast.TypeRef aliasTarget = parseTypeRef();
+                    if (!check(LBRACE)) {
+                        throw error(peek(), "local type alias requires a closed aggregate field shape");
+                    }
+                    Ast.TypeRef parsedFields = parseTypeRef();
+                    Ast.TypeRef aliasTarget = exactStruct
+                            ? Ast.TypeRef.structType(parsedFields.recordMembers())
+                            : parsedFields;
                     consumeStatementTerminator("expected ';' after local record alias");
                     if (specs.stream().anyMatch(spec -> spec.name().equals(aliasName))
                             || java.util.Set.of("int", "string", "String", "float", "bool",
