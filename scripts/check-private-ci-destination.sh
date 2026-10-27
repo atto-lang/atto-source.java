@@ -18,6 +18,7 @@ policy="$policy_dir/private-ci-approved-repositories.txt"
   fail 'reviewed policy file is missing, unreadable or symlinked'
 entry_pattern='^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$'
 declare -A seen=()
+declare -A seen_ids=()
 approved_id=''
 while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   [[ -z "$candidate" || "$candidate" =~ ^# ]] && continue
@@ -27,7 +28,9 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   numeric_id="${BASH_REMATCH[2]}"
   key="${approved_name,,}"
   [[ ! -v seen["$key"] ]] || fail 'duplicate repository identity in approval policy'
+  [[ ! -v seen_ids["$numeric_id"] ]] || fail 'duplicate numeric repository ID in approval policy'
   seen["$key"]=1
+  seen_ids["$numeric_id"]=1
   if [[ "$key" == "${target,,}" ]]; then approved_id="$numeric_id"; fi
 done < "$policy"
 [[ -n "$approved_id" ]] || fail 'destination is absent from reviewed repository policy'
