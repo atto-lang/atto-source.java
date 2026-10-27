@@ -184,6 +184,18 @@ final class StaticGeneratorFunctionTest {
     }
 
     @Test
+    void actorStaticGeneratorsRemainFailClosed() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Worker as
+                  pub static gen* values(): Iterator<int> {
+                    yield 1;
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
     void instanceGeneratorMethodsRemainRejected() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define class Bad as
