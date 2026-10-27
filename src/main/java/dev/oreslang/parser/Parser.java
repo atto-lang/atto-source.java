@@ -1978,10 +1978,19 @@ public final class Parser {
         if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
         if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
         if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
-        if ((check(STRUCT) || (check(IDENT) && peek().lexeme().equals("record")))
+        if (check(STRUCT) && checkNext(LBRACE)) {
+            advance();
+            // A mutable struct type must not silently become an immutable
+            // record, particularly when computing an inverted column ABI.
+            // Parse the canonical '{field: Type}' members, then retain its
+            // distinct structural mutability marker in the type AST.
+            Ast.TypeRef members = parseTypeAtom();
+            return Ast.TypeRef.structType(members.recordMembers());
+        }
+        if (check(IDENT) && peek().lexeme().equals("record")
                 && checkNext(LBRACE)) {
-            advance(); // 'struct' and 'record' denote a structural shape in type position.
-            return parseTypeAtom(); // the existing '{field: Type}' parser owns the braces
+            advance();
+            return parseTypeAtom(); // explicitly immutable record type
         }
         if (match(TYPE)) {
             Ast.TypeRef marked = parseTypeAtom();
