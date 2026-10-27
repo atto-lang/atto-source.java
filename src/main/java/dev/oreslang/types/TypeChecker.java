@@ -1900,6 +1900,40 @@ public final class TypeChecker {
         return env;
     }
 
+    private static boolean typeContainsInvertedArray(Type type) {
+        if (type == null) return false;
+        if (type instanceof Named named) {
+            if (named.name().equals("InvertedArray")) return true;
+            for (Type argument : named.arguments()) {
+                if (typeContainsInvertedArray(argument)) return true;
+            }
+            return false;
+        }
+        if (type instanceof Borrow borrow) {
+            return typeContainsInvertedArray(borrow.target());
+        }
+        if (type instanceof SelfType self) {
+            return typeContainsInvertedArray(self.bound());
+        }
+        if (type instanceof ListType list) {
+            return typeContainsInvertedArray(list.element());
+        }
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(TypeChecker::typeContainsInvertedArray);
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(TypeChecker::typeContainsInvertedArray);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(TypeChecker::typeContainsInvertedArray);
+        }
+        if (type instanceof Function function) {
+            return function.parameters().stream().anyMatch(TypeChecker::typeContainsInvertedArray)
+                    || typeContainsInvertedArray(function.result());
+        }
+        return false;
+    }
+
     private static boolean typeRefContainsInvertedArray(Ast.TypeRef type) {
         if (type == null) return false;
         if (type.isBorrow()) return typeRefContainsInvertedArray(type.borrowedTarget());
@@ -1926,6 +1960,11 @@ public final class TypeChecker {
                             + "keep it in a direct lexical function binding");
         }
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (typeContainsInvertedArray(actual)) {
+            throw new IllegalArgumentException(
+                    "module/global binding '" + field.name()
+                            + "' cannot own or contain InvertedArray storage in v1");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
