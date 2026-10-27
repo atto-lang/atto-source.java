@@ -11,6 +11,8 @@ class EvidenceTests(unittest.TestCase):
 
     def test_requires_positive_runner_name_and_real_step(self):
         job = {
+            "status": "completed",
+            "conclusion": "failure",
             "runner_id": 42,
             "runner_name": "GitHub Actions 1",
             "steps": [{"name": "Compile", "status": "completed", "conclusion": "failure"}],
@@ -23,6 +25,7 @@ class EvidenceTests(unittest.TestCase):
             **job,
             "steps": [{"name": "Set up job", "status": "completed", "conclusion": "success"}],
         }))
+        self.assertFalse(ev.qualified({**job, "status": "in_progress", "conclusion": None}))
 
     def test_classification_is_conservative_and_non_parity(self):
         self.assertIn("compiler", ev.classify({
@@ -44,7 +47,7 @@ class EvidenceTests(unittest.TestCase):
     @patch.object(ev, "pages")
     @patch.object(ev, "inspect_attempt")
     def test_collect_enumerates_historical_attempts_and_dedupes_reported(self, inspect, pages):
-        pages.return_value = [{"id": 99, "run_attempt": 3}]
+        pages.return_value = [{"id": 99, "run_attempt": 3, "status": "completed"}]
         inspect.side_effect = [
             {"attempt": 2},
             {"attempt": 3},
@@ -59,7 +62,7 @@ class EvidenceTests(unittest.TestCase):
     @patch.object(ev, "pages")
     @patch.object(ev, "inspect_attempt")
     def test_nonqualifying_attempt_is_not_permanently_suppressed(self, inspect, pages):
-        pages.return_value = [{"id": 100, "run_attempt": 1}]
+        pages.return_value = [{"id": 100, "run_attempt": 1, "status": "completed"}]
         inspect.return_value = None
         reports, updated = ev.collect("token", set())
         self.assertEqual([], reports)
