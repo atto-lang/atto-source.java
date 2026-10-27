@@ -192,6 +192,24 @@ final class ImportsQualifiedCallTest {
     }
 
     @Test
+    void importingSuspendingFncsCannotEraseTheirRemoteEffects() throws Exception {
+        Files.writeString(temp.resolve("lib.ores"), """
+                pub suspends fnc roodles(): int { return 123; }
+                """);
+        Path entry = temp.resolve("suspending.ores");
+        Files.writeString(entry, """
+                import fnc roodles from "./lib.ores";
+                pub routine main(): void {
+                  stdio.stdout.write(imports::roodles());
+                }
+                """);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(failure.getMessage().contains("does not match an exported declaration")
+                || failure.getMessage().contains("suspends"), failure.getMessage());
+    }
+
+    @Test
     void qualifiedDotAccessDoesNotBecomeSpecialImportLookup() {
         AstVerifier.verifyDotIsOrdinary();
     }
