@@ -507,6 +507,7 @@ public final class OutboundHttpRequest {
                 "http.request.physical",
                 () -> {
                     runPhysical(
+                            context,
                             target,
                             method,
                             headers,
@@ -538,6 +539,7 @@ public final class OutboundHttpRequest {
     }
 
     private static void runPhysical(
+            OresContext context,
             URI target,
             String method,
             List<Map.Entry<String, String>> headers,
