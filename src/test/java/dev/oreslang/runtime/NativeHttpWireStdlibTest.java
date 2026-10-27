@@ -30,25 +30,25 @@ final class NativeHttpWireStdlibTest {
     void guestParsesOnlyStrictBodylessHttp11Heads() throws Exception {
         String guest = """
             import module http_wire from "std/http_wire";
-            pub routine main(): void {
+            pub async routine main(): void {
               val valid = http_wire.parse_head("GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: keep-alive\\r\\n\\r\\n");
-              stdio.println(valid.is_ok());
+              await stdio.println(valid.is_ok());
               val head = valid.unwrap();
-              stdio.println(head.method);
-              stdio.println(head.target);
-              stdio.println(head.host);
-              stdio.println(head.keep_alive);
+              await stdio.println(head.method);
+              await stdio.println(head.target);
+              await stdio.println(head.host);
+              await stdio.println(head.keep_alive);
               val close = http_wire.parse_head("HEAD /ping HTTP/1.1\\r\\nHost: localhost:8080\\r\\nConnection: close\\r\\n\\r\\n");
-              stdio.println(close.is_ok());
-              stdio.println(close.unwrap().keep_alive);
-              stdio.println(http_wire.parse_head("POST /upload HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n").is_err());
-              stdio.println(http_wire.parse_head("GET / HTTP/1.0\\r\\nHost: x\\r\\n\\r\\n").is_err());
-              stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n").is_err());
-              stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\r\\nContent-Length: 1\\r\\n\\r\\n").is_err());
-              stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\r\\nHost: y\\r\\n\\r\\n").is_err());
-              stdio.println(http_wire.parse_head("GET //evil HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n").is_err());
-              stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\nX: y\\r\\n\\r\\n").is_err());
-              stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\r\\n").is_err());
+              await stdio.println(close.is_ok());
+              await stdio.println(close.unwrap().keep_alive);
+              await stdio.println(http_wire.parse_head("POST /upload HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n").is_err());
+              await stdio.println(http_wire.parse_head("GET / HTTP/1.0\\r\\nHost: x\\r\\n\\r\\n").is_err());
+              await stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n").is_err());
+              await stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\r\\nContent-Length: 1\\r\\n\\r\\n").is_err());
+              await stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\r\\nHost: y\\r\\n\\r\\n").is_err());
+              await stdio.println(http_wire.parse_head("GET //evil HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n").is_err());
+              await stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\nX: y\\r\\n\\r\\n").is_err());
+              await stdio.println(http_wire.parse_head("GET / HTTP/1.1\\r\\nHost: x\\r\\n").is_err());
               return;
             }
             """;
