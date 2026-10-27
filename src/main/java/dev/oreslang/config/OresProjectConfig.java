@@ -258,7 +258,7 @@ public final class OresProjectConfig {
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
-        if (isExplicitRelativeImport(unix)) {
+        if (ImportRules.isExplicitRelativePath(unix)) {
             Path lexicalImporter = importer.toAbsolutePath().normalize();
             ResolvedSource physicalImporter = existingSource(lexicalImporter)
                     .orElseThrow(() -> new IllegalArgumentException(
@@ -306,14 +306,6 @@ public final class OresProjectConfig {
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
-    }
-
-
-    private static boolean isExplicitRelativeImport(String unixPath) {
-        return ".".equals(unixPath)
-                || "..".equals(unixPath)
-                || unixPath.startsWith("./")
-                || unixPath.startsWith("../");
     }
 
     private static void rejectNestedRelativePackage(
