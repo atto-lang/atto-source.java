@@ -859,6 +859,15 @@ final class PinnedHttpTransportTest {
             Thread.sleep(5);
         }
         assertEquals(0, resolver.activeResolutions());
+        assertFalse(
+                resolver.closed(),
+                "request transport cancellation must not close the context resolver");
+        assertEquals(
+                "127.0.0.1",
+                resolver.resolve("second.example")
+                        .getFirst()
+                        .getHostAddress(),
+                "the context resolver must remain reusable by later requests");
         resolver.close();
         nativeIo.close();
     }
