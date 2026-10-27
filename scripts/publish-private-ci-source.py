@@ -197,6 +197,30 @@ def valid_sha(value):
     return value
 
 
+def _source_origin_contract(origin):
+    """Validate and fingerprint the security-relevant source repository state."""
+    if (not isinstance(origin, dict)
+            or origin.get("full_name") != SOURCE_REPO
+            or origin.get("id") != SOURCE_REPOSITORY_ID
+            or origin.get("private") is not True
+            or origin.get("visibility") != "private"
+            or origin.get("archived") is not False
+            or origin.get("disabled") is not False
+            or origin.get("fork") is not False
+            or origin.get("default_branch") != SOURCE_PROTECTED_BRANCH):
+        raise Denied("cannot attest identity and privacy of source origin")
+    return (
+        origin["full_name"],
+        origin["id"],
+        origin["private"],
+        origin["visibility"],
+        origin["archived"],
+        origin["disabled"],
+        origin["fork"],
+        origin["default_branch"],
+    )
+
+
 def gh_api(route, method="GET", payload=None):
     """Authenticated GitHub API through a trusted executable and sealed environment."""
     argv = [trusted_github_cli(), "api", "--method", method, route,
@@ -451,10 +475,7 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
     before success so movement or weakening during attestation fails closed.
     """
     origin = gh_api(f"repos/{SOURCE_REPO}")
-    if (origin.get("full_name") != SOURCE_REPO
-            or origin.get("id") != SOURCE_REPOSITORY_ID
-            or origin.get("private") is not True):
-        raise Denied("cannot attest identity and privacy of source origin")
+    origin_contract = _source_origin_contract(origin)
     branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
     if (branch.get("name") != SOURCE_PROTECTED_BRANCH
             or branch.get("protected") is not True):
@@ -510,8 +531,19 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
         raise Denied("protected CODEOWNERS has invalid base64") from exc
     require_security_codeowners(codeowners_contents)
 
-    # Close the attestation-internal TOCTOU window: main or its enforcement
-    # may change while the pinned policy/CODEOWNERS objects are being read.
+    # Close the attestation-internal TOCTOU window: repository state, main,
+    # or its enforcement may change while the pinned governance objects are read.
+    final_origin = gh_api(f"repos/{SOURCE_REPO}")
+    try:
+        final_origin_contract = _source_origin_contract(final_origin)
+    except Denied as exc:
+        raise Denied(
+            "source repository identity/state changed during protected-origin attestation"
+        ) from exc
+    if final_origin_contract != origin_contract:
+        raise Denied(
+            "source repository identity/state changed during protected-origin attestation"
+        )
     final_branch = gh_api(
         f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
     if (final_branch.get("name") != SOURCE_PROTECTED_BRANCH
