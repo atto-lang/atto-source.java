@@ -62,6 +62,7 @@ public final class LinkedProgramRunner {
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
@@ -178,6 +179,7 @@ public final class LinkedProgramRunner {
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
@@ -394,12 +396,26 @@ public final class LinkedProgramRunner {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
 
-            if (CoreLibrarySources.isCoreImport(imported.path())) {
+            if (CoreLibrarySources.isStdImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
-                collectCoreImportClosure(imported.path(), units, importResolutions,
+                collectStdImportClosure(imported.path(), units, importResolutions,
                         budget, depth + 1);
                 continue;
+            }
+
+            if (CoreLibrarySources.isOresCoreImport(imported.path())) {
+                String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectOresCoreImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
+
+            if (CoreLibrarySources.isReservedOresLibraryImport(imported.path())) {
+                throw new IllegalArgumentException(
+                        "reserved Oreslang library import must name a canonical module: "
+                                + imported.path());
             }
 
             String raw = imported.path().replace('\\', '/');
@@ -429,10 +445,11 @@ public final class LinkedProgramRunner {
 
 
     /**
-     * Collects only compiler-owned Oreslang sources under the reserved std/
-     * namespace. Neither the project manifest nor ORESLANG_PATH can override it.
+     * Collects compiler-owned hosted source under ores.std/* (and the temporary
+     * legacy std/* spelling). Hosted std may depend on ores.core or ores.std,
+     * but never on application/ambient modules or Java source islands.
      */
-    private static void collectCoreImportClosure(
+    private static void collectStdImportClosure(
             String importPath,
             Map<String, MixedSourceUnit> units,
             Map<String, Map<String, String>> importResolutions,
@@ -442,38 +459,104 @@ public final class LinkedProgramRunner {
         if (units.containsKey(id)) return;
         budget.checkCanAdmitUnit(depth);
 
-        String coreSource = CoreLibrarySources.source(importPath);
-        budget.admit(coreSource.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        String source = CoreLibrarySources.source(importPath);
+        budget.admit(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(
                 id,
                 CoreLibrarySources.fileName(importPath),
-                coreSource);
+                source);
         if (mixed.hasJavaSource()) {
             throw new SecurityException(
-                    "packaged std/* modules must be native Oreslang, not Java source islands: "
+                    "packaged ores.std modules must be native Oreslang, not Java source islands: "
                             + importPath);
         }
 
         Ast.Program program = Parser.parse(mixed.oresSource());
-        // Validate the whole source before admitting any unit to the closure.
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) {
-                throw new SecurityException("std/* cannot import Java host classes: "
-                        + importPath + " -> " + imported.path());
+                throw new SecurityException(
+                        "ores.std cannot import Java host classes: "
+                                + importPath + " -> " + imported.path());
             }
-            if (!CoreLibrarySources.isCoreImport(imported.path())) {
-                throw new IllegalArgumentException("std/* cannot import project or ambient modules: "
-                        + importPath + " -> " + imported.path());
+            if (CoreLibrarySources.isStdImport(imported.path())) {
+                CoreLibrarySources.unitId(imported.path());
+                continue;
             }
-            CoreLibrarySources.unitId(imported.path());
+            if (CoreLibrarySources.isOresCoreImport(imported.path())) {
+                CoreLibrarySources.oresCoreUnitId(imported.path());
+                continue;
+            }
+            throw new IllegalArgumentException(
+                    "ores.std cannot import project or ambient modules: "
+                            + importPath + " -> " + imported.path());
         }
 
         units.put(id, mixed);
         for (Ast.ImportDecl imported : program.imports()) {
-            String targetId = CoreLibrarySources.unitId(imported.path());
+            if (CoreLibrarySources.isStdImport(imported.path())) {
+                String targetId = CoreLibrarySources.unitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectStdImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            } else {
+                String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectOresCoreImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            }
+        }
+    }
+
+    /**
+     * Collects the closed ores.core registry. Core is strictly downward closed:
+     * it may import only ores.core and cannot reach Java, ores.std, project
+     * source, ORESLANG_PATH, filesystem, process, network or other host APIs
+     * through module resolution.
+     */
+    private static void collectOresCoreImportClosure(
+            String importPath,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
+        String id = CoreLibrarySources.oresCoreUnitId(importPath);
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+
+        String source = CoreLibrarySources.oresCoreSource(importPath);
+        budget.admit(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id,
+                CoreLibrarySources.oresCoreFileName(importPath),
+                source);
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "packaged ores.core modules must be native Oreslang, not Java source islands: "
+                            + importPath);
+        }
+
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException(
+                        "ores.core cannot import Java host classes: "
+                                + importPath + " -> " + imported.path());
+            }
+            if (!CoreLibrarySources.isOresCoreImport(imported.path())) {
+                throw new IllegalArgumentException(
+                        "ores.core cannot import ores.std, project, or ambient modules: "
+                                + importPath + " -> " + imported.path());
+            }
+            CoreLibrarySources.oresCoreUnitId(imported.path());
+        }
+
+        units.put(id, mixed);
+        for (Ast.ImportDecl imported : program.imports()) {
+            String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());
             recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectCoreImportClosure(imported.path(), units, importResolutions,
+            collectOresCoreImportClosure(imported.path(), units, importResolutions,
                     budget, depth + 1);
         }
     }
