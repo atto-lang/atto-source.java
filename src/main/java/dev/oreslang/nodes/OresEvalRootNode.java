@@ -7312,6 +7312,11 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "checked inverted bracket runtime schema does not match its nominal class");
             }
+            if (!array.schema().physicalFingerprint().equals(
+                    admission.physicalSchemaFingerprint())) {
+                throw new IllegalStateException(
+                        "checked inverted bracket runtime schema fingerprint changed after admission");
+            }
             array.schema().requireMatches(rowClass);
             return array;
         }
