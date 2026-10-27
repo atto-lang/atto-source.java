@@ -123,7 +123,7 @@ and allowlist. No private export or implicit actor same-file dependency
 is authorized. Imported function signatures remain opaque to the
 per-code-unit typechecker unless independently linked; this is **not**
 proof of end-to-end type or effect safety. Opaque `imports::` calls reject
-borrowed argument values, borrow-backed projections, and live mutex guards
+borrowed argument values, borrow-backed projections, and live MutexGuard values
 rather than silently exporting unknown lifetimes. The linker and runtime
 reject `import fnc` of a suspending declaration: the current first-class
 function type cannot safely represent its suspension effect. Ordinary
