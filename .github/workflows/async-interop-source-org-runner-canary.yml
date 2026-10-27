@@ -2,13 +2,15 @@ name: Source-org isolated runner capability canary (no checkout)
 # MANUAL ONLY. Do not schedule self-hosted runners from PR-controlled
 # workflow definitions. Requires independently reviewed workflow on a
 # protected default branch and deliberate administrator dispatch.
+# Use a dedicated v2 runner label: historical queued PR-triggered jobs require
+# the retired oreslang-isolated-ephemeral label and cannot match this worker.
 on:
   workflow_dispatch:
 permissions: {}
 jobs:
   source-free-runner-canary:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, x64, oreslang-isolated-ephemeral]
+    runs-on: [self-hosted, linux, x64, oreslang-isolated-canary-2172-v2]
     timeout-minutes: 5
     steps:
       - name: Verify source-free tooling prerequisites only
