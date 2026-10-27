@@ -28,7 +28,11 @@ jobs:
             echo "refusing conformance from mismatched Java Git commit: $actual != $expected" >&2
             exit 65
           fi
-          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+          if ! worktree_status="$(git status --porcelain --untracked-files=all)"; then
+            echo "Java conformance Git status inventory failed" >&2
+            exit 65
+          fi
+          if [[ -n "$worktree_status" ]]; then
             echo "refusing dirty Java conformance source checkout" >&2
             exit 65
           fi
