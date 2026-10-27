@@ -18,6 +18,11 @@
 /integration/ @ORESoftware
 /.oreslang/ @ORESoftware
 
+# Exact-main repository-scoped ephemeral runner: security ownership.
+/.github/workflows/private-exact-main-validation.yml @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
+/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware
+
 # Must remain the final CODEOWNERS rules: privileged private-source exporter
 # verifies this exact order and sole independent @ORESoftware ownership.
 # GitHub applies last matching CODEOWNERS rule, so keep these after broad rules.
