@@ -1578,6 +1578,13 @@ public final class Ast {
                     key.program() == null || key.get() == null);
         }
 
+        public static synchronized void revokeProgram(Program program) {
+            java.util.Objects.requireNonNull(program, "checked inverted program");
+            expunge();
+            ADMISSIONS.keySet().removeIf(key -> key.program() == program);
+            PROGRAM_EPOCHS.remove(new ProgramIdentityKey(program, null));
+        }
+
         public static synchronized void beginCheck(Program program, long checkEpoch) {
             if (checkEpoch <= 0) {
                 throw new IllegalArgumentException(
