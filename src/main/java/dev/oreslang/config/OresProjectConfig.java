@@ -251,11 +251,23 @@ public final class OresProjectConfig {
 
         List<String> sourceRootValues = stringArray(toml, "source.roots");
         if (toml.get("source.roots") == null) sourceRootValues = List.of(".");
-        List<Path> sourceRoots = resolvePaths(projectRoot, sourceRootValues);
-        List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
+        List<Path> sourceRoots = modernPackage
+                ? resolveModernPackagePaths(
+                        projectRoot, sourceRootValues, "source.roots", true)
+                : resolvePaths(projectRoot, sourceRootValues);
+        List<String> importPathValues = stringArray(toml, "source.import_paths");
+        List<Path> importPaths = modernPackage
+                ? resolveModernPackagePaths(
+                        projectRoot, importPathValues, "source.import_paths", true)
+                : resolvePaths(projectRoot, importPathValues);
 
         String mainText = toml.getString("entrypoints.main");
-        Path mainEntrypoint = mainText == null ? null : resolvePath(projectRoot, mainText);
+        Path mainEntrypoint = mainText == null
+                ? null
+                : (modernPackage
+                        ? resolveModernPackagePath(
+                                projectRoot, mainText, "entrypoints.main", false)
+                        : resolvePath(projectRoot, mainText));
 
         return new OresProjectConfig(
                 absoluteManifest,
@@ -655,6 +667,118 @@ public final class OresProjectConfig {
             Path path = Path.of(trimmed);
             if (!path.isAbsolute()) path = cwd.resolve(path);
             paths.add(path.toAbsolutePath().normalize());
+        }
+    }
+
+    private static List<Path> resolveModernPackagePaths(
+            Path packageRoot,
+            List<String> values,
+            String key,
+            boolean requireDirectoryWhenPresent) {
+        ArrayList<Path> paths = new ArrayList<>(values.size());
+        LinkedHashSet<Path> seen = new LinkedHashSet<>();
+        for (String value : values) {
+            Path path = resolveModernPackagePath(
+                    packageRoot, value, key, requireDirectoryWhenPresent);
+            if (seen.add(path)) paths.add(path);
+        }
+        return List.copyOf(paths);
+    }
+
+    private static Path resolveModernPackagePath(
+            Path packageRoot,
+            String value,
+            String key,
+            boolean requireDirectoryWhenPresent) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(
+                    PACKAGE_MANIFEST_NAME + " key '" + key + "' cannot be blank");
+        }
+        if (value.indexOf('\\') >= 0
+                || value.indexOf(':') >= 0
+                || value.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException(
+                    PACKAGE_MANIFEST_NAME + " key '" + key
+                            + "' must use a package-relative forward-slash path: " + value);
+        }
+
+        if (!".".equals(value)) {
+            for (String component : value.split("/", -1)) {
+                if (component.isEmpty() || ".".equals(component) || "..".equals(component)) {
+                    throw new IllegalArgumentException(
+                            PACKAGE_MANIFEST_NAME + " key '" + key
+                                    + "' contains invalid path component: " + value);
+                }
+            }
+        }
+
+        Path relative = Path.of(value);
+        if (relative.isAbsolute()) {
+            throw new IllegalArgumentException(
+                    PACKAGE_MANIFEST_NAME + " key '" + key
+                            + "' must be relative to the package root: " + value);
+        }
+
+        Path root = packageRoot.toAbsolutePath().normalize();
+        Path candidate = root.resolve(relative).normalize();
+        if (!candidate.startsWith(root)) {
+            throw new IllegalArgumentException(
+                    PACKAGE_MANIFEST_NAME + " key '" + key
+                            + "' escapes the package root: " + value);
+        }
+
+        verifyModernPackagePath(root, candidate, key, requireDirectoryWhenPresent);
+        return candidate;
+    }
+
+    private static void verifyModernPackagePath(
+            Path physicalRoot,
+            Path candidate,
+            String key,
+            boolean requireDirectoryWhenPresent) {
+        try {
+            Path existing = candidate;
+            while (existing != null
+                    && !Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+                existing = existing.getParent();
+            }
+            if (existing == null) {
+                throw new IllegalArgumentException(
+                        "cannot establish package authority for " + key + ": " + candidate);
+            }
+
+            Path physicalExisting = existing.toRealPath();
+            if (!physicalExisting.startsWith(physicalRoot)) {
+                throw new IllegalArgumentException(
+                        PACKAGE_MANIFEST_NAME + " key '" + key
+                                + "' escapes the physical package root: " + candidate);
+            }
+
+            if (existing.equals(candidate)
+                    && requireDirectoryWhenPresent
+                    && !Files.isDirectory(physicalExisting, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        PACKAGE_MANIFEST_NAME + " key '" + key
+                                + "' must resolve to a directory when present: " + candidate);
+            }
+
+            Path boundaryCursor = Files.isDirectory(
+                            physicalExisting, LinkOption.NOFOLLOW_LINKS)
+                    ? physicalExisting
+                    : physicalExisting.getParent();
+            for (Path cursor = boundaryCursor;
+                    cursor != null && !cursor.equals(physicalRoot);
+                    cursor = cursor.getParent()) {
+                if (hasPackageMarker(cursor)) {
+                    throw new IllegalArgumentException(
+                            PACKAGE_MANIFEST_NAME + " key '" + key
+                                    + "' crosses nested package boundary at '" + cursor + "'");
+                }
+            }
+        } catch (IOException failure) {
+            throw new IllegalArgumentException(
+                    "cannot verify physical package path for " + key + ": " + candidate,
+                    failure);
         }
     }
 
