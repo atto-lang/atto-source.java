@@ -318,6 +318,22 @@ public final class TaskPipeline {
                         throw new UpstreamCancelled();
                     }
                     Object produced = chain.get(next++).apply(value);
+                    // Parent cancellation can arrive *inside* a synchronous
+                    // stage that creates an owned asynchronous child. That
+                    // child is not yet in ownedStage, so the ordinary bridge
+                    // revocation callback cannot find and cancel it. Revoke
+                    // the new ownership token before returning to the
+                    // scheduler; never cancel borrowed stage Futures or the
+                    // input/bridge when a stage mislabels either as owned.
+                    if (TaskHandle.currentCancellationRequested()) {
+                        if (produced instanceof Owned freshlyOwned) {
+                            OresFuture<?> child = freshlyOwned.future();
+                            if (child != input && child != exposedRef.get()) {
+                                child.cancel(false);
+                            }
+                        }
+                        TaskHandle.checkCurrentCancellationCheckpoint();
+                    }
                     if (produced instanceof Owned owned) {
                         OresFuture<?> child = owned.future();
                         if (child == exposedRef.get()) {
