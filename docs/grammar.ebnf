@@ -378,6 +378,7 @@ primary         = literal
                 | inferred_struct_literal
                 | inferred_record_literal
                 | explicit_struct_literal
+                | local_struct_alias_constructor
                 | "(" expression ")" ;
 
 lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
@@ -405,6 +406,15 @@ inferred_record_literal
    infer<T> record may capture a structural alias. Records are structural readonly
    values. Inferred/explicit structs are a distinct concrete closed-shape category;
    no implicit record<->struct erasure. *)
+(* IDENT must be a previously defined function-local type alias to an
+   exact struct shape. This expression lowers to the existing checked explicit
+   struct object AST. Positional syntax is allowed only for a one-field shape;
+   multi-field aliases require statically named fields because structural
+   TypeRef canonicalization deliberately loses source declaration order. *)
+local_struct_alias_constructor
+                = IDENT "{" ( expression | struct_value_field
+                               { "," struct_value_field } ) "}" ;
+
 explicit_struct_literal
                 = "struct" "{"
                   [ struct_field_spec { "," struct_field_spec } ]
