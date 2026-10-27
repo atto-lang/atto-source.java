@@ -30,23 +30,20 @@ public final class OresProjectConfig {
     public static final String SCHEMA_VERSION = "1";
 
     /**
-     * A requested target library profile is not a statement of Java backend
-     * support. Only HOSTED is admitted until source/effect closure and native
-     * freestanding linking are implemented and independently tested.
+     * Oreslang has exactly two library layers:
+     * CORE is freestanding/no-OS; STD is the hosted/platform layer.
+     * The Java/Graal backend currently executes only STD programs.
      */
     public enum LibraryProfile {
-        HOSTED("hosted"),
-        FREESTANDING_CORE("freestanding-core"),
-        FREESTANDING_ALLOC("freestanding-alloc"),
-        FREESTANDING_ACTOR("freestanding-actor"),
-        FREESTANDING_OTP("freestanding-otp");
+        STD("std"),
+        CORE("core");
 
         private final String manifestValue;
         LibraryProfile(String manifestValue) { this.manifestValue = manifestValue; }
         public String manifestValue() { return manifestValue; }
 
         static LibraryProfile parse(Object value) {
-            if (value == null) return HOSTED;
+            if (value == null) return STD;
             if (!(value instanceof String name)) {
                 throw new IllegalArgumentException("build.library_profile must be a string");
             }
@@ -108,7 +105,7 @@ public final class OresProjectConfig {
                 List.of(),
                 parseEnvironmentPaths(environment),
                 null,
-                LibraryProfile.HOSTED);
+                LibraryProfile.STD);
     }
 
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
@@ -184,12 +181,12 @@ public final class OresProjectConfig {
     public LibraryProfile libraryProfile() { return libraryProfile; }
 
     /** Fail before import resolution, compiler emission, or guest execution. */
-    public void requireHostedJavaBackend() {
-        if (libraryProfile != LibraryProfile.HOSTED) {
+    public void requireStdJavaBackend() {
+        if (libraryProfile != LibraryProfile.STD) {
             throw new IllegalArgumentException(
                     "build.library_profile = \"" + libraryProfile.manifestValue()
-                            + "\" is not yet supported by the hosted Java/Graal backend; "
-                            + "no freestanding code was compiled");
+                            + "\" requests ores.core freestanding execution, which is not yet "
+                            + "supported by the hosted Java/Graal backend; no freestanding code was compiled");
         }
     }
 
