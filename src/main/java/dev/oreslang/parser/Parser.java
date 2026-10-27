@@ -2279,6 +2279,21 @@ public final class Parser {
                 }
             }
             consume(RBRACE, "expected '}' after callable body");
+            // A local alias may only depend on earlier, already-expanded local
+            // aliases. Without this check a forward local name could survive
+            // as an unrelated nominal type in the published structural ABI.
+            java.util.Set<String> earlierAliases = new java.util.HashSet<>();
+            for (java.util.Map.Entry<String, Ast.TypeRef> declared : callableRecordAliases.entrySet()) {
+                for (String other : callableRecordAliases.keySet()) {
+                    if (!earlierAliases.contains(other)
+                            && !other.equals(declared.getKey())
+                            && containsNamedType(declared.getValue(), other)) {
+                        throw error(previous(), "forward local record alias reference '"
+                                + other + "' requires checked two-phase type resolution");
+                    }
+                }
+                earlierAliases.add(declared.getKey());
+            }
             for (Ast.GenericParameter spec : specs) {
                 if (spec.defaultType() != null) {
                     for (String name : callableRecordAliases.keySet()) {
