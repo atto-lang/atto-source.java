@@ -31,7 +31,11 @@ public final class BoundedSourceReader {
     }
 
     public static ReadResult readWithByteCount(Path path) throws IOException {
-        byte[] bytes = readSnapshot(path.toAbsolutePath().normalize());
+        // Resolve caller aliases once, then never reopen through the original
+        // spelling. A later symlink swap at that alias cannot redirect the
+        // descriptor-relative read to another source object.
+        Path physical = path.toAbsolutePath().normalize().toRealPath();
+        byte[] bytes = readSnapshot(physical);
         // Reject binary source before lexical analysis (aligns with LLVM/Forge).
         for (byte value : bytes) {
             if (value == 0) {
