@@ -23,6 +23,8 @@ public final class VmNioTcpConnection implements AutoCloseable {
     private final Set<OresFuture<?>> outstanding = new HashSet<>();
     private final OresFuture<Void> connectionClosed = new OresFuture<>();
     private int activeOperations;
+    private boolean readInFlight;
+    private boolean writeInFlight;
     private boolean terminated;
     private boolean terminalHookRun;
 
@@ -57,21 +59,38 @@ public final class VmNioTcpConnection implements AutoCloseable {
         if (run) terminalHook.run();
     }
 
-    private Throwable reserveSocketOperation() {
+    private enum Direction { READ, WRITE }
+
+    private Throwable reserveSocketOperation(Direction direction) {
         synchronized (gate) {
             if (terminated) return new IOException("TCP connection closed");
             if (activeOperations >= maxPending)
                 return new RejectedExecutionException("TCP operation capacity exhausted");
+            if (direction == Direction.READ && readInFlight)
+                return new IllegalStateException("TCP connection already has an outstanding read");
+            if (direction == Direction.WRITE && writeInFlight)
+                return new IllegalStateException("TCP connection already has an outstanding write");
+            if (direction == Direction.READ) readInFlight = true;
+            else writeInFlight = true;
             ++activeOperations;
             return null;
         }
     }
 
-    private void releaseSocketOperation() {
+    private void releaseSocketOperation(Direction direction) {
         boolean quiesced;
         synchronized (gate) {
             if (activeOperations <= 0)
                 throw new IllegalStateException("TCP socket operation reservation underflow");
+            if (direction == Direction.READ) {
+                if (!readInFlight)
+                    throw new IllegalStateException("TCP read reservation released more than once");
+                readInFlight = false;
+            } else {
+                if (!writeInFlight)
+                    throw new IllegalStateException("TCP write reservation released more than once");
+                writeInFlight = false;
+            }
             --activeOperations;
             quiesced = terminated && activeOperations == 0;
         }
@@ -96,21 +115,21 @@ public final class VmNioTcpConnection implements AutoCloseable {
     public OresFuture<List<Long>> readBytesAsync(int maximum) {
         if (maximum < 1 || maximum > 65536)
             return OresFuture.failed(new IllegalArgumentException("invalid TCP read bound"));
-        Throwable denial = reserveSocketOperation();
+        Throwable denial = reserveSocketOperation(Direction.READ);
         if (denial != null) return OresFuture.failed(denial);
 
         final OresFuture<byte[]> raw;
         try {
             raw = readiness.readAsync(channel, maximum);
         } catch (RuntimeException | Error failure) {
-            releaseSocketOperation();
+            releaseSocketOperation(Direction.READ);
             throw failure;
         }
 
         OresFuture<List<Long>> exposed = new OresFuture<>(
                 () -> raw.cancel(false),
                 () -> { },
-                this::releaseSocketOperation);
+                () -> releaseSocketOperation(Direction.READ));
         raw.whenCompleteRuntime((bytes, failure) -> {
             try {
                 if (raw.isCancelled()) return;
@@ -145,21 +164,21 @@ public final class VmNioTcpConnection implements AutoCloseable {
             snapshot[i] = (byte) b;
         }
 
-        Throwable denial = reserveSocketOperation();
+        Throwable denial = reserveSocketOperation(Direction.WRITE);
         if (denial != null) return OresFuture.failed(denial);
 
         final OresFuture<Integer> written;
         try {
             written = readiness.writeAsync(channel, snapshot);
         } catch (RuntimeException | Error failure) {
-            releaseSocketOperation();
+            releaseSocketOperation(Direction.WRITE);
             throw failure;
         }
 
         OresFuture<Integer> exposed = new OresFuture<>(
                 () -> written.cancel(false),
                 () -> { },
-                this::releaseSocketOperation);
+                () -> releaseSocketOperation(Direction.WRITE));
         written.whenCompleteRuntime((value, failure) -> {
             if (written.isCancelled()) return;
             if (failure != null) exposed.failFromRuntime(failure);
