@@ -1702,10 +1702,20 @@ public final class OwnershipChecker {
                 throw error("imports::" + imported.member()
                         + " cannot specialize an opaque imported fnc");
             }
-            // No linked signature is fabricated here. Each argument is still
-            // ownership-checked, including moves and outstanding borrows.
+            // The imported fnc's parameter lifetimes and scheduling effects
+            // are opaque to this per-unit pass. Never transfer a borrow or
+            // lexical mutex guard across that unresolved ABI boundary.
+            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
+                throw error("imports::" + imported.member()
+                        + " cannot run while holding a MutexGuard");
+            }
             for (Ast.Expr argument : call.arguments()) {
-                checkExpr(argument, scope, true);
+                ValueInfo passed = checkExpr(argument, scope, true);
+                if (isBorrowValue(passed) || passed.borrowSource != null
+                        || containsMutexGuardType(passed.type)) {
+                    throw error("imports::" + imported.member()
+                            + " cannot pass a borrow or MutexGuard without a linked lifetime signature");
+                }
             }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
