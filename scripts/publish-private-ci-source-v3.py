@@ -54,6 +54,8 @@ RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
 CONTRACT_SCHEMA = 1
 MAX_CONTRACT = 64 * 1024
+MAX_CONTRACT_CARRIERS = 32
+MAX_CONTRACT_TEST_PLANS = 64
 MAX_PLAN = 64 * 1024
 RECEIPT_TTL = dt.timedelta(hours=24)
 SOURCE_REPOSITORY_ID = 1400792274
@@ -262,51 +264,109 @@ def parse_contract(raw, repository, source_pr, test_plan):
         )
     except UnicodeError as exc:
         raise Denied("invalid carrier contract JSON") from exc
-    if not isinstance(doc, dict) or doc.get("schema") != CONTRACT_SCHEMA:
-        raise Denied("unsupported carrier contract schema")
+    if (not isinstance(doc, dict)
+            or set(doc) != {"schema", "carriers"}
+            or doc.get("schema") != CONTRACT_SCHEMA):
+        raise Denied("unsupported or non-exact carrier contract schema")
     carriers = doc.get("carriers")
-    if not isinstance(carriers, dict):
-        raise Denied("carrier contract missing carriers")
-    carrier = carriers.get(repository)
-    if not isinstance(carrier, dict):
-        raise Denied("destination absent from protected carrier contract")
+    if (not isinstance(carriers, dict) or not carriers
+            or len(carriers) > MAX_CONTRACT_CARRIERS):
+        raise Denied("carrier contract has invalid carrier registry")
+
     required_carrier_fields = {
         "repository_id", "base_sha", "workflow_path",
         "workflow_blob_sha", "test_plans"
     }
     allowed_carrier_fields = required_carrier_fields | {"review_pr"}
-    if (not required_carrier_fields.issubset(carrier)
-            or not set(carrier).issubset(allowed_carrier_fields)):
-        raise Denied("carrier contract fields are not exact")
-    repo_id = carrier.get("repository_id")
-    if (not isinstance(repo_id, int) or isinstance(repo_id, bool) or repo_id <= 0):
-        raise Denied("carrier repository id invalid")
-    base_sha = valid_sha(carrier.get("base_sha"), "carrier base SHA invalid")
+    seen_slugs = set()
+    seen_ids = set()
+    quarantined_slugs = {
+        item.casefold() for item in legacy.QUARANTINED_DESTINATIONS
+    }
+    quarantined_ids = set(legacy.QUARANTINED_DESTINATION_IDS)
+
+    for slug, candidate in carriers.items():
+        if not isinstance(slug, str) or legacy.NAME.fullmatch(slug) is None:
+            raise Denied("carrier contract contains invalid repository slug")
+        key = slug.casefold()
+        if key in seen_slugs:
+            raise Denied("carrier contract contains duplicate repository identities")
+        if key in quarantined_slugs:
+            raise Denied("carrier contract contains quarantined destination")
+        seen_slugs.add(key)
+
+        if (not isinstance(candidate, dict)
+                or not required_carrier_fields.issubset(candidate)
+                or not set(candidate).issubset(allowed_carrier_fields)):
+            raise Denied("carrier contract fields are not exact")
+        candidate_id = candidate.get("repository_id")
+        if (not isinstance(candidate_id, int)
+                or isinstance(candidate_id, bool)
+                or candidate_id <= 0):
+            raise Denied("carrier repository id invalid")
+        if candidate_id in seen_ids:
+            raise Denied("carrier contract contains duplicate repository IDs")
+        if candidate_id in quarantined_ids:
+            raise Denied("carrier contract contains quarantined repository ID")
+        seen_ids.add(candidate_id)
+
+        valid_sha(candidate.get("base_sha"), "carrier base SHA invalid")
+        review_pr = candidate.get("review_pr")
+        if (review_pr is not None
+                and (not isinstance(review_pr, int)
+                     or isinstance(review_pr, bool)
+                     or review_pr <= 0)):
+            raise Denied("carrier review PR invalid")
+        safe_policy_path(
+            candidate.get("workflow_path"), ".github/workflows/", ".yml"
+        )
+        valid_sha(
+            candidate.get("workflow_blob_sha"), "carrier workflow blob invalid"
+        )
+
+        plans = candidate.get("test_plans")
+        if (not isinstance(plans, dict) or not plans
+                or len(plans) > MAX_CONTRACT_TEST_PLANS):
+            raise Denied("carrier test plans missing or unbounded")
+        for candidate_path, candidate_plan in plans.items():
+            safe_policy_path(candidate_path, "ci/test-plans/", ".json")
+            if (not isinstance(candidate_plan, dict)
+                    or set(candidate_plan) != {"blob_sha", "allowed_prs"}):
+                raise Denied("carrier test plan fields are not exact")
+            valid_sha(
+                candidate_plan.get("blob_sha"), "test plan blob invalid"
+            )
+            allowed_prs = candidate_plan.get("allowed_prs")
+            if (not isinstance(allowed_prs, list) or not allowed_prs
+                    or any(
+                        not isinstance(value, int)
+                        or isinstance(value, bool)
+                        or value <= 0
+                        for value in allowed_prs
+                    )
+                    or len(set(allowed_prs)) != len(allowed_prs)):
+                raise Denied("carrier test plan PR allowlist invalid")
+
+    carrier = carriers.get(repository)
+    if not isinstance(carrier, dict):
+        raise Denied("destination absent from protected carrier contract")
+    repo_id = carrier["repository_id"]
+    base_sha = valid_sha(carrier["base_sha"], "carrier base SHA invalid")
     review_pr = carrier.get("review_pr")
-    if (review_pr is not None
-            and (not isinstance(review_pr, int) or isinstance(review_pr, bool)
-                 or review_pr <= 0)):
-        raise Denied("carrier review PR invalid")
     workflow_path = safe_policy_path(
-        carrier.get("workflow_path"), ".github/workflows/", ".yml"
+        carrier["workflow_path"], ".github/workflows/", ".yml"
     )
     workflow_blob = valid_sha(
-        carrier.get("workflow_blob_sha"), "carrier workflow blob invalid"
+        carrier["workflow_blob_sha"], "carrier workflow blob invalid"
     )
-    plans = carrier.get("test_plans")
-    if not isinstance(plans, dict):
-        raise Denied("carrier test plans missing")
+    plans = carrier["test_plans"]
     plan_path = safe_policy_path(test_plan, "ci/test-plans/", ".json")
     plan = plans.get(plan_path)
-    if not isinstance(plan, dict) or set(plan) != {"blob_sha", "allowed_prs"}:
+    if not isinstance(plan, dict):
         raise Denied("test plan absent from protected carrier contract")
-    plan_blob = valid_sha(plan.get("blob_sha"), "test plan blob invalid")
-    allowed = plan.get("allowed_prs")
-    if (not isinstance(allowed, list) or not allowed
-            or any(not isinstance(x, int) or isinstance(x, bool) or x <= 0
-                   for x in allowed)
-            or len(set(allowed)) != len(allowed)
-            or source_pr not in allowed):
+    plan_blob = valid_sha(plan["blob_sha"], "test plan blob invalid")
+    allowed = plan["allowed_prs"]
+    if source_pr not in allowed:
         raise Denied("source PR is not authorized by protected test plan")
     return {
         "repository_id": repo_id,
