@@ -106,6 +106,37 @@ final class InvertedNestedLayoutTest {
     }
 
     @Test
+    void nestedRecordBytesAreLittleEndianAndNestedBooleansAreCanonical() {
+        Ast.TypeRef type = Ast.TypeRef.recordType(Map.of(
+                "ready", Ast.TypeRef.simple("bool"),
+                "location", Ast.TypeRef.recordType(Map.of(
+                        "x", Ast.TypeRef.simple("i64"),
+                        "enabled", Ast.TypeRef.simple("bool")))));
+        var codec = InvertedRecordLayout.fromType(type);
+        assertEquals(10, codec.bytes());
+        assertEquals("location", codec.members().getFirst().name());
+        byte[] encoded = codec.encode(Map.of(
+                "ready", false, "location", Map.of(
+                        "enabled", true, "x", 0x0102030405060708L)));
+        // Sorted path order: location.enabled @0, location.x @1, ready @9
+        assertEquals(1, encoded[0]);
+        assertEquals(0x0102030405060708L,
+                java.nio.ByteBuffer.wrap(encoded)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).getLong(1));
+        assertEquals(0, encoded[9]);
+        encoded[0] = 2;
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(encoded),
+                "nested corrupt bool must be rejected rather than normalized");
+        encoded[0] = 1;
+        encoded[9] = 3;
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(encoded),
+                "parent corrupt bool must be rejected too");
+        encoded[9] = 0;
+        assertEquals(0x0102030405060708L,
+                ((Map<?, ?>) codec.decode(encoded).get("location")).get("x"));
+    }
+
+    @Test
     void nestedValueRecordsRemainUnadmittedToGuestWithoutOwnershipProof() {
         String source = """
                 define inverted class Packet as
