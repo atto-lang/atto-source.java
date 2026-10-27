@@ -1,5 +1,5 @@
-// Compiler-owned canonical core source, intentionally free of host imports.
-// Initial hosted-compiler linking slice; NOT a native no-OS runtime proof.
+// Compiler-owned canonical ores.core source, intentionally free of host imports.
+// Freestanding-capable source layer; hosted linking here is NOT a native no-OS runtime proof.
 define module numeric as
 
   pub fnc min_int(int left, int right): int {
