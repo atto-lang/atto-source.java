@@ -504,17 +504,40 @@ def checked_carrier_main(repository, contract):
         raise Denied("carrier main advanced beyond reviewed base")
 
     if branch.get("protected") is not True:
-        return review_attested_carrier_main(repository, contract, branch)
+        raise Denied(
+            "carrier main is not protected; review history cannot substitute for branch protection"
+        )
 
     protection = legacy.gh_api(f"repos/{repository}/branches/main/protection")
     reviews = protection.get("required_pull_request_reviews")
+    checks = protection.get("required_status_checks")
+    conversation = protection.get("required_conversation_resolution")
+    contexts = checks.get("contexts") if isinstance(checks, dict) else None
+    named_checks = checks.get("checks") if isinstance(checks, dict) else None
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
+            or reviews.get("require_last_push_approval") is not True
             or not isinstance(reviews.get("required_approving_review_count"), int)
             or isinstance(reviews.get("required_approving_review_count"), bool)
             or reviews.get("required_approving_review_count", 0) < 1):
-        raise Denied("carrier main does not enforce independent CODEOWNER review")
+        raise Denied(
+            "carrier main does not enforce independent CODEOWNER, stale-review, and last-push approval"
+        )
+    if (not isinstance(checks, dict)
+            or checks.get("strict") is not True
+            or not isinstance(contexts, list)
+            or not isinstance(named_checks, list)
+            or not (contexts or named_checks)
+            or any(not isinstance(name, str) or not name.strip() for name in contexts)
+            or any(not isinstance(item, dict)
+                   or not isinstance(item.get("context"), str)
+                   or not item["context"].strip() for item in named_checks)
+            or not isinstance(conversation, dict)
+            or conversation.get("enabled") is not True):
+        raise Denied(
+            "carrier main must enforce strict required CI and conversation resolution"
+        )
     admins = protection.get("enforce_admins")
     force = protection.get("allow_force_pushes")
     delete = protection.get("allow_deletions")
@@ -884,6 +907,8 @@ def authorize_write(
     if (branch.get("name") != "main"
             or branch.get("commit", {}).get("sha") != contract["base_sha"]):
         raise Denied("carrier main changed during source-bearing write")
+    if checked_carrier_main(repository, contract) != contract["base_sha"]:
+        raise Denied("carrier main protection changed during source-bearing write")
     if verify_source_pr(source_pr, source_commit) != source_repo_id:
         raise Denied("source PR authorization changed during transfer")
     revalidate_source_governance(
