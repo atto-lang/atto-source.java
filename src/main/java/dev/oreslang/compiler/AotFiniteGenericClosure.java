@@ -34,15 +34,19 @@ public final class AotFiniteGenericClosure {
         }
     }
 
-    public record Plan(List<Instance> reachable) {
-        public Plan { reachable = List.copyOf(reachable); }
+    public record Plan(String sourceUnitId, List<Instance> reachable) {
+        public Plan {
+            Objects.requireNonNull(sourceUnitId, "AOT source unit identity");
+            reachable = List.copyOf(reachable);
+        }
     }
 
     private record Symbol(String module, String name, int arity) { }
     private record Work(Instance instance, int depth) { }
 
-    /** Must receive a program already checked for types, effects and ownership. */
-    public static Plan plan(Ast.Program checked, BuildOptions options) {
+    /** Package-internal planner for already checked ASTs; callers must not bypass
+     * OresCompiler.planFiniteAotGenerics for executable source admission. */
+    static Plan plan(Ast.Program checked, BuildOptions options) {
         Objects.requireNonNull(checked, "checked AOT program");
         Objects.requireNonNull(options, "AOT build options");
         return new Planner(checked, options).run();
@@ -133,7 +137,8 @@ public final class AotFiniteGenericClosure {
                 for (Ast.Param param : fn.parameters()) locals.add(param.name());
                 visitStatements(fn.body(), instance.module(), bindings, locals, work.depth(), 0);
             }
-            return new Plan(List.copyOf(visited));
+            return new Plan(MacroSourceUnitIdentity.unitId(program),
+                    List.copyOf(visited));
         }
 
         private void enqueue(Instance instance, int depth) {
@@ -157,6 +162,9 @@ public final class AotFiniteGenericClosure {
             }
             if (type.inferArguments() || type.name().startsWith("$")) {
                 throw fail("unresolved/inferred type cannot enter AOT specialization");
+            }
+            if (type.name().equals("Fnc") || type.name().equals("Routine")) {
+                throw fail("function values need static witness/closure-layout proof");
             }
             Ast.TypeRef parameter = bindings.get(type.name());
             if (parameter != null) {
