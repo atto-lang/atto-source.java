@@ -59,6 +59,23 @@ final class ActorIoIntrinsicTest {
     }
 
     @Test
+    void actorIoIntrinsicCannotBeShadowedByAParameter() {
+        PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                check("""
+                        pub actor fnc worker(string io) -> void {
+                          return;
+                        }
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-io-shadow.ores"));
+        assertTrue(
+                failure.getMessage().contains("reserved actor execution intrinsic"),
+                failure::getMessage);
+    }
+
+    @Test
     void unimplementedActorChannelsFailClosedAtTypecheck() {
         PolyglotException failure = assertThrows(PolyglotException.class, () ->
                 check("""
