@@ -1965,8 +1965,13 @@ public final class Parser {
             return parseTypeAtom(); // the existing '{field: Type}' parser owns the braces
         }
         if (match(TYPE)) {
+            // A local record alias was lexically named even though we erase it
+            // immediately to a structural TypeRef. Preserve the ordinary
+            // 'type T' explicit alias marker on that named source spelling.
+            boolean namedLocalAlias = callableRecordAliases != null
+                    && check(IDENT) && callableRecordAliases.containsKey(peek().lexeme());
             Ast.TypeRef marked = parseTypeAtom();
-            if (marked.name().startsWith("$")) {
+            if (marked.name().startsWith("$") && !namedLocalAlias) {
                 throw error(previous(), "'type' alias marker must prefix a named type");
             }
             return marked;
