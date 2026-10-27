@@ -96,7 +96,7 @@ public final class BoundedSourceReader {
      * detects same-size mutation during the first copy instead of silently
      * compiling a mixed snapshot.
      */
-    private static byte[] snapshotChannel(SeekableByteChannel channel) throws IOException {
+    static byte[] snapshotChannel(SeekableByteChannel channel) throws IOException {
         long initialSize = channel.size();
         if (initialSize < 0 || initialSize > MAX_BYTES) {
             throw new IllegalArgumentException("Oreslang source exceeds 16 MiB source limit");
