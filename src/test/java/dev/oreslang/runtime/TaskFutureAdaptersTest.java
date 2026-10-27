@@ -38,6 +38,73 @@ final class TaskFutureAdaptersTest {
     }
 
     @Test
+    void adapterRetiresWhileIndependentProducerStillPhysicallyRunning()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            java.util.concurrent.CountDownLatch entered =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch release =
+                    new java.util.concurrent.CountDownLatch(1);
+            TaskHandle<Integer> producer = scheduler.startTracked(resume -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("producer release timed out");
+                }
+                return OresScheduler.done(91);
+            });
+            try {
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                TaskHandle<Integer> adapter =
+                        TaskFutureAdapters.fromFuture(scheduler, producer.result());
+                assertEquals(1, producer.result().pendingRuntimeWaiterCount());
+                assertTrue(adapter.cancel("detach observer"));
+                assertInstanceOf(TaskHandle.Cancelled.class,
+                        adapter.getDone().get(3, TimeUnit.SECONDS));
+                assertEquals(0, producer.result().pendingRuntimeWaiterCount());
+                assertFalse(producer.isCancellationRequested());
+                assertFalse(producer.getDone().isDone(),
+                        "adapter physical retirement does not prove upstream retirement");
+            } finally {
+                release.countDown();
+            }
+            assertEquals(91, producer.result().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Success.class,
+                    producer.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void terminalBeforeAdapterRegistrationPreservesOriginalFailure()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            IllegalArgumentException failure =
+                    new IllegalArgumentException("producer failed before subscribe");
+            assertTrue(source.failFromRuntime(failure));
+            TaskHandle<Integer> adapter = TaskFutureAdapters.fromFuture(scheduler, source);
+            var outcome = adapter.getDone().get(3, TimeUnit.SECONDS);
+            assertSame(failure,
+                    assertInstanceOf(TaskHandle.Failed.class, outcome).failure());
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+            assertFalse(source.isCancelled());
+        }
+    }
+
+    @Test
+    void alreadyCancelledSourceHasAuthenticatedDependentCancellation()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            assertTrue(source.cancel(false));
+            TaskHandle<Integer> adapter = TaskFutureAdapters.fromFuture(scheduler, source);
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    adapter.getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(source.isCancelled());
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
     void adapterCancellationDetachesOnlyItsWaiter() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> source = new OresFuture<>();
