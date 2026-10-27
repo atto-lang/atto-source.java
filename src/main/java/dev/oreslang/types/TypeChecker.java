@@ -8765,7 +8765,14 @@ public final class TypeChecker {
                 GenericCallArguments.bind(genericNames, typeArguments, label);
         Map<String, Type> resolved = new HashMap<>();
         for (Map.Entry<String, Ast.TypeRef> entry : bound.explicitTypes().entrySet()) {
-            resolved.put(entry.getKey(), resolve(entry.getValue(), callerGenerics, callerSelf));
+            Type concrete = resolve(entry.getValue(), callerGenerics, callerSelf);
+            if (containsChannelBorrow(concrete, new LinkedHashSet<>(), Map.of())) {
+                throw new IllegalArgumentException(
+                        label + " generic '" + entry.getKey()
+                                + "' must bind an owned type; lexical borrows belong in "
+                                + "an explicit borrow " + entry.getKey() + " parameter");
+            }
+            resolved.put(entry.getKey(), concrete);
         }
         return resolved;
     }
@@ -8796,6 +8803,11 @@ public final class TypeChecker {
         if (ref.name().equals("Unknown") || ref.name().equals("Any")) {
             throw new IllegalArgumentException(label
                     + " cannot default to Any/Unknown until safe opaque/dynamic semantics are integrated");
+        }
+        if (ref.isBorrow()) {
+            throw new IllegalArgumentException(
+                    label + " cannot default to a lexical borrow; default the generic "
+                            + "to the owned target type and put borrow on the callable parameter");
         }
         if (declared.contains(ref.name()) && !previous.contains(ref.name())) {
             throw new IllegalArgumentException(label
@@ -8983,6 +8995,13 @@ public final class TypeChecker {
         if (containsUnknown(actual)) return;
         if (pattern instanceof Generic generic) {
             if (fixedBindings.contains(generic.name())) return;
+            if (containsChannelBorrow(actual, new LinkedHashSet<>(), Map.of())) {
+                throw new IllegalArgumentException(
+                        label + " cannot infer generic '" + generic.name()
+                                + "' as a lexical borrow or borrow-bearing aggregate; "
+                                + "declare the parameter as borrow " + generic.name()
+                                + " and bind the generic to its owned target type");
+            }
             Type previous = bindings.putIfAbsent(generic.name(), actual);
             if (previous != null) {
                 Type joined = commonType(previous, actual);
