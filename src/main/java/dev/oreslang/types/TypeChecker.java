@@ -3808,8 +3808,7 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
-                return new Function(List.of(), new Named("Future", List.of(
-                        new Named("Option", List.of(Primitive.STRING)))));
+                return new Function(List.of(), Primitive.STRING);
             }
             if (member.receiver() instanceof Ast.NameExpr clockName && clockName.name().equals("process")
                     && env.lookup("process") == null
@@ -4006,7 +4005,8 @@ public final class TypeChecker {
             if (receiver instanceof Named named
                     && named.name().equals("stdio.stdin")
                     && member.member().equals("read_line")) {
-                return new Function(List.of(), Primitive.STRING);
+                return new Function(List.of(), new Named("Future", List.of(
+                        new Named("Option", List.of(Primitive.STRING)))));
             }
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("fs")
