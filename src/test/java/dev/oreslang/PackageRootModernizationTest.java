@@ -96,6 +96,73 @@ final class PackageRootModernizationTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void modernManifestConfiguredPathsCannotEscapePhysicalPackageRoot() throws Exception {
+        Path root = Files.createDirectories(temp.resolve("modern-configured-paths"));
+        Path source = root.resolve("main.ores");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+
+        for (String body : new String[] {
+                "[source]\nroots = [\"../outside\"]\n",
+                "[source]\nimport_paths = [\"../outside\"]\n",
+                "[entrypoints]\nmain = \"../outside/main.ores\"\n",
+                "[source]\nroots = [\"C:/outside\"]\n",
+                "[source]\nimport_paths = [\"lib\\\\escape\"]\n"
+        }) {
+            Files.writeString(
+                    root.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                    "schema_version = \"1\"\n" + body);
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresProjectConfig.discover(source, Map.of()),
+                    body);
+        }
+    }
+
+    @Test
+    void modernManifestConfiguredPathCannotEscapeThroughSymlinkedAncestor() throws Exception {
+        Path root = Files.createDirectories(temp.resolve("modern-configured-symlink"));
+        Path source = root.resolve("main.ores");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+
+        Path outside = Files.createDirectories(temp.resolve("modern-configured-symlink-outside"));
+        requireSymlink(root.resolve("alias"), outside);
+        Files.writeString(root.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["alias/generated"]
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(source, Map.of()));
+        assertTrue(failure.getMessage().contains("escapes the physical package root"),
+                failure.getMessage());
+    }
+
+    @Test
+    void modernManifestConfiguredPathCannotCrossNestedPackage() throws Exception {
+        Path root = Files.createDirectories(temp.resolve("modern-configured-nested"));
+        Path source = root.resolve("main.ores");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+        Path child = Files.createDirectories(root.resolve("child"));
+        Files.writeString(
+                child.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(root.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["child"]
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(source, Map.of()));
+        assertTrue(failure.getMessage().contains("nested package boundary"),
+                failure.getMessage());
+    }
+
     @Test
     void canonicalPlusPathResolvesFromPhysicalPackageRoot() throws Exception {
         Path root = modernPackage("plus-canonical");
