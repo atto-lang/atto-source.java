@@ -164,28 +164,42 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
-    def test_quarantined_repository_id_rejected_even_after_slug_rename(self):
-        renamed = b"renamed-owner/renamed-carrier 1323575966\n"
-        with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
-            pub._parse_policy_approval(
-                renamed,
-                "renamed-owner/renamed-carrier",
-                "private CI approval policy",
-            )
+    def test_quarantined_repository_ids_rejected_even_after_slug_rename(self):
+        for repository_id in (
+            1323575966, 1323598260, 1412142815, 1370782550, 1324139596
+        ):
+            with self.subTest(repository_id=repository_id):
+                renamed = (
+                    "renamed-owner/renamed-carrier "
+                    + str(repository_id)
+                    + "\n"
+                ).encode("ascii")
+                with self.assertRaisesRegex(
+                    pub.Denied, "repository ID is quarantined"
+                ):
+                    pub._parse_policy_approval(
+                        renamed,
+                        "renamed-owner/renamed-carrier",
+                        "private CI approval policy",
+                    )
 
-        metadata = {
-            "id": 1323575966,
-            "full_name": "renamed-owner/renamed-carrier",
-            "visibility": "private",
-            "private": True,
-            "archived": False,
-            "disabled": False,
-            "fork": False,
-            "default_branch": "main",
-        }
-        with patch.object(pub, "gh_api", return_value=metadata):
-            with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
-                pub.checked_repo("renamed-owner/renamed-carrier", 1323575966)
+                metadata = {
+                    "id": repository_id,
+                    "full_name": "renamed-owner/renamed-carrier",
+                    "visibility": "private",
+                    "private": True,
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                }
+                with patch.object(pub, "gh_api", return_value=metadata):
+                    with self.assertRaisesRegex(
+                        pub.Denied, "repository ID is quarantined"
+                    ):
+                        pub.checked_repo(
+                            "renamed-owner/renamed-carrier", repository_id
+                        )
 
     def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
         with (
@@ -262,6 +276,43 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
             with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
                 ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_quarantined_scintilla_carrier_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "scintilla-run-test/gleam-runner-conformance", self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
+
+    def test_quarantined_dummy_stack_carrier_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+                    self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
 
     def test_quarantined_recovery_carrier_rejected_before_any_source_access(self):
         with (
@@ -450,6 +501,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "response exceeds size limit"):
                 pub.gh_api("repos/trusted/ci")
 
+    def test_private_ci_policy_rejects_duplicate_numeric_repository_ids(self):
+        raw = b"trusted/ci 246810\nrenamed/alias 246810\n"
+        with self.assertRaisesRegex(pub.Denied, "duplicate numeric repository IDs"):
+            pub._parse_policy_approval(
+                raw, "trusted/ci", "protected source policy"
+            )
+
     def test_private_ci_policy_rejects_noncanonical_control_bytes(self):
         for raw in (
             b"trusted/ci 246810\r\n",
@@ -525,10 +583,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         )
 
     def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
-                            codeowners=True, stale=True, admins=True,
-                            approvals=1, force=False, deletions=False,
-                            bypasses=None, strict_checks=True, contexts=None,
-                            named_checks=None, source_id=None, codeowners_file=None):
+                            codeowners=True, stale=True, last_push=True,
+                            conversations=True, admins=True, approvals=1,
+                            force=False, deletions=False, bypasses=None,
+                            strict_checks=True, contexts=None, named_checks=None,
+                            source_id=None, codeowners_file=None):
         routes = []
         if contexts is None:
             contexts = ["private-ci-gate"]
@@ -555,6 +614,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main/protection":
                 reviews = {"require_code_owner_reviews": codeowners,
                            "dismiss_stale_reviews": stale,
+                           "require_last_push_approval": last_push,
                            "required_approving_review_count": approvals}
                 if bypasses is not None:
                     reviews["bypass_pull_request_allowances"] = bypasses
@@ -566,7 +626,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         },
                         "enforce_admins": {"enabled": admins},
                         "allow_force_pushes": {"enabled": force},
-                        "allow_deletions": {"enabled": deletions}}
+                        "allow_deletions": {"enabled": deletions},
+                        "required_conversation_resolution": {
+                            "enabled": conversations
+                        }}
             if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
                          +pub.POLICY_PATH+"?ref="+A):
                 return {"path": pub.POLICY_PATH, "type": "file",
@@ -646,6 +709,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 api, _ = self.verified_origin_api(**options)
                 with patch.object(pub, "gh_api", side_effect=api):
                     with self.assertRaisesRegex(pub.Denied, "strict required CI"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_requires_last_push_and_conversation_resolution(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        for options, message in (
+            ({"last_push": False}, "last-push approval"),
+            ({"conversations": False}, "conversation resolution"),
+        ):
+            with self.subTest(options=options):
+                api, _ = self.verified_origin_api(**options)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, message):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_rejects_author_codeowner_instead_of_independent_security_owner(self):
