@@ -587,7 +587,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             conversations=True, admins=True, approvals=1,
                             force=False, deletions=False, bypasses=None,
                             strict_checks=True, contexts=None, named_checks=None,
-                            source_id=None, codeowners_file=None):
+                            source_id=None, codeowners_file=None,
+                            visibility="private", archived=False, disabled=False,
+                            fork=False, default_branch="main"):
         routes = []
         if contexts is None:
             contexts = ["private-ci-gate"]
@@ -607,7 +609,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def fake(route, method="GET", payload=None):
             routes.append(route)
             if route == "repos/"+pub.SOURCE_REPO:
-                return {"id": source_id, "full_name": pub.SOURCE_REPO, "private": True}
+                return {
+                    "id": source_id,
+                    "full_name": pub.SOURCE_REPO,
+                    "private": visibility == "private",
+                    "visibility": visibility,
+                    "archived": archived,
+                    "disabled": disabled,
+                    "fork": fork,
+                    "default_branch": default_branch,
+                }
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
                 return {"name": "main", "protected": protected,
                         "commit": {"sha": A}}
@@ -696,6 +707,38 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=api):
             with self.assertRaisesRegex(pub.Denied, "identity and privacy"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_invalid_source_repository_state(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        for options in (
+            {"visibility": "public"},
+            {"archived": True},
+            {"disabled": True},
+            {"fork": True},
+            {"default_branch": "develop"},
+        ):
+            with self.subTest(options=options):
+                api, _ = self.verified_origin_api(**options)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "identity and privacy"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_repository_state_change_during_attestation(self):
+        api, _ = self.verified_origin_api()
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        calls = [0]
+        def changed(route, method="GET", payload=None):
+            if route == "repos/"+pub.SOURCE_REPO:
+                calls[0] += 1
+                result = api(route, method, payload)
+                if calls[0] == 2:
+                    result = dict(result, archived=True)
+                return result
+            return api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed):
+            with self.assertRaisesRegex(pub.Denied, "identity/state changed during"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+        self.assertEqual(calls[0], 2)
 
     def test_origin_requires_strict_nonempty_required_status_checks(self):
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
