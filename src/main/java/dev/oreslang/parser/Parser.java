@@ -4549,6 +4549,13 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
             do {
+                if (check(IDENT) && checkNext(QUESTION)) {
+                    advance();
+                    consume(QUESTION, "expected '?' after lambda parameter name");
+                    throw error(
+                            previous(),
+                            "omittable lambda parameters require an omission-aware callable value ABI");
+                }
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
@@ -4557,11 +4564,21 @@ public final class Parser {
                     consume(COLON, "expected ':' after lambda parameter name");
                     Ast.TypeRef type = parsePipeParameterType();
                     boolean mutable = match(MUT);
+                    if (match(QUESTION)) {
+                        throw error(
+                                previous(),
+                                "omittable lambda parameters require an omission-aware callable value ABI");
+                    }
                     params.add(new Ast.Param(type, name, false, mutable));
                 } else {
                     Ast.TypeRef type = parsePipeParameterType();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                    if (match(QUESTION)) {
+                        throw error(
+                                previous(),
+                                "omittable lambda parameters require an omission-aware callable value ABI");
+                    }
                     params.add(new Ast.Param(type, name, false, mutable));
                 }
             } while (match(COMMA));
