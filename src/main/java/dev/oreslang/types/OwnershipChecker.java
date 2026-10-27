@@ -255,6 +255,16 @@ public final class OwnershipChecker {
                 throw error("field '" + klass.name() + "." + field.name()
                         + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
             }
+            if (!klass.inverted() && containsInvertedArrayType(fieldType)) {
+                throw error(
+                        "field '" + klass.name() + "." + field.name()
+                                + "' cannot store InvertedArray ownership in v1; "
+                                + "keep inverted storage in a direct lexical binding");
+            }
+        }
+
+        if (klass.inverted()) {
+            return;
         }
 
         // An initializer is executable code, not merely a type expression.
@@ -4979,6 +4989,21 @@ public final class OwnershipChecker {
 
     private static boolean isMutexGuardType(Ast.TypeRef type) {
         return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
+    }
+
+    private static boolean containsInvertedArrayType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return containsInvertedArrayType(type.borrowedTarget());
+        if (type.name().equals("InvertedArray")) return true;
+        if (type.isClosedAggregateType()) {
+            for (Ast.TypeRef member : type.aggregateMembers().values()) {
+                if (containsInvertedArrayType(member)) return true;
+            }
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsInvertedArrayType(argument)) return true;
+        }
+        return false;
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {
