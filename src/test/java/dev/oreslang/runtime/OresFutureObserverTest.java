@@ -105,6 +105,49 @@ public class OresFutureObserverTest {
     }
 
     @Test
+    void cancellingOneObserverDoesNotAffectAnIndependentObserver() {
+        OresFuture<String> producer = new OresFuture<>();
+        OresFuture<String> ignored = OresFuture.observe(producer);
+        OresFuture<String> wanted = OresFuture.observe(producer);
+        assertEquals(2, producer.pendingRuntimeWaiterCount());
+        assertTrue(ignored.cancel(false));
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isDone());
+        assertTrue(producer.completeFromRuntime("result"));
+        assertEquals("result", wanted.join());
+        assertTrue(ignored.isCancelled());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void observerCancellationVersusAuthenticProducerCancellationIsIdempotent()
+            throws Exception {
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 128; i++) {
+                OresFuture<Integer> producer = new OresFuture<>();
+                OresFuture<Integer> observer = OresFuture.observe(producer);
+                CountDownLatch start = new CountDownLatch(1);
+                var observeCancel = pool.submit(() -> {
+                    start.await();
+                    observer.cancel(false);
+                    return null;
+                });
+                var producerCancel = pool.submit(() -> {
+                    start.await();
+                    producer.cancel(false);
+                    return null;
+                });
+                start.countDown();
+                observeCancel.get(3, TimeUnit.SECONDS);
+                producerCancel.get(3, TimeUnit.SECONDS);
+                assertTrue(producer.isCancelled());
+                assertTrue(observer.isCancelled());
+                assertEquals(0, producer.pendingRuntimeWaiterCount());
+            }
+        }
+    }
+
+    @Test
     void longLivedSourceDoesNotRetainCancelledObservationWaiters() {
         OresFuture<Integer> source = new OresFuture<>();
         AtomicInteger cancelled = new AtomicInteger();
