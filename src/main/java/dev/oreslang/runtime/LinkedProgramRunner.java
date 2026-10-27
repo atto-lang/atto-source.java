@@ -58,8 +58,10 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             IsolatePolicy policy,
             PermissionCheckMode permissionCheckMode) throws IOException {
-        Path entry = entryFile.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
+        Path entry = entryFile.toRealPath();
+        if (!Files.isRegularFile(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("not a regular physical file: " + entry);
+        }
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         projectConfig.requireStdJavaBackend();
@@ -175,8 +177,10 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
-        Path entry = entryFile.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
+        Path entry = entryFile.toRealPath();
+        if (!Files.isRegularFile(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("not a regular physical file: " + entry);
+        }
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         projectConfig.requireStdJavaBackend();
@@ -385,7 +389,8 @@ public final class LinkedProgramRunner {
         // Fail before any file I/O or parsing when import recursion is too deep.
         budget.checkCanAdmitUnit(depth);
 
-        BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
+        BoundedSourceReader.ReadResult source =
+                BoundedSourceReader.readPhysicalWithByteCount(normalized);
         budget.admit(source.byteCount(), depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, source.text());
         units.put(id, mixed);
