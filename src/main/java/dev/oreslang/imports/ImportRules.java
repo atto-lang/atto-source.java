@@ -17,6 +17,15 @@ public final class ImportRules {
         return path != null && path.startsWith(JAVA_PREFIX);
     }
 
+    public static boolean isExplicitRelativePath(String path) {
+        if (path == null) return false;
+        String unix = path.replace('\\', '/');
+        return ".".equals(unix)
+                || "..".equals(unix)
+                || unix.startsWith("./")
+                || unix.startsWith("../");
+    }
+
     public static String javaClassName(String path) {
         if (!isJavaPath(path)) throw new IllegalArgumentException("not a Java host import path: " + path);
         String className = path.substring(JAVA_PREFIX.length());
