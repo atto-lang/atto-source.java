@@ -54,7 +54,7 @@ generator_decl  = { annotation } visibility [ "async" | "suspend" | "suspends" ]
                   generator_marker callable_name [ generic_params ]
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
-generator_marker = "gen" "*" | "generator" [ "*" ] ;
+generator_marker = "gen" "*" | "generator" "*" ;
 (* Legacy compatibility also permits generator/gen* in callable-modifier
    position around fnc/routine. Canonical source omits fnc/routine. *)
 
