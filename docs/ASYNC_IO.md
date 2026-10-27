@@ -56,6 +56,8 @@ backend is intentionally **fail closed**:
   Future results rather than invoking legacy transport methods;
 - unknown members on `fs`, `File`, `network`, `net`, `http`, and
   `env` are compile errors rather than dynamic/unknown escape routes.
+- `stdlib/testing.ores` is pure and performs no terminal I/O; rendering test
+  results belongs to an external async-capable runner/sink.
 
 Fail-closed is a supported safety state, not provider parity.
 
