@@ -107,6 +107,26 @@ public final class InvertedColumnStore implements AutoCloseable {
     private boolean transforming;
     private boolean rejectedReentrantAccess;
 
+    /** Package-private, one-shot allocation failure injection for host tests only. */
+    enum AllocationFailurePoint { BEFORE_HANDLE_ISSUE, BEFORE_RESERVE_COMMIT }
+    private AllocationFailurePoint injectedFailure;
+
+    synchronized void armAllocationFailureForTest(AllocationFailurePoint at) {
+        open();
+        Objects.requireNonNull(at, "allocation failure point");
+        if (injectedFailure != null) {
+            throw new IllegalStateException("inverted allocation failure is already armed");
+        }
+        injectedFailure = at;
+    }
+
+    private void failAllocationOnce(AllocationFailurePoint at) {
+        if (injectedFailure == at) {
+            injectedFailure = null;
+            throw new OutOfMemoryError("injected inverted allocation failure: " + at);
+        }
+    }
+
     public InvertedColumnStore(Kind... types) {
         this(scalarSpecs(types));
     }
@@ -223,6 +243,9 @@ public final class InvertedColumnStore implements AutoCloseable {
         long[] newGenerations = Arrays.copyOf(generations, required);
         boolean[] newLive = Arrays.copyOf(live, required);
         int[] newReusable = Arrays.copyOf(reusable, required);
+        // Simulate failure after preparing every replacement array but before
+        // publishing any of them. This is a host-only one-shot test seam.
+        failAllocationOnce(AllocationFailurePoint.BEFORE_RESERVE_COMMIT);
         columns = newColumns;
         buffers = newBuffers;
         rowSlots = newRowSlots;
@@ -310,6 +333,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         // handle issuance failure.
         int slot = freeCount != 0 ? reusable[freeCount - 1] : slotCount;
         long generation = generations[slot] == 0 ? 1 : generations[slot];
+        failAllocationOnce(AllocationFailurePoint.BEFORE_HANDLE_ISSUE);
         Handle issued = new Handle(capability, owner, slot, generation);
         // The remaining writes are fixed-capacity primitive stores, with
         // widths and values validated before this publication sequence.
