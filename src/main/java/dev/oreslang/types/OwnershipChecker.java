@@ -63,6 +63,11 @@ public final class OwnershipChecker {
             Ast.TaskExpr, Map<String, Ast.TaskCaptureTransfer>> pendingTaskCaptures =
             new IdentityHashMap<>();
 
+    /** Type-proven inverted sites staged until the whole ownership pass succeeds. */
+    private final IdentityHashMap<
+            Ast.MemberExpr, Ast.InvertedIndexTypeEvidence> pendingInvertedIndexes =
+            new IdentityHashMap<>();
+
     private OwnershipChecker(Ast.Program program) {
         this(program, Map.of());
     }
@@ -77,6 +82,7 @@ public final class OwnershipChecker {
         // Rechecking an existing immutable Program immediately invalidates
         // older executable Task proofs. A failed check must fail closed.
         Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
+        Ast.CheckedInvertedIndexes.beginCheck(checkedProgram, taskCheckEpoch);
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
@@ -90,7 +96,7 @@ public final class OwnershipChecker {
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
-        checker.publishTaskAdmissions();
+        checker.publishAdmissions();
         return program;
     }
 
@@ -135,15 +141,39 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
-        checker.publishTaskAdmissions();
+        checker.publishAdmissions();
         return program;
     }
 
-    private void publishTaskAdmissions() {
+    private void publishAdmissions() {
         Ast.CheckedTaskCaptures.publish(
                 checkedProgram,
                 taskCheckEpoch,
                 pendingTaskCaptures);
+        Ast.CheckedInvertedIndexes.publish(
+                checkedProgram,
+                taskCheckEpoch,
+                pendingInvertedIndexes);
+    }
+
+    private Ast.InvertedIndexTypeEvidence stageInvertedIndex(
+            Ast.MemberExpr member,
+            Ast.InvertedIndexAccess expectedAccess) {
+        Ast.InvertedIndexTypeEvidence evidence =
+                Ast.CheckedInvertedIndexTypes.lookup(member);
+        if (evidence == null || evidence.access() != expectedAccess
+                || member.receiver() != evidence.index()
+                || !member.member().equals(evidence.fieldName())) {
+            throw error(
+                    "inverted bracket-field site lacks matching TypeChecker evidence");
+        }
+        Ast.InvertedIndexTypeEvidence previous =
+                pendingInvertedIndexes.putIfAbsent(member, evidence);
+        if (previous != null && !previous.equals(evidence)) {
+            throw error(
+                    "same inverted bracket-field site produced inconsistent ownership evidence");
+        }
+        return evidence;
     }
 
     private void index(Ast.Program program) {
@@ -1291,6 +1321,33 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            Ast.InvertedIndexTypeEvidence invertedEvidence =
+                    Ast.CheckedInvertedIndexTypes.lookup(member);
+            if (invertedEvidence != null) {
+                if (invertedEvidence.access() != Ast.InvertedIndexAccess.READ) {
+                    throw error(
+                            "write-only inverted bracket-field site cannot be evaluated as a read");
+                }
+                Ast.IndexExpr index = invertedEvidence.index();
+                if (!(index.receiver() instanceof Ast.NameExpr ownerName)) {
+                    throw error(
+                            "inverted bracket-field receiver lost its direct named ownership root");
+                }
+                VarState owner = requireState(scope, ownerName.name());
+                requireUsable(owner, ownerName.name(), false);
+                if (!owner.type.name().equals("InvertedArray")
+                        || owner.type.arguments().size() != 1
+                        || !owner.type.arguments().getFirst().name()
+                                .equals(invertedEvidence.className())) {
+                    throw error(
+                            "inverted bracket-field ownership root does not match "
+                                    + invertedEvidence.className());
+                }
+                checkExpr(index.index(), scope, false);
+                stageInvertedIndex(member, Ast.InvertedIndexAccess.READ);
+                Ast.TypeRef fieldType = invertedEvidence.fieldType();
+                return new ValueInfo(fieldType, kindOfType(fieldType), null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1419,6 +1476,11 @@ public final class OwnershipChecker {
             // to affine Future<T> MOVE and synchronized Channel<T> handles;
             // guards, Rc and foreign/scheduler authority remain non-Send.
             for (Capture capture : captured.values.values()) {
+                if (capture.source.type.name().equals("InvertedArray")) {
+                    throw error(
+                            "independent task cannot capture InvertedArray storage; "
+                                    + "perform bracket-field access in the owning lexical turn");
+                }
                 if (!capture.source.type.isBorrow()
                         && forbiddenTaskCapability(capture.source.type)) {
                     throw error("independent task capture '" + capture.name
@@ -1725,6 +1787,30 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            Ast.TypeRef invertedReceiverType = receiverType(member.receiver(), scope);
+            if (invertedReceiverType != null) {
+                Ast.TypeRef concrete = invertedReceiverType.isBorrow()
+                        ? invertedReceiverType.borrowedTarget()
+                        : invertedReceiverType;
+                if (concrete.name().equals("InvertedArray")) {
+                    if (!member.member().equals("push")) {
+                        throw error(
+                                "InvertedArray exposes only push(...) and immediate [i].field access in v1");
+                    }
+                    ensureMutableReceiver(
+                            member.receiver(), scope, "InvertedArray.push");
+                    for (Ast.Expr argument : call.arguments()) {
+                        ValueInfo value = checkExpr(argument, scope, true);
+                        if (isBorrowValue(value) || containsMutexGuardType(value.type)) {
+                            throw error(
+                                    "InvertedArray.push requires owned/copy field values; "
+                                            + "borrows and guards cannot become column storage");
+                        }
+                    }
+                    return new ValueInfo(
+                            Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
+            }
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
@@ -2657,6 +2743,34 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            Ast.InvertedIndexTypeEvidence invertedEvidence =
+                    Ast.CheckedInvertedIndexTypes.lookup(member);
+            if (invertedEvidence != null) {
+                if (invertedEvidence.access() != Ast.InvertedIndexAccess.WRITE) {
+                    throw error(
+                            "read-only inverted bracket-field site cannot be used as assignment target");
+                }
+                Ast.IndexExpr index = invertedEvidence.index();
+                if (!(index.receiver() instanceof Ast.NameExpr ownerName)) {
+                    throw error(
+                            "inverted bracket-field write requires a direct named ownership root");
+                }
+                VarState owner = requireState(scope, ownerName.name());
+                if (!owner.type.name().equals("InvertedArray")
+                        || owner.type.arguments().size() != 1
+                        || !owner.type.arguments().getFirst().name()
+                                .equals(invertedEvidence.className())) {
+                    throw error(
+                            "inverted bracket-field write root does not match "
+                                    + invertedEvidence.className());
+                }
+                ensureMutableReceiver(
+                        index.receiver(), scope,
+                        "inverted field '" + invertedEvidence.fieldName() + "'");
+                checkExpr(index.index(), scope, false);
+                stageInvertedIndex(member, Ast.InvertedIndexAccess.WRITE);
+                return;
+            }
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
@@ -2956,6 +3070,11 @@ public final class OwnershipChecker {
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
+            if (source.type.name().equals("InvertedArray")) {
+                throw error(
+                        "closure cannot capture InvertedArray storage; "
+                                + "perform bracket-field access in the owning lexical scope");
+            }
             if (isBorrowState(source)) {
                 if (allowActorSelfCapture
                         && capture.name.equals("self")
@@ -4441,6 +4560,11 @@ public final class OwnershipChecker {
             // Borrowed aliases of self follow ordinary lexical lifetime rules.
             if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) continue;
 
+            if (source.type.name().equals("InvertedArray")) {
+                throw error(
+                        "deferred task/continuation cannot capture InvertedArray storage; "
+                                + "perform bracket-field access in the owning lexical turn");
+            }
             if (isBorrowState(source)) {
                 throw error("deferred task/continuation cannot capture borrowed value '"
                         + capture.name
