@@ -52,6 +52,9 @@ public final class ImportRules {
         if (local.isEmpty()) {
             throw new IllegalArgumentException("project-root import path cannot be empty");
         }
+        if (local.indexOf(':') >= 0 || local.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("invalid project-root import path: " + path);
+        }
         for (String component : local.split("/", -1)) {
             if (component.isEmpty() || ".".equals(component) || "..".equals(component)) {
                 throw new IllegalArgumentException("invalid project-root import path: " + path);
