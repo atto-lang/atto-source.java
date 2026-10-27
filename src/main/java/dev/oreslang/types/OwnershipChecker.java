@@ -1600,6 +1600,7 @@ public final class OwnershipChecker {
         // mutable loans, constructor restrictions and actor isolation.
         if (call.origin() == Ast.CallOrigin.DIRECT
                 && call.callee() instanceof Ast.NameExpr implicit
+                && !isBooleanIntrinsicName(implicit.name())
                 && scope.lookup(implicit.name()) == null) {
             VarState receiver = scope.lookup("self");
             if (receiver != null) {
