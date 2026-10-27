@@ -22,6 +22,20 @@ final class GeneratorCanonicalAdmissionTest {
     }
 
     @Test
+    void suspendGeneratorActivationIsLazyAndAllowedFromSyncCaller() {
+        OresCompiler.parseAndTypeCheck("""
+                pub suspend gen* values(): AsyncIterator<int> {
+                  rt cooperate;
+                  yield 42;
+                  return;
+                }
+                pub fnc make(): AsyncIterator<int> {
+                  return values();
+                }
+                """);
+    }
+
+    @Test
     void qualifiedSuspendGeneratorCannotEraseSuspensionAsFunctionValue() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define module streams as
