@@ -621,19 +621,29 @@ def checked_carrier_main(repository, contract):
             or any(not isinstance(name, str) or not name.strip() for name in contexts)
             or any(not isinstance(item, dict)
                    or not isinstance(item.get("context"), str)
-                   or not item["context"].strip() for item in named_checks)
+                   or not item["context"].strip()
+                   or (item.get("app_id") is not None
+                       and (type(item.get("app_id")) is not int
+                            or item["app_id"] <= 0))
+                   for item in named_checks)
             or not isinstance(conversation, dict)
             or conversation.get("enabled") is not True):
         raise Denied(
             "carrier main must enforce strict required CI and conversation resolution"
         )
-    required_contexts = set(contexts)
-    required_contexts.update(item["context"] for item in named_checks)
-    missing_required = CARRIER_REQUIRED_STATUS_CONTEXTS - required_contexts
+    required_named = {
+        (name, legacy.GITHUB_ACTIONS_APP_ID)
+        for name in CARRIER_REQUIRED_STATUS_CONTEXTS
+    }
+    actual_named = {
+        (item["context"], item.get("app_id"))
+        for item in named_checks
+    }
+    missing_required = required_named - actual_named
     if missing_required:
         raise Denied(
-            "carrier main required CI is missing private-carrier verifier checks: "
-            + ",".join(sorted(missing_required))
+            "carrier main required CI is missing GitHub-Actions-bound private-carrier verifier checks: "
+            + ",".join(sorted(name for name, _app_id in missing_required))
         )
     admins = protection.get("enforce_admins")
     force = protection.get("allow_force_pushes")
