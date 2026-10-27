@@ -1395,11 +1395,8 @@ public final class OwnershipChecker {
                 }
                 VarState owner = requireState(scope, ownerName.name());
                 requireUsable(owner, ownerName.name(), false);
-                Ast.TypeRef ownerType = expandInvertedReceiverAliases(owner.type);
-                if (ownerType.isBorrow()) ownerType = ownerType.borrowedTarget();
-                if (!ownerType.name().equals("InvertedArray")
-                        || ownerType.arguments().size() != 1
-                        || !ownerType.arguments().getFirst().name().equals(invertedEvidence.className())) {
+                if (!invertedOwnerMatches(
+                        owner.type, invertedEvidence.className())) {
                     throw error("inverted bracket-field ownership root does not match "
                             + invertedEvidence.className());
                 }
@@ -2834,11 +2831,8 @@ public final class OwnershipChecker {
                     throw error("inverted bracket-field write requires a direct named ownership root");
                 }
                 VarState owner = requireState(scope, ownerName.name());
-                Ast.TypeRef ownerType = expandInvertedReceiverAliases(owner.type);
-                if (ownerType.isBorrow()) ownerType = ownerType.borrowedTarget();
-                if (!ownerType.name().equals("InvertedArray")
-                        || ownerType.arguments().size() != 1
-                        || !ownerType.arguments().getFirst().name().equals(invertedEvidence.className())) {
+                if (!invertedOwnerMatches(
+                        owner.type, invertedEvidence.className())) {
                     throw error("inverted bracket-field write root does not match "
                             + invertedEvidence.className());
                 }
@@ -4194,31 +4188,64 @@ public final class OwnershipChecker {
     }
 
     private Ast.TypeRef expandInvertedReceiverAliases(Ast.TypeRef type) {
+        return expandInvertedReceiverAliases(
+                type,
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+    }
+
+    private Ast.TypeRef expandInvertedReceiverAliases(
+            Ast.TypeRef type,
+            Set<Ast.TypeAliasDecl> visiting) {
         if (type == null) return null;
-        Ast.TypeRef current = type;
-        Set<Ast.TypeAliasDecl> visiting =
-                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
-        while (true) {
-            if (current.isBorrow()) {
-                Ast.TypeRef expanded = expandInvertedReceiverAliases(
-                        current.borrowedTarget());
-                return Ast.TypeRef.borrowed(expanded, current.mutableBorrow());
-            }
-            Ast.TypeAliasDecl alias = findTypeAlias(current.name());
-            if (alias == null) return current;
-            if (current.inferArguments()
-                    || alias.genericParameters().size() != current.arguments().size()) {
-                throw error("type alias '" + alias.name()
-                        + "' has invalid generic arity while resolving InvertedArray receiver");
-            }
-            if (!visiting.add(alias)) {
-                throw error("cyclic type alias involving '" + alias.name()
-                        + "' while resolving InvertedArray receiver");
-            }
-            current = substituteType(
-                    alias.target(),
-                    genericBindings(alias.genericParameters(), current.arguments()));
+        if (type.isBorrow()) {
+            return Ast.TypeRef.borrowed(
+                    expandInvertedReceiverAliases(type.borrowedTarget(), visiting),
+                    type.mutableBorrow());
         }
+        Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+        if (alias == null) return type;
+        if (type.inferArguments()
+                || alias.genericParameters().size() != type.arguments().size()) {
+            throw error("type alias '" + alias.name()
+                    + "' has invalid generic arity while resolving InvertedArray receiver");
+        }
+        if (!visiting.add(alias)) {
+            throw error("cyclic type alias involving '" + alias.name()
+                    + "' while resolving InvertedArray receiver");
+        }
+        try {
+            Ast.TypeRef expanded = substituteType(
+                    alias.target(),
+                    genericBindings(alias.genericParameters(), type.arguments()));
+            return expandInvertedReceiverAliases(expanded, visiting);
+        } finally {
+            visiting.remove(alias);
+        }
+    }
+
+    private boolean invertedOwnerMatches(
+            Ast.TypeRef sourceType,
+            String checkedClassName) {
+        Ast.TypeRef ownerType = expandInvertedReceiverAliases(sourceType);
+        if (ownerType != null && ownerType.isBorrow()) {
+            ownerType = ownerType.borrowedTarget();
+        }
+        if (ownerType == null
+                || !ownerType.name().equals("InvertedArray")
+                || ownerType.arguments().size() != 1) {
+            return false;
+        }
+        Ast.TypeRef sourceRow = ownerType.arguments().getFirst();
+        if (sourceRow.inferArguments()
+                || sourceRow.isBorrow()
+                || !sourceRow.arguments().isEmpty()) {
+            return false;
+        }
+        Ast.ClassDecl actual = findClass(sourceRow.name());
+        Ast.ClassDecl checked = findClass(checkedClassName);
+        return actual != null
+                && actual == checked
+                && actual.inverted();
     }
 
     private VarState ownershipRoot(VarState state) {
