@@ -74,6 +74,16 @@ public final class OresCompiler {
     }
 
     /**
+     * Opt-in phase-two AOT specialization planning for a deliberately closed
+     * direct-call subset. The returned graph is a build manifest, not a native
+     * image, machine code artifact, or proof of closed actor/trait layouts.
+     */
+    public static AotFiniteGenericClosure.Plan planFiniteAotGenerics(
+            String source, BuildOptions options) {
+        return AotFiniteGenericClosure.plan(parseAndTypeCheck(source), options);
+    }
+
+    /**
      * Performs syntax, type, and language-capability admission without
      * executing guest code.
      */
