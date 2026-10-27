@@ -140,6 +140,9 @@ final class ImportGraph {
                             && fn.kind() == Ast.CallableKind.FNC
                             && fn.actorKind() == Ast.ActorKind.NONE
                             && fn.genericParameters().isEmpty()
+                            // Fnc value types cannot carry suspension effects:
+                            // importing one would erase the remote ABI contract.
+                            && !fn.suspends()
                             && fn.name().equals(name);
                     case ACTOR -> decl instanceof Ast.ClassDecl klass
                             && klass.actorKind() != Ast.ActorKind.NONE
