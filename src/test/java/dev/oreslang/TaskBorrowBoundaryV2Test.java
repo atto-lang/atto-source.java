@@ -367,6 +367,38 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void actorSendCannotLaunderProvenanceWhenTypePassIsBypassed() {
+        var program = Parser.parse("""
+                define class Payload as
+                  pub val int value = 7;
+
+                  pub same(): self {
+                    return self;
+                  }
+                end
+
+                define actor Worker as
+                  receive(ActorMail<Payload> mail): void {
+                    return;
+                  }
+                end
+
+                fnc bad(borrow Payload payload): void {
+                  val worker = spawn Worker();
+                  worker.send(payload.same());
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program));
+        assertTrue(failure.getMessage().contains("actor-capability")
+                || failure.getMessage().contains("provenance-tracked"),
+                failure::getMessage);
+    }
+
+    @Test
     void independentTaskCannotInheritMailboxSelfEvenIfTypePassIsBypassed() {
         var program = Parser.parse("""
                 define actor Worker as
