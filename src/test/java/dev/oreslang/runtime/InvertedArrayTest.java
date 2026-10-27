@@ -123,6 +123,25 @@ final class InvertedArrayTest {
         assertSame(schema.bindField("x"), readPlan.field());
 
         var writePlan = InvertedIndexedFieldPlan.bindWrite(write, schema);
+        readPlan.requireExactSource(field, schema);
+        writePlan.requireExactSource(write, schema);
+        assertThrows(IllegalStateException.class,
+                () -> readPlan.requireExactSource(
+                        new Ast.MemberExpr(new Ast.IndexExpr(receiver, index), "x"), schema),
+                "equal-by-value new AST must not inherit an old field binding");
+        assertThrows(IllegalStateException.class,
+                () -> writePlan.requireExactSource(
+                        new Ast.AssignExpr(field, rhs), schema),
+                "reconstructed assignment must revalidate proof");
+        assertThrows(IllegalStateException.class,
+                () -> writePlan.requireExactSource(write, InvertedArray.Schema.fromClass(particle())),
+                "nominally distinct declaration identity cannot reuse proof");
+        assertThrows(IllegalStateException.class,
+                () -> writePlan.requireExactSource(
+                        new Ast.AssignExpr(new Ast.MemberExpr(selected, "y"), rhs), schema));
+        assertThrows(IllegalStateException.class,
+                () -> writePlan.requireExactSource(
+                        new Ast.AssignExpr(field, new Ast.LiteralExpr(3.0)), schema));
         assertEquals(InvertedIndexedFieldPlan.Operation.WRITE, writePlan.operation());
         assertSame(receiver, writePlan.receiver());
         assertSame(index, writePlan.index());
