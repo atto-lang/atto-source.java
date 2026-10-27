@@ -1599,6 +1599,9 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
                 }
+                if (containsInvertedArrayType(info.type)) {
+                    throw error("InvertedArray ownership cannot be stored in an object/struct field in v1");
+                }
                 if (isBorrowValue(info)) {
                     throw error("borrowed references cannot be stored in an owned struct until explicit container lifetimes are supported");
                 }
@@ -1671,6 +1674,9 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(owned.type)) {
                 throw error(factory.name() + ".new cannot hide a guard-bearing value");
             }
+            if (containsInvertedArrayType(owned.type)) {
+                throw error(factory.name() + ".new cannot hide InvertedArray ownership in v1");
+            }
             Ast.TypeRef mutexType = new Ast.TypeRef(factory.name(), List.of(owned.type), false);
             return new ValueInfo(mutexType, factory.name().equals("SharedMutex") ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
@@ -1685,6 +1691,10 @@ public final class OwnershipChecker {
                     || (payload.type != null && payload.type.isBorrow())) {
                 throw error(name.name()
                         + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
+            }
+            if (containsInvertedArrayType(payload.type)) {
+                throw error(name.name()
+                        + " cannot store InvertedArray ownership in an owned sum value in v1");
             }
             if (name.name().equals("Some")) {
                 Ast.TypeRef type = new Ast.TypeRef("Option", List.of(payload.type), false);
