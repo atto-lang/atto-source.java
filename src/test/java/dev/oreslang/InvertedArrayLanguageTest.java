@@ -76,6 +76,53 @@ final class InvertedArrayLanguageTest {
     }
 
     @Test
+    void invertedBracketFieldsRemainProofGatedInsideResumableExpressions() throws Exception {
+        String source = """
+                define inverted class Particle as
+                  let f64 x;
+                end
+
+                async fnc delayed(): f64 {
+                  return 2.0;
+                }
+
+                pub async fnc main(): void {
+                  let mut InvertedArray<Particle> particles =
+                      new InvertedArray<Particle>();
+                  particles.push(4.0);
+
+                  val first = (await delayed()) + particles[0].x;
+                  particles[0].x = await delayed();
+                  val second = (await delayed()) + particles[0].x;
+
+                  stdio.stdout.write(first);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = Source.newBuilder(
+                        OresLanguage.ID, source, "inverted-array-resume.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(program);
+        }
+
+        assertEquals(
+                "6.0|4.0",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void standaloneRowProjectionCannotEscape() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
