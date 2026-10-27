@@ -244,44 +244,63 @@ public final class InvertedIndexPlan {
     /**
      * Conservative syntax-only prefilter for a later verified integer index.
      * This is not type/effect evidence: even accepted NameExpr/binary sites
-     * still require the full type and ownership checker before guest lowering.
-     * Do not accept boolean/string/floating literal or arbitrary operator
-     * syntax and then mistake this candidate for a validated integer site.
+     * still require the full checker before guest lowering.
+     *
+     * Use an iterative bounded walk: malformed/synthesized ASTs must produce
+     * a diagnostic instead of exhausting the compiler Java stack. The node
+     * budget also limits repeated traversal of shared expression subgraphs.
      */
+    private static final int MAX_INDEX_EXPR_DEPTH = 1024;
+    private static final int MAX_INDEX_EXPR_NODES = 4096;
+    private record IndexVisit(Ast.Expr expression, int depth) { }
+
     private static void requireScalarNonSuspending(
-            Ast.Expr expression,
-            String label) {
+            Ast.Expr expression, String label) {
         Objects.requireNonNull(expression, "inverted index expression");
-        if (expression instanceof Ast.NameExpr) return;
-        if (expression instanceof Ast.LiteralExpr literal) {
-            if (literal.value() instanceof Integer
-                    || literal.value() instanceof Long) return;
+        java.util.ArrayDeque<IndexVisit> pending = new java.util.ArrayDeque<>();
+        pending.push(new IndexVisit(expression, 0));
+        int count = 0;
+        while (!pending.isEmpty()) {
+            IndexVisit visit = pending.pop();
+            if (++count > MAX_INDEX_EXPR_NODES
+                    || visit.depth() > MAX_INDEX_EXPR_DEPTH) {
+                throw new IllegalArgumentException(
+                        label + " expression exceeds index staging complexity budget");
+            }
+            Ast.Expr current = visit.expression();
+            if (current instanceof Ast.NameExpr) continue;
+            if (current instanceof Ast.LiteralExpr literal) {
+                if (literal.value() instanceof Integer
+                        || literal.value() instanceof Long) continue;
+                throw new IllegalArgumentException(
+                        label + " requires an integral i32/i64 literal, got "
+                                + (literal.value() == null ? "null"
+                                        : literal.value().getClass().getSimpleName()));
+            }
+            if (current instanceof Ast.UnaryExpr unary) {
+                if (!unary.operator().equals("+")
+                        && !unary.operator().equals("-")) {
+                    throw new IllegalArgumentException(
+                            label + " does not permit unary " + unary.operator());
+                }
+                pending.push(new IndexVisit(unary.operand(), visit.depth() + 1));
+                continue;
+            }
+            if (current instanceof Ast.BinaryExpr binary) {
+                if (!java.util.Set.of("+", "-", "*", "/", "%", "mod")
+                        .contains(binary.operator())) {
+                    throw new IllegalArgumentException(
+                            label + " does not permit binary " + binary.operator());
+                }
+                // Push right before left to inspect left first.
+                pending.push(new IndexVisit(binary.right(), visit.depth() + 1));
+                pending.push(new IndexVisit(binary.left(), visit.depth() + 1));
+                continue;
+            }
             throw new IllegalArgumentException(
-                    label + " requires an integral i32/i64 literal, got "
-                            + (literal.value() == null ? "null"
-                                    : literal.value().getClass().getSimpleName()));
+                    label + " must be a non-suspending integral expression; got "
+                            + current.getClass().getSimpleName());
         }
-        if (expression instanceof Ast.UnaryExpr unary) {
-            if (!unary.operator().equals("+")
-                    && !unary.operator().equals("-")) {
-                throw new IllegalArgumentException(
-                        label + " does not permit unary " + unary.operator());
-            }
-            requireScalarNonSuspending(unary.operand(), label);
-            return;
-        }
-        if (expression instanceof Ast.BinaryExpr binary) {
-            if (!java.util.Set.of("+", "-", "*", "/", "%", "mod")
-                    .contains(binary.operator())) {
-                throw new IllegalArgumentException(
-                        label + " does not permit binary " + binary.operator());
-            }
-            requireScalarNonSuspending(binary.left(), label);
-            requireScalarNonSuspending(binary.right(), label);
-            return;
-        }
-        throw new IllegalArgumentException(
-                label + " must be a non-suspending integral expression; got "
-                        + expression.getClass().getSimpleName());
     }
+
 }
