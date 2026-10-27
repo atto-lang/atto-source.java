@@ -289,7 +289,8 @@ final class InvertedArrayLanguageTest {
                 """
                 fnc bad(): void {
                   let mut InvertedArray<Particle> particles = new InvertedArray<Particle>();
-                  val hidden = infer struct { storage: particles };
+                  val hidden =
+                      struct{storage: InvertedArray<Particle>}{storage: particles};
                   return;
                 }
                 """,
