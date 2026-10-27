@@ -20,6 +20,7 @@ import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.InvertedArray;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
@@ -56,6 +57,7 @@ public final class OresEvalRootNode extends RootNode {
     private final String codeUnitId;
     /** Ownership epoch captured when this executable root is created. */
     private final long taskAdmissionEpoch;
+    private final long invertedAdmissionEpoch;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
@@ -68,6 +70,8 @@ public final class OresEvalRootNode extends RootNode {
         this.codeUnitId = codeUnitId;
         this.taskAdmissionEpoch =
                 Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        this.invertedAdmissionEpoch =
+                Ast.CheckedInvertedIndexes.requireProgramEpoch(program);
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -130,7 +134,8 @@ public final class OresEvalRootNode extends RootNode {
                                 program,
                                 context,
                                 codeUnitId,
-                                taskAdmissionEpoch);
+                                taskAdmissionEpoch,
+                                invertedAdmissionEpoch);
             }
             return current;
         }
@@ -146,6 +151,7 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final String codeUnitId;
         private final long taskAdmissionEpoch;
+        private final long invertedAdmissionEpoch;
         private final AtomicLong nextTaskLaunchId = new AtomicLong();
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
@@ -231,11 +237,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Program program,
                 OresContext context,
                 String codeUnitId,
-                long taskAdmissionEpoch) {
+                long taskAdmissionEpoch,
+                long invertedAdmissionEpoch) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
+            this.invertedAdmissionEpoch = invertedAdmissionEpoch;
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -5619,6 +5627,9 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (target instanceof Ast.MemberExpr member) {
+                if (Ast.CheckedInvertedIndexTypes.lookup(member) != null) {
+                    return writeInvertedMember(member, value, env);
+                }
                 Object receiver = eval(member.receiver(), env);
                 if (receiver instanceof OresObject object) {
                     OwnedField targetField =
@@ -5665,6 +5676,21 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("InvertedArray")) {
+                if (!args.isEmpty()
+                        || created.type().inferArguments()
+                        || created.type().arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "new InvertedArray<T>() requires one explicit row type and no positional arguments");
+                }
+                Ast.TypeRef rowType = created.type().arguments().getFirst();
+                Ast.ClassDecl row = findClass(rowType.name());
+                if (row == null || !row.inverted()) {
+                    throw new IllegalArgumentException(
+                            "InvertedArray<T> runtime target requires a local inverted class");
+                }
+                return InvertedArray.fromClass(row, 0);
+            }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty() || args.size() > 1)
                     throw new IllegalArgumentException("HttpResponse requires zero or one string body");
@@ -5707,6 +5733,10 @@ public final class OresEvalRootNode extends RootNode {
             if (klass == null) {
                 throw new IllegalArgumentException(
                         "unknown class " + created.type().name());
+            }
+            if (klass.inverted()) {
+                throw new IllegalArgumentException(
+                        "inverted rows cannot be constructed as ordinary objects");
             }
             return owner.instantiate(klass, args, externalConstruction);
         }
@@ -7246,6 +7276,67 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        private Ast.InvertedIndexAdmission invertedAdmission(
+                Ast.MemberExpr member,
+                Ast.InvertedIndexAccess access) {
+            return Ast.CheckedInvertedIndexes.require(
+                    program, member, invertedAdmissionEpoch, access);
+        }
+
+        private InvertedArray admittedInvertedArray(
+                Object receiver,
+                Ast.InvertedIndexAdmission admission) {
+            if (!(receiver instanceof InvertedArray array)) {
+                throw new IllegalStateException(
+                        "checked inverted bracket receiver is not an InvertedArray");
+            }
+            Ast.ClassDecl rowClass = findClass(admission.className());
+            if (rowClass == null || !rowClass.inverted()
+                    || !array.schema().className().equals(rowClass.name())) {
+                throw new IllegalStateException(
+                        "checked inverted bracket runtime schema does not match its nominal class");
+            }
+            return array;
+        }
+
+        private Object readInvertedMember(
+                Ast.MemberExpr member,
+                Env env) {
+            Ast.InvertedIndexAdmission admission =
+                    invertedAdmission(member, Ast.InvertedIndexAccess.READ);
+            if (!(member.receiver() instanceof Ast.IndexExpr index)) {
+                throw new IllegalStateException(
+                        "checked inverted member lost its bracket receiver");
+            }
+            Object receiver = eval(index.receiver(), env);
+            Object key = eval(index.index(), env);
+            InvertedArray array = admittedInvertedArray(receiver, admission);
+            long row = integralLong(key);
+            InvertedArray.ColumnAccess field =
+                    array.bindField(admission.fieldName());
+            return field.get(array.index(row).handle());
+        }
+
+        private Object writeInvertedMember(
+                Ast.MemberExpr member,
+                Object value,
+                Env env) {
+            Ast.InvertedIndexAdmission admission =
+                    invertedAdmission(member, Ast.InvertedIndexAccess.WRITE);
+            if (!(member.receiver() instanceof Ast.IndexExpr index)) {
+                throw new IllegalStateException(
+                        "checked inverted member lost its bracket receiver");
+            }
+            Object receiver = eval(index.receiver(), env);
+            Object key = eval(index.index(), env);
+            InvertedArray array = admittedInvertedArray(receiver, admission);
+            long row = integralLong(key);
+            InvertedArray.ColumnAccess field =
+                    array.bindField(admission.fieldName());
+            field.set(array.index(row).handle(), value);
+            return value;
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
@@ -7356,6 +7447,9 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
+                    if (Ast.CheckedInvertedIndexTypes.lookup(target) != null) {
+                        return writeInvertedMember(target, value, env);
+                    }
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                     if (receiver instanceof OresObject object) {
@@ -7539,7 +7633,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
+            if (expr instanceof Ast.MemberExpr member) {
+                if (Ast.CheckedInvertedIndexTypes.lookup(member) != null) {
+                    return readInvertedMember(member, env);
+                }
+                return member(eval(member.receiver(), env), member.member(), env);
+            }
             if (expr instanceof Ast.IndexExpr indexed) {
                 return indexValue(
                         eval(indexed.receiver(), env),
@@ -7548,6 +7647,11 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("InvertedArray")) {
+                    List<Object> args = created.arguments().stream()
+                            .map(arg -> eval(arg, env)).toList();
+                    return instantiateEvaluated(created, args, env);
+                }
                 if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                     List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                     return instantiateEvaluated(created, args, env);
@@ -7708,6 +7812,20 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof InvertedArray array) {
+                if (!name.equals("push")) {
+                    throw new IllegalArgumentException(
+                            "unknown InvertedArray member " + name);
+                }
+                return (Invokable) args -> {
+                    if (args.size() != array.schema().fieldCount()) {
+                        throw new IllegalArgumentException(
+                                "InvertedArray.push arity mismatch");
+                    }
+                    array.pushValues(args.toArray());
+                    return null;
+                };
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
