@@ -269,9 +269,8 @@ public final class OresProjectConfig {
         Path lexicalRoot = configuredRoot.toAbsolutePath().normalize();
         Path normalizedCandidate = candidate.toAbsolutePath().normalize();
         try {
-            BasicFileAttributes rootAttributes;
             try {
-                rootAttributes = Files.readAttributes(
+                Files.readAttributes(
                         lexicalRoot, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
             } catch (NoSuchFileException missingRoot) {
                 return Optional.empty();
