@@ -76,6 +76,43 @@ final class InvertedArrayLanguageTest {
     }
 
     @Test
+    void directTypeAliasPreservesInvertedOwnershipAndExecutionProof() throws Exception {
+        String source = """
+                define inverted class Particle as
+                  let f64 x;
+                end
+                type ParticleStore = InvertedArray<Particle>;
+
+                pub routine main(): void {
+                  let mut ParticleStore particles = new InvertedArray<Particle>();
+                  particles.push(1.5);
+                  particles[0].x = 8.25;
+                  stdio.stdout.write(particles[0].x);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = Source.newBuilder(
+                        OresLanguage.ID, source, "inverted-array-alias.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(program);
+        }
+
+        assertEquals(
+                "8.25",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void invertedBracketFieldsRemainProofGatedInsideResumableExpressions() throws Exception {
         String source = """
                 define inverted class Particle as
