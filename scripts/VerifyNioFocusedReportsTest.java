@@ -9,13 +9,16 @@ import javax.tools.ToolProvider;
 
 /** Executable report-contract regressions; requires only a standard JDK. */
 final class VerifyNioFocusedReportsTest {
-    private static final String SUITES = "OresCarrierPermitPoolTest,OresCarrierBudgetTest,AdaptiveCarrierExecutorTest,NioReadinessGroupTest,OresVMNioLifecycleTest,VmNioTcpListenerTest,OresSchedulerTest,ActorFutureBlockingTest,OresFutureTerminalNotificationRaceTest,FormalPhysicalStopJobModelCheckTest,FormalContextShutdownOrderModelCheckTest,ActorShardStopRaceTest,AsyncNativeIoTest,ActorHeapPlacementGuardTest,ActorHeapAdmissionTest,ActorPhysicalTurnCreditsTest,NativeNetStdlibTest,StrictNonblockingStdlibIoTest,CanonicalCoreLibraryTest,CoreStdLibraryImportProvenanceTest,CoreStdLibraryProfileAdmissionTest";
+    private static final String SUITES = "OresCarrierPermitPoolTest,OresCarrierBudgetTest,AdaptiveCarrierExecutorTest,NioReadinessGroupTest,OresVMNioLifecycleTest,VmNioTcpListenerTest,VmNioTcpConnectionTest,OresSchedulerTest,ActorFutureBlockingTest,OresFutureTerminalNotificationRaceTest,FormalPhysicalStopJobModelCheckTest,FormalContextShutdownOrderModelCheckTest,ActorShardStopRaceTest,AsyncNativeIoTest,ActorHeapPlacementGuardTest,ActorHeapAdmissionTest,ActorPhysicalTurnCreditsTest,NativeNetStdlibTest,StrictNonblockingStdlibIoTest,CanonicalCoreLibraryTest,CoreStdLibraryImportProvenanceTest,CoreStdLibraryProfileAdmissionTest";
     private static final Map<String, List<String>> CASES = Map.of(
             "NioReadinessGroupTest", List.of(
                     "stalledTcpReadDoesNotOccupyTheOnlyCompletionCarrierAndCancelRearms",
                     "outboundConnectUsesSelectorAndTransfersNonblockingChannel",
                     "unresolvedConnectFailsClosedBeforeReactorOrDnsAdmission",
                     "refusedConnectRetiresLeaseAndDoesNotPoisonLaterConnect"),
+            "VmNioTcpConnectionTest", List.of(
+                    "closeAsyncWaitsForPendingReadRetirementAndRunsTerminalHookOnce",
+                    "closedOutboundConnectionFailsFurtherIoWithoutReadinessAdmission"),
             "NativeNetStdlibTest", List.of(
                     "realGuestOutboundConnectReadWriteThroughNonblockingKernel"),
             "StrictNonblockingStdlibIoTest", List.of(
