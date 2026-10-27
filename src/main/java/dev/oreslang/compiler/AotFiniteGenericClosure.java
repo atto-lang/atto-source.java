@@ -24,6 +24,11 @@ public final class AotFiniteGenericClosure {
     private static final int MAX_NODES = 16_384;
     private static final int MAX_DEPTH = 64;
     private static final int MAX_TYPE_DEPTH = 48;
+    private static final int MAX_MODULES = 256;
+    private static final int MAX_DECLARATIONS = 4_096;
+    private static final int MAX_FORMALS_PER_FUNCTION = 64;
+    private static final int MAX_PARAMETERS_PER_FUNCTION = 128;
+    private static final int MAX_ENTRY_POINTS = 256;
 
     private AotFiniteGenericClosure() { }
 
@@ -70,11 +75,22 @@ public final class AotFiniteGenericClosure {
             if (!program.imports().isEmpty()) {
                 throw fail("linked import graph not yet admitted for generic AOT closure");
             }
+            if (program.modules().size() > MAX_MODULES) {
+                throw fail("module indexing budget exceeded");
+            }
+            int indexed = 0;
             for (Ast.ModuleDecl module : program.modules()) {
                 for (Ast.Decl decl : module.declarations()) {
+                    if (++indexed > MAX_DECLARATIONS) {
+                        throw fail("declaration indexing budget exceeded");
+                    }
                     if (!(decl instanceof Ast.FunctionDecl fn)) {
                         throw fail("static subset admits only free functions; layouts, "
                                 + "actors, macros and traits require separate closure proofs");
+                    }
+                    if (fn.genericParameters().size() > MAX_FORMALS_PER_FUNCTION
+                            || fn.parameters().size() > MAX_PARAMETERS_PER_FUNCTION) {
+                        throw fail("function signature budget exceeded");
                     }
                     formalTypeNames.addAll(fn.genericParameters());
                     Symbol key = new Symbol(module.name(), fn.name(), fn.parameters().size());
@@ -83,6 +99,9 @@ public final class AotFiniteGenericClosure {
                                 + "/" + key.arity());
                     }
                 }
+            }
+            if (options.entryPoints().size() > MAX_ENTRY_POINTS) {
+                throw fail("entry-point indexing budget exceeded");
             }
             if (options.preservePublicApi()) {
                 for (Map.Entry<Symbol, Ast.FunctionDecl> entry : functions.entrySet()) {
@@ -194,6 +213,12 @@ public final class AotFiniteGenericClosure {
                 } else if (statement instanceof Ast.ExprStmt expr) {
                     visitExpr(expr.expression(), module, bindings, locals, graphDepth, depth + 1);
                 } else if (statement instanceof Ast.BindingStmt bind) {
+                    // A local declaration participates in specialized HIR layout.
+                    // Merely scanning its initializer silently omits that type.
+                    resolveType(bind.declaredType(), bindings, 0);
+                    if (bind.inferredTypeName() != null) {
+                        throw fail("unresolved local inferred-type metadata");
+                    }
                     visitExpr(bind.initializer(), module, bindings, locals, graphDepth, depth + 1);
                     if (!locals.add(bind.name())) throw fail("ambiguous local binding in AOT subset");
                 } else if (statement instanceof Ast.BlockStmt block) {
@@ -242,6 +267,10 @@ public final class AotFiniteGenericClosure {
                 return;
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.arguments().size() > MAX_PARAMETERS_PER_FUNCTION
+                        || call.typeArguments().size() > MAX_FORMALS_PER_FUNCTION) {
+                    throw fail("call shape budget exceeded");
+                }
                 if (call.origin() != Ast.CallOrigin.DIRECT) {
                     throw fail("dynamic/pipeline call requires static dispatch proof");
                 }
