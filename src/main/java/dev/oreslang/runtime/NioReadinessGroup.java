@@ -68,7 +68,7 @@ public final class NioReadinessGroup implements AutoCloseable {
     // otherwise a second acceptAsync can race the first one's accept().
     private final IdentityHashMap<ServerSocketChannel, OresFuture<SocketChannel>> acceptLeases =
             new IdentityHashMap<>();
-    // Keep exclusive read ownership until all completion callbacks drain.
+    // Keep read ownership until all completion callbacks drain.
     // A retired OP_READ key alone is not proof that its channel is free.
     private final IdentityHashMap<SocketChannel, OresFuture<byte[]>> readLeases =
             new IdentityHashMap<>();
