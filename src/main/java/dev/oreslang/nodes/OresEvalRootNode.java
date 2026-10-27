@@ -181,6 +181,7 @@ public final class OresEvalRootNode extends RootNode {
                 callableSlots = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
+        private final Map<String, Ast.ImportDecl> hostFunctionImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
@@ -290,6 +291,9 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' does not export invocable static member '" + sourceName + "'");
                     }
                     String localName = ImportRules.localName(imported, sourceName);
+                    if (hostFunctionImports.putIfAbsent(localName, imported) != null) {
+                        throw new IllegalArgumentException("duplicate Java fnc import binding " + localName);
+                    }
                     putHostFunction(localName, args -> {
                         context.requireCapability(
                                 IsolatePolicy.Capability.JAVA_INTEROP,
@@ -7013,6 +7017,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private ImportedBinding namedImportedFnc(String name) {
+            if (hostFunctionImports.containsKey(name)) return null;
             ImportedBinding imported = namedImports.get(name);
             if (imported == null || imported.declaration().kind() != Ast.ImportKind.FUNCTION
                     || imported.declaration().wildcard()) {
@@ -7025,7 +7030,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareExplicitImportInvocation(String name, List<Object> args) {
             ImportedBinding imported = namedImportedFnc(name);
-            if (ImportRules.isJavaPath(imported.declaration().path())) {
+            if (hostFunctionImports.containsKey(name)) {
                 Invokable host = hostFunctions.get(name);
                 if (host == null) {
                     throw new IllegalArgumentException(
@@ -7040,7 +7045,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object explicitImportValue(String name) {
             ImportedBinding imported = namedImportedFnc(name);
-            if (ImportRules.isJavaPath(imported.declaration().path())) {
+            if (hostFunctionImports.containsKey(name)) {
                 Invokable host = hostFunctions.get(name);
                 if (host == null) throw new IllegalArgumentException(
                         "imports::" + name + " has no authorized Java host function");
@@ -7506,8 +7511,8 @@ public final class OresEvalRootNode extends RootNode {
                     requireLexicalClassAccess(env, klass);
                     return new ClassFacade(this, klass);
                 }
-                Object imported = importedValue(name.name());
-                if (imported != Env.MISSING) return imported;
+                // File-root function values win over imported names on a
+                // spelling collision. Use imports::name for the import.
                 Ast.FunctionDecl fn = findSingleFunction(name.name());
                 if (fn != null) {
                     requireExplicitClassCallableImport(env, name.name());
@@ -7527,6 +7532,8 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
                 }
+                Object imported = importedValue(name.name());
+                if (imported != Env.MISSING) return imported;
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
