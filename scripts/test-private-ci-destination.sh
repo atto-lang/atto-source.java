@@ -90,6 +90,9 @@ for flag in MOCK_ARCHIVED MOCK_DISABLED MOCK_FORK; do
   expect_fail trusted/ci
   unset "$flag"
 done
+export MOCK_EXTRA_FIELD=$'\t'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
 export MOCK_EXTRA_FIELD=$'\textra'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
