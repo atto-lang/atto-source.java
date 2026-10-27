@@ -166,21 +166,34 @@ public final class IncrementalCompiler {
             if (source == null) {
                 throw new IllegalArgumentException("missing linked class source '" + sourceId + "'");
             }
+            ExportResolver.Result sourceExports = ExportResolver.resolve(source);
             for (String name : imported.names()) {
                 Ast.ClassDecl resolved = null;
                 Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
-                for (Ast.ModuleDecl module : source.modules()) {
-                    for (Ast.Decl declaration : module.declarations()) {
+                for (ExportResolver.ExportBinding binding : sourceExports.bindings()) {
+                    if (binding.scope() != Ast.ExportScope.PUBLIC
+                            || binding.localKind() != Ast.ExportKind.CLASS
+                            || !binding.externalName().equals(name)) {
+                        continue;
+                    }
+                    Ast.ModuleDecl owner = source.modules().stream()
+                            .filter(module -> module.name().equals(binding.ownerNamespaceId()))
+                            .findFirst()
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "export binding owner '" + binding.ownerNamespaceId()
+                                            + "' is missing in linked source '" + sourceId + "'"));
+                    String localName = exportLocalName(binding.localSymbolId());
+                    for (Ast.Decl declaration : owner.declarations()) {
                         if (declaration instanceof Ast.ClassDecl klass
-                                && klass.name().equals(name)
-                                && klass.visibility() == Ast.Visibility.PUBLIC) {
-                            if (resolved != null) {
+                                && klass.actorKind() == Ast.ActorKind.NONE
+                                && klass.name().equals(localName)) {
+                            if (resolved != null && resolved != klass) {
                                 throw new IllegalArgumentException(
-                                        "ambiguous linked public class '" + name + "'");
+                                        "ambiguous linked public class export '" + name + "'");
                             }
                             resolved = klass;
                             LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
-                            for (Ast.Decl companion : module.declarations()) {
+                            for (Ast.Decl companion : owner.declarations()) {
                                 if (companion instanceof Ast.TypeAliasDecl alias
                                         && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
                                     throw new IllegalArgumentException(
@@ -193,13 +206,21 @@ public final class IncrementalCompiler {
                 }
                 if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
                     throw new IllegalArgumentException(
-                            "missing or duplicate public linked class '" + name
-                                    + "' in source unit '" + unitId + "'");
+                            "missing or duplicate public linked class export '" + name
+                                    + "' in source unit '" + sourceId + "'");
                 }
                 aliases.put(name, classAliases);
             }
         }
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
+    }
+
+    private static String exportLocalName(String localSymbolId) {
+        int marker = localSymbolId.lastIndexOf("::");
+        if (marker < 0 || marker + 2 >= localSymbolId.length()) {
+            throw new IllegalArgumentException("malformed export local symbol id: " + localSymbolId);
+        }
+        return localSymbolId.substring(marker + 2);
     }
 
     public synchronized void clear() {

@@ -11,10 +11,12 @@ on:
       - "src/main/java/dev/oreslang/compiler/OresCompiler.java"
       - "src/main/java/dev/oreslang/compiler/TreeShaker.java"
       - "src/main/java/dev/oreslang/compiler/IncrementalCompiler.java"
+      - "src/main/java/dev/oreslang/compiler/ImportGraph.java"
       - "src/main/java/dev/oreslang/types/TypeChecker.java"
       - "src/test/java/dev/oreslang/ExplicitExportSyntaxTest.java"
       - "src/test/java/dev/oreslang/ExplicitExportSemanticMatrixTest.java"
       - "src/test/java/dev/oreslang/ExplicitVisibilityContractTest.java"
+      - "src/test/java/dev/oreslang/ExplicitExportLinkedImportTest.java"
       - ".github/workflows/explicit-exports-exact-head.yml"
   workflow_dispatch:
 
@@ -51,5 +53,5 @@ jobs:
       - name: Run explicit export v1 tests
         run: >-
           mvn -B -ntp
-          -Dtest=ExplicitExportSyntaxTest,ExplicitExportSemanticMatrixTest,ExplicitVisibilityContractTest
+          -Dtest=ExplicitExportSyntaxTest,ExplicitExportSemanticMatrixTest,ExplicitVisibilityContractTest,ExplicitExportLinkedImportTest
           test

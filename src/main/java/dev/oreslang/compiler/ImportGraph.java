@@ -127,58 +127,32 @@ final class ImportGraph {
 
     private static int exportedMatches(Ast.Program program, Ast.ImportKind kind, String name) {
         int matches = 0;
-        for (Ast.ModuleDecl module : program.modules()) {
-            if (kind == Ast.ImportKind.MODULE) {
-                if (module.name().equals(name)) matches++;
-                continue;
-            }
-
-            for (Ast.Decl decl : module.declarations()) {
-                boolean matched = switch (kind) {
-                    case FUNCTION -> decl instanceof Ast.FunctionDecl fn
-                            && fn.visibility() == Ast.Visibility.PUBLIC
-                            && fn.kind() == Ast.CallableKind.FNC
-                            && fn.actorKind() == Ast.ActorKind.NONE
-                            && fn.genericParameters().isEmpty()
-                            && fn.name().equals(name);
-                    case ACTOR -> decl instanceof Ast.ClassDecl klass
-                            && klass.actorKind() != Ast.ActorKind.NONE
-                            && klass.visibility() == Ast.Visibility.PUBLIC
-                            && klass.name().equals(name);
-                    case CLASS -> decl instanceof Ast.ClassDecl klass
-                            && klass.visibility() == Ast.Visibility.PUBLIC
-                            && klass.actorKind() == Ast.ActorKind.NONE
-                            && klass.name().equals(name);
-                    case INTERFACE -> decl instanceof Ast.InterfaceDecl iface
-                            && !iface.moduleContract()
-                            && iface.visibility() == Ast.Visibility.PUBLIC
-                            && iface.name().equals(name);
-                    case CONTRACT -> decl instanceof Ast.InterfaceDecl iface
-                            && iface.moduleContract()
-                            && iface.visibility() == Ast.Visibility.PUBLIC
-                            && iface.name().equals(name);
-                    case TYPE -> decl instanceof Ast.TypeAliasDecl alias
-                            && alias.visibility() == Ast.Visibility.PUBLIC
-                            && alias.name().equals(name);
-                    case TYPES -> (decl instanceof Ast.InterfaceDecl iface
-                                    && iface.visibility() == Ast.Visibility.PUBLIC
-                                    && iface.name().equals(name))
-                            || (decl instanceof Ast.TypeAliasDecl alias
-                                    && alias.visibility() == Ast.Visibility.PUBLIC
-                                    && alias.name().equals(name));
-                    case TRAIT, STRUCT -> false;
-                    case ALL -> (decl instanceof Ast.FunctionDecl fn
-                                    && fn.visibility() == Ast.Visibility.PUBLIC
-                                    && fn.name().equals(name))
-                            || (decl instanceof Ast.ClassDecl klass
-                                    && klass.visibility() == Ast.Visibility.PUBLIC
-                                    && klass.name().equals(name));
-                    case MODULE -> false;
-                };
-                if (matched) matches++;
-            }
+        for (ExportResolver.ExportBinding binding : ExportResolver.resolve(program).bindings()) {
+            if (binding.scope() != Ast.ExportScope.PUBLIC) continue;
+            if (!binding.externalName().equals(name)) continue;
+            if (importKindMatches(kind, binding.localKind())) matches++;
         }
         return matches;
+    }
+
+    private static boolean importKindMatches(Ast.ImportKind imported, Ast.ExportKind exported) {
+        return switch (imported) {
+            case MODULE -> exported == Ast.ExportKind.MODULE;
+            case ACTOR -> exported == Ast.ExportKind.ACTOR;
+            case CLASS -> exported == Ast.ExportKind.CLASS;
+            case FUNCTION -> exported == Ast.ExportKind.FUNCTION;
+            case INTERFACE -> exported == Ast.ExportKind.INTERFACE;
+            case CONTRACT -> exported == Ast.ExportKind.CONTRACT;
+            case TRAIT -> exported == Ast.ExportKind.TRAIT;
+            case STRUCT -> exported == Ast.ExportKind.STRUCT;
+            case TYPE -> exported == Ast.ExportKind.TYPE;
+            case TYPES -> exported == Ast.ExportKind.TYPE
+                    || exported == Ast.ExportKind.INTERFACE
+                    || exported == Ast.ExportKind.CONTRACT
+                    || exported == Ast.ExportKind.TRAIT
+                    || exported == Ast.ExportKind.STRUCT;
+            case ALL -> true;
+        };
     }
 
     /**
