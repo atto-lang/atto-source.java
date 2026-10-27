@@ -678,6 +678,46 @@ final class GeneratorLanguageTest {
 
 
     @Test
+    void genericGeneratorTypingIsExplicitAndContinuationSafe() {
+        OresCompiler.parseAndTypeCheck("""
+                pub gen* one<T>(T value): Iterator<T> {
+                  yield value;
+                  return;
+                }
+                """);
+
+        IllegalArgumentException asynchronous = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async gen* one<T>(T value): AsyncIterator<T> {
+                          yield value;
+                          return;
+                        }
+                        """));
+        assertTrue(asynchronous.getMessage().contains("generic continuation-backed"),
+                asynchronous::getMessage);
+
+        IllegalArgumentException suspendable = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub suspend gen* one<T>(T value): AsyncIterator<T> {
+                          yield value;
+                          return;
+                        }
+                        """));
+        assertTrue(suspendable.getMessage().contains("generic continuation-backed"),
+                suspendable::getMessage);
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub gen* missing_type() {
+                  yield 1;
+                  return;
+                }
+                """));
+    }
+
+
+    @Test
     void canonicalGeneratorProtocolMismatchesStillFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 pub gen* values(): AsyncIterator<int> {
