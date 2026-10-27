@@ -7828,9 +7828,12 @@ public final class OresEvalRootNode extends RootNode {
                     case "connect_async" -> (Invokable) args -> {
                         requireTwo(args, "network.connect_async");
                         String host = requireString(args.get(0), "host");
-                        if (!(args.get(1) instanceof Number port))
+                        if (!(args.get(1) instanceof Number port) || !isIntegral(port))
                             throw new IllegalArgumentException("port must be an integer");
-                        return context.connectNioIpv4(host, port.intValue());
+                        long portValue = port.longValue();
+                        if (portValue < 1 || portValue > 65535)
+                            throw new IllegalArgumentException("port must be in 1..65535");
+                        return context.connectNioIpv4(host, (int) portValue);
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
                 };
