@@ -46,6 +46,8 @@ expect_wrapper_reject() {
 expect_ok trusted/ci
 for quarantined_slug in \
   ZED-PKG-TEST/JAVA-APP \
+  SCINTILLA-RUN-TEST/GLEAM-RUNNER-CONFORMANCE \
+  ORES-DUMMY-ORG-ORESLANG-STACK/ORES-DUMMY-ORG-ORESLANG-STACK-INFRA \
   AGENT-PONTIFEX-TEST/AGENT-PONTIFEX-E2E-TESTS \
   LED-DYNAMO/LEDDY-E2E
 do
@@ -73,7 +75,7 @@ printf 'trusted/ci 246810\r\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
-for quarantined_id in 1323575966 1370782550 1324139596; do
+for quarantined_id in 1323575966 1323598260 1412142815 1370782550 1324139596; do
   printf 'trusted/ci %s\n' "$quarantined_id" > "$policy"
   export MOCK_REPOSITORY_ID="$quarantined_id"
   expect_fail trusted/ci
