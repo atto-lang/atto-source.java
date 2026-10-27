@@ -336,6 +336,7 @@ public final class TypeChecker {
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
+        Set<String> builtinNames = Set.copyOf(localNames);
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -370,7 +371,8 @@ public final class TypeChecker {
                 importedNames.add(name);
                 if (localNames.contains(name)
                         && !(imported.kind() == Ast.ImportKind.FUNCTION
-                                && !imported.wildcard() && localFunctions.contains(name))) {
+                                && !imported.wildcard() && localFunctions.contains(name)
+                                && !builtinNames.contains(name))) {
                     throw new IllegalArgumentException("imported name '" + name
                             + "' conflicts with a local or builtin name");
                 }
@@ -2965,6 +2967,21 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
+                // A file-root declaration must not fall through to an import
+                // when its own arity is wrong. Imports are reached explicitly.
+                if (importedFunctions.containsKey(functionName.name())
+                        && functions.containsKey(Parser.ROOT_MODULE + "." + functionName.name())) {
+                    int arity = fixedCallArity(call.arguments(), env, generics, self,
+                            "function " + functionName.name());
+                    if (findQualifiedFunction(
+                            Parser.ROOT_MODULE + "." + functionName.name(), arity) == null) {
+                        throw new IllegalArgumentException(
+                                "file-root function '" + functionName.name()
+                                        + "' has no overload at arity " + arity
+                                        + "; use imports::" + functionName.name()
+                                        + "(...) for the imported function");
+                    }
+                }
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + functionName.name());
