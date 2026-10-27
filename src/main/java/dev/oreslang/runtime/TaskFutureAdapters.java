@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * compiler proof. Adapter getDone() is NOT a producer retirement receipt.</p>
  */
 public final class TaskFutureAdapters {
+    private record SourceTerminal<V>(V value, Throwable failure, boolean cancelled) { }
+
     private TaskFutureAdapters() { }
 
     public static <T> TaskHandle<T> fromFuture(
@@ -78,24 +80,43 @@ public final class TaskFutureAdapters {
         TaskHandle<T> adapter = scheduler.startTracked(waiter);
         AtomicReference<OresFuture.RuntimeWaiterRegistration<T>> registration =
                 new AtomicReference<>();
+        AtomicReference<SourceTerminal<T>> staged = new AtomicReference<>();
+        AtomicBoolean registrationValid = new AtomicBoolean();
+        Runnable dispatchTerminal = () -> {
+            if (!registrationValid.get()) return;
+            SourceTerminal<T> terminal = staged.getAndSet(null);
+            if (terminal == null) return;
+            if (terminal.cancelled()) {
+                // Only the source's authenticated cancellation state requests
+                // cancellation of the dependent Task. This adapter never
+                // calls source.cancel or forges the source's cancellation.
+                adapter.cancel("source Future cancelled");
+                awaited.cancel(false);
+            } else if (terminal.failure() != null) {
+                awaited.failFromRuntime(OresFuture.unwrap(terminal.failure()));
+            } else {
+                awaited.completeFromRuntime(terminal.value());
+            }
+        };
         try {
             OresFuture.RuntimeWaiterRegistration<T> token =
                     source.whenCompleteRuntimeCancellable((value, failure) -> {
-                        if (source.isCancelled()) {
-                            // This is an authenticated upstream CANCELLED event.
-                            // Cancel the dependent Task through its own tracked
-                            // token BEFORE publishing a ready failure to it.
-                            adapter.cancel("source Future cancelled");
-                            awaited.cancel(false);
-                        } else if (failure != null) {
-                            awaited.failFromRuntime(OresFuture.unwrap(failure));
-                        } else {
-                            awaited.completeFromRuntime(value);
-                        }
+                        staged.compareAndSet(null,
+                                new SourceTerminal<>(value, failure, source.isCancelled()));
+                        dispatchTerminal.run();
                     });
+            if (token == null) {
+                throw new IllegalStateException(
+                        "Future adapter source registration returned no detach token");
+            }
             registration.set(token);
+            registrationValid.set(true);
+            dispatchTerminal.run();
         } catch (RuntimeException | Error subscriptionFailure) {
-            // Failing to attach cannot leave a tracked waiter orphaned.
+            staged.set(null);
+            // A synchronous source result must not be exposed if its own
+            // detachable subscription failed to be admitted. Adapter failure
+            // remains distinct from upstream producer lifetime.
             awaited.failFromRuntime(subscriptionFailure);
         }
 
