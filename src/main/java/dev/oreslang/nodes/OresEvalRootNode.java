@@ -6284,6 +6284,7 @@ public final class OresEvalRootNode extends RootNode {
                         for (Object item : delegated) {
                             context.schedulerSafepoint();
                             emitter.emit(item);
+                            resetGeneratorQuantumAfterYield();
                         }
                     } finally {
                         closeIterable(delegated);
@@ -6292,6 +6293,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 context.schedulerSafepoint();
                 emitter.emit(value);
+                resetGeneratorQuantumAfterYield();
                 return;
             }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
@@ -6595,6 +6597,16 @@ public final class OresEvalRootNode extends RootNode {
          * A MutexGuard is a no-yield region; preemption remains advisory and
          * never revokes source borrowing or shared-state authority.
          */
+        private void resetGeneratorQuantumAfterYield() {
+            SourceCooperationQuantum quantum = activeGeneratorQuantum.get();
+            if (quantum != null) {
+                // Producer suspension is not CPU time. Resume starts a fresh
+                // physical virtual-carrier quantum without falsely recording
+                // a scheduler cooperation event.
+                quantum.beginDispatch();
+            }
+        }
+
         private void generatorLoopSafepoint(Env env) {
             SourceCooperationQuantum quantum = activeGeneratorQuantum.get();
             if (quantum == null) return;
