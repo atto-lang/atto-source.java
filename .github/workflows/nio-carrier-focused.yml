@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/nio-carrier-focused.yml"
       - "scripts/VerifyNioFocusedReports.java"
+      - "scripts/VerifyNioFocusedReportsTest.java"
       - "pom.xml"
       - "src/main/java/dev/oreslang/**"
       - "src/test/java/dev/oreslang/runtime/**"
@@ -66,6 +67,12 @@ jobs:
           java -version 2>&1 | tee ci-evidence/java-version.txt
           mvn -version | tee ci-evidence/maven-version.txt
           printf '%s\n' "mvn -B -ntp -Dores.runtime.carriers=native -Dtest=$NIO_TESTS -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true clean test" > ci-evidence/command.txt
+      - name: Verify the focused evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          java scripts/VerifyNioFocusedReportsTest.java \
+            2>&1 | tee ci-evidence/report-contract-tests.log
       - name: Execute the complete focused NIO carrier suite
         shell: bash
         run: |

@@ -8,6 +8,29 @@ import org.w3c.dom.Element;
 
 /** Reject empty, incomplete or skipped-only focused JUnit qualification. */
 final class VerifyNioFocusedReports {
+    private static final java.util.Set<String> REQUIRED_SUITES = java.util.Set.of(
+            "OresCarrierPermitPoolTest",
+            "OresCarrierBudgetTest",
+            "AdaptiveCarrierExecutorTest",
+            "NioReadinessGroupTest",
+            "OresVMNioLifecycleTest",
+            "VmNioTcpListenerTest",
+            "OresSchedulerTest",
+            "ActorFutureBlockingTest",
+            "OresFutureTerminalNotificationRaceTest",
+            "FormalPhysicalStopJobModelCheckTest",
+            "FormalContextShutdownOrderModelCheckTest",
+            "ActorShardStopRaceTest",
+            "AsyncNativeIoTest",
+            "ActorHeapPlacementGuardTest",
+            "ActorHeapAdmissionTest",
+            "ActorPhysicalTurnCreditsTest",
+            "NativeNetStdlibTest",
+            "StrictNonblockingStdlibIoTest",
+            "CanonicalCoreLibraryTest",
+            "CoreStdLibraryImportProvenanceTest",
+            "CoreStdLibraryProfileAdmissionTest");
+
     private static final java.util.Map<String, java.util.Set<String>> REQUIRED_CASES =
             java.util.Map.of(
                     "NioReadinessGroupTest", java.util.Set.of(
@@ -23,6 +46,16 @@ final class VerifyNioFocusedReports {
     public static void main(String[] args) throws Exception {
         if (args.length != 2) {
             throw new IllegalArgumentException("usage: reports-directory suite1,suite2,...");
+        }
+        var requested = new java.util.HashSet<String>();
+        for (String suite : args[1].split(",", -1)) {
+            if (!REQUIRED_SUITES.contains(suite) || !requested.add(suite))
+                throw new IllegalArgumentException("unknown or duplicate required suite: " + suite);
+        }
+        if (!requested.equals(REQUIRED_SUITES)) {
+            var missing = new java.util.TreeSet<>(REQUIRED_SUITES);
+            missing.removeAll(requested);
+            throw new IllegalArgumentException("incomplete NIO qualification; missing suites: " + missing);
         }
         Path directory = Path.of(args[0]);
         List<Path> reports;
@@ -57,8 +90,10 @@ final class VerifyNioFocusedReports {
             int errors = count(root, "errors");
             var cases = root.getElementsByTagName("testcase");
             int observedSkipped = root.getElementsByTagName("skipped").getLength();
+            String expectedClass = (suite.equals("CoreStdLibraryProfileAdmissionTest")
+                    ? "dev.oreslang.config." : "dev.oreslang.runtime.") + suite;
             boolean identityMatches = root.getTagName().equals("testsuite")
-                    && root.getAttribute("name").endsWith("." + suite)
+                    && root.getAttribute("name").equals(expectedClass)
                     && matches.get(0).getFileName().toString()
                             .equals("TEST-" + root.getAttribute("name") + ".xml");
             boolean valid = identityMatches && tests == cases.getLength()
@@ -67,18 +102,22 @@ final class VerifyNioFocusedReports {
                     && root.getElementsByTagName("failure").getLength() == 0
                     && root.getElementsByTagName("error").getLength() == 0;
             var requiredCases = REQUIRED_CASES.getOrDefault(suite, java.util.Set.of());
-            var observedRequired = new java.util.HashSet<String>();
+            var observedRequired = new java.util.HashMap<String, Integer>();
             for (int i = 0; i < cases.getLength(); i++) {
                 Element test = (Element) cases.item(i);
                 String name = test.getAttribute("name");
+                if (test.getParentNode() != root
+                        || !test.getAttribute("classname").equals(expectedClass))
+                    valid = false;
                 if (requiredCases.contains(name)
                         && test.getElementsByTagName("skipped").getLength() == 0) {
-                    observedRequired.add(name);
+                    observedRequired.merge(name, 1, Integer::sum);
                 }
             }
-            if (!observedRequired.equals(requiredCases)) {
+            if (!observedRequired.keySet().equals(requiredCases)
+                    || observedRequired.values().stream().anyMatch(count -> count != 1)) {
                 var missing = new java.util.HashSet<>(requiredCases);
-                missing.removeAll(observedRequired);
+                missing.removeAll(observedRequired.keySet());
                 problems.add(suite + ": missing required executed case(s) " + missing);
                 valid = false;
             }
