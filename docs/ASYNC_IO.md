@@ -1,125 +1,98 @@
-# Async standard-library I/O
+# Strict asynchronous standard-library I/O
 
-The async APIs return native Oreslang `Future<T>` values. `await` suspends the
-source continuation and releases its actor/root execution carrier. Completion
-resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs remain available for compatibility.
+Status: **release-blocking core/std contract**.
 
-| API | Awaited result |
+Oreslang core/stdlib I/O is asynchronous by default. Canonical names return
+`Future<T>`; callers use `await` when sequential source semantics are wanted.
+Core/std does not expose duplicate `*_async` methods and does not expose
+`*_sync` or `*_blocking` escape hatches.
+
+A blocking filesystem, socket, DNS, HTTP, pipe, terminal or process-stream call
+does **not** become compliant merely because it runs on a worker, platform
+thread, or virtual thread. A compliant provider must use readiness/completion
+mechanisms without one parked native thread per guest operation. A bounded
+reactor may sleep in a multiplexed wait such as epoll, kqueue, IOCP or another
+verified completion primitive.
+
+## Canonical source surface
+
+| API | Type |
 | --- | --- |
-| `fs.read_text_async(path)` | `String` (UTF-8) |
-| `fs.exists_async(path)` | `bool` |
-| `fs.write_text_async(path, text)` | `void` |
-| `fs.append_text_async(path, text)` | `void` |
-| `fs.remove_async(path)` | `void` |
-| `fs.mkdir_all_async(path)` | `void` |
-| `network.connect_async(host, port)` | `TcpConnection` |
-| `socket.read_line_async()` | `Option<String>` (`None` at EOF) |
-| `socket.write_text_async(text)` | `void` (flushes the text) |
-| `socket.close_async()` | `void` |
-| `http.get_text_async(url)` | `String` (response body) |
-| `http.post_text_async(url, text)` | `String` (response body) |
+| `fs.read_text(path)` | `Future<String>` |
+| `fs.list_dir(path)` | `Future<List<String>>` |
+| `fs.is_dir(path)`, `fs.is_symlink(path)`, `fs.exists(path)` | `Future<bool>` |
+| `fs.write_text(path, text)`, `write_text_atomic(...)`, `append_text(...)` | `Future<void>` |
+| `fs.remove(path)`, `mkdir_all(path)` | `Future<void>` |
+| `network.connect(host, port)` | `Future<TcpConnection>` |
+| `socket.read_line()` | `Future<Option<String>>` |
+| `socket.write_text(text)`, `socket.close()` | `Future<void>` |
+| `http.get_text(url)` | `Future<String>` |
+| `http.post_text(url, text)` | `Future<String>` |
+| `http.listen(host, port, capacity, body_limit, deadline_ms)` | `Future<HttpServer>` |
+| `stdio.print(...)`, `stdio.println(...)` | `Future<void>` |
+| `stdio.stdout.write(value)`, `println(value)`, `log(...)`, `logList(values)` | `Future<void>` |
+| `stdio.stdin.read_line()` | `Future<Option<String>>` |
 
-`File` aliases `fs`; `net` aliases `network`. Async TCP connections are local
-capabilities, not mailbox-sendable values. Await each operation before starting
-the next operation in the same direction; TCP reads and writes may run in parallel.
+Ambient global `print` is not an I/O escape hatch.
 
-```ores
-pub async routine main(): void {
-  await fs.write_text_async("./message.txt", "hello");
-  val String text = await fs.read_text_async("./message.txt");
-  stdio.println(text);
-  return;
-}
-```
+Legacy `*_async`, `*_sync`, and `*_blocking` spellings are not part of the
+core/std API. If explicitly synchronous compiler/build tooling is ever retained,
+it must remain outside guest core/std and be visibly named `*_sync` or
+`*_blocking`; it must never be an implicit fallback for a canonical guest call.
 
-Grant the same filesystem/network permissions required by synchronous calls.
-Actor-local capabilities are checked before submission. Canonical path resolution,
-resource permission checks, DNS/connect, file operations and blocking client HTTP
-work execute off the actor carrier. Only immutable argument values are captured.
-HTTP redirects remain disabled so a response cannot bypass the destination grant.
-Failures retain their cause and a bounded `native:io` boundary annotation.
+## Current Java/Graal state
 
-## Execution and lifecycle
+Until a strict readiness/completion provider is connected, the Java reference
+backend is intentionally **fail closed**:
 
-Each context owns a virtual-thread executor with a hard maximum of 128 in-flight
-standard-library operations. Submission above that bound returns a failed future;
-there is no unbounded backlog or caller-runs fallback. Socket close has 16
-separately reserved in-flight control slots, so saturated reads cannot consume
-all admission needed to close their sockets. These are executor admission
-counters, not additional actor channels. One future is created per
-operation, not one channel. Await uses the actor's existing continuation transport.
+- canonical I/O calls typecheck as Futures;
+- evaluating those guest members returns already-failed Futures before host I/O;
+- legacy worker-offloaded `AsyncNativeIo`, blocking `NativeIo`, and legacy
+  `NativeHttp` transport code may remain as migration/reference code but are
+  unreachable from strict guest I/O dispatch;
+- `http.handler` and `http.claim` are not admitted through the strict
+  core/std boundary;
+- server accept/shutdown and exchange data-plane operations fail closed through
+  Future results rather than invoking legacy transport methods;
+- unknown members on `fs`, `File`, `network`, `net`, `http`, and
+  `env` are compile errors rather than dynamic/unknown escape routes.
 
-This is **non-blocking for guest execution**. The portable implementation offloads
-blocking host filesystem, TCP and HTTP client calls; it does not promise kernel
-asynchronous filesystem I/O or zero blocked OS threads. HTTP client connections
-are currently per call and closed after completion. No throughput improvement is
-claimed for tiny cached files.
+Fail-closed is a supported safety state, not provider parity.
 
-Cancellation of an individual I/O future is declined (`cancel` returns false):
-filesystem writes cannot safely promise rollback. Ending an actor does not undo
-an already submitted operation. Context closure stops new admission, interrupts
-workers, closes tracked sockets and settles pending futures. A filesystem syscall
-that ignores interruption may still finish after context closure. Await outstanding
-writes when their completion matters; closing a socket interrupts its pending read.
-Close TCP sockets explicitly when finished; context shutdown is a fallback.
+## Provider requirements
 
-The server-side HTTP API already returns futures for accept, body reads, response
-writes and graceful shutdown. Listener setup and synchronous abort/close control
-remain separate operations. Stdout/console export and stdin are not migrated by
-this change. This implementation does not add physical actor heap isolation.
+A real provider may replace fail-closed behavior only after it demonstrates:
+
+1. nonblocking/readiness or completion-driven transport;
+2. bounded admission and backpressure;
+3. partial read/write progress;
+4. EOF and peer-reset semantics;
+5. cancellation before readiness;
+6. cancellation after readiness but before continuation resume;
+7. timeout/completion single-winner arbitration;
+8. stale generation rejection;
+9. no busy polling;
+10. scheduler progress while I/O is pending;
+11. logical Future settlement separated from physical kernel/callback retirement;
+12. actor `get_done()` cannot complete until that physical retirement occurs.
+
+Filesystem and DNS remain unsupported on a target if the target cannot provide
+a compliant completion mechanism. Blocking file or resolver calls hidden behind
+a worker pool are not fallback implementations.
 
 ## Validation
 
-`AsyncNativeIoTest` covers real filesystem operations, permission denial and
-symlink escape, untrusted actor authority, HTTP GET/POST and redirect suppression,
-TCP write/read/EOF, bounded admission and context shutdown. A delayed TCP peer
-withholds its response until a second actor runs on the **same single actor
-carrier**, proving that the first actor's pending read does not occupy that carrier.
-EOF, errors and future results travel through normal continuation lowering.
+The focused release gate is
+`.github/workflows/strict-async-stdlib-io.yml`. It:
 
-Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
+- verifies the exact checked-out commit and emits its Git tree SHA;
+- runs the Rust `tools/strict-async-io-audit` unit tests;
+- audits guest dispatch and packaged `stdlib/**/*.ores` for blocking/legacy
+  edges and suffixes;
+- runs `StrictAsyncStdlibIoCurrentMainTest` on GraalVM JDK 25.
 
-## Synchronous directory operations (Oreslang stack CLI)
+A workflow that fails before any job step executes is runner-admission evidence
+only. It is neither a pass nor an implementation failure.
 
-The Java/Graal interpreter exposes capability-gated `fs.list_dir(path): List<String>`,
-`fs.is_dir(path): bool` and `fs.is_symlink(path): bool`. `list_dir` returns only
-the immediate child **names**, sorted lexically, and refuses directories with
-more than 20,000 children. It rejects a symlink at the input path; callers
-must check children before descending. Each operation requires scoped filesystem
-read permission. These metadata operations are not a race-free openat-style
-directory handle and are not sufficient for processing hostile mutable trees.
-The language also exposes `String.split_literal`, `trim`, `starts_with`,
-`ends_with`, and `contains_literal` for source-level code generators.
-
-## Audited Oreslang Stack CLI source-generation primitives
-
-`fs.write_text_atomic(path, value)` uses a temporary UTF-8 file adjacent to
-the destination and an atomic move/replace. It requires write permission on
-both the lexical path and canonical parent target, refuses an existing symlink
-destination, and does not fall back to a non-atomic move. Atomic replacement
-is **one file at a time**, not a transaction over all RPC/Lambda outputs.
-
-Metadata operations `fs.is_dir` and `fs.is_symlink` resolve and authorize
-the parent before inspecting a child entry without following its terminal
-symbolic link. They can inspect an exactly granted project root even when
-its parent directory is not granted; symlinked ancestors cannot extend the
-granted read scope. `fs.list_dir` returns immediate names in sorted order,
-rejects symlink inputs, and caps enumeration at 20,000 names.
-
-All path-based checks remain subject to time-of-check/time-of-use races when
-a different process can concurrently change directory entries. This API is
-not a directory-handle sandbox for actively hostile mutable trees. Use it
-for locally trusted project source generation; a production hostile-tenant
-builder must add race-free directory capabilities and multi-file transaction
-admission.
-
-**Validation:** The private mirror of the Java/Graal reference runtime
-executed the `NativeCliIoTest` suite (5 passing tests) including the complete
-`oreslang-stack-cli/src/main.ores` source, symlink escape denial and atomic
-write operations:
-https://github.com/ores-stack/ores-stack-cli/actions/runs/37884619591
-
-The downstream generator additionally passed its full real-runtime command
-integration:
-https://github.com/ores-stack/ores-stack-cli/actions/runs/37884619670
+The broader JDK/GraalVM and Native Image AOT/hybrid suites remain mandatory
+before this contract can be promoted on `main`.
