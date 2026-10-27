@@ -2073,10 +2073,17 @@ public final class OwnershipChecker {
         }
 
         // Unknown host/dynamic callables remain conservative and consuming.
+        // A lexical loan cannot become owned merely because the callee lacks
+        // a statically resolved signature; this path also covers capability
+        // surfaces such as ActorRef.send that are not ordinary class methods.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
+            }
+            if (isBorrowValue(argument)) {
+                throw error("borrowed/provenance-tracked values cannot cross an arbitrary "
+                        + "or actor-capability call boundary; pass owned/copy/shared data");
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
