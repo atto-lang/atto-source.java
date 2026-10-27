@@ -346,7 +346,12 @@ public final class MacroExpander {
             }
             return bound;
         }
-        if (expression instanceof Ast.LiteralExpr) return expression;
+        if (expression instanceof Ast.LiteralExpr literal) {
+            // Each template instantiation owns its own AST identity. Reusing the
+            // literal node from the macro declaration would alias unrelated
+            // invocation sites in identity-keyed provenance/semantic side tables.
+            return new Ast.LiteralExpr(literal.value());
+        }
         if (expression instanceof Ast.UnaryExpr unary) {
             return new Ast.UnaryExpr(
                     unary.operator(),
