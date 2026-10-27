@@ -47,6 +47,7 @@ public record OptionalCallPlan(
         Boolean provenanceMode = null;
         int previousCallItemIndex = -1;
         int previousProjectionIndex = -1;
+        boolean previousProjectionWasNamed = false;
 
         for (int i = 0; i < sourceOrder.size(); i++) {
             BoundSlot slot = Objects.requireNonNull(sourceOrder.get(i), "bound slot");
@@ -101,6 +102,12 @@ public record OptionalCallPlan(
                             "optional call provenance reorders source call items");
                 }
                 if (slot.callItemIndex() == previousCallItemIndex) {
+                    // One raw call item cannot simultaneously be a tuple
+                    // (unlabeled) and a record (labeled) spread.
+                    if ((slot.label() != null) != previousProjectionWasNamed) {
+                        throw new IllegalArgumentException(
+                                "one call item cannot mix tuple and record projections");
+                    }
                     // Mixed projection kinds for one source item cannot be
                     // produced by the parser; reject public-plan forgeries.
                     if ((slot.label() == null)
@@ -120,6 +127,7 @@ public record OptionalCallPlan(
                 }
                 previousCallItemIndex = slot.callItemIndex();
                 previousProjectionIndex = slot.projectionIndex();
+                previousProjectionWasNamed = slot.label() != null;
             }
 
             seenSource[slot.sourceIndex()] = true;
