@@ -161,11 +161,10 @@ public final class OresContext implements AutoCloseable {
 
         final OresFuture<VmNioTcpConnection> exposed =
                 new OresFuture<>(() -> raw.cancel(false), () -> { });
+        final boolean cancelForClosedContext;
         synchronized (nioLifecycle) {
-            if (nioContextClosed) {
-                exposed.cancel(false);
-            }
             vmNioConnecting.add(exposed);
+            cancelForClosedContext = nioContextClosed;
         }
 
         raw.whenCompleteRuntime((socket, failure) -> {
@@ -213,6 +212,7 @@ public final class OresContext implements AutoCloseable {
                 }
             }
         });
+        if (cancelForClosedContext) exposed.cancel(false);
         return exposed;
     }
 
