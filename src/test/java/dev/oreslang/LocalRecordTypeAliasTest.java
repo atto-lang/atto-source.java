@@ -128,6 +128,17 @@ final class LocalRecordTypeAliasTest {
     }
 
     @Test
+    void forwardLocalRecordAliasesFailBeforePublishedAbiConstruction() {
+        parseRejected("""
+                pub fnc foo(): A {
+                    type A = record { nested: B };
+                    type B = record { foo: string };
+                    return record { nested: record { foo: "oops" } };
+                }
+                """, "forward local record alias reference");
+    }
+
+    @Test
     void localTypeBindingsDoNotLeakToTheNextFunction() {
         String source = """
                 fnc first(): string {
