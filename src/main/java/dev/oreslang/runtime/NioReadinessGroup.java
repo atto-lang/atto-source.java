@@ -730,9 +730,9 @@ public final class NioReadinessGroup implements AutoCloseable {
         synchronized (lifecycle) {
             if (closed || !channel.isOpen())
                 return OresFuture.failed(new IOException("NIO TCP channel closed"));
-            if (readLeases.containsKey(channel) || writeLeases.containsKey(channel))
+            if (readLeases.containsKey(channel))
                 return OresFuture.failed(new IllegalStateException(
-                        "channel already has an outstanding TCP I/O operation"));
+                        "channel already has an outstanding TCP read"));
             readLeases.put(channel, received);
         }
 
@@ -820,9 +820,9 @@ public final class NioReadinessGroup implements AutoCloseable {
      * are sent: cancellation must not report success after any bytes have
      * escaped. A zero-byte kernel attempt can be rearmed and cancelled.
      *
-     * Read and write share exclusive channel admission, because the manager
-     * admits one readiness key per channel. This is an intentionally
-     * conservative host substrate until a duplex connection owner lands.
+     * One read and one write may coexist on the same channel. They share one
+     * selector registration with disjoint OP_READ/OP_WRITE one-shot watches.
+     * Duplicate writes remain rejected until the first write physically drains.
      */
     public OresFuture<Integer> writeAsync(SocketChannel channel, byte[] bytes) {
         Objects.requireNonNull(channel, "channel");
@@ -840,9 +840,9 @@ public final class NioReadinessGroup implements AutoCloseable {
             synchronized (lifecycle) {
                 if (closed || !channel.isOpen())
                     return OresFuture.failed(new IOException("NIO TCP channel closed"));
-                if (readLeases.containsKey(channel) || writeLeases.containsKey(channel))
+                if (writeLeases.containsKey(channel))
                     return OresFuture.failed(new IllegalStateException(
-                            "channel already has an outstanding TCP I/O operation"));
+                            "channel already has an outstanding TCP write"));
                 return OresFuture.completed(0);
             }
         }
@@ -861,9 +861,9 @@ public final class NioReadinessGroup implements AutoCloseable {
         synchronized (lifecycle) {
             if (closed || !channel.isOpen())
                 return OresFuture.failed(new IOException("NIO TCP channel closed"));
-            if (readLeases.containsKey(channel) || writeLeases.containsKey(channel))
+            if (writeLeases.containsKey(channel))
                 return OresFuture.failed(new IllegalStateException(
-                        "channel already has an outstanding TCP I/O operation"));
+                        "channel already has an outstanding TCP write"));
             writeLeases.put(channel, written);
         }
 
@@ -950,56 +950,73 @@ public final class NioReadinessGroup implements AutoCloseable {
         synchronized (lifecycle) {
             if (closed || !channel.isOpen()) return OresFuture.failed(
                     new IllegalStateException("NIO manager or channel closed"));
-            if (ownership.containsKey(channel)) return OresFuture.failed(
-                    new IllegalStateException("channel already has a pending readiness watch"));
             if (pending.get() >= maxPending || notificationReservations.get() >= maxPending)
                 return OresFuture.failed(new RejectedExecutionException(
                         "NIO readiness or completion notification capacity exhausted"));
-            final Reactor initial;
-            try {
-                initial = reactors.isEmpty() ? startReactorLocked() : null;
-            } catch (IOException | RuntimeException failure) {
-                return OresFuture.failed(failure);
-            }
-            Reactor target = initial == null ? leastBacklogged() : initial;
-            // Reactor scaling is about *runnable registration work*, not the
-            // number of pending network reads. The active kernel wait is idle.
-            if (target.commands.size() >= Math.max(8, commandCapacity / 2)) {
-                if (consecutiveCommandPressure < 8) consecutiveCommandPressure++;
-            } else {
-                consecutiveCommandPressure = 0;
-            }
-            if (consecutiveCommandPressure >= 8 && reactors.size() < maxReactors) {
-                try {
-                    target = startReactorLocked();
-                    consecutiveCommandPressure = 0;
-                } catch (IOException | RuntimeException | Error failure) {
-                    // Admission may still use existing reactors; throttle
-                    // retries rather than allocating a selector on every
-                    // subsequent request during FD/thread exhaustion.
-                    consecutiveCommandPressure = 0;
-                    if (failure instanceof VirtualMachineError fatal) throw fatal;
-                    if (failure instanceof ThreadDeath fatal) throw fatal;
+
+            Watch representative = ownership.get(channel);
+            final ChannelRegistration registration;
+            Reactor target;
+            if (representative != null) {
+                registration = representative.registration;
+                int existing = registration.claimedInterests;
+                if ((existing & interestOps) != 0)
+                    return OresFuture.failed(new IllegalStateException(
+                            "channel already has an overlapping readiness watch"));
+                int duplexMask = SelectionKey.OP_READ | SelectionKey.OP_WRITE;
+                if ((existing | interestOps) != duplexMask
+                        || (interestOps != SelectionKey.OP_READ
+                            && interestOps != SelectionKey.OP_WRITE)
+                        || (existing != SelectionKey.OP_READ
+                            && existing != SelectionKey.OP_WRITE)) {
+                    return OresFuture.failed(new IllegalStateException(
+                            "only one disjoint OP_READ + OP_WRITE pair may share a channel"));
                 }
+                target = registration.reactor;
+            } else {
+                final Reactor initial;
+                try {
+                    initial = reactors.isEmpty() ? startReactorLocked() : null;
+                } catch (IOException | RuntimeException failure) {
+                    return OresFuture.failed(failure);
+                }
+                target = initial == null ? leastBacklogged() : initial;
+                // Reactor scaling is about *runnable registration work*, not the
+                // number of pending network reads. The active kernel wait is idle.
+                if (target.commands.size() >= Math.max(8, commandCapacity / 2)) {
+                    if (consecutiveCommandPressure < 8) consecutiveCommandPressure++;
+                } else {
+                    consecutiveCommandPressure = 0;
+                }
+                if (consecutiveCommandPressure >= 8 && reactors.size() < maxReactors) {
+                    try {
+                        target = startReactorLocked();
+                        consecutiveCommandPressure = 0;
+                    } catch (IOException | RuntimeException | Error failure) {
+                        consecutiveCommandPressure = 0;
+                        if (failure instanceof VirtualMachineError fatal) throw fatal;
+                        if (failure instanceof ThreadDeath fatal) throw fatal;
+                    }
+                }
+                registration = new ChannelRegistration(channel, target);
             }
+
             if (target.stopping.get())
                 return OresFuture.failed(new RejectedExecutionException("NIO reactor stopped"));
-            ChannelRegistration registration =
-                    new ChannelRegistration(channel, target);
             Watch watch = new Watch(channel, interestOps, registration);
-            registration.claimedInterests = interestOps;
+            registration.claimedInterests |= interestOps;
             registration.watches.put(watch, Boolean.TRUE);
-            ownership.put(channel, watch);
+            if (representative == null) ownership.put(channel, watch);
             pending.incrementAndGet();
             notificationReservations.incrementAndGet();
             target.admitted.put(watch, Boolean.TRUE);
             if (!target.commands.offer(watch)) {
                 target.admitted.remove(watch);
                 registration.watches.remove(watch);
-                registration.claimedInterests = 0;
+                registration.claimedInterests &= ~interestOps;
                 pending.decrementAndGet();
                 notificationReservations.decrementAndGet();
-                ownership.remove(channel);
+                if (representative == null) ownership.remove(channel);
                 return OresFuture.failed(new RejectedExecutionException("NIO reactor command queue full"));
             }
             target.selector.wakeup();
