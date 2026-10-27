@@ -252,6 +252,21 @@ final class AotFiniteGenericClosureTest {
     }
 
     @Test
+    void declarationIndexingBudgetLimitsUnreachableFunctions() {
+        java.util.ArrayList<Ast.Decl> declarations = new java.util.ArrayList<>();
+        for (int i = 0; i < 4_097; i++) {
+            declarations.add(fn("function_" + i, List.of(), null,
+                    type("int"), new Ast.LiteralExpr(1L)));
+        }
+        Ast.Program source = new Ast.Program(List.of(
+                new Ast.ModuleDecl(Parser.ROOT_MODULE, declarations)));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> AotFiniteGenericClosure.plan(source, BuildOptions.executable()));
+        assertTrue(error.getMessage().contains("declaration indexing budget"),
+                error::toString);
+    }
+
+    @Test
     void oversizedFunctionSignatureFailsBeforeGraphTraversal() {
         java.util.ArrayList<Ast.Param> parameters = new java.util.ArrayList<>();
         for (int i = 0; i < 129; i++) {
