@@ -85,6 +85,65 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void provenSynchronousScalarHelperRemainsCallableUnderMutexGuard()
+            throws Exception {
+        assertEquals("42", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                fnc add_one(value: int): int {
+                  return value + 1;
+                }
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  let answer = add_one(41);
+                  guard.release();
+                  stdio.stdout.write(answer);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void asyncHelperCannotLaunchUnderLiveMutexGuardEvenWithoutAwait()
+            throws Exception {
+        // A Future return type must not bypass child-launch admission.
+        String text = """
+                define class Counter as
+                  pub let int value = 0;
+                end
+                async fnc blocked_source(): int {
+                  stdio.stdout.write("ILLEGAL_ASYNC_CHILD_STARTED");
+                  return 7;
+                }
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  let pending = blocked_source();
+                  guard.release();
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source src = Source.newBuilder(
+                        OresLanguage.ID, text, "async-guard-prelaunch.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        RuntimeException rejected;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            rejected = assertThrows(RuntimeException.class, () -> context.eval(src));
+        }
+        assertTrue(rejected.getMessage().contains("MutexGuard"),
+                "explicit async child Task must be denied before launch: " + rejected);
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "invalid async source child executed a guest side effect");
+    }
+
+    @Test
     void nestedCpuHelperCannotStartUnderLiveMutexGuard() throws Exception {
         // A synchronous helper can contain an implicit safepoint. Refuse
         // its Task admission BEFORE invoking the source body, so an invalid
