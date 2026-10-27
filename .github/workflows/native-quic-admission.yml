@@ -23,4 +23,4 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run exact-checkout JUnit admission negatives
-        run: ./mvnw -q -Dtest=NativeQuicAdmissionTest test
+        run: mvn -q -Dtest=NativeQuicAdmissionTest test
