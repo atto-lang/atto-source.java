@@ -44,6 +44,17 @@ expect_wrapper_reject() {
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
+for quarantined_slug in \
+  ZED-PKG-TEST/JAVA-APP \
+  AGENT-PONTIFEX-TEST/AGENT-PONTIFEX-E2E-TESTS \
+  LED-DYNAMO/LEDDY-E2E
+do
+  if "$script_dir/check-private-ci-destination.sh" "$quarantined_slug" > "$work/out" 2>&1; then
+    echo 'Unsafe quarantined slug approval' >&2
+    exit 1
+  fi
+  grep -q 'destination slug is quarantined by private-source incident policy' "$work/out"
+done
 export MOCK_REPOSITORY_ID=246811
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
