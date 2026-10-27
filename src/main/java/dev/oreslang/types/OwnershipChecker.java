@@ -904,7 +904,7 @@ public final class OwnershipChecker {
         // still cannot cross suspension.
         if (scope.visibleStates().stream().anyMatch(state -> !state.moved
                 && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
-                && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                && (isBorrowState(state)
                     || state.immutableBorrows > 0 || state.mutableBorrowed))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
         }
