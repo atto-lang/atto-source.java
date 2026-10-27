@@ -18,6 +18,7 @@ policy="$policy_dir/private-ci-approved-repositories.txt"
   fail 'reviewed policy file is missing, unreadable or symlinked'
 entry_pattern='^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$'
 declare -A seen=()
+declare -A seen_ids=()
 approved_id=''
 while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   [[ -z "$candidate" || "$candidate" =~ ^# ]] && continue
@@ -26,19 +27,38 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   approved_name="${BASH_REMATCH[1]}"
   numeric_id="${BASH_REMATCH[2]}"
   key="${approved_name,,}"
-  [[ ! -v seen["$key"] ]] || fail 'duplicate repository identity in approval policy'
+  [[ ! -v seen["$key"] && ! -v seen_ids["$numeric_id"] ]] ||
+    fail 'duplicate repository name or numeric ID in approval policy'
   seen["$key"]=1
+  seen_ids["$numeric_id"]=1
   if [[ "$key" == "${target,,}" ]]; then approved_id="$numeric_id"; fi
 done < "$policy"
 [[ -n "$approved_id" ]] || fail 'destination is absent from reviewed repository policy'
 [[ "$approved_id" != 1323575966 ]] ||
   fail 'destination repository ID is quarantined by private-source incident policy'
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
-metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring)] | @tsv' 2>/dev/null)" ||
+metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring), (.archived|tostring), (.disabled|tostring), (.fork|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* && "$metadata" != *$'\r'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=$'\t' read -r actual_name visibility private_flag actual_id <<< "$metadata"
+without_tabs="${metadata//
+[[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
+[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
+[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
+  fail 'GitHub numeric repository ID differs from independently reviewed approval'
+[[ "$archived" == false && "$disabled" == false && "$fork" == false ]] ||
+  fail 'destination is archived, disabled or forked'
+printf 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY: %s (private id=%s)\n' "$target" "$approved_id"
+\t'/}"
+[[ $((${#metadata} - ${#without_tabs})) -eq 6 ]] ||
+  fail 'API returned invalid repository metadata fields'
+IFS=
+[[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
+[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
+[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
+  fail 'GitHub numeric repository ID differs from independently reviewed approval'
+printf 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY: %s (private id=%s)\n' "$target" "$approved_id"
+\t' read -r actual_name visibility private_flag actual_id archived disabled fork <<< "$metadata"
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
 [[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
