@@ -380,6 +380,10 @@ members and any nested readonly `record{...}` members are sorted canonically
 within their containing values, then packed little-endian into **one single
 physical parent column**. The Java host codec supports at most **8 nested
 record boundaries**, **1,024 members in aggregate across the record tree**,
+and at most **1,024 directly declared columns per inverted owner**.
+The column-count limit is checked before the host store or schema planner
+allocates its metadata. Separate JUnit fixtures cover the exact bound and
+its rejection boundary,
 and **64 KiB total parent stride**; the limits are host denial-of-service
 budgets, not a standardized cross-backend ABI. Nested mutable `struct`, owned
 class, pointer and `InvertedArray<T>` members are still rejected. Both leaf
