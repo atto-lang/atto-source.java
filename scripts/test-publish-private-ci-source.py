@@ -527,13 +527,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
                             codeowners=True, stale=True, admins=True,
                             approvals=1, force=False, deletions=False,
+                            last_push=True, conversations=True,
                             bypasses=None, strict_checks=True, contexts=None,
                             named_checks=None, source_id=None, codeowners_file=None):
         routes = []
         if contexts is None:
-            contexts = ["private-ci-gate"]
+            contexts = [pub.SOURCE_POLICY_CHECK]
         if named_checks is None:
-            named_checks = []
+            named_checks = [{
+                "context": pub.SOURCE_POLICY_CHECK,
+                "app_id": pub.GITHUB_ACTIONS_APP_ID,
+            }]
         if source_id is None:
             source_id = pub.SOURCE_REPOSITORY_ID
         if codeowners_file is None:
@@ -555,6 +559,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main/protection":
                 reviews = {"require_code_owner_reviews": codeowners,
                            "dismiss_stale_reviews": stale,
+                           "require_last_push_approval": last_push,
                            "required_approving_review_count": approvals}
                 if bypasses is not None:
                     reviews["bypass_pull_request_allowances"] = bypasses
@@ -566,7 +571,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         },
                         "enforce_admins": {"enabled": admins},
                         "allow_force_pushes": {"enabled": force},
-                        "allow_deletions": {"enabled": deletions}}
+                        "allow_deletions": {"enabled": deletions},
+                        "required_conversation_resolution": {"enabled": conversations}}
             if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
                          +pub.POLICY_PATH+"?ref="+A):
                 return {"path": pub.POLICY_PATH, "type": "file",
@@ -634,18 +640,54 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "identity and privacy"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
-    def test_origin_requires_strict_nonempty_required_status_checks(self):
+    def test_origin_requires_last_push_approval_and_conversation_resolution(self):
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
-        for options in (
-            {"strict_checks": False},
-            {"contexts": [], "named_checks": []},
-            {"contexts": [""]},
-            {"contexts": [], "named_checks": [{"context": ""}]},
+        for options, message in (
+            ({"last_push": False}, "last-push approval"),
+            ({"conversations": False}, "conversation resolution"),
         ):
             with self.subTest(options=options):
                 api, _ = self.verified_origin_api(**options)
                 with patch.object(pub, "gh_api", side_effect=api):
-                    with self.assertRaisesRegex(pub.Denied, "strict required CI"):
+                    with self.assertRaisesRegex(pub.Denied, message):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_requires_strict_issuer_bound_security_check(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        cases = (
+            ({"strict_checks": False}, "strict required CI"),
+            ({"contexts": [], "named_checks": []}, "issuer binding"),
+            ({"contexts": [""]}, "malformed"),
+            (
+                {"contexts": [], "named_checks": [{"context": ""}]},
+                "identity is ambiguous",
+            ),
+            (
+                {
+                    "contexts": [],
+                    "named_checks": [{
+                        "context": pub.SOURCE_POLICY_CHECK,
+                        "app_id": 999999,
+                    }],
+                },
+                "untrusted issuer",
+            ),
+            (
+                {
+                    "contexts": [],
+                    "named_checks": [{
+                        "context": "unrelated-actions-job",
+                        "app_id": pub.GITHUB_ACTIONS_APP_ID,
+                    }],
+                },
+                "security CI check missing",
+            ),
+        )
+        for options, message in cases:
+            with self.subTest(options=options):
+                api, _ = self.verified_origin_api(**options)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, message):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_rejects_author_codeowner_instead_of_independent_security_owner(self):
@@ -672,20 +714,24 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "solely owned"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
-    def test_origin_protection_fingerprint_handles_duplicate_context_app_ids(self):
+    def test_origin_rejects_duplicate_required_check_identity(self):
         api, _ = self.verified_origin_api(
             contexts=[],
             named_checks=[
-                {"context": "private-ci-gate", "app_id": None},
-                {"context": "private-ci-gate", "app_id": 15368},
+                {
+                    "context": pub.SOURCE_POLICY_CHECK,
+                    "app_id": pub.GITHUB_ACTIONS_APP_ID,
+                },
+                {
+                    "context": pub.SOURCE_POLICY_CHECK,
+                    "app_id": pub.GITHUB_ACTIONS_APP_ID,
+                },
             ],
         )
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         with patch.object(pub, "gh_api", side_effect=api):
-            self.assertEqual(
-                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
-                A,
-            )
+            with self.assertRaisesRegex(pub.Denied, "identity is ambiguous"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_rejects_nonterminal_security_codeowners(self):
         valid = (

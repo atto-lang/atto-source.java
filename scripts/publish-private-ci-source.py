@@ -58,6 +58,8 @@ SECURITY_CODEOWNER_PATHS = (
     "/scripts/publish-private-ci-source-v3.py",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
+GITHUB_ACTIONS_APP_ID = 15368
+SOURCE_POLICY_CHECK = "preflight-regressions"
 
 
 class Denied(RuntimeError):
@@ -361,6 +363,45 @@ def checked_policy_fingerprint(root, repository):
     """Compatibility wrapper returning the reviewed policy fingerprint."""
     return checked_policy_approval(root, repository)[0]
 
+def require_issuer_bound_actions_checks(required_checks, label, expected_context):
+    """Require every mandatory CI context to be GitHub-Actions-bound and pin the security check."""
+    if (not isinstance(expected_context, str)
+            or not expected_context.strip()):
+        raise Denied(label + " expected required CI context invalid")
+    if not isinstance(required_checks, dict):
+        raise Denied(label + " required status-check policy missing")
+    contexts = required_checks.get("contexts", [])
+    named_checks = required_checks.get("checks")
+    if (not isinstance(contexts, list)
+            or any(not isinstance(name, str) or not name.strip()
+                   for name in contexts)
+            or len(contexts) != len(set(contexts))):
+        raise Denied(label + " legacy required status checks are malformed")
+    if not isinstance(named_checks, list) or not named_checks:
+        raise Denied(label + " required CI issuer binding missing")
+
+    seen = set()
+    bound = []
+    for item in named_checks:
+        if not isinstance(item, dict):
+            raise Denied(label + " required CI check metadata malformed")
+        name = item.get("context")
+        app_id = item.get("app_id")
+        if (not isinstance(name, str) or not name.strip() or name in seen):
+            raise Denied(label + " required CI check identity is ambiguous")
+        if (type(app_id) is not int
+                or app_id != GITHUB_ACTIONS_APP_ID):
+            raise Denied(label + " required CI check has untrusted issuer")
+        seen.add(name)
+        bound.append((name, app_id))
+
+    if any(name not in seen for name in contexts):
+        raise Denied(label + " legacy required status check lacks issuer binding")
+    if expected_context not in seen:
+        raise Denied(label + " required security CI check missing")
+    return tuple(sorted(contexts)), tuple(sorted(bound))
+
+
 def _require_strict_source_protection(protection):
     """Validate the security-relevant classic branch-protection contract."""
     reviews = protection.get("required_pull_request_reviews")
@@ -368,32 +409,31 @@ def _require_strict_source_protection(protection):
     administrators = protection.get("enforce_admins")
     force_pushes = protection.get("allow_force_pushes")
     deletions = protection.get("allow_deletions")
-    contexts = checks.get("contexts") if isinstance(checks, dict) else None
-    named_checks = checks.get("checks") if isinstance(checks, dict) else None
+    conversations = protection.get("required_conversation_resolution")
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
+            or reviews.get("require_last_push_approval") is not True
             or not isinstance(reviews.get("required_approving_review_count"), int)
             or isinstance(reviews["required_approving_review_count"], bool)
             or reviews["required_approving_review_count"] < 1
             or not isinstance(checks, dict)
             or checks.get("strict") is not True
-            or not isinstance(contexts, list)
-            or not isinstance(named_checks, list)
-            or not (contexts or named_checks)
-            or any(not isinstance(name, str) or not name.strip() for name in contexts)
-            or any(not isinstance(item, dict)
-                   or not isinstance(item.get("context"), str)
-                   or not item["context"].strip() for item in named_checks)
             or not isinstance(administrators, dict)
             or administrators.get("enabled") is not True
             or not isinstance(force_pushes, dict)
             or force_pushes.get("enabled") is not False
             or not isinstance(deletions, dict)
-            or deletions.get("enabled") is not False):
+            or deletions.get("enabled") is not False
+            or not isinstance(conversations, dict)
+            or conversations.get("enabled") is not True):
         raise Denied(
             "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
-            "strict required CI, administrator protection and deny forced pushes/deletions")
+            "last-push approval, conversation resolution, strict required CI, "
+            "administrator protection and deny forced pushes/deletions")
+    contexts, named_contract = require_issuer_bound_actions_checks(
+        checks, "origin main", SOURCE_POLICY_CHECK
+    )
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
         if (not isinstance(bypasses, dict)
@@ -401,17 +441,14 @@ def _require_strict_source_protection(protection):
                        or bypasses.get(category)
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
-    named_contract = tuple(sorted(
-        (item["context"], json.dumps(item.get("app_id"), sort_keys=True,
-                                     separators=(",", ":")))
-        for item in named_checks
-    ))
     return (
         reviews["require_code_owner_reviews"],
         reviews["dismiss_stale_reviews"],
+        reviews["require_last_push_approval"],
         reviews["required_approving_review_count"],
+        conversations["enabled"],
         checks["strict"],
-        tuple(sorted(contexts)),
+        contexts,
         named_contract,
         administrators["enabled"],
         force_pushes["enabled"],
