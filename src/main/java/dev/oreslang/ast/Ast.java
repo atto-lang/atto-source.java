@@ -670,7 +670,21 @@ public final class Ast {
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
+            ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt, LocalTypeDeclStmt { }
+
+    /** Compile-time declaration within a lexical callable/block scope.
+     *  Nominal named structs are not admitted by runtime lowering yet.
+     */
+    public record LocalTypeDeclStmt(String name, TypeRef target, boolean nominal) implements Stmt {
+        public LocalTypeDeclStmt {
+            if (name == null || name.isBlank() || target == null) {
+                throw new IllegalArgumentException("local type declaration needs a name and target");
+            }
+            if (nominal && !target.isStructType()) {
+                throw new IllegalArgumentException("named local struct requires a struct shape");
+            }
+        }
+    }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
@@ -1040,7 +1054,31 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr { }
+
+    /** Statically named local aggregate constructor; not a dynamic object allocation.
+     *  Deliberately retained until checked identity/layout and backend lowering exist.
+     */
+    public record LocalAggregateConstructExpr(
+            String typeName, List<Expr> positionalArguments,
+            List<ObjectField> namedArguments) implements Expr {
+        public LocalAggregateConstructExpr {
+            if (typeName == null || typeName.isBlank()) {
+                throw new IllegalArgumentException("aggregate constructor needs a named type");
+            }
+            positionalArguments = List.copyOf(positionalArguments);
+            namedArguments = List.copyOf(namedArguments);
+            if (!positionalArguments.isEmpty() && !namedArguments.isEmpty()) {
+                throw new IllegalArgumentException("cannot mix positional and named aggregate fields");
+            }
+            java.util.Set<String> names = new HashSet<>();
+            for (ObjectField field : namedArguments) {
+                if (!names.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
+                }
+            }
+        }
+    }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
