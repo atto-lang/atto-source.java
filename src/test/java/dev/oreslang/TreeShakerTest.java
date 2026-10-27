@@ -78,6 +78,54 @@ final class TreeShakerTest {
     }
 
     @Test
+    void optimizerRetainsEffectsSuspensionAndActorAdmissionMetadata() {
+        // This is a synthetic AST rewrite contract test, not semantic admission:
+        // checked effects remain closed in TypeChecker until their full lowering.
+        Ast.Program parsed = Parser.parse(
+                "pub fnc meaning() -> int { return 42; }");
+        Ast.FunctionDecl original = assertInstanceOf(Ast.FunctionDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        Ast.TypeRef error = new Ast.TypeRef("Error", List.of(), false);
+        Ast.EffectSpec effects = new Ast.EffectSpec(List.of(error), List.of(), List.of());
+
+        Ast.FunctionDecl function = new Ast.FunctionDecl(
+                original.name(), original.kind(), original.visibility(),
+                original.async(), original.suspends(), original.generator(),
+                original.structural(), original.nonLexical(), original.trapped(),
+                original.actorKind(), original.genericParameters(),
+                original.parameters(), original.returnType(),
+                original.annotations(), original.body(), original.genericSpecs(), effects);
+        Ast.MethodDecl method = new Ast.MethodDecl(
+                "handle", Ast.Visibility.PUBLIC, false, false,
+                false, true, false, null,
+                List.of(), List.of(), original.returnType(),
+                List.of(), original.body(), effects);
+        Ast.ActorConcurrency concurrency =
+                new Ast.ActorConcurrency(Ast.ActorTransport.HTTP, 3, 2);
+        Ast.ClassDecl actor = new Ast.ClassDecl(
+                "Worker", Ast.Visibility.PUBLIC, false,
+                Ast.ActorKind.PRIVATE, List.of(), List.of(), List.of(),
+                List.of(), null, List.of(method), concurrency);
+        Ast.Program synthetic = new Ast.Program(List.of(
+                new Ast.ModuleDecl(Parser.ROOT_MODULE, List.of(function, actor))));
+
+        TreeShaker.Result optimized =
+                TreeShaker.shake(synthetic, BuildOptions.library(Map.of()));
+        Ast.ModuleDecl root = optimized.program().modules().getFirst();
+        Ast.FunctionDecl outputFunction = root.declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast).findFirst().orElseThrow();
+        Ast.ClassDecl outputActor = root.declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast).findFirst().orElseThrow();
+
+        assertEquals(effects, outputFunction.effects());
+        assertEquals(concurrency, outputActor.actorConcurrency());
+        assertTrue(outputActor.methods().getFirst().suspends());
+        assertEquals(effects, outputActor.methods().getFirst().effects());
+    }
+
+    @Test
     void cliDefinesOverrideEnvironmentDefinesDeterministically() {
         Map<String, String> merged = BuildOptions.mergeDefines(
                 Map.of(
