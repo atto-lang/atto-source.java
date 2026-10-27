@@ -462,6 +462,8 @@ public final class IncrementalCompiler {
     private static String classMethodAbi(Ast.MethodDecl method) {
         StringBuilder out = new StringBuilder();
         if (method.async()) out.append("async ");
+        if (method.suspends()) out.append("suspend ");
+        if (method.generator()) out.append("gen* ");
         if (method.structural()) out.append("structural ");
         out.append(method.isStatic() ? " static-fnc " : " method ")
                 .append(method.name())
