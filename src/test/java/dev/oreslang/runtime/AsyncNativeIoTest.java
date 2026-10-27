@@ -34,7 +34,7 @@ class AsyncNativeIoTest {
               await stdio.println(await fs.exists("%s"));
               await stdio.println(await fs.read_text("%s"));
               await fs.remove("%s");
-              stdio.println(await fs.exists("%s"));
+              await stdio.println(await fs.exists("%s"));
               try { await fs.read_text("%s"); }
               catch (failure) { await stdio.println("missing-caught"); }
               try { await fs.write_text("/tmp/ores-async-denied.txt", "blocked"); }
