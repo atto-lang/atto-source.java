@@ -11,7 +11,6 @@ on:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'stdlib/**'
       - 'tools/stdlib-boundary-audit/**'
-      - 'tools/strict-nonblocking-io-audit.py'
       - 'docs/ASYNC_IO.md'
       - 'docs/STRICT_NONBLOCKING_STDLIB_IO.md'
       - 'src/test/java/dev/oreslang/runtime/StrictNonblockingStdlibIoTest.java'
@@ -27,7 +26,6 @@ on:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'stdlib/**'
       - 'tools/stdlib-boundary-audit/**'
-      - 'tools/strict-nonblocking-io-audit.py'
       - 'docs/ASYNC_IO.md'
       - 'docs/STRICT_NONBLOCKING_STDLIB_IO.md'
       - 'src/test/java/dev/oreslang/runtime/StrictNonblockingStdlibIoTest.java'
@@ -45,7 +43,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+      - name: Unit-test Rust strict-I/O audit
+        run: cargo test --manifest-path tools/stdlib-boundary-audit/Cargo.toml --locked
       - name: Reject blocking stdlib-reachable I/O
-        run: python3 tools/strict-nonblocking-io-audit.py
+        run: cargo run --quiet --release --manifest-path tools/stdlib-boundary-audit/Cargo.toml --locked -- stdlib .
       - name: Execute strict fail-closed stdlib regression
         run: mvn -q -Dtest=StrictNonblockingStdlibIoTest test
