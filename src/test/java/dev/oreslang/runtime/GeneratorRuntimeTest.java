@@ -373,4 +373,65 @@ final class GeneratorRuntimeTest {
             assertFalse(resumed.await(100, TimeUnit.MILLISECONDS));
         }
     }
+
+    @Test
+    void asyncCloseFutureWaitsForPhysicalProducerExit() throws Exception {
+        CountDownLatch leaving = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try { turn.run(); }
+            finally {
+                leaving.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try { allowExit.await(); break; }
+                    catch (InterruptedException ignored) { interrupted = true; }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        }); var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(1))) {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            OresFuture<Void> closing = generator.closeAsync();
+            try {
+                assertTrue(leaving.await(2, TimeUnit.SECONDS));
+                assertFalse(closing.isDone(),
+                        "AsyncIterator.close completed before physical producer exit");
+            } finally {
+                allowExit.countDown();
+            }
+            closing.get(2, TimeUnit.SECONDS);
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        }
+    }
+
+    @Test
+    void syncGeneratorReturnsOneStableIteratorView() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(1);
+                 emitter.emit(2);
+             })) {
+            var first = generator.iterator();
+            var second = generator.iterator();
+            assertSame(first, second);
+            assertEquals(1, first.next());
+            assertEquals(2, second.next());
+            assertFalse(first.hasNext());
+        }
+    }
+
+    @Test
+    void closeInvalidatesPrefetchedSyncYield() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(1);
+                 emitter.emit(2);
+             })) {
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            generator.close();
+            assertFalse(iterator.hasNext());
+            assertThrows(java.util.NoSuchElementException.class, iterator::next);
+        }
+    }
 }
