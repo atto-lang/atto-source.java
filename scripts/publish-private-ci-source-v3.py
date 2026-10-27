@@ -999,18 +999,18 @@ def require_exact_ref(repository, ref_name, expected_sha, expected_repository_id
 
 
 def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
-    expected_sha = valid_sha(expected_sha, "invalid rollback commit SHA")
+    expected_sha = valid_sha(expected_sha, "invalid cleanup commit SHA")
     actual = live_ref_sha(repository, ref_name, expected_repository_id)
     if actual is None:
         return False
     if actual != expected_sha:
-        raise Denied("carrier ref moved; refusing rollback")
+        raise Denied("carrier ref moved; refusing cleanup")
 
     result = _gh_ref_request(repository, ref_name, "DELETE")
     if result.returncode != 0 and not _is_http_status(result.stderr, 404):
-        raise Denied("carrier ref rollback failed")
+        raise Denied("carrier ref cleanup failed")
     if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
-        raise Denied("carrier ref still exists after rollback")
+        raise Denied("carrier ref still exists after cleanup")
     return True
 
 
@@ -1054,7 +1054,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     branch = "ci/oreslang-" + source_tree
     if live_ref_sha(repository, branch, contract["repository_id"]) is not None:
         raise Denied(
-            "carrier payload ref already exists; refusing overwrite or rollback"
+            "carrier payload ref already exists; refusing overwrite of pre-existing ref"
         )
     handoff_nonce = new_handoff_nonce()
 
