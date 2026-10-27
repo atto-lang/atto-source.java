@@ -143,41 +143,59 @@ public final class OresProjectConfig {
     private static final int MAX_MANIFEST_BYTES = 65_536;
 
     private static String readManifestSnapshot(Path manifest) throws IOException {
+        BasicFileAttributes before = Files.readAttributes(
+                manifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!before.isRegularFile() || before.isSymbolicLink()) {
+            throw new IllegalArgumentException(
+                    "project manifest must remain a regular non-symlink file: " + manifest);
+        }
+        if (before.size() < 0 || before.size() > MAX_MANIFEST_BYTES) {
+            throw new IllegalArgumentException("project manifest exceeds 64 KiB: " + manifest);
+        }
+
+        ByteBuffer bytes = ByteBuffer.allocate(MAX_MANIFEST_BYTES + 1);
         try (var channel = Files.newByteChannel(
                 manifest,
                 java.util.Set.<OpenOption>of(
                         StandardOpenOption.READ,
                         LinkOption.NOFOLLOW_LINKS))) {
-            long initialSize = channel.size();
-            if (initialSize > MAX_MANIFEST_BYTES) {
-                throw new IllegalArgumentException("project manifest exceeds 64 KiB: " + manifest);
-            }
-
-            ByteBuffer bytes = ByteBuffer.allocate(MAX_MANIFEST_BYTES + 1);
             while (bytes.hasRemaining()) {
                 int count = channel.read(bytes);
                 if (count == -1) break;
                 if (count == 0) throw new IOException("project manifest read made no progress");
             }
-            if (bytes.position() > MAX_MANIFEST_BYTES) {
-                throw new IllegalArgumentException("project manifest exceeds 64 KiB: " + manifest);
-            }
-            if (channel.size() != bytes.position()) {
-                throw new IOException("project manifest changed while being read: " + manifest);
-            }
+        }
 
-            bytes.flip();
-            try {
-                return StandardCharsets.UTF_8.newDecoder()
-                        .onMalformedInput(CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(CodingErrorAction.REPORT)
-                        .decode(bytes)
-                        .toString();
-            } catch (CharacterCodingException invalid) {
-                throw new IllegalArgumentException(
-                        "project manifest requires valid UTF-8: " + manifest,
-                        invalid);
-            }
+        if (bytes.position() > MAX_MANIFEST_BYTES) {
+            throw new IllegalArgumentException("project manifest exceeds 64 KiB: " + manifest);
+        }
+
+        BasicFileAttributes after = Files.readAttributes(
+                manifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        Object beforeKey = before.fileKey();
+        Object afterKey = after.fileKey();
+        if (!after.isRegularFile()
+                || after.isSymbolicLink()
+                || (beforeKey != null && afterKey != null && !beforeKey.equals(afterKey))
+                || before.size() != after.size()
+                || bytes.position() != before.size()
+                || !before.lastModifiedTime().equals(after.lastModifiedTime())
+                || !before.creationTime().equals(after.creationTime())) {
+            throw new IllegalArgumentException(
+                    "project manifest changed during bounded snapshot: " + manifest);
+        }
+
+        bytes.flip();
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(bytes)
+                    .toString();
+        } catch (CharacterCodingException invalid) {
+            throw new IllegalArgumentException(
+                    "project manifest requires valid UTF-8: " + manifest,
+                    invalid);
         }
     }
 
