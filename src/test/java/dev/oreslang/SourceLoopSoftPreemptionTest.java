@@ -144,6 +144,67 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void guardedSourceHelperRejectsBeforeEvaluatingEffectfulArguments()
+            throws Exception {
+        assertGuardedCallRejectedWithoutOutput("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                fnc effectful_argument(): int {
+                  stdio.stdout.write("ILLEGAL_ARGUMENT_COMMITTED");
+                  return 4096;
+                }
+                fnc count_in_helper(n: int): int {
+                  let count = 0;
+                  for (let i = 0; i < n; i = i + 1) do
+                    count = count + 1;
+                  done
+                  return count;
+                }
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  val int answer = count_in_helper(effectful_argument());
+                  guard.release();
+                  stdio.stdout.write(answer);
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void guardedSourceMethodRejectsBeforeEvaluatingEffectfulArguments()
+            throws Exception {
+        assertGuardedCallRejectedWithoutOutput("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                define class Calculator as
+                  count_in_helper(n: int): int {
+                    let count = 0;
+                    for (let i = 0; i < n; i = i + 1) do
+                      count = count + 1;
+                    done
+                    return count;
+                  }
+                end
+                fnc effectful_argument(): int {
+                  stdio.stdout.write("ILLEGAL_MEMBER_ARGUMENT_COMMITTED");
+                  return 4096;
+                }
+                pub async routine main(): void {
+                  val Calculator calculator = new Calculator();
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  val int answer = calculator.count_in_helper(effectful_argument());
+                  guard.release();
+                  stdio.stdout.write(answer);
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void dynamicCallbackInNestedExpressionCannotRunUnderLiveMutexGuard()
             throws Exception {
         // This must be caught by the synchronous eval(CallExpr) path too:
@@ -767,6 +828,26 @@ final class SourceLoopSoftPreemptionTest {
         assertTrue(output.startsWith("4000|"), output);
         assertTrue(Long.parseLong(output.substring("4000|".length())) > 0,
                 "while must lower to the same resumable budgeted backedge");
+    }
+
+    private static void assertGuardedCallRejectedWithoutOutput(String code)
+            throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, code, "guarded-argument-preflight.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        RuntimeException rejected;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            rejected = assertThrows(RuntimeException.class, () -> context.eval(source));
+        }
+        assertTrue(rejected.getMessage().contains("MutexGuard"),
+                "the pre-invocation no-yield gate must reject the call: " + rejected);
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "a rejected nested source call evaluated an effectful argument");
     }
 
     private static String run(String sourceText) throws Exception {
