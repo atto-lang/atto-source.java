@@ -140,6 +140,27 @@ column element. Generating an AoS mirror, implicit whole-table transpose,
 reflective property access, runtime macros, or an untyped fallback is
 not permitted.
 
+### Atomic compound indexed operations
+
+A generated `rows[i].field += expression` must never be implemented as
+separate `getAt` and `setAt` calls. Resolve the receiver and index once,
+then use a **single** verified, non-suspending read-modify-write transaction
+that keeps the current row, field loan state, and column access synchronized
+for the entire mutation. The value expression must be side-effect/effect
+checked and evaluated with the language's specified order. If its effects
+cannot be proven to fit this atomic transaction, reject rather than secretly
+reorder evaluation or reselect a different row.
+
+The Java host reference now stages package-private
+`InvertedColumnStore.transformAt(long, column, verifiedTransform)`:
+the callback sees only a detached scalar or copied opaque record payload,
+nested store access taints the transaction (even if the exception is
+swallowed), invalid field values/throws do not publish any write, and
+`finally` releases the transform guard after every thrown `Throwable`.
+This is **not** permission for arbitrary guest closures to run under the
+monitor, block scheduler threads, perform I/O or cross await/Task boundaries.
+Full guest code generation and ownership proofs remain disabled.
+
 ## Borrow and concurrency rules
 
 A column view is zero-copy and tied to its owning store; compiler-enforced, nonescaping lifetime is mandatory. Read loans on a field may coexist; a write loan excludes all other same-field access. Disjoint columns may have independent write loans. Structural changes (push, erase, reorder, reserve/reallocate, close, ownership transfer) require quiescence across *all* columns; no suspension or `await` may extend an unsafe exclusive loan without an explicit proof. A raw host-language `span` must not escape its loan; the compiler is responsible for enforcing this when lowered to Oreslang.
