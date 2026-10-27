@@ -85,6 +85,49 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void nestedCpuHelperCannotStartUnderLiveMutexGuard() throws Exception {
+        // A synchronous helper can contain an implicit safepoint. Refuse
+        // its Task admission BEFORE invoking the source body, so an invalid
+        // call cannot execute arbitrary guest effects or take a guard loan.
+        String sourceText = """
+                define class Counter as
+                  pub let int value = 0;
+                end
+                fnc count_in_helper(n: int): int {
+                  stdio.stdout.write("ILLEGAL_CHILD_STARTED");
+                  let count = 0;
+                  for (let i = 0; i < n; i = i + 1) do
+                    count = count + 1;
+                  done
+                  return count;
+                }
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  let answer = count_in_helper(4096);
+                  guard.release();
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, sourceText, "nested-cpu-guard.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        RuntimeException rejected;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            rejected = assertThrows(RuntimeException.class, () -> context.eval(source));
+        }
+        assertTrue(rejected.getMessage().contains("MutexGuard"),
+                "implicit nested task must be denied under a live guard: " + rejected);
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "rejected nested source callable executed a guest side effect");
+    }
+
+    @Test
     void synchronousReceiveHelperLoopPreservesOneLogicalMessageAndCooperates()
             throws Exception {
         // A nested plain synchronous function must carry its heap-owned
