@@ -21,8 +21,9 @@ fails closed until the source policy is reviewed again.
 V3 requires **protected source `main` for every private-source export**.
 If GitHub reports source `main protected: true`, V3 delegates to the legacy
 protected-origin verifier. It requires CODEOWNER review, stale-review dismissal,
-at least one approval, strict non-empty required status checks, administrator
-enforcement, no review bypasses, no force pushes, and no branch deletion.
+at least one approval, GitHub last-push approval independence, strict non-empty
+required status checks, administrator enforcement, no review bypasses, no force
+pushes, and no branch deletion.
 
 There is deliberately no review-attested fallback for the source repository.
 A reviewed governance PR, CODEOWNERS text, or successful source-free carrier
@@ -32,9 +33,11 @@ private export is denied.
 
 Carrier `main` has a separate fail-closed choice: the unprotected fallback
 is bound by the **carrier contract**, not by an implicit trusted branch. If the
-carrier reports `protected: true`, V3 requires CODEOWNER review, stale-review
-dismissal, at least one approval, administrator enforcement, no review
-bypasses, no force pushes, no deletion, and the exact security CODEOWNERS file.
+carrier reports `protected: true`, V3 applies the same strict protection
+contract as the source authority: CODEOWNER review, stale-review dismissal,
+at least one approval, GitHub last-push approval independence, strict non-empty
+required status checks, administrator enforcement, no review bypasses, no force
+pushes, no deletion, and the exact security CODEOWNERS file.
 If those private-repository protections are unavailable, the protected source
 contract must include an exact positive `review_pr`. That PR must be a
 same-repository PR merged to carrier `main`, authored by an account other than
