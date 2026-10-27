@@ -11126,51 +11126,75 @@ public final class OresEvalRootNode extends RootNode {
 
     private record FileSystemFacade(OresContext context) {
         private Object readText(List<Object> args) {
-            return NativeIo.readText(context, requireStringArg(args, "fs.read_text"));
+            String path = requireStringArg(args, "fs.read_text");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.READ,
+                    "fs.read_text", () -> NativeIo.readText(context, path));
         }
         private Object writeText(List<Object> args) {
             requireTwo(args, "fs.write_text");
-            NativeIo.writeText(
-                    context,
-                    requireString(args.get(0), "fs.write_text path"),
-                    requireString(args.get(1), "fs.write_text value"));
-            return null;
+            String path = requireString(args.get(0), "fs.write_text path");
+            String value = requireString(args.get(1), "fs.write_text value");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.WRITE,
+                    "fs.write_text", () -> {
+                        NativeIo.writeText(context, path, value);
+                        return null;
+                    });
         }
         private Object writeTextAtomic(List<Object> args) {
             requireTwo(args, "fs.write_text_atomic");
-            NativeIo.writeTextAtomic(
-                    context,
-                    requireString(args.get(0), "fs.write_text_atomic path"),
-                    requireString(args.get(1), "fs.write_text_atomic value"));
-            return null;
+            String path = requireString(args.get(0), "fs.write_text_atomic path");
+            String value = requireString(args.get(1), "fs.write_text_atomic value");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.WRITE,
+                    "fs.write_text_atomic", () -> {
+                        NativeIo.writeTextAtomic(context, path, value);
+                        return null;
+                    });
         }
         private Object appendText(List<Object> args) {
             requireTwo(args, "fs.append_text");
-            NativeIo.appendText(
-                    context,
-                    requireString(args.get(0), "fs.append_text path"),
-                    requireString(args.get(1), "fs.append_text value"));
-            return null;
+            String path = requireString(args.get(0), "fs.append_text path");
+            String value = requireString(args.get(1), "fs.append_text value");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.WRITE,
+                    "fs.append_text", () -> {
+                        NativeIo.appendText(context, path, value);
+                        return null;
+                    });
         }
         private Object exists(List<Object> args) {
-            return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
+            String path = requireStringArg(args, "fs.exists");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.READ,
+                    "fs.exists", () -> NativeIo.exists(context, path));
         }
         private Object listDir(List<Object> args) {
-            return NativeIo.listDir(context, requireStringArg(args, "fs.list_dir"));
+            String path = requireStringArg(args, "fs.list_dir");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.READ,
+                    "fs.list_dir", () -> NativeIo.listDir(context, path));
         }
         private Object isDir(List<Object> args) {
-            return NativeIo.isDir(context, requireStringArg(args, "fs.is_dir"));
+            String path = requireStringArg(args, "fs.is_dir");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.READ,
+                    "fs.is_dir", () -> NativeIo.isDir(context, path));
         }
         private Object isSymlink(List<Object> args) {
-            return NativeIo.isSymlink(context, requireStringArg(args, "fs.is_symlink"));
+            String path = requireStringArg(args, "fs.is_symlink");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.READ,
+                    "fs.is_symlink", () -> NativeIo.isSymlink(context, path));
         }
         private Object remove(List<Object> args) {
-            NativeIo.remove(context, requireStringArg(args, "fs.remove"));
-            return null;
+            String path = requireStringArg(args, "fs.remove");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.WRITE,
+                    "fs.remove", () -> {
+                        NativeIo.remove(context, path);
+                        return null;
+                    });
         }
         private Object mkdirAll(List<Object> args) {
-            NativeIo.createDirectories(context, requireStringArg(args, "fs.mkdir_all"));
-            return null;
+            String path = requireStringArg(args, "fs.mkdir_all");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.WRITE,
+                    "fs.mkdir_all", () -> {
+                        NativeIo.createDirectories(context, path);
+                        return null;
+                    });
         }
     }
 
@@ -11179,23 +11203,27 @@ public final class OresEvalRootNode extends RootNode {
             requireTwo(args, "network.connect");
             String host = requireString(args.get(0), "network.connect host");
             Object portValue = args.get(1);
-            if (!(portValue instanceof Number number)) {
+            if (!(portValue instanceof Number number) || number.doubleValue() != number.intValue()) {
                 throw new IllegalArgumentException("network.connect port must be an integer");
             }
-            return NativeIo.connect(context, host, number.intValue());
+            int port = number.intValue();
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.NET,
+                    "network.connect", () -> NativeIo.connect(context, host, port));
         }
     }
 
     private record HttpFacade(OresContext context) {
         private Object getText(List<Object> args) {
-            return NativeIo.httpGetText(context, requireStringArg(args, "http.get_text"));
+            String url = requireStringArg(args, "http.get_text");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.NET,
+                    "http.get_text", () -> NativeIo.httpGetText(context, url));
         }
         private Object postText(List<Object> args) {
             requireTwo(args, "http.post_text");
-            return NativeIo.httpPostText(
-                    context,
-                    requireString(args.get(0), "http.post_text url"),
-                    requireString(args.get(1), "http.post_text body"));
+            String url = requireString(args.get(0), "http.post_text url");
+            String body = requireString(args.get(1), "http.post_text body");
+            return context.nativeIo().submit(context, RuntimePermissions.Permission.NET,
+                    "http.post_text", () -> NativeIo.httpPostText(context, url, body));
         }
     }
 
