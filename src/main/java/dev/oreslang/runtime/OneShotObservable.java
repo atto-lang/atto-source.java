@@ -25,6 +25,9 @@ public final class OneShotObservable<T> {
         }
     }
 
+    /** One terminal item is staged until a valid detach registration exists. */
+    private record TerminalSignal<V>(V value, Throwable failure, boolean cancelled) { }
+
     private final OresFuture<T> producer;
     private final boolean eventOnly;
     private final AtomicBoolean claimed = new AtomicBoolean();
@@ -72,39 +75,61 @@ public final class OneShotObservable<T> {
             if (active != null) active.detach();
         });
 
+        // A settled producer may execute the runtime callback inside the
+        // subscribe() call, BEFORE it returns an unsubscribe token. Stage
+        // exactly one terminal signal; publish only after token admission.
+        AtomicReference<TerminalSignal<T>> staged = new AtomicReference<>();
+        AtomicBoolean registrationValid = new AtomicBoolean();
+        Runnable deliver = () -> {
+            if (!registrationValid.get()) return;
+            TerminalSignal<T> terminal = staged.getAndSet(null);
+            if (terminal == null) return;
+            try {
+                if (terminal.cancelled()) {
+                    reduction.cancel(false); // authenticated producer CANCELLED
+                } else if (terminal.failure() != null) {
+                    reduction.failFromRuntime(OresFuture.unwrap(terminal.failure()));
+                } else if (mode == Mode.FIRST) {
+                    @SuppressWarnings("unchecked")
+                    R option = (R) ((eventOnly || terminal.value() == null)
+                            ? Optional.<T>empty() : Optional.of(terminal.value()));
+                    reduction.completeFromRuntime(option);
+                } else if (eventOnly || terminal.value() == null) {
+                    reduction.failFromRuntime(new EmptyObservableError());
+                } else {
+                    @SuppressWarnings("unchecked")
+                    R item = (R) terminal.value();
+                    reduction.completeFromRuntime(item);
+                }
+            } finally {
+                OresFuture.RuntimeWaiterRegistration<T> active =
+                        registration.getAndSet(null);
+                if (active != null) active.detach();
+            }
+        };
+
         final OresFuture.RuntimeWaiterRegistration<T> subscribed;
         try {
             subscribed = producer.whenCompleteRuntimeCancellable((value, failure) -> {
-                try {
-                    if (producer.isCancelled()) {
-                        reduction.cancel(false); // authenticated CANCELLED
-                    } else if (failure != null) {
-                        reduction.failFromRuntime(OresFuture.unwrap(failure));
-                    } else if (mode == Mode.FIRST) {
-                        @SuppressWarnings("unchecked")
-                        R option = (R) ((eventOnly || value == null)
-                                ? Optional.<T>empty() : Optional.of(value));
-                        reduction.completeFromRuntime(option);
-                    } else if (eventOnly || value == null) {
-                        reduction.failFromRuntime(new EmptyObservableError());
-                    } else {
-                        @SuppressWarnings("unchecked")
-                        R item = (R) value;
-                        reduction.completeFromRuntime(item);
-                    }
-                } finally {
-                    OresFuture.RuntimeWaiterRegistration<T> active =
-                            registration.getAndSet(null);
-                    if (active != null) active.detach();
-                }
+                staged.compareAndSet(null,
+                        new TerminalSignal<>(value, failure, producer.isCancelled()));
+                deliver.run();
             });
+            if (subscribed == null) {
+                throw new IllegalStateException(
+                        "one-shot Observable registration returned no detach token");
+            }
         } catch (RuntimeException | Error registrationFailure) {
+            staged.set(null);
+            // An invalid subscription cannot publish provisional success.
+            // The checked-in runtime always returns a token when it returns
+            // normally; other provider adapters must prove their own cleanup.
             reduction.failFromRuntime(registrationFailure);
             return reduction;
         }
         registration.set(subscribed);
-        // An already-terminal producer can synchronously run its runtime-only
-        // callback before subscribe returns a registration token.
+        registrationValid.set(true);
+        deliver.run();
         if (reduction.isDone()) {
             OresFuture.RuntimeWaiterRegistration<T> active =
                     registration.getAndSet(null);
