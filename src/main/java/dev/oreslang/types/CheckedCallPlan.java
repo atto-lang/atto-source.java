@@ -199,6 +199,20 @@ public record CheckedCallPlan(
         invalidate(callSite);
     }
 
+    /**
+     * Ownership validation uses already-published type proofs. Track each
+     * consumed site without revoking the proof it must verify; a failed
+     * ownership pass will revoke every site it actually inspected.
+     */
+    public static synchronized void trackValidationSite(Ast.Expr callSite) {
+        Objects.requireNonNull(callSite, "checked call site");
+        for (ValidationScope scope = ACTIVE_VALIDATION.get();
+                scope != null;
+                scope = scope.parent) {
+            scope.visited.add(callSite);
+        }
+    }
+
     public static synchronized void invalidate(Ast.Expr callSite) {
         Objects.requireNonNull(callSite, "checked call site");
         expungeCheckedCallSites();
