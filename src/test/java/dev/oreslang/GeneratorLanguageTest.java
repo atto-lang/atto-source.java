@@ -597,6 +597,38 @@ final class GeneratorLanguageTest {
                 """));
     }
 
+    @Test
+    void legacyGeneratorCompatibilitySpellingsRemainExecutable() throws Exception {
+        assertEquals("42", run("""
+                fnc gen* first(): Iterator<int> {
+                  yield 10;
+                  return;
+                }
+                generator routine second(): int {
+                  yield 10;
+                  return;
+                }
+                routine generator* third(): Iterator<int> {
+                  yield 10;
+                  return;
+                }
+                async fnc gen* fourth(): AsyncIterator<int> {
+                  yield 12;
+                  return;
+                }
+                pub async routine main(): void {
+                  let int total = 0;
+                  for const value of first() { total = total + value; }
+                  for const value of second() { total = total + value; }
+                  for const value of third() { total = total + value; }
+                  for await const value of fourth() { total = total + value; }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "generators.ores")
