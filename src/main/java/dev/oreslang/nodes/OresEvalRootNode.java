@@ -4282,6 +4282,23 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MemberExpr member) {
+                    if (Ast.CheckedInvertedIndexTypes.lookup(member) != null) {
+                        // TypeChecker guarantees this bracket-field site has a
+                        // direct named receiver and a non-suspending scalar
+                        // index. The enclosing expression may still be running
+                        // on the resumable evaluator after a sibling await, so
+                        // use the same exact-site ownership-gated lowering
+                        // rather than falling through to generic IndexExpr.
+                        try {
+                            continuation.accept(
+                                    task,
+                                    readInvertedMember(member, env),
+                                    null);
+                        } catch (RuntimeException | Error failure) {
+                            continuation.accept(task, null, failure);
+                        }
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             member.receiver(),
