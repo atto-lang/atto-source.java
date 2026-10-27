@@ -4,6 +4,7 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.compiler.MacroExpansionPlanner;
+import dev.oreslang.compiler.MacroSourceUnitIdentity;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -228,7 +229,11 @@ public final class TypeChecker {
         rejectPendingMacroInvocations(program);
         rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
-        program = AnnotationExpander.expand(program);
+        // Annotation expansion rebuilds Program; retain the canonical file ID
+        // so subsequent compile-time passes cannot fall back to <memory>.
+        program = MacroSourceUnitIdentity.attach(
+                AnnotationExpander.expand(program),
+                MacroSourceUnitIdentity.unitId(program));
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectPendingMacroInvocations(program);
@@ -284,7 +289,11 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
-        program = AnnotationExpander.expand(program);
+        // Annotation expansion rebuilds Program; retain the canonical file ID
+        // so subsequent compile-time passes cannot fall back to <memory>.
+        program = MacroSourceUnitIdentity.attach(
+                AnnotationExpander.expand(program),
+                MacroSourceUnitIdentity.unitId(program));
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectPendingMacroInvocations(program);
