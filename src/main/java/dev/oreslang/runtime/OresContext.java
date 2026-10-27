@@ -42,10 +42,15 @@ public final class OresContext implements AutoCloseable {
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     private final java.util.Set<VmNioTcpListener> vmNioListeners = new java.util.HashSet<>();
+    private final java.util.Set<VmNioTcpConnection> vmNioOutboundConnections =
+            new java.util.HashSet<>();
+    private final java.util.Set<OresFuture<?>> vmNioConnecting = new java.util.HashSet<>();
     private final Object nioLifecycle = new Object();
     private boolean nioContextClosed;
     private int nioOpening;
     private static final int MAX_NIO_LISTENERS_PER_CONTEXT = 4;
+    private static final int MAX_NIO_OUTBOUND_CONNECTIONS_PER_CONTEXT = 64;
+    private static final int MAX_NIO_OPERATIONS_PER_OUTBOUND_CONNECTION = 16;
 
     public void requireNioOwner(VmNioTcpListener listener, String operation) {
         synchronized (nioLifecycle) {
@@ -57,6 +62,15 @@ public final class OresContext implements AutoCloseable {
 
     public void requireNioOwner(VmNioTcpListener.Connection connection, String operation) {
         requireNioOwner(connection.ownerListener(), operation);
+    }
+
+    public void requireNioOwner(VmNioTcpConnection connection, String operation) {
+        synchronized (nioLifecycle) {
+            if (nioContextClosed || !vmNioOutboundConnections.contains(connection))
+                throw new SecurityException(
+                        "foreign or closed outbound nonblocking TCP connection: " + operation);
+        }
+        requireCapability(IsolatePolicy.Capability.NETWORK, operation);
     }
 
     public VmNioTcpListener listenNioLoopback(
@@ -106,6 +120,134 @@ public final class OresContext implements AutoCloseable {
         return listener;
     }
 
+    public OresFuture<VmNioTcpConnection> connectNioIpv4(String host, int port) {
+        if (ActorRuntime.inActorExecution())
+            throw new SecurityException("nonblocking TCP connect is supervisor-only");
+        if (port < 1 || port > 65535)
+            return OresFuture.failed(new IllegalArgumentException("invalid TCP connect port"));
+
+        final java.net.InetAddress address;
+        try {
+            address = strictIpv4Literal(host);
+        } catch (IllegalArgumentException invalidHost) {
+            return OresFuture.failed(invalidHost);
+        }
+        requirePermission(RuntimePermissions.Permission.NET, host + ":" + port,
+                "network.connect_async");
+
+        synchronized (nioLifecycle) {
+            if (nioContextClosed)
+                return OresFuture.failed(new IllegalStateException(
+                        "cannot connect TCP in closed context"));
+            vmNioOutboundConnections.removeIf(VmNioTcpConnection::isTerminated);
+            if (vmNioOutboundConnections.size() + vmNioConnecting.size()
+                    >= MAX_NIO_OUTBOUND_CONNECTIONS_PER_CONTEXT)
+                return OresFuture.failed(new RejectedExecutionException(
+                        "outbound TCP connection capacity exhausted"));
+            ++nioOpening;
+        }
+
+        final OresFuture<java.nio.channels.SocketChannel> raw;
+        try {
+            raw = vm.nioReadiness().connectAsync(
+                    new java.net.InetSocketAddress(address, port));
+        } catch (RuntimeException | Error failure) {
+            synchronized (nioLifecycle) {
+                --nioOpening;
+                nioLifecycle.notifyAll();
+            }
+            throw failure;
+        }
+
+        final OresFuture<VmNioTcpConnection> exposed =
+                new OresFuture<>(() -> raw.cancel(false), () -> { });
+        synchronized (nioLifecycle) {
+            if (nioContextClosed) {
+                exposed.cancel(false);
+            }
+            vmNioConnecting.add(exposed);
+        }
+
+        raw.whenCompleteRuntime((socket, failure) -> {
+            VmNioTcpConnection connection = null;
+            try {
+                if (raw.isCancelled()) {
+                    if (!exposed.isCancelled()) exposed.cancel(false);
+                    return;
+                }
+                if (failure != null) {
+                    exposed.failFromRuntime(failure);
+                    return;
+                }
+                synchronized (nioLifecycle) {
+                    if (!nioContextClosed && !exposed.isDone()) {
+                        connection = new VmNioTcpConnection(
+                                vm.nioReadiness(),
+                                socket,
+                                MAX_NIO_OPERATIONS_PER_OUTBOUND_CONNECTION,
+                                () -> {
+                                    synchronized (nioLifecycle) {
+                                        vmNioOutboundConnections.removeIf(
+                                                VmNioTcpConnection::isTerminated);
+                                        nioLifecycle.notifyAll();
+                                    }
+                                });
+                        vmNioOutboundConnections.add(connection);
+                    }
+                }
+                if (connection == null) {
+                    try { socket.close(); } catch (java.io.IOException ignored) { }
+                    if (!exposed.isDone())
+                        exposed.failFromRuntime(new IllegalStateException(
+                                "TCP context closed during connect completion"));
+                } else if (!exposed.completeFromRuntime(connection)) {
+                    connection.close();
+                }
+            } finally {
+                synchronized (nioLifecycle) {
+                    vmNioConnecting.remove(exposed);
+                    --nioOpening;
+                    if (nioOpening < 0)
+                        throw new IllegalStateException("NIO admission counter underflow");
+                    nioLifecycle.notifyAll();
+                }
+            }
+        });
+        return exposed;
+    }
+
+    private static java.net.InetAddress strictIpv4Literal(String host) {
+        if (host == null) throw new IllegalArgumentException("TCP host cannot be null");
+        String[] parts = host.split("\\.", -1);
+        if (parts.length != 4)
+            throw new IllegalArgumentException(
+                    "network.connect_async requires a numeric IPv4 literal until async DNS is installed");
+        byte[] bytes = new byte[4];
+        for (int i = 0; i < parts.length; ++i) {
+            String part = parts[i];
+            if (part.isEmpty() || part.length() > 3
+                    || !part.chars().allMatch(Character::isDigit))
+                throw new IllegalArgumentException(
+                        "network.connect_async requires a canonical numeric IPv4 literal");
+            int value;
+            try { value = Integer.parseInt(part); }
+            catch (NumberFormatException malformed) {
+                throw new IllegalArgumentException("invalid IPv4 literal", malformed);
+            }
+            if (value < 0 || value > 255)
+                throw new IllegalArgumentException("IPv4 octet outside 0..255");
+            if (part.length() > 1 && part.charAt(0) == '0')
+                throw new IllegalArgumentException(
+                        "IPv4 octets with leading zeroes are not canonical");
+            bytes[i] = (byte) value;
+        }
+        try {
+            return java.net.InetAddress.getByAddress(bytes);
+        } catch (java.net.UnknownHostException impossible) {
+            throw new IllegalStateException("four-byte IPv4 address rejected", impossible);
+        }
+    }
+
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
@@ -138,7 +280,8 @@ public final class OresContext implements AutoCloseable {
                     || host instanceof OresFuture<?>
                     || host instanceof CompletionStage<?>
                     || host instanceof VmNioTcpListener
-                    || host instanceof VmNioTcpListener.Connection) {
+                    || host instanceof VmNioTcpListener.Connection
+                    || host instanceof VmNioTcpConnection) {
                 return host;
             }
         }
@@ -583,15 +726,24 @@ public final class OresContext implements AutoCloseable {
         QUARANTINED_CONTEXTS.add(this);
 
         final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        java.util.Set<OresFuture<?>> cancellingConnects;
+        java.util.Set<VmNioTcpConnection> closingOutbound;
         java.util.Set<VmNioTcpListener> closingVmNio;
         synchronized (nioLifecycle) {
             nioContextClosed = true;
+            cancellingConnects = java.util.Set.copyOf(vmNioConnecting);
+            closingOutbound = java.util.Set.copyOf(vmNioOutboundConnections);
+        }
+        for (OresFuture<?> pending : cancellingConnects) pending.cancel(false);
+        for (VmNioTcpConnection connection : closingOutbound) connection.close();
+
+        synchronized (nioLifecycle) {
             while (nioOpening > 0) {
                 long left = deadline - System.nanoTime();
                 if (left <= 0) {
                     output.flush();
                     throw new IllegalStateException(
-                            "Oreslang TCP listener bootstrap failed to quiesce");
+                            "Oreslang TCP admission failed to quiesce");
                 }
                 try {
                     TimeUnit.NANOSECONDS.timedWait(nioLifecycle, left);
@@ -599,7 +751,7 @@ public final class OresContext implements AutoCloseable {
                     Thread.currentThread().interrupt();
                     output.flush();
                     throw new IllegalStateException(
-                            "interrupted while fencing Oreslang TCP listener bootstrap",
+                            "interrupted while fencing Oreslang TCP admission",
                             interrupted);
                 }
             }
@@ -626,6 +778,12 @@ public final class OresContext implements AutoCloseable {
         }
         synchronized (nioLifecycle) {
             vmNioListeners.removeIf(VmNioTcpListener::isTerminated);
+            vmNioOutboundConnections.removeIf(VmNioTcpConnection::isTerminated);
+            if (!vmNioConnecting.isEmpty() || !vmNioOutboundConnections.isEmpty()) {
+                output.flush();
+                throw new IllegalStateException(
+                        "Oreslang outbound TCP resources did not physically retire");
+            }
         }
 
         try {
