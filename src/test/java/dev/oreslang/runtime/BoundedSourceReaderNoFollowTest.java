@@ -4,10 +4,17 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.net.StandardProtocolFamily;
+import java.net.UnixDomainSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.ServerSocketChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -59,6 +66,49 @@ final class BoundedSourceReaderNoFollowTest {
                 BoundedSourceReader.readPhysicalWithByteCount(physical);
         assertEquals(Files.readString(target), result.text());
         assertEquals(Files.size(target), result.byteCount());
+    }
+
+
+    @Test
+    void callerDanglingAliasFailsBeforePhysicalSnapshot() throws Exception {
+        Path dangling = temp.resolve("dangling.ores");
+        requireSymlink(dangling, temp.resolve("missing.ores"));
+        assertThrows(IOException.class,
+                () -> BoundedSourceReader.readWithByteCount(dangling));
+    }
+
+    @Test
+    void physicalSnapshotRejectsDirectory() throws Exception {
+        Path directory = Files.createDirectories(temp.resolve("directory.ores"));
+        assertRejectedPhysical(directory);
+    }
+
+    @Test
+    void physicalSnapshotRejectsUnixSocketSpecialNodeBeforeOpen() throws Exception {
+        Path socket = temp.resolve("source.sock");
+        try (ServerSocketChannel server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+            try {
+                server.bind(UnixDomainSocketAddress.of(socket));
+            } catch (UnsupportedOperationException | IOException unavailable) {
+                assumeTrue(false, "Unix-domain socket fixture unavailable: " + unavailable);
+            }
+            assertRejectedPhysical(socket);
+        } catch (UnsupportedOperationException unavailable) {
+            assumeTrue(false, "Unix-domain sockets unavailable: " + unavailable);
+        }
+    }
+
+    @Test
+    void physicalSnapshotRejectsOversizedRegularFileBeforeAllocation() throws Exception {
+        Path oversized = temp.resolve("oversized.ores");
+        try (var channel = Files.newByteChannel(
+                oversized,
+                Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
+            channel.position(BoundedSourceReader.MAX_BYTES);
+            channel.write(ByteBuffer.wrap(new byte[] {1}));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> BoundedSourceReader.readPhysicalWithByteCount(oversized.toRealPath()));
     }
 
     private static void assertRejectedPhysical(Path path) {
