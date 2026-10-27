@@ -2408,6 +2408,9 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
+            if (name.name().equals(Parser.PKG_ROOT_NAMESPACE)) {
+                throw new IllegalArgumentException("pkg is a qualification-only compiler namespace");
+            }
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
@@ -2981,15 +2984,18 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
-                    && env.lookup(namespace.name()) == null
-                    && modules.containsKey(namespace.name())) {
-                rejectUnimportedModuleNamespace(namespace.name());
+                    && (namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                        || env.lookup(namespace.name()) == null)
+                    && modules.containsKey(namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                            ? Parser.ROOT_MODULE : namespace.name())) {
+                boolean pkgRoot = namespace.name().equals(Parser.PKG_ROOT_NAMESPACE);
+                String moduleName = pkgRoot ? Parser.ROOT_MODULE : namespace.name();
+                rejectUnimportedModuleNamespace(moduleName);
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
-                        "function " + namespace.name() + "." + qualifiedCall.member());
+                        "function " + (pkgRoot ? "pkg::" : moduleName + ".") + qualifiedCall.member());
                 Ast.FunctionDecl target = findQualifiedFunction(
-                        namespace.name() + "." + qualifiedCall.member(),
-                        arity);
+                        moduleName + "." + qualifiedCall.member(), arity);
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
@@ -3013,6 +3019,11 @@ public final class TypeChecker {
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                }
+                if (pkgRoot) {
+                    throw new IllegalArgumentException(
+                            "pkg::" + qualifiedCall.member()
+                                    + " has no file-root function/routine at arity " + arity);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
@@ -3798,11 +3809,15 @@ public final class TypeChecker {
                                 + " must be called so arity can select the scalar or list overload");
             }
             if (member.receiver() instanceof Ast.NameExpr namespace
-                    && env.lookup(namespace.name()) == null
-                    && modules.containsKey(namespace.name())) {
-                rejectUnimportedModuleNamespace(namespace.name());
+                    && (namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                        || env.lookup(namespace.name()) == null)
+                    && modules.containsKey(namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                            ? Parser.ROOT_MODULE : namespace.name())) {
+                boolean pkgRoot = namespace.name().equals(Parser.PKG_ROOT_NAMESPACE);
+                String moduleName = pkgRoot ? Parser.ROOT_MODULE : namespace.name();
+                rejectUnimportedModuleNamespace(moduleName);
                 Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
-                        namespace.name() + "." + member.member());
+                        moduleName + "." + member.member());
                 if (moduleFunction != null) {
                     if (moduleFunction.kind() == Ast.CallableKind.ROUTINE) {
                         throw new IllegalArgumentException("routine '" + namespace.name() + "." + member.member()
@@ -3815,6 +3830,10 @@ public final class TypeChecker {
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
                     return trapFunctionType(moduleFunction, Set.of(), null);
+                }
+                if (pkgRoot) {
+                    throw new IllegalArgumentException(
+                            "pkg::" + member.member() + " is not a file-root fnc value");
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
