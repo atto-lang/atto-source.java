@@ -82,7 +82,6 @@ final class InvertedColumnStoreTest {
         }
     }
 
-final class InvertedColumnStoreTest {
     @Test
     void injectedHandleAllocationFailureCannotPublishReusedRow() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
