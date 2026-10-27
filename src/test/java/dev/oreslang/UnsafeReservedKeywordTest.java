@@ -103,6 +103,24 @@ final class UnsafeReservedKeywordTest {
     }
 
     @Test
+    void crAndCrlfProduceCorrectUnsafeTokenLocations() {
+        for (String newline : List.of("\r", "\r\n", "\n")) {
+            for (String prefix : List.of("// comment", "/* comment */",
+                    "`literal text`", "\"literal text\"")) {
+                var tokens = new Lexer(prefix + newline + "unsafe").scan();
+                Token unsafe = tokens.stream().filter(t -> t.type() == Token.Type.UNSAFE)
+                        .findFirst().orElseThrow();
+                assertEquals(2, unsafe.line(), prefix + " newline=" + newline);
+                assertEquals(1, unsafe.column(), prefix + " newline=" + newline);
+            }
+            var inBlock = new Lexer("/* one" + newline + "two */ unsafe").scan();
+            Token unsafe = inBlock.stream().filter(t -> t.type() == Token.Type.UNSAFE)
+                    .findFirst().orElseThrow();
+            assertEquals(2, unsafe.line());
+        }
+    }
+
+    @Test
     void doesNotFlagOrdinaryTextCommentsOrSymbolLiterals() {
         assertDoesNotThrow(() -> Parser.parse(
                 "fnc safe(): string { /* unsafe */ return \"unsafe\"; }"));
