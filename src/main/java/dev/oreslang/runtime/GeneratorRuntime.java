@@ -50,6 +50,7 @@ public final class GeneratorRuntime {
 
     public static final class Generator<T> implements Iterable<T>, AutoCloseable {
         private final Engine<T> engine;
+        private final AtomicBoolean pullActive = new AtomicBoolean();
 
         private Generator(Engine<T> engine) {
             this.engine = engine;
@@ -61,7 +62,15 @@ public final class GeneratorRuntime {
                         "synchronous generator iteration cannot park an actor carrier; "
                                 + "use an async generator and 'for await'");
             }
-            return engine.next();
+            if (!pullActive.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "generator already has an active pull");
+            }
+            try {
+                return engine.next();
+            } finally {
+                pullActive.set(false);
+            }
         }
 
         @Override
@@ -128,7 +137,19 @@ public final class GeneratorRuntime {
             // An async pull always returns an OresFuture, including when
             // scheduler admission itself rejects before any guest work starts.
             try {
-                OresFuture<Step<T>> pull = runtime.submit(engine::next);
+                OresFuture<Step<T>> pull = runtime.submit(() -> {
+                    try {
+                        return engine.next();
+                    } finally {
+                        // Clear before the task publishes its result so a
+                        // consumer that immediately issues the next pull cannot
+                        // observe a stale single-flight reservation.
+                        pullActive.set(false);
+                    }
+                });
+                // Admission/cancellation can settle without running the task
+                // body. This is a fallback for those paths; ordinary success
+                // clears in the task finally before result publication.
                 pull.whenCompleteRuntime((value, failure) -> pullActive.set(false));
                 return pull;
             } catch (java.util.concurrent.RejectedExecutionException rejected) {
