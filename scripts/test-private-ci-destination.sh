@@ -21,7 +21,7 @@ if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
 fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
-printf '%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_EXTRA_LINE:-}"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_ARCHIVED:-false}" "${MOCK_DISABLED:-false}" "${MOCK_FORK:-false}" "${MOCK_EXTRA_FIELD:-}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 mkdir -p "$work/fixture/source"
 printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
@@ -52,6 +52,9 @@ expect_fail trusted/ci
 unset MOCK_REPOSITORY_ID
 printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
 expect_fail trusted/ci
+printf 'trusted/ci 246810\nother/repo 246810\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
@@ -79,6 +82,18 @@ export MOCK_PRIVATE_FLAG=true MOCK_NAME=other/repo
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_NAME
+for flag in MOCK_ARCHIVED MOCK_DISABLED MOCK_FORK; do
+  export "$flag=true"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  export "$flag=null"
+  expect_fail trusted/ci
+  unset "$flag"
+done
+export MOCK_EXTRA_FIELD=$'\textra'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_EXTRA_FIELD
 expect_fail trusted/ci-extra
 expect_fail other/repo
 expect_fail trusted
@@ -111,4 +126,4 @@ mv "$work/fixture/.github" "$work/approved-policy-directory"
 ln -s "$work/approved-policy-directory" "$work/fixture/.github"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
-printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
+printf 'PASS: private identity, active/non-fork destination, unique repository IDs, strict API metadata, and no child execution\n'
