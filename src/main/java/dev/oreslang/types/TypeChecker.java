@@ -2924,6 +2924,7 @@ public final class TypeChecker {
             // Lambda scopes without a captured self cannot use this sugar.
             if (call.origin() == Ast.CallOrigin.DIRECT
                     && call.callee() instanceof Ast.NameExpr implicit
+                    && !isBooleanIntrinsicName(implicit.name())
                     && env.lookup(implicit.name()) == null) {
                 Env.Binding receiverBinding = env.lookup("self");
                 if (receiverBinding != null) {
