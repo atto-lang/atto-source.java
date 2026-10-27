@@ -25,7 +25,7 @@ fnc placeholder_skip_body(): TestOutcome {
   return pass();
 }
 
-pub routine main(): void {
+pub async routine main(): void {
   val TestSuite suite = new TestSuite(
     "core",
     arr[
@@ -37,7 +37,7 @@ pub routine main(): void {
   );
 
   val TestOptions options = new TestOptions("", false, true);
-  val RunSummary summary = run_suite(&suite, &options);
+  val RunSummary summary = await run_suite(&suite, &options);
   require_success(&summary);
   return;
 }
