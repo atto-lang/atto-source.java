@@ -664,7 +664,9 @@ public final class Parser {
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
-            if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
+            if (mods.generator && !mods.isStatic) {
+                throw error(peek(), "instance generator methods require continuation-owned receiver lifetime checking; use a static generator fnc for now");
+            }
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
@@ -672,7 +674,7 @@ public final class Parser {
                 if (explicitMethod) {
                     throw error(previous(), "static class functions use 'static fnc', not 'static method'");
                 }
-                if (!explicitFnc) {
+                if (!explicitFnc && !mods.generator) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
                 }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
@@ -1365,7 +1367,8 @@ public final class Parser {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
-        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
+        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract,
+                mods.async, mods.suspends, mods.generator, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
     }
 
