@@ -1,22 +1,8 @@
 name: Private CI destination policy self-test
 on:
+  # Always emit the required governance check so branch protection cannot be
+  # satisfied by an unrelated status or deadlock on path-filtered PRs.
   pull_request:
-    paths:
-      - 'scripts/check-private-ci-destination.sh'
-      - 'scripts/test-private-ci-destination.sh'
-      - 'scripts/test-private-ci-codeowners-contract.sh'
-      - 'scripts/run-in-private-ci-destination.sh'
-      - 'scripts/publish-private-ci-source.py'
-      - 'scripts/test-publish-private-ci-source-v3.py'
-      - 'scripts/publish-private-ci-source-v3.py'
-      - 'scripts/test-publish-private-ci-source.py'
-      - '.github/private-ci-approved-repositories.txt'
-      - '.github/private-ci-incident-dispositions.json'
-      - '.github/private-ci-carrier-contracts.json'
-      - '.github/CODEOWNERS'
-      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
-      - 'tools/verify-exact-source-tree.sh'
-      - 'tools/test-verify-exact-source-tree.sh'
   push:
     paths:
       - 'scripts/check-private-ci-destination.sh'
