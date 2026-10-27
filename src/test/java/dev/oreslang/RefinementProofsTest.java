@@ -25,7 +25,7 @@ final class RefinementProofsTest {
     @Test void additionSubtractionAndMultiplicationUseMathematicalBounds() {
         assertEquals(r(3, 7), r(1, 3).plus(r(2, 4)));
         assertEquals(r(-3, 1), r(1, 3).minus(r(2, 4)));
-        assertEquals(r(-8, 12), r(-2, 3).times(r(-4, 4)));
+        assertEquals(r(-12, 12), r(-2, 3).times(r(-4, 4)));
         assertThrows(IllegalArgumentException.class, () ->
                 r(Long.MAX_VALUE, Long.MAX_VALUE).plus(r(1, 1)));
         assertThrows(IllegalArgumentException.class, () ->
