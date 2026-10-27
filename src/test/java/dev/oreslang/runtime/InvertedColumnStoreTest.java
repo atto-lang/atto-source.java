@@ -11,6 +11,79 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class InvertedColumnStoreTest {
     @Test
+    void injectedReadLoanAllocationFailureDoesNotLeakReaderHold() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I32,
+                InvertedColumnStore.Kind.I64)) {
+            var row = store.push(11, 12L);
+            store.armAllocationFailureForTest(
+                    InvertedColumnStore.AllocationFailurePoint.BEFORE_COLUMN_LOAN_ISSUE);
+            assertThrows(OutOfMemoryError.class, () -> store.borrowRead(0));
+            // No read hold was published: the same column is immediately
+            // eligible for an exclusive loan, without cleanup of a ghost loan.
+            try (var exclusive = store.borrowWrite(0)) {
+                exclusive.set(0, 15);
+            }
+            assertEquals(15, store.get(row, 0));
+            store.reserve(store.capacity() + 4);
+            assertEquals(15, store.get(row, 0));
+            try (var read = store.borrowRead(0)) {
+                assertEquals(15, read.get(0));
+            }
+        }
+    }
+
+    @Test
+    void injectedWriteLoanAllocationFailureDoesNotLeakExclusiveHold() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I32,
+                InvertedColumnStore.Kind.I64)) {
+            var row = store.push(17, 21L);
+            store.armAllocationFailureForTest(
+                    InvertedColumnStore.AllocationFailurePoint.BEFORE_COLUMN_LOAN_ISSUE);
+            assertThrows(OutOfMemoryError.class, () -> store.borrowWrite(0));
+            // The failed exclusive-loan allocation must leave neither writer
+            // nor reader state behind, even while another field is borrowed.
+            try (var read = store.borrowRead(0);
+                 var unrelatedWrite = store.borrowWrite(1)) {
+                assertEquals(17, read.get(0));
+                unrelatedWrite.set(0, 23L);
+            }
+            try (var exclusive = store.borrowWrite(0)) {
+                exclusive.set(0, 19);
+            }
+            assertEquals(19, store.get(row, 0));
+            assertEquals(23L, store.get(row, 1));
+            store.reserve(store.capacity() + 3);
+            assertEquals(1, store.size());
+        }
+    }
+
+    @Test
+    void loanFailureInjectionIsOneShotAndDoesNotDisturbExistingLoans() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I32,
+                InvertedColumnStore.Kind.BOOL)) {
+            var row = store.push(4, true);
+            try (var prior = store.borrowRead(0)) {
+                store.armAllocationFailureForTest(
+                        InvertedColumnStore.AllocationFailurePoint.BEFORE_COLUMN_LOAN_ISSUE);
+                assertThrows(OutOfMemoryError.class, () -> store.borrowWrite(1));
+                assertThrows(IllegalStateException.class, () -> store.borrowWrite(0),
+                        "existing reader remains live");
+                try (var next = store.borrowWrite(1)) {
+                    next.set(0, false);
+                }
+                assertEquals(4, prior.get(0));
+            }
+            store.reserve(store.capacity() + 2);
+            assertEquals(false, store.get(row, 1));
+            assertEquals(4, store.get(row, 0));
+        }
+    }
+
+final class InvertedColumnStoreTest {
+    @Test
     void injectedHandleAllocationFailureCannotPublishReusedRow() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
             var deleted = store.push(11);
