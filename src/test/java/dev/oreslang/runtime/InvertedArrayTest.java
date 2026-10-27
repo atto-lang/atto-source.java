@@ -17,6 +17,59 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class InvertedArrayTest {
     @Test
+    void primitiveF64TransposeUpdatesAreAtomicWithoutGuestCallbacks()
+            throws InterruptedException {
+        try (var array = InvertedArray.fromClass(particle(), 0)) {
+            var first = array.pushValues(0.0, 2.0, 3.0, 4.0, false);
+            var second = array.pushValues(7.0, 8.0, 9.0, 10.0, true);
+            var x = array.bindField(array.schema().bindField("x"));
+            var ready = array.bindField(array.schema().bindField("ready"));
+
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Runnable increment = () -> {
+                try {
+                    for (int i = 0; i < 1000; ++i) x.addF64At(0, 1.0);
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            };
+            Thread a = new Thread(increment);
+            Thread b = new Thread(increment);
+            a.start();
+            b.start();
+            a.join();
+            b.join();
+            assertNull(failure.get());
+            assertEquals(2000.0, (Double) x.getAt(0));
+            assertEquals(7.0, (Double) x.getAt(1));
+
+            // Field-sensitive loans: disjoint column access remains valid,
+            // while an overlapping loan excludes direct compound mutation.
+            try (var writeOther = array.borrowWrite("ready")) {
+                x.addF64At(0, 3.0);
+                assertThrows(IllegalStateException.class,
+                        () -> ready.addF64At(0, 1.0));
+            }
+            try (var readX = array.borrowRead("x")) {
+                assertThrows(IllegalStateException.class, () -> x.addF64At(0, 1.0));
+                assertThrows(IllegalStateException.class, () -> x.addF64(first, 1.0));
+            }
+            assertThrows(IllegalArgumentException.class, () -> ready.addF64At(0, 1.0));
+            assertThrows(IndexOutOfBoundsException.class, () -> x.addF64At(-1, 1.0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> x.addF64At(Long.MAX_VALUE, 1.0));
+
+            array.eraseSwap(first);
+            x.addF64(second, 5.0); // logical handle remains stable after swap-delete
+            assertEquals(12.0, (Double) x.getAt(0));
+            assertEquals(12.0, (Double) x.get(second));
+            assertThrows(IllegalArgumentException.class, () -> x.addF64(first, 1.0));
+            assertThrows(IndexOutOfBoundsException.class, () -> x.addF64At(1, 1.0));
+        }
+    }
+
+    @Test
     void indexedFieldAstPlanRetainsExactExpressionsAndNominalBindings() {
         var schema = InvertedArray.Schema.fromClass(particle());
         var differentSchema = InvertedArray.Schema.fromClass(particle());
