@@ -163,11 +163,13 @@ final class BoundedDnsResolver
             while (true) {
                 if (closed.get() || cancelled.getAsBoolean()) {
                     resolution.cancel();
+                    resolution.retireIfQueued();
                     throw failure("DNS resolution cancelled", null);
                 }
                 long remaining = phaseDeadline - System.nanoTime();
                 if (remaining <= 0) {
                     resolution.cancel();
+                    resolution.retireIfQueued();
                     throw failure("DNS resolution deadline expired", null);
                 }
                 if (resolution.done.await(
@@ -178,6 +180,7 @@ final class BoundedDnsResolver
             }
         } catch (InterruptedException interrupted) {
             resolution.cancel();
+            resolution.retireIfQueued();
             Thread.currentThread().interrupt();
             throw failure(
                     "DNS resolution interrupted",
@@ -271,6 +274,12 @@ final class BoundedDnsResolver
             stale.set(true);
             Thread running = runner;
             if (running != null) running.interrupt();
+        }
+
+        void retireIfQueued() {
+            if (workers.remove(this)) {
+                retire();
+            }
         }
 
         void retire() {

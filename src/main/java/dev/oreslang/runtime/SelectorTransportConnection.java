@@ -8,7 +8,9 @@ import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
+import java.nio.channels.CancelledKeyException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
@@ -559,38 +561,55 @@ final class SelectorTransportConnection implements AutoCloseable {
                                 + " deadline expired");
             }
 
-            key.interestOps(operation);
-            long millis = Math.max(
-                    1L,
-                    Math.min(
-                            Integer.MAX_VALUE,
-                            (remaining + 999_999L)
-                                    / 1_000_000L));
-            int ready = selector.select(millis);
-            if (Thread.currentThread().isInterrupted()) {
-                throw new IOException(
-                        "pinned HTTP "
-                                + what
-                                + " interrupted");
-            }
-            if (ready == 0) continue;
-
-            boolean matched = false;
-            Iterator<SelectionKey> selected =
-                    selector.selectedKeys().iterator();
-            while (selected.hasNext()) {
-                SelectionKey candidate = selected.next();
-                selected.remove();
-                if (candidate == key
-                        && candidate.isValid()
-                        && (candidate.readyOps()
-                                & operation) != 0) {
-                    matched = true;
+            try {
+                key.interestOps(operation);
+                long millis = Math.max(
+                        1L,
+                        Math.min(
+                                Integer.MAX_VALUE,
+                                (remaining + 999_999L)
+                                        / 1_000_000L));
+                int ready = selector.select(millis);
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new IOException(
+                            "pinned HTTP "
+                                    + what
+                                    + " interrupted");
                 }
-            }
-            if (matched) {
-                key.interestOps(0);
-                return;
+                if (ready == 0) continue;
+
+                boolean matched = false;
+                Iterator<SelectionKey> selected =
+                        selector.selectedKeys().iterator();
+                while (selected.hasNext()) {
+                    SelectionKey candidate = selected.next();
+                    selected.remove();
+                    if (candidate == key
+                            && candidate.isValid()
+                            && (candidate.readyOps()
+                                    & operation) != 0) {
+                        matched = true;
+                    }
+                }
+                if (matched) {
+                    key.interestOps(0);
+                    return;
+                }
+            } catch (ClosedSelectorException
+                    | CancelledKeyException closedRace) {
+                if (closed.get()
+                        || !channel.isOpen()
+                        || !selector.isOpen()
+                        || !key.isValid()) {
+                    ClosedChannelException failure =
+                            new ClosedChannelException();
+                    failure.addSuppressed(closedRace);
+                    throw failure;
+                }
+                throw new IOException(
+                        "pinned HTTP selector state invalid during "
+                                + what,
+                        closedRace);
             }
         }
     }

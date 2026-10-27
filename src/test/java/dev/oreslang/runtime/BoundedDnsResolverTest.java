@@ -69,6 +69,66 @@ final class BoundedDnsResolverTest {
     }
 
     @Test
+    void timedOutQueuedLookupRetiresBeforeRunningLookupPhysicallyExits()
+            throws Exception {
+        AsyncNativeIo nativeIo = new AsyncNativeIo(8, 1, 8);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        OutboundEgressPolicy.Resolver delegate = host -> {
+            entered.countDown();
+            awaitIgnoringInterrupts(release);
+            return List.of(InetAddress.getByName("127.0.0.1"));
+        };
+        BoundedDnsResolver resolver = new BoundedDnsResolver(
+                nativeIo,
+                delegate,
+                Duration.ofMillis(150),
+                1,
+                1);
+
+        AtomicReference<Throwable> firstFailure =
+                new AtomicReference<>();
+        AtomicReference<Throwable> secondFailure =
+                new AtomicReference<>();
+        Thread first = resolveAsync(
+                resolver,
+                "running.example",
+                firstFailure);
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        Thread second = resolveAsync(
+                resolver,
+                "queued.example",
+                secondFailure);
+        awaitActive(resolver, 2);
+
+        second.join();
+        first.join();
+
+        assertInstanceOf(
+                UnknownHostException.class,
+                firstFailure.get());
+        assertInstanceOf(
+                UnknownHostException.class,
+                secondFailure.get());
+        assertEquals(
+                1,
+                resolver.activeResolutions(),
+                "queued timeout must retire immediately while the running resolver remains physical");
+        assertEquals(
+                1,
+                resolver.retiredResolutions(),
+                "only the queued resolver should have retired before release");
+
+        release.countDown();
+        awaitActive(resolver, 0);
+        assertEquals(2, resolver.retiredResolutions());
+
+        resolver.close();
+        nativeIo.close();
+    }
+
+    @Test
     void resolverQueueIsBoundedAndRejectedAdmissionRetiresItsLoan()
             throws Exception {
         AsyncNativeIo nativeIo = new AsyncNativeIo(8, 1, 8);
