@@ -17,6 +17,7 @@ on:
       - "src/main/java/dev/oreslang/compiler/OresCompiler.java"
       - "src/main/java/dev/oreslang/compiler/TreeShaker.java"
       - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
+      - "src/main/java/dev/oreslang/interop/MixedJavaCompiler.java"
       - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
       - "src/main/java/dev/oreslang/types/TypeChecker.java"
       - "src/test/java/dev/oreslang/ExplicitExportSyntaxTest.java"
