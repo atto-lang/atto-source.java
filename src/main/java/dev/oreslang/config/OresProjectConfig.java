@@ -392,16 +392,26 @@ public final class OresProjectConfig {
     }
 
     private static Optional<Path> canonicalRegularSource(Path candidate) {
+        BasicFileAttributes lexical;
         try {
-            BasicFileAttributes lexical = Files.readAttributes(
+            lexical = Files.readAttributes(
                     candidate, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-            if (lexical.isDirectory()) return Optional.empty();
-            if (!lexical.isRegularFile() && !lexical.isSymbolicLink()) {
-                throw new IllegalArgumentException(
-                        "filesystem import resolves through a non-regular source node: "
-                                + candidate);
-            }
+        } catch (NoSuchFileException missing) {
+            return Optional.empty();
+        } catch (IOException failure) {
+            throw new IllegalArgumentException(
+                    "cannot inspect filesystem source identity: " + candidate,
+                    failure);
+        }
 
+        if (lexical.isDirectory()) return Optional.empty();
+        if (!lexical.isRegularFile() && !lexical.isSymbolicLink()) {
+            throw new IllegalArgumentException(
+                    "filesystem import resolves through a non-regular source node: "
+                            + candidate);
+        }
+
+        try {
             Path physical = candidate.toRealPath();
             if (!Files.isRegularFile(physical, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException(
@@ -409,8 +419,6 @@ public final class OresProjectConfig {
                                 + candidate);
             }
             return Optional.of(physical);
-        } catch (NoSuchFileException missing) {
-            return Optional.empty();
         } catch (IOException failure) {
             throw new IllegalArgumentException(
                     "cannot establish canonical physical source identity: " + candidate,
