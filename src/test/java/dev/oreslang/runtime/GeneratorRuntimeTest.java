@@ -421,6 +421,65 @@ final class GeneratorRuntimeTest {
 
 
     @Test
+    void asyncCloseReceiptSurvivesConcurrentRuntimeShutdown() throws Exception {
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch allowCleanupExit = new CountDownLatch(1);
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            try {
+                emitter.emit(1);
+            } finally {
+                cleanupStarted.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        allowCleanupExit.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        });
+
+        try {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            OresFuture<Void> closing = generator.closeAsync();
+            assertTrue(cleanupStarted.await(2, TimeUnit.SECONDS));
+
+            var shutdownFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread shutdown = Thread.ofVirtual().start(() -> {
+                try {
+                    runtime.close();
+                } catch (Throwable failure) {
+                    shutdownFailure.set(failure);
+                }
+            });
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!runtime.isClosed() && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertTrue(runtime.isClosed(), "runtime shutdown did not begin");
+            assertFalse(closing.isDone(),
+                    "close receipt settled before held producer cleanup exited");
+            assertFalse(closing.cancel(true),
+                    "runtime shutdown must not make close cleanup cancellable");
+
+            allowCleanupExit.countDown();
+            assertNull(closing.get(2, TimeUnit.SECONDS));
+            shutdown.join(2_000);
+            assertFalse(shutdown.isAlive(), "runtime shutdown did not finish after cleanup");
+            assertNull(shutdownFailure.get(), "runtime shutdown failed after generator cleanup");
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            allowCleanupExit.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
+
+
+    @Test
     void concurrentAsyncPullIsRejectedBeforeAnotherPullTaskIsAdmitted() throws Exception {
         CountDownLatch producerStarted = new CountDownLatch(1);
         CountDownLatch releaseProducer = new CountDownLatch(1);
