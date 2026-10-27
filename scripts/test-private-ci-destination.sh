@@ -44,6 +44,19 @@ expect_wrapper_reject() {
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
+for quarantined_slug in \
+  ZED-PKG-TEST/JAVA-APP \
+  SCINTILLA-RUN-TEST/GLEAM-RUNNER-CONFORMANCE \
+  ORES-DUMMY-ORG-ORESLANG-STACK/ORES-DUMMY-ORG-ORESLANG-STACK-INFRA \
+  AGENT-PONTIFEX-TEST/AGENT-PONTIFEX-E2E-TESTS \
+  LED-DYNAMO/LEDDY-E2E
+do
+  if "$script_dir/check-private-ci-destination.sh" "$quarantined_slug" > "$work/out" 2>&1; then
+    echo 'Unsafe quarantined slug approval' >&2
+    exit 1
+  fi
+  grep -q 'destination slug is quarantined by private-source incident policy' "$work/out"
+done
 export MOCK_REPOSITORY_ID=246811
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
@@ -51,6 +64,8 @@ export MOCK_REPOSITORY_ID=invalid
 expect_fail trusted/ci
 unset MOCK_REPOSITORY_ID
 printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
+expect_fail trusted/ci
+printf 'trusted/ci 246810\nrenamed/alias 246810\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
 expect_fail trusted/ci
@@ -60,10 +75,12 @@ printf 'trusted/ci 246810\r\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
-printf 'trusted/ci 1323575966\n' > "$policy"
-export MOCK_REPOSITORY_ID=1323575966
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
+for quarantined_id in 1323575966 1323598260 1412142815 1370782550 1324139596; do
+  printf 'trusted/ci %s\n' "$quarantined_id" > "$policy"
+  export MOCK_REPOSITORY_ID="$quarantined_id"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+done
 unset MOCK_REPOSITORY_ID
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
