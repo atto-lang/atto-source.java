@@ -1,0 +1,61 @@
+name: Strict async-only stdlib I/O
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/runtime/StrictAsyncStdlibIoCurrentMainTest.java'
+      - 'stdlib/**'
+      - 'tools/strict-async-io-audit/**'
+      - 'docs/ASYNC_IO.md'
+      - '.github/workflows/strict-async-stdlib-io.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/runtime/StrictAsyncStdlibIoCurrentMainTest.java'
+      - 'stdlib/**'
+      - 'tools/strict-async-io-audit/**'
+      - 'docs/ASYNC_IO.md'
+      - '.github/workflows/strict-async-stdlib-io.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  strict-async-stdlib-io:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Unit-test Rust boundary audit
+        run: cargo test --manifest-path tools/strict-async-io-audit/Cargo.toml --locked
+      - name: Audit guest dispatch and packaged stdlib
+        run: cargo run --quiet --release --manifest-path tools/strict-async-io-audit/Cargo.toml --locked -- .
+      - name: Run behavioral fail-closed regression
+        run: mvn -B -ntp -Dtest=StrictAsyncStdlibIoCurrentMainTest test
