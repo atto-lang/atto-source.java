@@ -297,6 +297,13 @@ public record CheckedCallPlan(
                             "checked call provenance reorders source call items");
                 }
                 if (slot.callItemIndex() == previousCallItemIndex) {
+                    // A single raw spread cannot change from tuple to record
+                    // projection semantics halfway through its projections.
+                    if ((slot.label() == null)
+                            != (sourceOrder.get(i - 1).label() == null)) {
+                        throw new IllegalArgumentException(
+                                "checked call item mixes tuple and record projections");
+                    }
                     if (slot.projectionIndex() < 0
                             || previousProjectionIndex < 0
                             || slot.projectionIndex()
