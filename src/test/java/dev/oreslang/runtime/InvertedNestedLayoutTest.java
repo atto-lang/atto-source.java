@@ -63,6 +63,73 @@ final class InvertedNestedLayoutTest {
     }
 
     @Test
+    void invalidRecordUpdatesRollBackAndNeverAliasGuestMaps() {
+        Ast.ClassDecl packet = inverted(
+                "pose: record{ready: bool, x: i64};");
+        try (var array = InvertedArray.fromClass(packet, 1)) {
+            var input = new java.util.LinkedHashMap<String, Object>(
+                    Map.of("ready", true, "x", 10L));
+            var row = array.pushValues(input);
+            input.put("x", 999L);
+            var field = array.bindField("pose");
+            assertEquals(10L, ((Map<?, ?>) field.getAt(0)).get("x"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> field.setAt(0, Map.of("x", 20L)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> array.write(row, "pose", Map.of("ready", 1, "x", 20L)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> array.updateRow(row,
+                            Map.of("pose", Map.of("ready", false, "x", "bad"))));
+            assertEquals(10L, ((Map<?, ?>) array.read(row, "pose")).get("x"));
+            assertEquals(true, ((Map<?, ?>) array.read(row, "pose")).get("ready"));
+            try (var readLoan = array.borrowRead("pose")) {
+                assertThrows(IllegalStateException.class,
+                        () -> field.setAt(0, Map.of("ready", false, "x", 20L)));
+                assertEquals(10L, ((Map<?, ?>) readLoan.readAt(0)).get("x"));
+            }
+            field.setAt(0, Map.of("ready", false, "x", 20L));
+            assertEquals(20L, ((Map<?, ?>) array.read(row, "pose")).get("x"));
+        }
+    }
+
+    @Test
+    void randomizedPackedRecordSwapDeletePreservesOpaqueRowHandles() {
+        Ast.ClassDecl packet = inverted("pose: record{ready: bool, x: i64};");
+        var rng = new java.util.Random(0x51A0B1L);
+        try (var array = InvertedArray.fromClass(packet, 0)) {
+            var handles = new java.util.ArrayList<InvertedColumnStore.Handle>();
+            var values = new java.util.ArrayList<Long>();
+            var column = array.bindField("pose");
+            for (int i = 0; i < 1000; i++) {
+                if (handles.isEmpty() || rng.nextInt(3) != 0) {
+                    long value = i * 73L + 5;
+                    handles.add(array.pushValues(
+                            Map.of("ready", (i & 1) == 0, "x", value)));
+                    values.add(value);
+                } else {
+                    int erased = rng.nextInt(handles.size());
+                    var stale = handles.get(erased);
+                    array.eraseSwap(stale);
+                    int last = handles.size() - 1;
+                    handles.set(erased, handles.get(last));
+                    values.set(erased, values.get(last));
+                    handles.remove(last);
+                    values.remove(last);
+                    assertThrows(IllegalArgumentException.class,
+                            () -> array.read(stale, "pose"));
+                }
+                assertEquals(handles.size(), array.size());
+                for (int j = 0; j < handles.size(); j++) {
+                    assertEquals(values.get(j),
+                            ((Map<?, ?>) array.read(handles.get(j), "pose")).get("x"));
+                    assertEquals(values.get(j),
+                            ((Map<?, ?>) column.getAt(j)).get("x"));
+                }
+            }
+        }
+    }
+
+    @Test
     void packedRecordCodecIsDeterministicAndRejectsCorruptBoolOrWrongShapes() {
         Ast.TypeRef shape = Ast.TypeRef.recordType(Map.of(
                 "x", Ast.TypeRef.simple("i64"),
