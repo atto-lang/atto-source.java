@@ -551,31 +551,19 @@ def checked_destination(repository, contract):
                 or path == RECEIPT_PATH):
             raise Denied("reviewed carrier base is not source-free")
 
-    workflow = legacy.gh_api(
-        f"repos/{repository}/contents/{contract['workflow_path']}?ref={base_sha}"
+    workflow_bytes, workflow_blob = remote_carrier_file(
+        repository, contract["workflow_path"], base_sha, MAX_GOVERNANCE_FILE
     )
-    if (workflow.get("path") != contract["workflow_path"]
-            or workflow.get("type") != "file"
-            or workflow.get("sha") != contract["workflow_blob_sha"]):
+    if workflow_blob != contract["workflow_blob_sha"]:
         raise Denied("carrier workflow differs from protected contract")
+    if not workflow_bytes:
+        raise Denied("carrier workflow is empty")
 
-    plan = legacy.gh_api(
-        f"repos/{repository}/contents/{contract['test_plan_path']}?ref={base_sha}"
+    plan_bytes, plan_blob = remote_carrier_file(
+        repository, contract["test_plan_path"], base_sha, MAX_PLAN
     )
-    if (plan.get("path") != contract["test_plan_path"]
-            or plan.get("type") != "file"
-            or plan.get("encoding") != "base64"
-            or plan.get("sha") != contract["test_plan_blob_sha"]):
+    if plan_blob != contract["test_plan_blob_sha"]:
         raise Denied("carrier test plan differs from protected contract")
-    encoded = plan.get("content")
-    if not isinstance(encoded, str):
-        raise Denied("carrier test plan content missing")
-    try:
-        plan_bytes = base64.b64decode("".join(encoded.split()), validate=True)
-    except (ValueError, base64.binascii.Error) as exc:
-        raise Denied("carrier test plan has invalid base64") from exc
-    if not plan_bytes or len(plan_bytes) > MAX_PLAN:
-        raise Denied("carrier test plan missing or oversized")
     return repo, base_tree, plan_bytes
 
 
