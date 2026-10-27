@@ -88,6 +88,24 @@ public final class TypedScalarSmtTest {
                     || body.contains("(push 1)") || body.contains("(echo ")) {
                 throw new IllegalArgumentException("noncanonical scalar obligation");
             }
+            // Restrict to one balanced top-level assert. Extra solver commands
+            // must never execute before a verdict becomes a proof receipt.
+            String assertion = body.substring(0, body.length() - termination.length());
+            if (assertion.indexOf('\n') >= 0 || assertion.indexOf('\r') >= 0
+                    || assertion.indexOf(';') >= 0 || assertion.indexOf('"') >= 0
+                    || assertion.indexOf('|') >= 0) {
+                throw new IllegalArgumentException("unsupported assertion text");
+            }
+            int depth = 0;
+            for (int i = 0; i < assertion.length(); i++) {
+                char ch = assertion.charAt(i);
+                if (ch == '(') depth++;
+                else if (ch == ')') depth--;
+                if (depth < 0 || (depth == 0 && i != assertion.length() - 1)) {
+                    throw new IllegalArgumentException("extra top-level SMT command");
+                }
+            }
+            if (depth != 0) throw new IllegalArgumentException("unbalanced assertion");
         }
         return List.of(prelude + marker + positive, prelude + marker + control);
     }
@@ -161,6 +179,12 @@ public final class TypedScalarSmtTest {
                 separateProofAndControl(smt.replaceFirst("\\(check-sat\\)", "(echo \"unsat\")")));
         assertThrows(IllegalArgumentException.class, () ->
                 separateProofAndControl(smt + "(check-sat)\n"));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replaceFirst("\\(check-sat\\)",
+                        "(reset)\n(check-sat)")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replaceFirst("\\(check-sat\\)",
+                        "(assert true)\n(check-sat)")));
         assertThrows(IllegalArgumentException.class, () ->
                 separateProofAndControl(smt.replace("(push 1)\n", "")));
         assertThrows(IllegalArgumentException.class, () ->
