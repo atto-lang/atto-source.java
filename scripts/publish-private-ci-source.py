@@ -69,6 +69,7 @@ SECURITY_CODEOWNER_PATHS = (
     "/scripts/publish-private-ci-source-v3.py",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
+GITHUB_ACTIONS_APP_ID = 15368
 SOURCE_REQUIRED_STATUS_CONTEXTS = frozenset({"preflight-regressions", "policy-negative-tests"})
 
 
@@ -426,7 +427,11 @@ def _require_strict_source_protection(protection):
             or any(not isinstance(name, str) or not name.strip() for name in contexts)
             or any(not isinstance(item, dict)
                    or not isinstance(item.get("context"), str)
-                   or not item["context"].strip() for item in named_checks)
+                   or not item["context"].strip()
+                   or (item.get("app_id") is not None
+                       and (type(item.get("app_id")) is not int
+                            or item["app_id"] <= 0))
+                   for item in named_checks)
             or not isinstance(administrators, dict)
             or administrators.get("enabled") is not True
             or not isinstance(force_pushes, dict)
@@ -446,13 +451,19 @@ def _require_strict_source_protection(protection):
                        or bypasses.get(category)
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
-    required_contexts = set(contexts)
-    required_contexts.update(item["context"] for item in named_checks)
-    missing_required = SOURCE_REQUIRED_STATUS_CONTEXTS - required_contexts
+    required_named = {
+        (name, GITHUB_ACTIONS_APP_ID)
+        for name in SOURCE_REQUIRED_STATUS_CONTEXTS
+    }
+    actual_named = {
+        (item["context"], item.get("app_id"))
+        for item in named_checks
+    }
+    missing_required = required_named - actual_named
     if missing_required:
         raise Denied(
-            "origin main required CI is missing private-CI governance checks: "
-            + ",".join(sorted(missing_required))
+            "origin main required CI is missing GitHub-Actions-bound private-CI governance checks: "
+            + ",".join(sorted(name for name, _app_id in missing_required))
         )
     named_contract = tuple(sorted(
         (item["context"], json.dumps(item.get("app_id"), sort_keys=True,
