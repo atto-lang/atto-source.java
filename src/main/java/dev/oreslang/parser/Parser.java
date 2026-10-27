@@ -4472,6 +4472,15 @@ public final class Parser {
             consume(RPAREN, "expected ')' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
+        // A lexical transparent alias to a closed exact struct shape may be
+        // constructed with a checked initializer. This reuses the existing
+        // explicit-struct AST; it does not invent nominal type identity.
+        if (check(IDENT) && checkNext(LBRACE)
+                && callableRecordAliases != null
+                && callableRecordAliases.containsKey(peek().lexeme())
+                && callableRecordAliases.get(peek().lexeme()).isStructType()) {
+            return parseLocalStructAliasConstructor();
+        }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());
         }
@@ -4535,6 +4544,49 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+
+    private Ast.ObjectExpr parseLocalStructAliasConstructor() {
+        String name = consume(IDENT, "expected local struct alias name").lexeme();
+        Ast.TypeRef shape = callableRecordAliases.get(name);
+        java.util.Map<String, Ast.TypeRef> members = shape.structMembers();
+        consume(LBRACE, "expected '{' after local struct alias");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        List<Ast.StructFieldSpec> declared = new ArrayList<>();
+        for (java.util.Map.Entry<String, Ast.TypeRef> member : members.entrySet()) {
+            declared.add(new Ast.StructFieldSpec(member.getKey(), member.getValue()));
+        }
+        if (!check(RBRACE)) {
+            boolean named = check(IDENT) && checkNext(COLON);
+            if (!named) {
+                // Aggregate TypeRef canonicalizes field names; declaration
+                // order is not preserved. Positional initialization is safe
+                // only for a genuinely single-field shape.
+                if (members.size() != 1) {
+                    throw error(peek(),
+                            "multi-field local struct constructors require named initializers");
+                }
+                String onlyField = members.keySet().iterator().next();
+                fields.add(Ast.ObjectField.named(onlyField, parseExpression()));
+                if (check(COMMA)) {
+                    throw error(peek(),
+                            "single-field local struct constructor accepts only one value");
+                }
+            } else {
+                do {
+                    String field = consumeStaticObjectKeyName(
+                            "expected named local struct initializer field");
+                    consume(COLON, "expected ':' after named struct initializer field");
+                    if (!members.containsKey(field)) {
+                        throw error(previous(), "unknown local struct field '" + field + "'");
+                    }
+                    fields.add(Ast.ObjectField.named(field, parseExpression()));
+                } while (match(COMMA));
+            }
+        }
+        consume(RBRACE, "expected '}' after local struct alias initializer");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.EXPLICIT_STRUCT, declared);
     }
 
     private Ast.ObjectExpr parseExplicitStructLiteral() {
