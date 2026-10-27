@@ -30,6 +30,7 @@ import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
+import dev.oreslang.runtime.Utf8StringAbi;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -9038,7 +9039,13 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
             }
-            if (value instanceof Number || value instanceof Boolean || value instanceof String
+            if (value instanceof String text) {
+                // A JVM String can contain unpaired UTF-16 surrogates. Do not
+                // admit such host values as Oreslang Unicode strings.
+                Utf8StringAbi.encode(text);
+                return text;
+            }
+            if (value instanceof Number || value instanceof Boolean
                     || value instanceof Character || value instanceof OresFuture<?>) {
                 return value;
             }
@@ -9047,6 +9054,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object unwrapHostArgument(Object value) {
             if (value instanceof HostObjectFacade host) return host.value();
+            if (value instanceof String text) {
+                Utf8StringAbi.encode(text);
+                return text;
+            }
             if (value instanceof Map<?, ?> map) {
                 // Never hand Java a mutable alias to anonymous struct storage.
                 // A host call may observe the snapshot, but cannot add/remove
