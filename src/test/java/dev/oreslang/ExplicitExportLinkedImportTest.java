@@ -215,6 +215,87 @@ final class ExplicitExportLinkedImportTest {
     }
 
     @Test
+    void sourceExportAliasAndImportAliasComposeWithoutLeakingLocalName() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        assertDoesNotThrow(() -> compiler.compile(
+                Map.of(
+                        "lib.ores", """
+                                export class Internal as PublicBox;
+                                define class Internal as
+                                  pub self_ref(Internal other): Internal { return other; }
+                                end
+                                """,
+                        "main.ores", """
+                                import class PublicBox as Box from "./lib.ores";
+                                pub fnc use(Box value): Box {
+                                  return value.self_ref(value);
+                                }
+                                """),
+                Map.of()));
+    }
+
+    @Test
+    void exportedDefaultPrivateClassMayExposePublicConstructor() throws Exception {
+        Path lib = temp.resolve("ctor-lib.ores");
+        Path main = temp.resolve("ctor-main.ores");
+        Files.writeString(lib, """
+                export class Internal as PublicBox;
+                define class Internal as
+                  val int value;
+                  pub constructor(int value) {
+                    self.value = value;
+                  }
+                  pub get(): int { return self.value; }
+                end
+                """);
+        Files.writeString(main, """
+                import class PublicBox from "./ctor-lib.ores";
+                pub fnc main(): void {
+                  val box = new PublicBox(9);
+                  stdio.stdout.write(box.get());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("9", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void privateConstructorRemainsUnavailableThroughPublicExportAlias() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> compiler.compile(
+                        Map.of(
+                                "lib.ores", """
+                                        export class Internal as PublicBox;
+                                        define class Internal as
+                                          private constructor() { return; }
+                                        end
+                                        """,
+                                "main.ores", """
+                                        import class PublicBox from "./lib.ores";
+                                        pub fnc make(): void {
+                                          val box = new PublicBox();
+                                          return;
+                                        }
+                                        """),
+                        Map.of()));
+        assertTrue(failure.getMessage().contains("constructor for imported class"),
+                failure.getMessage());
+    }
+
+    @Test
     void fileAndPackageExportsDoNotWidenIntoCrossFilePublicImports() {
         for (String scope : new String[] {"file", "pkg"}) {
             IncrementalCompiler compiler = new IncrementalCompiler();

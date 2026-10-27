@@ -81,6 +81,14 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.TypeAliasDecl, String> typeAliasOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    /**
+     * Explicit source exports can make an otherwise default-private class
+     * reachable without mutating declaration visibility. This identity set is
+     * used only for declaration-site constructor reachability checks; full
+     * export admission still belongs to ExportResolver.
+     */
+    private final Set<Ast.ClassDecl> explicitlyExportedClasses =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -293,9 +301,8 @@ public final class TypeChecker {
                     : Ast.ImportKind.ACTOR;
             boolean imported = program.imports().stream().anyMatch(use ->
                     use.kind() == expectedKind && !use.wildcard()
-                            && use.names().contains(name)
-                            && (use.namespace() == null
-                                    || use.namespace().equals(name)));
+                            && use.names().stream().anyMatch(sourceName ->
+                                    ImportRules.localName(use, sourceName).equals(name)));
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
@@ -397,6 +404,25 @@ public final class TypeChecker {
                     rejectReservedSymbolTypeName(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
+                }
+            }
+        }
+
+        // ExportResolver performs the authoritative kind/ambiguity/scope checks
+        // later. Here we only need conservative declaration reachability so a
+        // written public constructor is not rejected solely because the class
+        // is published by a separate export declaration.
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.ExportDecl export : module.exports()) {
+                if (export.kind() != null && export.kind() != Ast.ExportKind.CLASS) continue;
+                for (Ast.ExportItem item : export.items()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl klass
+                                && klass.actorKind() == Ast.ActorKind.NONE
+                                && klass.name().equals(item.localName())) {
+                            explicitlyExportedClasses.add(klass);
+                        }
+                    }
                 }
             }
         }
@@ -1455,10 +1481,12 @@ public final class TypeChecker {
                         "actor '" + klass.name() + "' cannot declare a class constructor");
             }
             if (constructor.visibility() == Ast.Visibility.PUBLIC
-                    && klass.visibility() != Ast.Visibility.PUBLIC) {
+                    && (klass.visibility() == Ast.Visibility.PRIVATE
+                        || klass.visibility() == Ast.Visibility.EXPLICIT_PRIVATE)
+                    && !explicitlyExportedClasses.contains(klass)) {
                 throw new IllegalArgumentException(
-                        "public constructor on private class '" + klass.name()
-                                + "' is unreachable; make the module class public or keep the constructor private");
+                        "public constructor on unexported private class '" + klass.name()
+                                + "' is unreachable; export the class or keep the constructor private");
             }
 
             Env constructorEnv = new Env(null);
@@ -4255,6 +4283,13 @@ public final class TypeChecker {
 
             Ast.ConstructorDecl constructor = klass.constructor();
             if (constructor != null) {
+                if (!classOwners.containsKey(klass)
+                        && linkedClassAliases.containsKey(klass)
+                        && constructor.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "constructor for imported class '" + created.type().name()
+                                    + "' is not public");
+                }
                 if (created.arguments().size() != constructor.arity()) {
                     throw new IllegalArgumentException(
                             "constructor for " + klass.name() + " expects "

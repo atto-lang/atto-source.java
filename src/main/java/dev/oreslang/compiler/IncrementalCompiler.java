@@ -204,15 +204,131 @@ public final class IncrementalCompiler {
                         }
                     }
                 }
-                if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
+                if (resolved == null) {
                     throw new IllegalArgumentException(
-                            "missing or duplicate public linked class export '" + name
+                            "missing public linked class export '" + name
                                     + "' in source unit '" + sourceId + "'");
                 }
-                aliases.put(name, classAliases);
+                String localName = ImportRules.localName(imported, name);
+                Ast.ClassDecl linkedView = linkedClassView(resolved, localName);
+                if (linked.putIfAbsent(localName, linkedView) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate linked class import name '" + localName + "'");
+                }
+                LinkedHashMap<String, Ast.TypeAliasDecl> projectedAliases = new LinkedHashMap<>();
+                for (Map.Entry<String, Ast.TypeAliasDecl> entry : classAliases.entrySet()) {
+                    projectedAliases.put(entry.getKey(),
+                            linkedAliasView(entry.getValue(), resolved.name(), localName));
+                }
+                aliases.put(localName, Map.copyOf(projectedAliases));
             }
         }
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
+    }
+
+    /**
+     * Build an importer-local, type-only view after ExportResolver has proven
+     * the PUBLIC source binding. The original declaration remains authoritative
+     * for runtime execution; this projection prevents a source-local class name
+     * from leaking through an export/import alias and preserves constructor
+     * visibility in static checking.
+     */
+    private static Ast.ClassDecl linkedClassView(Ast.ClassDecl source, String localName) {
+        String self = source.name();
+        return new Ast.ClassDecl(
+                localName,
+                Ast.Visibility.PUBLIC,
+                source.isAbstract(),
+                source.actorKind(),
+                source.genericParameters(),
+                source.parents().stream().map(type -> rewriteLinkedSelf(type, self, localName)).toList(),
+                source.interfaces().stream().map(type -> rewriteLinkedSelf(type, self, localName)).toList(),
+                source.fields().stream().map(field -> new Ast.FieldDecl(
+                        field.name(),
+                        field.visibility(),
+                        field.bindingKind(),
+                        rewriteLinkedSelf(field.type(), self, localName),
+                        rewriteLinkedAnnotations(field.annotations(), self, localName),
+                        field.initializer(),
+                        field.mutableReferent())).toList(),
+                source.constructor() == null ? null : new Ast.ConstructorDecl(
+                        source.constructor().visibility(),
+                        rewriteLinkedParams(source.constructor().parameters(), self, localName),
+                        rewriteLinkedAnnotations(source.constructor().annotations(), self, localName),
+                        source.constructor().body()),
+                source.methods().stream().map(method -> new Ast.MethodDecl(
+                        method.name(),
+                        method.visibility(),
+                        method.isStatic(),
+                        method.isAbstract(),
+                        method.async(),
+                        method.suspends(),
+                        method.structural(),
+                        rewriteLinkedSelf(method.explicitReceiverType(), self, localName),
+                        method.genericParameters(),
+                        rewriteLinkedParams(method.parameters(), self, localName),
+                        rewriteLinkedSelf(method.returnType(), self, localName),
+                        rewriteLinkedAnnotations(method.annotations(), self, localName),
+                        method.body(),
+                        rewriteLinkedEffects(method.effects(), self, localName))).toList(),
+                source.actorConcurrency());
+    }
+
+    private static Ast.TypeAliasDecl linkedAliasView(
+            Ast.TypeAliasDecl alias,
+            String self,
+            String localName) {
+        return new Ast.TypeAliasDecl(
+                alias.name(),
+                alias.visibility(),
+                alias.genericParameters(),
+                rewriteLinkedSelf(alias.target(), self, localName));
+    }
+
+    private static List<Ast.Param> rewriteLinkedParams(
+            List<Ast.Param> params,
+            String self,
+            String localName) {
+        return params.stream().map(param -> new Ast.Param(
+                rewriteLinkedSelf(param.type(), self, localName),
+                param.name(),
+                param.structural(),
+                param.mutable())).toList();
+    }
+
+    private static List<Ast.Annotation> rewriteLinkedAnnotations(
+            List<Ast.Annotation> annotations,
+            String self,
+            String localName) {
+        return annotations.stream().map(annotation -> new Ast.Annotation(
+                annotation.name(),
+                annotation.arguments().stream()
+                        .map(type -> rewriteLinkedSelf(type, self, localName))
+                        .toList())).toList();
+    }
+
+    private static Ast.EffectSpec rewriteLinkedEffects(
+            Ast.EffectSpec effects,
+            String self,
+            String localName) {
+        return new Ast.EffectSpec(
+                effects.throwsTypes().stream().map(type -> rewriteLinkedSelf(type, self, localName)).toList(),
+                effects.raisesTypes().stream().map(type -> rewriteLinkedSelf(type, self, localName)).toList(),
+                effects.panicsTypes().stream().map(type -> rewriteLinkedSelf(type, self, localName)).toList());
+    }
+
+    private static Ast.TypeRef rewriteLinkedSelf(
+            Ast.TypeRef type,
+            String self,
+            String localName) {
+        if (type == null) return null;
+        String name = type.name().equals(self) ? localName : type.name();
+        return new Ast.TypeRef(
+                name,
+                type.arguments().stream()
+                        .map(child -> rewriteLinkedSelf(child, self, localName))
+                        .toList(),
+                type.inferArguments());
     }
 
     private static String exportLocalName(String localSymbolId) {
