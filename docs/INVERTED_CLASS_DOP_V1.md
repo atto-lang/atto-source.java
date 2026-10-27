@@ -140,6 +140,34 @@ column element. Generating an AoS mirror, implicit whole-table transpose,
 reflective property access, runtime macros, or an untyped fallback is
 not permitted.
 
+### AST identity and proof lifecycle (fail closed)
+
+The first-stage `InvertedIndexedFieldPlan` is **syntactic candidate binding
+only**. It records the exact read or assignment source node and its exact
+receiver/index/RHS AST subnodes, plus the immutable nominal-schema identity
+and field binding. The `requireExactSource(currentNode, currentSchema)`
+guard fails if the node or schema changes, even when an AST reconstruction is
+equal by value. It must be called after each AST transformation if that
+candidate is reused. A completely new candidate must be constructed for the
+new node after every rewrite.
+
+**Important:** matching source identity is necessary, but is **not** a type,
+borrow, escape, effect, or backend-emission proof. It does not admit guest
+source indexing or permit arbitrary callbacks. The future typed
+`InvertedRowRef<T>` / `IndexPlan` proof must be admitted by the compiler
+type/ownership pass, revoked at the **start** of every recheck, and only
+republished once receiver type, index kind, nominal field, liveness and
+ownership checks all succeed. An exception, stale linked metadata, changed
+generic specialization, rejected annotation expansion, or unrelated AST
+rewrite must never leave a previously admitted plan executable.
+
+The required *negative* matrix includes: structurally equal rebuilt read
+and write sites; altered receiver, index, RHS and field; same field spelling
+but unrelated nominal schema; failed recheck; borrowed row-view escape;
+ordinary `Array<T>`, dynamic `Any`, `Symbol.index` and user-macro fallback;
+unsupported nested, multi-index and slice syntax. All must reject rather
+than silently use text-based generated accessors.
+
 ### Atomic compound indexed operations
 
 A generated `rows[i].field += expression` must never be implemented as
