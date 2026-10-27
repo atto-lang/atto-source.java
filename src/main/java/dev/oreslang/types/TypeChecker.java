@@ -2922,7 +2922,8 @@ public final class TypeChecker {
             // Lookup the complete method family before free functions: a
             // wrong-arity call must not silently dispatch a global function.
             // Lambda scopes without a captured self cannot use this sugar.
-            if (call.callee() instanceof Ast.NameExpr implicit
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr implicit
                     && env.lookup(implicit.name()) == null) {
                 Env.Binding receiverBinding = env.lookup("self");
                 if (receiverBinding != null) {
