@@ -54,7 +54,6 @@ final class InvertedArrayTest {
         }
     }
 
-final class InvertedArrayTest {
     @Test
     void primitiveF64TransposeUpdatesAreAtomicWithoutGuestCallbacks()
             throws InterruptedException {
