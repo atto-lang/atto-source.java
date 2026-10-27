@@ -57,6 +57,22 @@ final class InvertedClassParserAdmissionTest {
     }
 
     @Test
+    void bracketSyntaxIsNativeIndexAstNotATextualMacro() {
+        Ast.Program parsed = Parser.parse("""
+                define class Holder as
+                    value: int = items[0];
+                end
+                """);
+        Ast.ClassDecl holder = (Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst();
+        Ast.IndexExpr indexed = assertInstanceOf(
+                Ast.IndexExpr.class, holder.fields().getFirst().initializer());
+        assertEquals("items", assertInstanceOf(Ast.NameExpr.class, indexed.receiver()).name());
+        assertEquals(0L, ((Number) assertInstanceOf(
+                Ast.LiteralExpr.class, indexed.index()).value()).longValue());
+    }
+
+    @Test
     void executableInvertedClassesFailClosedUntilSoaLowering() {
         for (String source : new String[] {
                 """
@@ -172,6 +188,8 @@ final class InvertedClassParserAdmissionTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(original));
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.checkTypesWithDiagnostics(original));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(rewritten),
+                "the exact post-expansion AST must remain fail-closed");
     }
 
     @Test
