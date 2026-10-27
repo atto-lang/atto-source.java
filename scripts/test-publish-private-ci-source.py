@@ -165,7 +165,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ORIGINAL_REQUIRE_RESOLVED()
 
     def test_quarantined_repository_ids_rejected_even_after_slug_rename(self):
-        for repository_id in (1323575966, 1370782550, 1324139596):
+        for repository_id in (
+            1323575966, 1323598260, 1412142815, 1370782550, 1324139596
+        ):
             with self.subTest(repository_id=repository_id):
                 renamed = (
                     "renamed-owner/renamed-carrier "
@@ -274,6 +276,43 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
             with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
                 ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_quarantined_scintilla_carrier_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "scintilla-run-test/gleam-runner-conformance", self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
+
+    def test_quarantined_dummy_stack_carrier_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+                    self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
 
     def test_quarantined_recovery_carrier_rejected_before_any_source_access(self):
         with (
