@@ -562,7 +562,6 @@ class PrivateCiV3Test(unittest.TestCase):
                         "base_sha": BASE,
                         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
                         "workflow_blob_sha": WORKFLOW,
-                        "review_pr": 17,
                         "test_plans": {
                             "ci/test-plans/java-pr1482.json": {
                                 "blob_sha": PLAN_BLOB,
@@ -580,7 +579,7 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(got["base_sha"], BASE)
         self.assertEqual(got["workflow_blob_sha"], WORKFLOW)
         self.assertEqual(got["test_plan_blob_sha"], PLAN_BLOB)
-        self.assertEqual(got["review_pr"], 17)
+        self.assertNotIn("review_pr", got)
         with self.assertRaisesRegex(v3.Denied, "not authorized"):
             v3.parse_contract(
                 raw, "trusted/ci", 1483, "ci/test-plans/java-pr1482.json"
@@ -673,7 +672,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 "ci/test-plans/java-pr1482.json",
             )
 
-    def test_contract_rejects_invalid_carrier_review_pr(self):
+    def test_contract_rejects_review_history_fallback_field(self):
         raw = {
             "schema": 1,
             "carriers": {
@@ -682,7 +681,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     "base_sha": BASE,
                     "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
                     "workflow_blob_sha": WORKFLOW,
-                    "review_pr": 0,
+                    "review_pr": 17,
                     "test_plans": {
                         "ci/test-plans/java-pr1482.json": {
                             "blob_sha": PLAN_BLOB,
@@ -692,80 +691,22 @@ class PrivateCiV3Test(unittest.TestCase):
                 }
             },
         }
-        with self.assertRaisesRegex(v3.Denied, "review PR"):
+        with self.assertRaisesRegex(v3.Denied, "fields are not exact"):
             v3.parse_contract(
                 json.dumps(raw).encode(),
                 "trusted/ci", 1482, "ci/test-plans/java-pr1482.json",
             )
 
-    def carrier_review_fixture(self, *, tree=ROOT_TREE, main_tree=None,
-                               author_id=424242, state="APPROVED",
-                               review_commit=None):
+    def test_unprotected_carrier_denied_without_review_fallback(self):
         carrier = contract()
-        carrier["review_pr"] = 17
-        head_sha = "7" * 40
-        main_tree = tree if main_tree is None else main_tree
-        review_commit = head_sha if review_commit is None else review_commit
-
-        def api(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/branches/main":
-                return {
-                    "name": "main",
-                    "protected": False,
-                    "commit": {"sha": BASE},
-                }
-            if route == "repos/trusted/ci/pulls/17":
-                return {
-                    "number": 17,
-                    "state": "closed",
-                    "merged_at": "2026-10-25T04:00:00Z",
-                    "user": {"id": author_id, "login": "carrier-author"},
-                    "head": {
-                        "sha": head_sha,
-                        "repo": {
-                            "full_name": "trusted/ci",
-                            "id": carrier["repository_id"],
-                        },
-                    },
-                    "base": {
-                        "ref": "main",
-                        "repo": {
-                            "full_name": "trusted/ci",
-                            "id": carrier["repository_id"],
-                        },
-                    },
-                }
-            if route == "repos/trusted/ci/git/commits/" + head_sha:
-                return {"sha": head_sha, "tree": {"sha": tree}}
-            if route == "repos/trusted/ci/git/commits/" + BASE:
-                return {"sha": BASE, "tree": {"sha": main_tree}}
-            if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
-                return {
-                    "path": ".github/CODEOWNERS",
-                    "type": "file",
-                    "encoding": "base64",
-                    "content": base64.b64encode(CARRIER_CODEOWNERS).decode(),
-                    "sha": CARRIER_CODEOWNERS_BLOB,
-                }
-            raise AssertionError((method, route))
-
-        reviews = [{
-            "id": 91,
-            "state": state,
-            "commit_id": review_commit,
-            "submitted_at": "2026-10-25T03:59:00Z",
-            "user": {
-                "id": v3.CARRIER_REVIEW_USER_ID,
-                "login": v3.CARRIER_REVIEW_LOGIN,
+        with patch.object(
+            v3.legacy,
+            "gh_api",
+            return_value={
+                "name": "main",
+                "protected": False,
+                "commit": {"sha": BASE},
             },
-        }]
-        return carrier, api, reviews
-
-    def test_unprotected_carrier_denied_even_with_exact_review(self):
-        carrier, api, reviews = self.carrier_review_fixture()
-        with (
-            patch.object(v3.legacy, "gh_api", side_effect=api),
-            patch.object(v3, "gh_api_list", return_value=reviews),
         ):
             with self.assertRaisesRegex(v3.Denied, "carrier main is not protected"):
                 v3.checked_carrier_main("trusted/ci", carrier)
