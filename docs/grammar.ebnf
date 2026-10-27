@@ -72,11 +72,19 @@ actor_body      = "{" { actor_member } "}"
 actor_member    = field_decl
                 | final_actor_field_decl
                 | actor_method_decl
-                | static_function_decl ;
+                | actor_static_function_decl ;
 final_actor_field_decl = { annotation } visibility "final" IDENT ":" type_ref [ "=" expression ] stmt_terminator ;
 actor_method_decl
                 = { annotation } visibility { callable_modifier } [ "fnc" | "method" ] method_name [ generic_params ]
                   method_head return_spec block ;
+actor_static_function_decl
+                = { annotation } visibility "static"
+                  { "async" | "suspend" | "suspends" | "structural" }
+                  "fnc" callable_name [ generic_params ]
+                  "(" [ param_list ] ")" return_spec block ;
+(* Actor members never expose generator activations; actor-local iteration needs
+   a separately checked actor-owned continuation rather than a mailbox-visible
+   Iterator/AsyncIterator activation. *)
 
 class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
