@@ -222,6 +222,61 @@ final class LocalRecordTypeAliasTest {
     }
 
     @Test
+    void localAliasCannotShadowLaterModuleAliasOrNominalType() {
+        parseRejected("""
+                fnc early(): T {
+                    type T = record { foo: string };
+                    return record { foo: "x" };
+                }
+                type T = record { foo: string };
+                """, "conflicts with an existing imported, module, or nominal type name");
+
+        parseRejected("""
+                fnc early(): T {
+                    type T = record { foo: string };
+                    return record { foo: "x" };
+                }
+                define class T as
+                end
+                """, "conflicts with an existing imported, module, or nominal type name");
+    }
+
+    @Test
+    void localAliasCannotCaptureImportAliasesOrModuleNames() {
+        parseRejected("""
+                import type External as T from "./external";
+                fnc value(): T {
+                    type T = record { foo: string };
+                    return record { foo: "x" };
+                }
+                """, "conflicts with an existing imported, module, or nominal type name");
+
+        parseRejected("""
+                fnc value(): T {
+                    type T = record { foo: string };
+                    return record { foo: "x" };
+                }
+                define module T as
+                end
+                """, "conflicts with an existing imported, module, or nominal type name");
+    }
+
+    @Test
+    void localAliasesInSeparateFunctionsCanStillShareSpelling() {
+        String source = """
+                fnc a(): T {
+                    type T = record { foo: string };
+                    return record { foo: "a" };
+                }
+                fnc b(): T {
+                    type T = record { foo: string };
+                    return a();
+                }
+                """;
+        accepted(source);
+    }
+
+    @Test
     void recordAliasesDoNotManufactureNominalTypeIdentity() {
         String source = """
                 fnc a(): T {
