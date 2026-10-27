@@ -9,8 +9,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -24,10 +22,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * and never publishes HttpClient, CompletableFuture, InputStream or sockets to
  * guest code.</p>
  *
- * <p>This first contract deliberately reuses the loopback-only transport. DNS,
- * TLS, redirects, arbitrary egress, request bodies and CONNECT remain separate
- * follow-up work. The ownership/lifetime shape is intended to survive those
- * transport expansions unchanged.</p>
+ * <p>The current guest admission remains literal IPv4 loopback only, but the
+ * physical request now runs through the exact-address transport. Hostname DNS,
+ * arbitrary egress, redirects, request bodies and CONNECT remain disabled at
+ * the guest boundary until their policy and lifecycle gates are complete.</p>
  */
 public final class OutboundHttpRequest {
     private static final int PIPE_BYTES = 32 * 1024;
@@ -76,10 +74,8 @@ public final class OutboundHttpRequest {
         private final AtomicBoolean requested = new AtomicBoolean();
         private final AtomicBoolean gracefulClose = new AtomicBoolean();
         private final AtomicBoolean abortScheduled = new AtomicBoolean();
-        private final AtomicReference<CompletableFuture<ProxyOutboundLoopback.Response>>
-                opening = new AtomicReference<>();
-        private final AtomicReference<ProxyOutboundLoopback.Response>
-                delivered = new AtomicReference<>();
+        private final AtomicReference<PinnedHttpTransport> transport =
+                new AtomicReference<>();
         private final AtomicReference<BodyPipe> pipe = new AtomicReference<>();
 
         private Revocation(OresContext context) {
@@ -106,45 +102,35 @@ public final class OutboundHttpRequest {
         private void revoke(boolean closing) {
             if (closing) gracefulClose.set(true);
             requested.set(true);
-            CompletableFuture<ProxyOutboundLoopback.Response> pending = opening.get();
-            if (pending != null && !pending.isDone()) pending.cancel(true);
             BodyPipe body = pipe.get();
             if (body != null) body.cancel();
-            scheduleDeliveredAbort();
+            scheduleTransportAbort();
         }
 
-        void trackOpening(CompletableFuture<ProxyOutboundLoopback.Response> pending) {
-            Objects.requireNonNull(pending, "pending");
-            if (!opening.compareAndSet(null, pending)) {
-                throw new IllegalStateException("HTTP acquisition already tracked");
+        void trackTransport(PinnedHttpTransport value) {
+            Objects.requireNonNull(value, "value");
+            if (!transport.compareAndSet(null, value)) {
+                throw new IllegalStateException(
+                        "HTTP transport already tracked");
             }
-            if (requested.get() && !pending.isDone()) pending.cancel(true);
+            if (requested.get()) scheduleTransportAbort();
         }
 
-        void clearOpening(CompletableFuture<ProxyOutboundLoopback.Response> pending) {
-            opening.compareAndSet(pending, null);
+        void clearTransport(PinnedHttpTransport value) {
+            transport.compareAndSet(value, null);
         }
 
-        void trackDelivered(ProxyOutboundLoopback.Response response) {
-            Objects.requireNonNull(response, "response");
-            if (!delivered.compareAndSet(null, response)) {
-                throw new IllegalStateException("HTTP response already tracked");
+        private void scheduleTransportAbort() {
+            PinnedHttpTransport current = transport.get();
+            if (current == null
+                    || !abortScheduled.compareAndSet(false, true)) {
+                return;
             }
-            if (requested.get()) scheduleDeliveredAbort();
-        }
-
-        void clearDelivered(ProxyOutboundLoopback.Response response) {
-            delivered.compareAndSet(response, null);
-        }
-
-        private void scheduleDeliveredAbort() {
-            ProxyOutboundLoopback.Response response = delivered.get();
-            if (response == null || !abortScheduled.compareAndSet(false, true)) return;
             context.nativeIo().submitClose(
                     context,
                     "http.request.abort",
                     () -> {
-                        response.close();
+                        current.close();
                         return null;
                     });
         }
@@ -152,7 +138,8 @@ public final class OutboundHttpRequest {
         void bind(BodyPipe body) {
             Objects.requireNonNull(body, "body");
             if (!pipe.compareAndSet(null, body)) {
-                throw new IllegalStateException("HTTP response body pipe already bound");
+                throw new IllegalStateException(
+                        "HTTP response body pipe already bound");
             }
             if (requested.get()) body.cancel();
         }
@@ -563,36 +550,31 @@ public final class OutboundHttpRequest {
                     "http.request revoked before native acquisition");
         }
 
-        ProxyOutboundLoopback transport = new ProxyOutboundLoopback(1);
+        PinnedHttpTransport transport =
+                PinnedHttpTransport.systemDefault(
+                        OutboundEgressPolicy.Purpose.GENERAL_HTTP,
+                        context.outboundHttpPolicy(),
+                        64L * 1024 * 1024,
+                        context.outboundHttpBudget());
+        revocation.trackTransport(transport);
         BodyPipe pipe = null;
-        try {
-            CompletableFuture<ProxyOutboundLoopback.Response> opening =
+        try (transport) {
+            PinnedHttpTransport.Response upstream =
                     transport.request(target, method, headers);
-            revocation.trackOpening(opening);
-            ProxyOutboundLoopback.Response upstream;
-            try {
-                upstream = opening.join();
-            } catch (CompletionException failure) {
-                Throwable cause = OresFuture.unwrap(failure);
-                if (cause instanceof CancellationException cancelled) throw cancelled;
-                if (cause instanceof RuntimeException runtime) throw runtime;
-                if (cause instanceof Error error) throw error;
-                throw new IOException("http.request acquisition failed", cause);
-            } finally {
-                revocation.clearOpening(opening);
-            }
-
-            revocation.trackDelivered(upstream);
             try (upstream) {
                 if (revocation.requested()) {
                     throw new CancellationException(
                             "http.request revoked after headers");
                 }
+
                 pipe = new BodyPipe();
                 revocation.bind(pipe);
                 Body body = new Body(owner, pipe, revocation, lifetime);
                 Response response = new Response(
-                        owner, upstream.status(), upstream.headers(), body);
+                        owner,
+                        upstream.status(),
+                        upstream.headers(),
+                        body);
 
                 if (!exposed.completeFromRuntime(response)) {
                     revocation.cancel();
@@ -608,8 +590,6 @@ public final class OutboundHttpRequest {
                             "http.request revoked after response body");
                 }
                 pipe.finish();
-            } finally {
-                revocation.clearDelivered(upstream);
             }
         } catch (Throwable failure) {
             if (pipe != null) pipe.fail(failure);
@@ -623,9 +603,11 @@ public final class OutboundHttpRequest {
             if (failure instanceof IOException io) throw io;
             if (failure instanceof RuntimeException runtime) throw runtime;
             if (failure instanceof Error error) throw error;
-            throw new IOException("http.request body transport failed", failure);
+            throw new IOException(
+                    "http.request body transport failed",
+                    failure);
         } finally {
-            transport.closeAndJoin();
+            revocation.clearTransport(transport);
         }
     }
 
