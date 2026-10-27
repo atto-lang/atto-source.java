@@ -10,7 +10,7 @@ target="$1"
 slug_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$'
 [[ "$target" =~ $slug_pattern ]] || fail 'destination must be an owner/repo slug'
 case "${target,,}" in
-  zed-pkg-test/java-app|agent-pontifex-test/agent-pontifex-e2e-tests|led-dynamo/leddy-e2e)
+  zed-pkg-test/java-app|scintilla-run-test/gleam-runner-conformance|ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra|agent-pontifex-test/agent-pontifex-e2e-tests|led-dynamo/leddy-e2e)
     fail 'destination slug is quarantined by private-source incident policy'
     ;;
 esac
@@ -40,7 +40,7 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
 done < "$policy"
 [[ -n "$approved_id" ]] || fail 'destination is absent from reviewed repository policy'
 case "$approved_id" in
-  1323575966|1370782550|1324139596)
+  1323575966|1323598260|1412142815|1370782550|1324139596)
     fail 'destination repository ID is quarantined by private-source incident policy'
     ;;
 esac
