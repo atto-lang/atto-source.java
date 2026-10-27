@@ -293,6 +293,25 @@ with no arbitrary guest callbacks; it clears the failpoint before throwing.
 Source inspection and source-order assertions are weaker evidence than an
 executed Java failure-injection suite.
 
+### Scrub retired physical images after successful reserve
+
+`reserve(n)` must stage every replacement byte array, buffer wrapper, row
+mapping and generation array before changing the live store. A failed
+allocation (including the deterministic `BEFORE_RESERVE_COMMIT` injector)
+preserves the old physical columns and all row handles. On success, it
+publishes the complete new image and then zeroes **every retired column
+array** without allocation. The old bytes must not linger in obsolete
+backing arrays until GC. No old array is zeroed if preparation fails; its
+content is still needed by the live store. Reflection-backed tests retain
+old `byte[]` and `ByteBuffer` references across failed and successful
+reserve calls and verify rollback vs. scrubbing separately.
+
+The prior test fixtures had accidentally acquired duplicate top-level
+`InvertedColumnStoreTest` and `InvertedArrayTest` declarations. They are
+consolidated into one class per file, preserving the older regression tests.
+This is a source-level repair; exact-head JUnit compilation and execution
+remain required before claiming that the test suite passes.
+
 ### Allocation-free, all-column teardown
 
 `InvertedColumnStore.close()` must revoke access and scrub **all** original
