@@ -7,6 +7,12 @@ define module net_core as
                                       max_connections, max_pending);
   }
 
+  // Numeric IPv4 only until the separately-audited async DNS provider lands.
+  // The runtime rejects hostnames rather than performing blocking resolution.
+  pub fnc connect_ipv4(String host, int port): Future<NioTcpConnection> {
+    return network.connect_async(host, port);
+  }
+
   pub fnc accept(borrow NioTcpListener listener): Future<NioTcpConnection> {
     return listener.accept_async();
   }
