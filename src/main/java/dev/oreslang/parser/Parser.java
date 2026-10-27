@@ -9,6 +9,8 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
+    /** Parser-only scope marker: $ is not a source identifier, so lexical variables cannot forge it. */
+    public static final String PKG_ROOT_NAMESPACE = "$pkg_root$";
 
     public record SyntaxWarning(int line, int column, String message) { }
 
@@ -4048,10 +4050,18 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT, DOUBLE_COLON)) {
-                // Two explicit qualified-member spellings, one binding and
-                // evaluation path; no dynamic symbol lookup or macro rewrite.
+                Token.Type qualifier = previous().type();
                 String member = consumeMemberName();
-                expr = new Ast.MemberExpr(expr, member);
+                // pkg::name is a compiler-resolved reference to this code
+                // unit's file-root declarations, never a receiver or import.
+                // pkg.name retains ordinary object/module member semantics.
+                if (qualifier == DOUBLE_COLON
+                        && expr instanceof Ast.NameExpr namespace
+                        && namespace.name().equals("pkg")) {
+                    expr = new Ast.MemberExpr(new Ast.NameExpr(PKG_ROOT_NAMESPACE), member);
+                } else {
+                    expr = new Ast.MemberExpr(expr, member);
+                }
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
                 consume(RBRACKET, "expected ']' after index");
