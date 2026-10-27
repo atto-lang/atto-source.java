@@ -80,6 +80,51 @@ This feature currently has Java source changes and test cases, but **not**
 exact-head JVM or Native Image execution proof. Compiler-generic AST
 transformations and all other backends still require verification.
 
+## Explicit import qualifier: `imports::name`
+
+`imports::roodles(...)` selects an **explicitly named `import fnc`
+binding** of the current compilation unit. It is orthogonal to
+`pkg::roodles(...)` (file-root) and `roodles(...)` (lexical/method/root
+resolution). This first version does **not** flatten wildcard imports, search
+dependencies transitively, treat an imported class/module/type as a callable,
+or implicitly import external routines.
+
+```ores
+import fnc roodles from "./lib.ores";
+
+fnc roodles(): int { return 99; }
+
+define class Foo as
+  pub roodles(): int { return 7; }
+  pub run(): void {
+    stdio.stdout.write(roodles());           // class method
+    stdio.stdout.write(pkg::roodles());      // this file's function
+    stdio.stdout.write(imports::roodles());  // explicitly imported function
+  }
+end
+```
+
+The import's **locally bound name** is used: `import fnc roodles as remote
+from "...";` is addressed with `imports::remote()`, never
+`imports::roodles()`. File-root `fnc` imports may share a name with a
+file-root `fnc`/routine; unqualified `roodles()` binds to the local
+declaration (with no wrong-arity fallback), and `imports::roodles()` binds
+to the import. Builtin names, non-function local declarations, and duplicate
+import aliases still conflict as before.
+
+`imports::` uses a separate unforgeable AST namespace marker, not a runtime
+value, object property, or reflection lookup. `imports.roodles` retains
+normal member semantics even if a local binding called `imports` exists.
+`imports::name` is valid as a value only when the named `import fnc`
+is reifiable under the existing import/export contract. Source imports
+still use their linker's exact source path and public export checks, and
+Java host `fnc` imports still require their original host capability
+and allowlist. No private export or implicit actor same-file dependency
+is authorized. Imported function signatures remain opaque to the
+per-code-unit typechecker unless independently linked; this is **not**
+proof of end-to-end type or effect safety. Every argument must at least
+cross the normal type and ownership passes.
+
 ## Receiver binding and performance
 
 Each class/actor code image holds shared method implementations and immutable
