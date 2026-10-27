@@ -186,6 +186,48 @@ final class InvertedIndexPlanTest {
     }
 
     @Test
+    void syntheticDeepOrOverBudgetIndexAstFailsWithDiagnosticNotStackOverflow() {
+        Ast.ClassDecl particle = particle();
+        Ast.Expr nested = new Ast.NameExpr("i");
+        for (int i = 0; i < 1025; i++) {
+            nested = new Ast.UnaryExpr("-", nested);
+        }
+        Ast.IndexExpr deep = new Ast.IndexExpr(
+                new Ast.NameExpr("particles"), nested);
+        IllegalArgumentException depth = assertThrows(
+                IllegalArgumentException.class,
+                () -> InvertedIndexPlan.compile(
+                        particle, deep, "x", InvertedIndexPlan.Access.READ));
+        assertTrue(depth.getMessage().contains("complexity budget"),
+                depth::getMessage);
+
+        // A shared binary AST subtree can be expanded in a short source
+        // description but still require exponential staging work if visited
+        // recursively. The cap must count logical visits, not unique nodes.
+        Ast.Expr wide = new Ast.NameExpr("i");
+        for (int i = 0; i < 13; i++) {
+            wide = new Ast.BinaryExpr("+", wide, wide);
+        }
+        Ast.IndexExpr overBudget = new Ast.IndexExpr(
+                new Ast.NameExpr("particles"), wide);
+        IllegalArgumentException nodes = assertThrows(
+                IllegalArgumentException.class,
+                () -> InvertedIndexPlan.compile(
+                        particle, overBudget, "x", InvertedIndexPlan.Access.READ));
+        assertTrue(nodes.getMessage().contains("complexity budget"),
+                nodes::getMessage);
+
+        Ast.Expr withinBudget = new Ast.NameExpr("i");
+        for (int i = 0; i < 100; i++) {
+            withinBudget = new Ast.UnaryExpr("-", withinBudget);
+        }
+        Ast.IndexExpr acceptedCandidate = new Ast.IndexExpr(
+                new Ast.NameExpr("particles"), withinBudget);
+        assertDoesNotThrow(() -> InvertedIndexPlan.compile(
+                particle, acceptedCandidate, "x", InvertedIndexPlan.Access.READ));
+    }
+
+    @Test
     void runtimeSchemaAndColumnLoanAuthorityRemainMandatory() {
         Ast.ClassDecl particle = particle();
         var read = InvertedIndexPlan.compile(
