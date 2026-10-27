@@ -208,8 +208,10 @@ public final class TypeChecker {
         rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
-        // Expansion can synthesize declarations; recheck before type or
-        // structural projection can discard newly introduced effect rows.
+        // Expansion/rewrite must never erase or introduce executable physical
+        // layout authority. Re-run both fail-closed gates on the exact AST
+        // consumed by downstream type/ownership passes.
+        rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -264,8 +266,10 @@ public final class TypeChecker {
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
         program = AnnotationExpander.expand(program);
-        // Expansion can synthesize declarations; recheck before type or
-        // structural projection can discard newly introduced effect rows.
+        // Expansion/rewrite must never erase or introduce executable physical
+        // layout authority. Re-run both fail-closed gates on the exact AST
+        // consumed by downstream type/ownership passes.
+        rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
