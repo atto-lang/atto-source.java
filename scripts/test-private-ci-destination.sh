@@ -52,6 +52,8 @@ expect_fail trusted/ci
 unset MOCK_REPOSITORY_ID
 printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
 expect_fail trusted/ci
+printf 'trusted/ci 246810\nrenamed/alias 246810\n' > "$policy"
+expect_fail trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
