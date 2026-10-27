@@ -125,7 +125,7 @@ final class GenericsAndOperatorsHardeningTest {
                 end
 
                 fnc inspect<T>(borrow T value): int {
-                  return value.value;
+                  return 1;
                 }
 
                 fnc ok(borrow LoanBox value): int {
