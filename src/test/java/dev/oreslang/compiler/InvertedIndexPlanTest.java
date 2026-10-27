@@ -140,6 +140,45 @@ final class InvertedIndexPlanTest {
     }
 
     @Test
+    void stagedIndexPlanRejectsNonIntegralLiteralsAndNonArithmeticOperators() {
+        Ast.ClassDecl particle = particle();
+        Ast.NameExpr array = new Ast.NameExpr("particles");
+        for (Ast.Expr invalid : List.<Ast.Expr>of(
+                new Ast.LiteralExpr(true),
+                new Ast.LiteralExpr("0"),
+                new Ast.LiteralExpr(0.0),
+                new Ast.LiteralExpr(0.0f),
+                new Ast.UnaryExpr("not", new Ast.NameExpr("i")),
+                new Ast.UnaryExpr("!", new Ast.NameExpr("i")),
+                new Ast.BinaryExpr("eq", new Ast.NameExpr("i"),
+                        new Ast.LiteralExpr(0)),
+                new Ast.BinaryExpr("and", new Ast.NameExpr("i"),
+                        new Ast.LiteralExpr(1)),
+                new Ast.BinaryExpr("||", new Ast.NameExpr("i"),
+                        new Ast.LiteralExpr(1)))) {
+            Ast.IndexExpr site = new Ast.IndexExpr(array, invalid);
+            assertThrows(IllegalArgumentException.class,
+                    () -> InvertedIndexPlan.compile(
+                            particle, site, "x", InvertedIndexPlan.Access.READ),
+                    () -> "unverified noninteger site must fail closed: " + invalid);
+        }
+
+        for (Ast.Expr validCandidate : List.<Ast.Expr>of(
+                new Ast.LiteralExpr(0),
+                new Ast.LiteralExpr(1L),
+                new Ast.UnaryExpr("-", new Ast.NameExpr("i")),
+                new Ast.BinaryExpr("+", new Ast.NameExpr("i"),
+                        new Ast.LiteralExpr(1)),
+                new Ast.BinaryExpr("*", new Ast.NameExpr("i"),
+                        new Ast.LiteralExpr(2L)))) {
+            Ast.IndexExpr site = new Ast.IndexExpr(array, validCandidate);
+            InvertedIndexPlan candidate = InvertedIndexPlan.compile(
+                    particle, site, "x", InvertedIndexPlan.Access.READ);
+            candidate.requireExactSite(site);
+        }
+    }
+
+    @Test
     void runtimeSchemaAndColumnLoanAuthorityRemainMandatory() {
         Ast.ClassDecl particle = particle();
         var read = InvertedIndexPlan.compile(
