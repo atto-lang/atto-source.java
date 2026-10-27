@@ -95,6 +95,28 @@ final class ExplicitImportPhysicalBoundaryTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void manifestRelativeImportUsesPhysicalImporterAndRejectsOutsideSibling() throws Exception {
+        Path project = manifestProject("physical-importer");
+        Path src = Files.createDirectories(project.resolve("src"));
+        Path outside = Files.createDirectories(temp.resolve("physical-importer-outside"));
+        Path physicalImporter = outside.resolve("main.ores");
+        Files.writeString(physicalImporter, "pub fnc main(): void { return; }\n");
+        Files.writeString(outside.resolve("helper.ores"),
+                "pub fnc helper(): int { return 42; }\n");
+
+        Path importer = src.resolve("main.ores");
+        requireSymlink(importer, physicalImporter);
+
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "./helper"));
+        assertTrue(failure.getMessage().contains("escapes physical project root"),
+                failure.getMessage());
+    }
+
     @Test
     void manifestRelativeInRootAliasUsesCanonicalPhysicalIdentity() throws Exception {
         Path project = manifestProject("relative-canonical-alias");
