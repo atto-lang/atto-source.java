@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -55,8 +56,8 @@ public class OresFutureObserverTest {
         assertFalse(failed.isCancelled());
         assertFalse(failureView.isCancelled());
         assertTrue(failureView.isCompletedExceptionally());
-        assertSame(thrownByGuest, assertThrows(CancellationException.class,
-                failureView::join));
+        assertSame(thrownByGuest,
+                assertThrows(CompletionException.class, failureView::join).getCause());
     }
 
     @Test
@@ -70,7 +71,8 @@ public class OresFutureObserverTest {
         IllegalArgumentException failure = new IllegalArgumentException("expected");
         OresFuture<Integer> view = OresFuture.observe(failed);
         assertTrue(failed.failFromRuntime(failure));
-        assertSame(failure, assertThrows(IllegalArgumentException.class, view::join));
+        assertSame(failure,
+                assertThrows(CompletionException.class, view::join).getCause());
     }
 
     @Test
