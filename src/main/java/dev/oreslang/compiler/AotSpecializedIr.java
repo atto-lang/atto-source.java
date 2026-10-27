@@ -204,8 +204,10 @@ public final class AotSpecializedIr {
                     }
                     lowered.add(new Return(value));
                 } else if (stmt instanceof Ast.ExprStmt expression) {
-                    lowered.add(new ExpressionStatement(value(expression.expression(),
-                            module, generics, locals, depth + 1)));
+                    Value result = value(expression.expression(),
+                            module, generics, locals, depth + 1);
+                    if (result == null) throw fail("missing expression statement value");
+                    lowered.add(new ExpressionStatement(result));
                 } else if (stmt instanceof Ast.BindingStmt binding) {
                     if (binding.inferredTypeName() != null || binding.declaredType() == null
                             || binding.mutableReferent()) {
@@ -261,10 +263,14 @@ public final class AotSpecializedIr {
                 if (type == null) throw fail("free or dynamic identifier in specialized HIR");
                 return new LocalRef(name.name(), type);
             }
+            // Retain the checked source arithmetic operator without choosing
+            // a wrapping/checked backend instruction here. Numeric overflow
+            // and division parity require the separate #1068 contract gate.
             if (expr instanceof Ast.BinaryExpr binary) {
                 Value left = value(binary.left(), module, generics, locals, depth + 1);
                 Value right = value(binary.right(), module, generics, locals, depth + 1);
-                if (!left.type().equals(right.type())
+                if (left == null || right == null
+                        || !left.type().equals(right.type())
                         || !left.type().name().equals("int")
                         || !Set.of("+", "-", "*").contains(binary.operator())) {
                     throw fail("operator lacks proven scalar lowering semantics");
@@ -273,7 +279,8 @@ public final class AotSpecializedIr {
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 Value operand = value(unary.operand(), module, generics, locals, depth + 1);
-                if (!Set.of("+", "-").contains(unary.operator())
+                if (operand == null
+                        || !Set.of("+", "-").contains(unary.operator())
                         || !operand.type().name().equals("int")) {
                     throw fail("unproven specialized unary operator");
                 }
