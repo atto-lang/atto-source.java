@@ -68,6 +68,11 @@ expect_fail trusted/ci
 unset MOCK_EXTRA_LINE
 printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
 expect_fail trusted/ci
+printf 'trusted/ci 246810\nother/repo 246810\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+printf 'trusted/ci 246810\nother/repo 246811\n' > "$policy"
+expect_ok trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
