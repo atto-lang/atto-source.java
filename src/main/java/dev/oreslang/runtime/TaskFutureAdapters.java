@@ -17,6 +17,22 @@ public final class TaskFutureAdapters {
 
     public static <T> TaskHandle<T> fromFuture(
             OresScheduler scheduler, OresFuture<T> source) {
+        return fromFuture(scheduler, source, false);
+    }
+
+    /**
+     * For a trusted adapter that uniquely owns the source's observation
+     * subscription, release that private subscription when the adapter
+     * physically retires. Never use this on a producer-owned Future.
+     */
+    static <T> TaskHandle<T> fromOwnedObservation(
+            OresScheduler scheduler, OresFuture<T> observation) {
+        return fromFuture(scheduler, observation, true);
+    }
+
+    private static <T> TaskHandle<T> fromFuture(
+            OresScheduler scheduler, OresFuture<T> source,
+            boolean ownsObservationSubscription) {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(source, "source");
 
@@ -78,6 +94,9 @@ public final class TaskFutureAdapters {
             OresFuture.RuntimeWaiterRegistration<T> active =
                     registration.getAndSet(null);
             if (active != null) active.detach();
+            // Cancellation here is safe ONLY for a bridge-owned projection:
+            // its cancellation hook detaches a subscription, not producer.
+            if (ownsObservationSubscription) source.cancel(false);
         });
         // A synchronously settled upstream can finish the adapter before
         // publication of its detachable source subscription.
@@ -85,6 +104,7 @@ public final class TaskFutureAdapters {
             OresFuture.RuntimeWaiterRegistration<T> active =
                     registration.getAndSet(null);
             if (active != null) active.detach();
+            if (ownsObservationSubscription) source.cancel(false);
         }
         return adapter;
     }
