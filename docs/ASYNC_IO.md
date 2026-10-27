@@ -1,24 +1,30 @@
 # Async standard-library I/O
 
-The async APIs return native Oreslang `Future<T>` values. `await` suspends the
-source continuation and releases its actor/root execution carrier. Completion
-resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs remain available for compatibility.
+Core and standard-library I/O is asynchronous-only. Plain guest APIs return
+native Oreslang `Future<T>` values; `await` suspends the source continuation
+and releases its actor/root execution carrier. Completion resumes through the
+owning scheduler; I/O workers never execute guest callbacks. Blocking JDK calls
+are host implementation details admitted only on bounded context-owned I/O
+workers, never on an actor/root/CONTROL execution carrier.
+
+Legacy `*_async` spellings remain temporary aliases for source compatibility;
+they do not select a different implementation. New code should use the plain
+names and `await` them.
 
 | API | Awaited result |
 | --- | --- |
-| `fs.read_text_async(path)` | `String` (UTF-8) |
-| `fs.exists_async(path)` | `bool` |
-| `fs.write_text_async(path, text)` | `void` |
-| `fs.append_text_async(path, text)` | `void` |
-| `fs.remove_async(path)` | `void` |
-| `fs.mkdir_all_async(path)` | `void` |
-| `network.connect_async(host, port)` | `TcpConnection` |
-| `socket.read_line_async()` | `Option<String>` (`None` at EOF) |
-| `socket.write_text_async(text)` | `void` (flushes the text) |
-| `socket.close_async()` | `void` |
-| `http.get_text_async(url)` | `String` (response body) |
-| `http.post_text_async(url, text)` | `String` (response body) |
+| `fs.read_text(path)` | `String` (UTF-8) |
+| `fs.exists(path)` | `bool` |
+| `fs.write_text(path, text)` | `void` |
+| `fs.append_text(path, text)` | `void` |
+| `fs.remove(path)` | `void` |
+| `fs.mkdir_all(path)` | `void` |
+| `network.connect(host, port)` | `TcpConnection` |
+| `socket.read_line()` | `Option<String>` (`None` at EOF) |
+| `socket.write_text(text)` | `void` (flushes the text) |
+| `socket.close()` | `void` |
+| `http.get_text(url)` | `String` (response body) |
+| `http.post_text(url, text)` | `String` (response body) |
 
 `File` aliases `fs`; `net` aliases `network`. Async TCP connections are local
 capabilities, not mailbox-sendable values. Await each operation before starting
@@ -26,8 +32,8 @@ the next operation in the same direction; TCP reads and writes may run in parall
 
 ```ores
 pub async routine main(): void {
-  await fs.write_text_async("./message.txt", "hello");
-  val String text = await fs.read_text_async("./message.txt");
+  await fs.write_text("./message.txt", "hello");
+  val String text = await fs.read_text("./message.txt");
   stdio.println(text);
   return;
 }
@@ -64,10 +70,12 @@ that ignores interruption may still finish after context closure. Await outstand
 writes when their completion matters; closing a socket interrupts its pending read.
 Close TCP sockets explicitly when finished; context shutdown is a fallback.
 
-The server-side HTTP API already returns futures for accept, body reads, response
-writes and graceful shutdown. Listener setup and synchronous abort/close control
-remain separate operations. Stdout/console export and stdin are not migrated by
-this change. This implementation does not add physical actor heap isolation.
+The server-side HTTP API returns futures for listener creation, accept, body
+reads, response writes and graceful shutdown. Stdin and stdout are also submitted
+through the bounded native-I/O worker boundary; callers should await writes when
+ordering or completion matters. Synchronous abort remains a control operation,
+not a data-I/O path. This implementation does not add physical actor heap
+isolation.
 
 ## Validation
 
@@ -80,10 +88,10 @@ EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
 
-## Synchronous directory operations (Oreslang stack CLI)
+## Asynchronous directory operations (Oreslang stack CLI)
 
-The Java/Graal interpreter exposes capability-gated `fs.list_dir(path): List<String>`,
-`fs.is_dir(path): bool` and `fs.is_symlink(path): bool`. `list_dir` returns only
+The Java/Graal interpreter exposes capability-gated `fs.list_dir(path): Future<List<String>>`,
+`fs.is_dir(path): Future<bool>` and `fs.is_symlink(path): Future<bool>`. `list_dir` returns only
 the immediate child **names**, sorted lexically, and refuses directories with
 more than 20,000 children. It rejects a symlink at the input path; callers
 must check children before descending. Each operation requires scoped filesystem
