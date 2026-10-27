@@ -1214,6 +1214,18 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
     }
 
+    private boolean operationLeasesRetired() {
+        synchronized (lifecycle) {
+            return ownership.isEmpty()
+                    && acceptLeases.isEmpty()
+                    && readLeases.isEmpty()
+                    && writeLeases.isEmpty()
+                    && connectLeases.isEmpty()
+                    && pending.get() == 0
+                    && notificationReservations.get() == 0;
+        }
+    }
+
     /** Nonblocking stop request. A host may separately await termination. */
     @Override public void close() {
         synchronized (lifecycle) {
@@ -1239,8 +1251,11 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
         long left = deadline - System.nanoTime();
         if (left <= 0) return false;
-        if (boundCompletionExecutor == null && ownedCompletionExecutor != null)
-            return ownedCompletionExecutor.awaitTermination(left, TimeUnit.NANOSECONDS);
+        if (boundCompletionExecutor == null && ownedCompletionExecutor != null) {
+            if (!ownedCompletionExecutor.awaitTermination(left, TimeUnit.NANOSECONDS))
+                return false;
+            return operationLeasesRetired();
+        }
         // The VM owns its actor and CONTROL shutdown, which must happen AFTER all of our
         // notifications finish. Never shut down its shared executor here.
         retryStagedNotifications();
@@ -1259,6 +1274,6 @@ public final class NioReadinessGroup implements AutoCloseable {
             if (left <= 0 || !ownedCompletionExecutor.awaitTermination(
                     left, TimeUnit.NANOSECONDS)) return false;
         }
-        return true;
+        return operationLeasesRetired();
     }
 }
