@@ -299,4 +299,50 @@ final class InvertedArrayTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(guest),
                 "no direct guest AoS lowering may occur before true compiler integration");
     }
+
+    @Test
+    void completeNominalSchemaCheckRejectsSameNamePhysicalSubstitution() {
+        Ast.ClassDecl expected = declaration("""
+                define inverted class Particle as
+                    x: f64;
+                    y: f64;
+                end
+                """);
+        Ast.ClassDecl wrongKind = declaration("""
+                define inverted class Particle as
+                    x: i64;
+                    y: f64;
+                end
+                """);
+        Ast.ClassDecl wrongOrder = declaration("""
+                define inverted class Particle as
+                    y: f64;
+                    x: f64;
+                end
+                """);
+        Ast.ClassDecl wrongRecord = declaration("""
+                define inverted class Particle as
+                    sample: record { ok: bool, x: f64 };
+                end
+                """);
+        Ast.ClassDecl otherRecord = declaration("""
+                define inverted class Particle as
+                    sample: record { ok: bool, x: i64 };
+                end
+                """);
+
+        try (var array = InvertedArray.fromClass(expected, 0)) {
+            assertDoesNotThrow(() -> array.schema().requireMatches(expected));
+            assertThrows(IllegalStateException.class,
+                    () -> array.schema().requireMatches(wrongKind));
+            assertThrows(IllegalStateException.class,
+                    () -> array.schema().requireMatches(wrongOrder));
+        }
+
+        try (var array = InvertedArray.fromClass(wrongRecord, 0)) {
+            assertThrows(IllegalStateException.class,
+                    () -> array.schema().requireMatches(otherRecord));
+        }
+    }
+
 }
