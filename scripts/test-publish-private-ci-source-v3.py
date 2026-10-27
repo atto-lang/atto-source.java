@@ -49,6 +49,15 @@ CARRIER_CODEOWNERS = (
     b"/.github/CODEOWNERS @ORESoftware\n"
 )
 CARRIER_CODEOWNERS_BLOB = v3.git_blob_sha(CARRIER_CODEOWNERS)
+CONTROL_BYTES = {
+    path: ("control:" + path + "\n").encode()
+    for path in v3.CARRIER_CONTROL_PATHS
+}
+CONTROL_BYTES[v3.legacy.CODEOWNERS_PATH] = CARRIER_CODEOWNERS
+CONTROL_BLOBS = {
+    path: v3.git_blob_sha(raw)
+    for path, raw in CONTROL_BYTES.items()
+}
 
 
 def contract():
@@ -57,6 +66,7 @@ def contract():
         "base_sha": BASE,
         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
         "workflow_blob_sha": WORKFLOW,
+        "control_blobs": dict(CONTROL_BLOBS),
         "test_plan_path": "ci/test-plans/java-pr1482.json",
         "test_plan_blob_sha": PLAN_BLOB,
     }
@@ -555,13 +565,14 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_parse_contract_requires_exact_pr_and_pinned_fields(self):
         raw = json.dumps(
             {
-                "schema": 1,
+                "schema": 2,
                 "carriers": {
                     "trusted/ci": {
                         "repository_id": 42,
                         "base_sha": BASE,
                         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
                         "workflow_blob_sha": WORKFLOW,
+                        "control_blobs": dict(CONTROL_BLOBS),
                         "test_plans": {
                             "ci/test-plans/java-pr1482.json": {
                                 "blob_sha": PLAN_BLOB,
@@ -578,6 +589,7 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(got["repository_id"], 42)
         self.assertEqual(got["base_sha"], BASE)
         self.assertEqual(got["workflow_blob_sha"], WORKFLOW)
+        self.assertEqual(got["control_blobs"], CONTROL_BLOBS)
         self.assertEqual(got["test_plan_blob_sha"], PLAN_BLOB)
         self.assertNotIn("review_pr", got)
         with self.assertRaisesRegex(v3.Denied, "not authorized"):
@@ -592,6 +604,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 "base_sha": BASE,
                 "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
                 "workflow_blob_sha": WORKFLOW,
+                "control_blobs": dict(CONTROL_BLOBS),
                 "test_plans": {
                     "ci/test-plans/java-pr1482.json": {
                         "blob_sha": PLAN_BLOB,
@@ -633,7 +646,7 @@ class PrivateCiV3Test(unittest.TestCase):
         for carriers, message in cases:
             with self.subTest(message=message):
                 raw = json.dumps(
-                    {"schema": 1, "carriers": carriers}
+                    {"schema": 2, "carriers": carriers}
                 ).encode()
                 with self.assertRaisesRegex(v3.Denied, message):
                     v3.parse_contract(
@@ -646,13 +659,14 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_contract_rejects_unreviewed_top_level_extension(self):
         raw = json.dumps(
             {
-                "schema": 1,
+                "schema": 2,
                 "carriers": {
                     "trusted/ci": {
                         "repository_id": 42,
                         "base_sha": BASE,
                         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
                         "workflow_blob_sha": WORKFLOW,
+                        "control_blobs": dict(CONTROL_BLOBS),
                         "test_plans": {
                             "ci/test-plans/java-pr1482.json": {
                                 "blob_sha": PLAN_BLOB,
@@ -681,6 +695,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     "base_sha": BASE,
                     "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
                     "workflow_blob_sha": WORKFLOW,
+                    "control_blobs": dict(CONTROL_BLOBS),
                     "review_pr": 17,
                     "test_plans": {
                         "ci/test-plans/java-pr1482.json": {
@@ -2648,24 +2663,10 @@ class PrivateCiV3Test(unittest.TestCase):
             digest, hashlib.sha256(v3.canonical_bytes(rows)).hexdigest()
         )
 
-    def test_checked_in_contract_excludes_quarantined_incident_carrier(self):
+    def test_checked_in_contract_is_fail_closed_until_fresh_carrier_review(self):
         path = SCRIPT.parent.parent / ".github" / "private-ci-carrier-contracts.json"
         doc = json.loads(path.read_text())
-        carriers = doc["carriers"]
-        self.assertNotIn(
-            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
-            carriers,
-        )
-        carrier = carriers["opto-sync-test/go-java-validation"]
-        self.assertEqual(carrier["repository_id"], 1323598177)
-        self.assertEqual(
-            carrier["base_sha"],
-            "f8e9f99f6c1be2a20350fe65d1a553e342fe4266",
-        )
-        self.assertEqual(
-            carrier["workflow_blob_sha"],
-            "a071ba75b75b3a6c784a3e0e9c6e1817a111f139",
-        )
+        self.assertEqual(doc, {"schema": 2, "carriers": {}})
 
 
 if __name__ == "__main__":
