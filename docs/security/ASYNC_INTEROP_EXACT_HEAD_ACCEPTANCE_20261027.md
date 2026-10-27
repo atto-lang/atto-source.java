@@ -69,3 +69,51 @@ free GitHub-connector tree copier is still a source export.
 Keep Java PR #2153 and conformance PR #192 DRAFT until exact-head JVM,
 native-image, source fixture and independent five-backend parity gates all
 have nonzero executed-step evidence. All 62 shared vectors remain PENDING.
+
+## 2026-10-27: actual executable-step discovery and fail-closed JUnit receipt
+
+The new source-only `.github/workflows/async-interop-source-org-runner-canary.yml`
+targets `[self-hosted, linux, x64, oreslang-isolated-ephemeral]` with
+`permissions: {}`. Its single step **never checks out, fetches, or executes
+the Oreslang private source**. It merely identifies installed runtime tools
+and prints an explicitly source-free receipt. A queued canary is NOT a proof
+of runner availability; require at least one successfully executed step and
+independent administrator confirmation of disposable isolation, source-org
+runner-group restrictions, offline build execution, and the absence of
+production secrets. GitHub Actions job permission settings alone do not
+prove OS/process isolation.
+
+The exact-head script now executes `clean test` in offline Maven mode so
+stale class files or reports cannot satisfy the gate, and executes
+`tests/test_verify_async_interop_junit.py` first. The Python suite has
+10 independent source-free adversarial tests. The additional verifier
+`tools/verify_async_interop_junit.py` refuses a JVM success receipt unless
+these four unskipped JUnit reports contain the expected counts, identities,
+and distinct method records:
+
+| Exact JUnit suite | Required passing executions |
+| --- | ---: |
+| `OresFutureObserverTest` | 10 |
+| `TaskFutureAdaptersTest` | 11 |
+| `OneShotObservableTest` | 14 |
+| `FutureFromInlineTaskLanguageTest` | 7 |
+| **Total** | **42** |
+
+A missing, symlinked, malformed, duplicate, skipped, failed, or misattributed
+report denies the JVM proof. The counts are frozen to this implementation
+revision and must be reviewed again if test classes change. The verifier
+is a *receipt sanity gate*; it does not independently authenticate a
+malicious Maven plugin, source code under test, or the runner.
+
+**Runner action after the canary executes:** freeze the then-current PR head,
+provision an administrator-verified disposable source-org-only worker with
+JDK 25, GraalVM and offline-cached Maven dependencies, and invoke
+`bash tools/verify-async-interop-exact-head.sh HEAD_SHA`. Collect separate
+full-Maven and native-image receipts on the same pinned source tree. Never
+mark Native AOT, full guest Observable syntax, or any other backend as passed
+from the focused script alone.
+
+**Privacy blocker unchanged:** the source-main private mirror allowlist is
+empty and `main` has not been verified protected. A GitHub connector
+Git-tree write to another organization remains a private-source export
+requiring the independent policy approval, irrespective of Actions minutes.
