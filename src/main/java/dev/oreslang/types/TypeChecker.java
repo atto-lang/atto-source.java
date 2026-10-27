@@ -134,10 +134,25 @@ public final class TypeChecker {
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
 
+    // One revocation per call identity per pass, not per recursive typeOf use.
+    private final Set<Ast.Expr> begunCallRechecks =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
+    private void beginCallRecheck(Ast.Expr callSite) {
+        if (begunCallRechecks.add(callSite)) {
+            CheckedCallPlan.beginRecheck(callSite);
+        }
+    }
+
     public static Ast.Program check(Ast.Program program) {
-        TypeCheckResult checked = checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
-        return checked.program();
+        // Ownership may reject after type checking has already published
+        // plans. Keep an outer revocation scope across both checker passes.
+        try (CheckedCallPlan.ValidationScope proof = CheckedCallPlan.beginValidation()) {
+            TypeCheckResult checked = checkTypesWithDiagnostics(program);
+            OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+            proof.commit();
+            return checked.program();
+        }
     }
 
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
@@ -192,17 +207,22 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
-        rejectUnloweredCheckedEffects(program);
-        program = AnnotationExpander.expand(program);
-        // Expansion can synthesize declarations; recheck before type or
-        // structural projection can discard newly introduced effect rows.
-        rejectUnloweredCheckedEffects(program);
-        ReturnCleanupChecker.check(program);
-        TypeChecker checker = new TypeChecker();
-        checker.validateImports(program);
-        checker.collect(program);
-        checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        try (CheckedCallPlan.ValidationScope proof = CheckedCallPlan.beginValidation()) {
+            rejectUnloweredCheckedEffects(program);
+            program = AnnotationExpander.expand(program);
+            // Expansion can synthesize declarations; recheck before type or
+            // structural projection can discard newly introduced effect rows.
+            rejectUnloweredCheckedEffects(program);
+            ReturnCleanupChecker.check(program);
+            TypeChecker checker = new TypeChecker();
+            checker.validateImports(program);
+            checker.collect(program);
+            checker.validate(program);
+            TypeCheckResult result = new TypeCheckResult(
+                    program, checker.warnings, checker.shortInferredTypeNames);
+            proof.commit();
+            return result;
+        }
     }
 
     /**
@@ -316,8 +336,13 @@ public final class TypeChecker {
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
-        checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        try (CheckedCallPlan.ValidationScope proof = CheckedCallPlan.beginValidation()) {
+            checker.validate(program);
+            TypeCheckResult result = new TypeCheckResult(
+                    program, checker.warnings, checker.shortInferredTypeNames);
+            proof.commit();
+            return result;
+        }
     }
 
     private void validateImports(Ast.Program program) {
@@ -2909,6 +2934,7 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            beginCallRecheck(call);
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -4334,6 +4360,7 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            beginCallRecheck(created);
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty()
                         || created.arguments().size() > 1) {
