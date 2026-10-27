@@ -174,7 +174,7 @@ final class ImplicitSelfMethodCallTest {
                     stdio.stdout.write(roodles() + pkg::roodles() - 11);
                   }
                 end
-                pub routine main(): void { new Foo().park_it(); }
+                pub routine main(): void { val foo = new Foo(); foo.park_it(); }
                 """));
     }
 
@@ -195,7 +195,7 @@ final class ImplicitSelfMethodCallTest {
                     stdio.stdout.write(pkg::roodles());
                   }
                 end
-                pub routine main(): void { new Foo().park_it(); }
+                pub routine main(): void { val foo = new Foo(); foo.park_it(); }
                 """));
     }
 
@@ -210,7 +210,7 @@ final class ImplicitSelfMethodCallTest {
                     return r(41);
                   }
                 end
-                pub routine main(): void { stdio.stdout.write(new Foo().park_it()); }
+                pub routine main(): void { val foo = new Foo(); stdio.stdout.write(foo.park_it()); }
                 """));
     }
 
@@ -282,7 +282,7 @@ final class ImplicitSelfMethodCallTest {
                   pub roodles(int value): int { return value + 100; }
                   pub park_it(): int { return pkg::roodles(10); }
                 end
-                pub routine main(): void { stdio.stdout.write(new Foo().park_it()); }
+                pub routine main(): void { val foo = new Foo(); stdio.stdout.write(foo.park_it()); }
                 """));
     }
 
