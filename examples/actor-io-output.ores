@@ -1,0 +1,42 @@
+// Shared JVM/native fixture. Only the root observer writes process stdout.
+// A no-op io.out.write must fail (EOF/unwrap or timeout), never look successful.
+define actor Worker as
+  suspends receive(ActorMail<String> mail): void {
+    await io.out.write(mail.value);
+    await io.out.write("second");
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = await spawn Worker();
+  worker.send("hello");
+
+  val firstStep = await worker.outputs.next();
+  val first = firstStep.value.unwrap();
+  stdio.stdout.write(firstStep.done);
+  stdio.stdout.write("|");
+  stdio.stdout.write(first.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(first.sequence);
+  stdio.stdout.write("|");
+  stdio.stdout.write(first.actor_id == worker.id);
+
+  val secondStep = await worker.outputs.next();
+  val second = secondStep.value.unwrap();
+  stdio.stdout.write("|");
+  stdio.stdout.write(secondStep.done);
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.sequence);
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.actor_id == worker.id);
+
+  await worker.get_done();
+  val terminal = await worker.outputs.next();
+  stdio.stdout.write("|");
+  stdio.stdout.write(terminal.done);
+  return;
+}

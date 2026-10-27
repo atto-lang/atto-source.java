@@ -45,6 +45,15 @@ jobs:
           native-image --version
       - name: Verify JIT/JVM profile
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Verify actor io output delivery under JVM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
+          timeout 30s java --enable-native-access=ALL-UNNAMED -p "target/classes:$(cat target/classpath.txt)" -m dev.oreslang/dev.oreslang.launcher.OresMain examples/actor-io-output.ores > /tmp/actor-io-jvm.out
+          cat /tmp/actor-io-jvm.out
+          printf '%s' 'false|hello|0|true|false|second|1|true|true' > /tmp/actor-io-jvm.expected
+          cmp /tmp/actor-io-jvm.expected /tmp/actor-io-jvm.out
       - name: Run showcase
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
       - name: Load native stdlib through the modular JVM launcher
@@ -107,6 +116,14 @@ jobs:
         run: |
           ./target/ores-aot --build-info | tee /tmp/ores-aot-build-info.json
           grep -F '"managed_reference_mode":"compressed32"' /tmp/ores-aot-build-info.json
+      - name: Verify actor io output delivery under AOT
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s ./target/ores-aot --mode=aot --platform=linux examples/actor-io-output.ores > /tmp/actor-io-aot.out
+          cat /tmp/actor-io-aot.out
+          printf '%s' 'false|hello|0|true|false|second|1|true|true' > /tmp/actor-io-aot.expected
+          cmp /tmp/actor-io-aot.expected /tmp/actor-io-aot.out
       - name: Run AOT image
         run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
       - name: Load packaged native stdlib under AOT
@@ -210,6 +227,14 @@ jobs:
         run: |
           ./target/ores-hybrid --build-info | tee /tmp/ores-hybrid-build-info.json
           grep -F '"managed_reference_mode":"compressed32"' /tmp/ores-hybrid-build-info.json
+      - name: Verify actor io output delivery under hybrid
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s ./target/ores-hybrid --mode=hybrid --platform=linux examples/actor-io-output.ores > /tmp/actor-io-hybrid.out
+          cat /tmp/actor-io-hybrid.out
+          printf '%s' 'false|hello|0|true|false|second|1|true|true' > /tmp/actor-io-hybrid.expected
+          cmp /tmp/actor-io-hybrid.expected /tmp/actor-io-hybrid.out
       - name: Run hybrid image
         run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
       - name: Load packaged native stdlib under hybrid

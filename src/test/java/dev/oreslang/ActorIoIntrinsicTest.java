@@ -2,13 +2,17 @@ package dev.oreslang;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@Timeout(30)
 final class ActorIoIntrinsicTest {
     private static void check(String code, String name) throws Exception {
         try (Context context = Context.newBuilder(OresLanguage.ID)
@@ -62,6 +66,25 @@ final class ActorIoIntrinsicTest {
                 "",
                 out.toString(StandardCharsets.UTF_8),
                 "actor io.out must not be routed to process stdout");
+    }
+
+    @Test
+    void actorIoOutDeliversOrderedActorOwnedDataAndTerminalEof() throws Exception {
+        var out = new ByteArrayOutputStream();
+        String code = Files.readString(
+                Path.of("examples/actor-io-output.ores"), StandardCharsets.UTF_8);
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(out)
+                .build()) {
+            context.eval(Source.newBuilder(
+                    OresLanguage.ID, code, "actor-io-output.ores").build());
+        }
+        // Exact output also rejects any extra host stdout emitted by the actor.
+        assertEquals(
+                "false|hello|0|true|false|second|1|true|true",
+                out.toString(StandardCharsets.UTF_8),
+                "root must observe both actor-owned records in order, then EOF");
     }
 
     @Test
