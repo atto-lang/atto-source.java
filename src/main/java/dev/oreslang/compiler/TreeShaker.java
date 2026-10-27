@@ -613,7 +613,8 @@ public final class TreeShaker {
                         function.returnType(),
                         function.annotations(),
                         rewriteStatements(function.body(), module, locals),
-                        function.genericSpecs());
+                        function.genericSpecs(),
+                        function.effects());
             }
             if (declaration instanceof Ast.FieldDecl field) {
                 Ast.Expr initializer = rewriteExpression(field.initializer(), module, Map.of());
@@ -660,13 +661,15 @@ public final class TreeShaker {
                             method.isStatic(),
                             method.isAbstract(),
                             method.async(),
+                            method.suspends(),
                             method.structural(),
                             method.explicitReceiverType(),
                             method.genericParameters(),
                             method.parameters(),
                             method.returnType(),
                             method.annotations(),
-                            rewriteStatements(method.body(), module, locals)));
+                            rewriteStatements(method.body(), module, locals),
+                            method.effects()));
                 }
                 return new Ast.ClassDecl(
                         klass.name(),
@@ -678,7 +681,8 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.actorConcurrency());
             }
             return declaration;
         }
