@@ -4714,6 +4714,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("unknown anonymous aggregate kind " + object.kind());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
+            rejectOmittableLambdaParameters(lambda, "lambda");
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
@@ -5488,6 +5489,7 @@ public final class TypeChecker {
     }
 
     private void validateMutexCallback(Ast.LambdaExpr lambda, Type expectedParameter, Env parent, Set<String> generics, Type self) {
+        rejectOmittableLambdaParameters(lambda, "mutex callback");
         if (lambda.parameters().size() != 1) {
             throw new IllegalArgumentException("mutex callback must accept exactly one protected-value parameter");
         }
@@ -5518,6 +5520,18 @@ public final class TypeChecker {
     }
 
 
+    private static void rejectOmittableLambdaParameters(
+            Ast.LambdaExpr lambda,
+            String context) {
+        for (Ast.Param param : lambda.parameters()) {
+            if (param.omittable()) {
+                throw new IllegalArgumentException(
+                        context + " parameter '" + param.name()
+                                + "' cannot be omittable on this callable surface");
+            }
+        }
+    }
+
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
         if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
@@ -5525,6 +5539,7 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        rejectOmittableLambdaParameters(lambda, "lambda");
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
@@ -7299,6 +7314,7 @@ public final class TypeChecker {
     private Function inferSumLambda(
             Ast.LambdaExpr lambda, Type input, boolean zeroArg,
             Env parent, Set<String> generics, Type self, String operation) {
+        rejectOmittableLambdaParameters(lambda, operation + " callback");
         int expected = zeroArg ? 0 : 1;
         if (lambda.parameters().size() != expected) {
             throw new IllegalArgumentException(
