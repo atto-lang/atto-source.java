@@ -444,13 +444,6 @@ public final class OresProjectConfig {
                         "project-root import importer does not resolve to a regular source: "
                                 + importer));
 
-        if (manifestPath != null && isPackageManifest(manifestPath)) {
-            Path currentRoot = projectRoot.toAbsolutePath().normalize();
-            if (physicalImporter.path().startsWith(currentRoot)) {
-                return new PackageAuthority(manifestPath, currentRoot);
-            }
-        }
-
         for (Path cursor = physicalImporter.path().getParent();
                 cursor != null;
                 cursor = cursor.getParent()) {
