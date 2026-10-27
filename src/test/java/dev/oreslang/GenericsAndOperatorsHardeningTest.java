@@ -83,6 +83,58 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void bareGenericCannotBindLexicalBorrowByInferenceOrExplicitArgument() {
+        String source = """
+                define class LoanBox as
+                  pub val int value = 7;
+                end
+
+                fnc identity<T>(T value): T {
+                  return value;
+                }
+                """;
+
+        IllegalArgumentException inferred = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source + """
+                        fnc bad(borrow LoanBox value): void {
+                          val escaped = identity(value);
+                          return;
+                        }
+                        """)));
+        assertTrue(inferred.getMessage().contains("generic 'T'")
+                && inferred.getMessage().contains("borrow"),
+                inferred::getMessage);
+
+        IllegalArgumentException explicit = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source + """
+                        fnc bad(borrow LoanBox value): void {
+                          val escaped = identity<borrow LoanBox>(value);
+                          return;
+                        }
+                        """)));
+        assertTrue(explicit.getMessage().contains("generic 'T'")
+                && (explicit.getMessage().contains("owned type")
+                    || explicit.getMessage().contains("borrow")),
+                explicit::getMessage);
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class LoanBox as
+                  pub val int value = 7;
+                end
+
+                fnc inspect<T>(borrow T value): int {
+                  return value.value;
+                }
+
+                fnc ok(borrow LoanBox value): int {
+                  return inspect<LoanBox>(value);
+                }
+                """)));
+    }
+
+    @Test
     void enforcesKnownGenericArityAndSubstitutesClassMembers() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
