@@ -161,6 +161,37 @@ final class ImportsQualifiedCallTest {
     }
 
     @Test
+    void opaqueImportedFncsCannotConsumeBorrowedArguments() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> {
+                    var program = Parser.parse("""
+                            import fnc consume from "./lib.ores";
+                            pub fnc test(): void {
+                              let int value = 1;
+                              imports::consume(rt borrow value);
+                              return;
+                            }
+                            """);
+                    TypeChecker.check(program);
+                });
+        assertTrue(rejected.getMessage().contains("borrow")
+                || rejected.getMessage().contains("signature"), rejected.getMessage());
+    }
+
+    @Test
+    void importedFunctionCannotReuseRootFunctionNameThatAlsoNamesAClass() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import fnc Widget from "./lib.ores";
+                        fnc Widget(): void { return; }
+                        define class Widget as
+                        end
+                        pub routine main(): void { return; }
+                        """)));
+        assertTrue(rejected.getMessage().contains("conflicts"), rejected.getMessage());
+    }
+
+    @Test
     void qualifiedDotAccessDoesNotBecomeSpecialImportLookup() {
         AstVerifier.verifyDotIsOrdinary();
     }
