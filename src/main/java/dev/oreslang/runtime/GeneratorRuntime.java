@@ -115,8 +115,9 @@ public final class GeneratorRuntime {
         }
 
         /**
-         * One asynchronous pull. Calls are serialized by the activation even
-         * if callers issue more than one pull before an earlier pull completes.
+         * One asynchronous pull. Exactly one pull may be outstanding for an
+         * activation. An overlapping pull returns a failed OresFuture instead
+         * of admitting another runtime task that would wait behind the first.
          */
         public OresFuture<Step<T>> nextStep() {
             if (!pullInFlight.compareAndSet(false, true)) {
