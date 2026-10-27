@@ -207,6 +207,24 @@ Do not silently extend this f64-only primitive to integer overflow modes,
 f32 precision, records, or general user overloads before their semantics and
 cross-backend differential tests are specified.
 
+### Exception-safe push and issued-handle publication
+
+Insertion must **issue its opaque store/slot/generation capability before**
+consuming a free slot, initializing a newly claimed generation, storing row
+field data, updating dense row-to-slot maps, marking the row live, or
+incrementing logical length. A failed handle allocation (including OOME)
+must not leave a live but unreachable row. Reserve may have enlarged idle
+capacity, but is not allowed to publish an unreported live row. Admission
+must validate all column types and fixed-record widths before this commit
+sequence. Reused slot generations must not be reset after a failed
+admission, and a stale handle must never regain authority.
+
+The Java host reference enforces this *publication ordering* on
+`InvertedColumnStore.push` and adds negative width/type and reuse
+regressions. **No controlled OOME injection or actual Java/JUnit execution
+has been demonstrated for this change.** A source-order check is weaker
+than an executed failure-injection test and must not be reported as such.
+
 ## Borrow and concurrency rules
 
 A column view is zero-copy and tied to its owning store; compiler-enforced, nonescaping lifetime is mandatory. Read loans on a field may coexist; a write loan excludes all other same-field access. Disjoint columns may have independent write loans. Structural changes (push, erase, reorder, reserve/reallocate, close, ownership transfer) require quiescence across *all* columns; no suspension or `await` may extend an unsafe exclusive loan without an explicit proof. A raw host-language `span` must not escape its loan; the compiler is responsible for enforcing this when lowered to Oreslang.
