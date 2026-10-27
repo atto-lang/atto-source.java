@@ -89,7 +89,6 @@ final class PinnedHttpTransport implements AutoCloseable {
     private final SSLContext sslContext;
     private final long maxResponseBytes;
     private final ConnectionBudget budget;
-    private final AutoCloseable resolverOwner;
     private final Set<SelectorTransportConnection> liveConnections =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
     private final Set<Response> liveResponses =
@@ -465,7 +464,6 @@ final class PinnedHttpTransport implements AutoCloseable {
                 resolver,
                 sslContext,
                 maxResponseBytes,
-                null,
                 null);
     }
 
@@ -476,24 +474,6 @@ final class PinnedHttpTransport implements AutoCloseable {
             SSLContext sslContext,
             long maxResponseBytes,
             ConnectionBudget sharedBudget) {
-        this(
-                purpose,
-                policy,
-                resolver,
-                sslContext,
-                maxResponseBytes,
-                sharedBudget,
-                null);
-    }
-
-    PinnedHttpTransport(
-            OutboundEgressPolicy.Purpose purpose,
-            OutboundEgressPolicy.Policy policy,
-            OutboundEgressPolicy.Resolver resolver,
-            SSLContext sslContext,
-            long maxResponseBytes,
-            ConnectionBudget sharedBudget,
-            AutoCloseable resolverOwner) {
         this.purpose = Objects.requireNonNull(purpose, "purpose");
         this.policy = Objects.requireNonNull(policy, "policy");
         this.resolver = Objects.requireNonNull(resolver, "resolver");
@@ -507,7 +487,6 @@ final class PinnedHttpTransport implements AutoCloseable {
                 ? new ConnectionBudget(policy.limits())
                 : sharedBudget;
         this.budget.requireCompatible(policy.limits());
-        this.resolverOwner = resolverOwner;
     }
 
     static PinnedHttpTransport systemDefault(
@@ -547,25 +526,16 @@ final class PinnedHttpTransport implements AutoCloseable {
             OutboundEgressPolicy.Policy policy,
             long maxResponseBytes,
             ConnectionBudget sharedBudget,
-            AsyncNativeIo nativeIo) {
-        BoundedDnsResolver bounded =
-                BoundedDnsResolver.system(
-                        Objects.requireNonNull(nativeIo, "nativeIo"),
-                        policy.limits().connectTimeout());
+            OutboundEgressPolicy.Resolver resolver) {
         try {
             return new PinnedHttpTransport(
                     purpose,
                     policy,
-                    bounded,
+                    Objects.requireNonNull(resolver, "resolver"),
                     SSLContext.getDefault(),
                     maxResponseBytes,
-                    sharedBudget,
-                    bounded);
-        } catch (RuntimeException | Error failure) {
-            bounded.close();
-            throw failure;
+                    sharedBudget);
         } catch (Exception failure) {
-            bounded.close();
             throw new IllegalStateException(
                     "default TLS context unavailable",
                     failure);
@@ -1130,14 +1100,6 @@ final class PinnedHttpTransport implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         phase.set(PhysicalPhase.RETIRING);
         Exception failure = null;
-
-        if (resolverOwner != null) {
-            try {
-                resolverOwner.close();
-            } catch (Exception closeFailure) {
-                failure = closeFailure;
-            }
-        }
 
         for (Response response : List.copyOf(liveResponses)) {
             try {
