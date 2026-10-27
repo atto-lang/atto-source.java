@@ -5066,6 +5066,20 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, name.name());
+                    // Source-callable admission must precede evaluating even
+                    // the argument expressions: a rejected call must not
+                    // launch another Task or commit a guest side effect while
+                    // the no-yield guard remains live.
+                    if (env.hasLiveMutexGuards()
+                            && (direct.async()
+                                    || functionContainsPotentialSuspension(direct))) {
+                        continuation.accept(
+                                task,
+                                null,
+                                new IllegalStateException(
+                                        "cannot launch or suspend a source callable while holding a live MutexGuard"));
+                        return;
+                    }
                     evalSuspendableArguments(
                             task,
                             call.arguments(),
