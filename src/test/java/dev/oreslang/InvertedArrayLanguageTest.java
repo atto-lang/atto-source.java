@@ -223,7 +223,6 @@ final class InvertedArrayLanguageTest {
 
         TypeChecker.TypeCheckResult rechecked =
                 TypeChecker.checkTypesWithDiagnostics(typed);
-        assertSame(typed, rechecked.program());
         assertThrows(IllegalStateException.class, () ->
                 Ast.CheckedInvertedIndexes.requireProgramEpoch(typed));
         assertThrows(IllegalStateException.class, () ->
@@ -232,10 +231,15 @@ final class InvertedArrayLanguageTest {
 
         OwnershipChecker.check(
                 rechecked.program(), rechecked.shortInferredAliases());
-        long second = Ast.CheckedInvertedIndexes.requireProgramEpoch(typed);
+        Ast.MemberExpr recheckedMember = returnedMember(rechecked.program());
+        long second =
+                Ast.CheckedInvertedIndexes.requireProgramEpoch(rechecked.program());
         assertTrue(second > first);
         assertDoesNotThrow(() -> Ast.CheckedInvertedIndexes.require(
-                typed, member, second, Ast.InvertedIndexAccess.READ));
+                rechecked.program(),
+                recheckedMember,
+                second,
+                Ast.InvertedIndexAccess.READ));
     }
 
     @Test
