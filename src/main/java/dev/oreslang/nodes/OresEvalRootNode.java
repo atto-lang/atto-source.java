@@ -7597,11 +7597,25 @@ public final class OresEvalRootNode extends RootNode {
                 // separate admission protocols (e.g. MutexGuard.release);
                 // unproven dynamic member callbacks remain a P0 review gate.
                 if (env.hasLiveMutexGuards()
-                        && call.callee() instanceof Ast.NameExpr name
-                        && env.lookup(name.name()) != Env.MISSING
-                        && env.lookup(name.name()) instanceof Invokable) {
-                    throw new IllegalStateException(
-                            "cannot call an unproven dynamic source callable while holding a live MutexGuard");
+                        && call.callee() instanceof Ast.NameExpr name) {
+                    Object bound = env.lookup(name.name());
+                    if (bound instanceof Invokable) {
+                        throw new IllegalStateException(
+                                "cannot call an unproven dynamic source callable while holding a live MutexGuard");
+                    }
+                    if (bound == Env.MISSING) {
+                        Ast.FunctionDecl declared =
+                                findFunction(name.name(), call.arguments().size());
+                        if (declared != null
+                                && (declared.async()
+                                        || functionContainsPotentialSuspension(declared))) {
+                            // Check before evaluating even the arguments:
+                            // they may themselves commit effects or launch
+                            // independently owned continuations.
+                            throw new IllegalStateException(
+                                    "cannot launch or suspend a source callable while holding a live MutexGuard");
+                        }
+                    }
                 }
                 Invocation invocation = prepareInvocation(call, env);
                 if (env.hasLiveMutexGuards()
