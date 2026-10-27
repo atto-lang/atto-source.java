@@ -638,6 +638,35 @@ final class SourceLoopSoftPreemptionTest {
                 "implicit generator scheduling must obey borrow admission: " + rejected);
     }
 
+    @Test
+    void ordinaryHelperDoesNotInheritUncheckedGeneratorCooperationPermit()
+            throws Exception {
+        String output = run("""
+                fnc heavy_helper(): int {
+                  let loops = 0;
+                  while loops < 2500 do
+                    loops = loops + 1;
+                  done
+                  return loops;
+                }
+                generator fnc values(): int {
+                  yield heavy_helper();
+                  return;
+                }
+                pub async routine main(): void {
+                  for const value of values() do
+                    stdio.stdout.write(value);
+                  done
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertEquals("2500|0", output,
+                "unchecked synchronous helpers must not dynamically inherit "
+                        + "a generator's automatic suspension authority");
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
