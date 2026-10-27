@@ -7,9 +7,10 @@ owning scheduler; I/O workers never execute guest callbacks. Blocking JDK calls
 are host implementation details admitted only on bounded context-owned I/O
 workers, never on an actor/root/CONTROL execution carrier.
 
-Legacy `*_async` spellings remain temporary aliases for source compatibility;
-they do not select a different implementation. New code should use the plain
-names and `await` them.
+There is one guest-visible I/O spelling: the plain operation name. Legacy
+`*_async`, `*_sync`, and `*_blocking` I/O spellings are not part of the
+core/stdlib API; callers use `await` on the plain operation when they need its
+result.
 
 | API | Awaited result |
 | --- | --- |
