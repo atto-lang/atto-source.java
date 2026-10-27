@@ -226,7 +226,7 @@ public final class OresContext implements AutoCloseable {
         for (int i = 0; i < parts.length; ++i) {
             String part = parts[i];
             if (part.isEmpty() || part.length() > 3
-                    || !part.chars().allMatch(Character::isDigit))
+                    || !part.chars().allMatch(c -> c >= '0' && c <= '9'))
                 throw new IllegalArgumentException(
                         "network.connect_async requires a canonical numeric IPv4 literal");
             int value;
