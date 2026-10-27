@@ -725,7 +725,7 @@ class PrivateCiV3Test(unittest.TestCase):
             },
             "required_status_checks": {
                 "strict": True,
-                "contexts": ["carrier-source-free-gate"],
+                "contexts": ["verifier-tests"],
                 "checks": [],
             },
             "required_conversation_resolution": {"enabled": True},
@@ -794,6 +794,18 @@ class PrivateCiV3Test(unittest.TestCase):
                 with patch.object(v3.legacy, "gh_api", side_effect=weakened_api):
                     with self.assertRaisesRegex(v3.Denied, message):
                         v3.checked_carrier_main("trusted/ci", carrier)
+
+        missing_verifier = json.loads(json.dumps(protection))
+        missing_verifier["required_status_checks"]["contexts"] = ["unrelated-lint"]
+        def missing_verifier_api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return {"name": "main", "protected": True, "commit": {"sha": BASE}}
+            if route == "repos/trusted/ci/branches/main/protection":
+                return missing_verifier
+            raise AssertionError(route)
+        with patch.object(v3.legacy, "gh_api", side_effect=missing_verifier_api):
+            with self.assertRaisesRegex(v3.Denied, "verifier checks"):
+                v3.checked_carrier_main("trusted/ci", carrier)
 
         weak = json.loads(json.dumps(protection))
         weak["required_pull_request_reviews"]["bypass_pull_request_allowances"]["users"] = [{"login": "bypass"}]
