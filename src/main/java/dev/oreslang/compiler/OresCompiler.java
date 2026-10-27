@@ -48,6 +48,20 @@ public final class OresCompiler {
     }
 
     /**
+     * Build a backend-neutral, exact-AST lowering proof for one direct
+     * inverted-array field access. This does not enable guest inverted classes;
+     * callers must still pass the normal program admission gates.
+     */
+    public static InvertedIndexPlan planInvertedIndex(
+            Ast.ClassDecl invertedClass,
+            Ast.IndexExpr site,
+            String fieldName,
+            InvertedIndexPlan.Access access) {
+        return InvertedIndexPlan.compile(
+                invertedClass, site, fieldName, access);
+    }
+
+    /**
      * Opt-in RT primitive subset: perform the full existing type/ownership check
      * before admitting any source-level resource bounds or lowering to Java 8.
      * This is not a verified no-heap runtime or WCET proof. Consumers must run
