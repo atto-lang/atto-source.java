@@ -14,6 +14,7 @@ final class VerifyNioFocusedReportsTest {
             "NioReadinessGroupTest", List.of(
                     "stalledTcpReadDoesNotOccupyTheOnlyCompletionCarrierAndCancelRearms",
                     "outboundConnectUsesSelectorAndTransfersNonblockingChannel",
+                    "concurrentReadAndWriteShareOneRegistrationAndRetireIndependently",
                     "unresolvedConnectFailsClosedBeforeReactorOrDnsAdmission",
                     "refusedConnectRetiresLeaseAndDoesNotPoisonLaterConnect"),
             "VmNioTcpConnectionTest", List.of(
