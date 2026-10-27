@@ -349,6 +349,32 @@ public final class OresProjectConfig {
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
         String unix = importPath.replace('\\', '/');
+        if (ImportRules.isProjectRootPath(importPath)) {
+            String local = ImportRules.projectRootRelativePath(importPath);
+            if (manifestPath == null || !isPackageManifest(manifestPath)) {
+                throw new IllegalArgumentException(
+                        "project-root import requires " + PACKAGE_MANIFEST_NAME + ": " + importPath);
+            }
+
+            Path root = projectRoot.toAbsolutePath().normalize();
+            Path candidate = root.resolve(local).normalize();
+            Optional<ResolvedSource> resolved =
+                    existingSourceWithinRoot(candidate, root, importPath);
+            if (resolved.isEmpty()) return Optional.empty();
+
+            Path physicalRoot;
+            try {
+                physicalRoot = root.toRealPath();
+            } catch (IOException failure) {
+                throw new IllegalArgumentException(
+                        "cannot establish physical package root for project-root import '"
+                                + importPath + "'",
+                        failure);
+            }
+            rejectNestedPackageBoundary(physicalRoot, resolved.get().path(), importPath);
+            return resolved;
+        }
+
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
@@ -384,7 +410,7 @@ public final class OresProjectConfig {
                         "relative import '" + importPath
                                 + "' escapes physical project root '" + physicalRoot + "'");
             }
-            rejectNestedRelativePackage(physicalRoot, physicalSource, importPath);
+            rejectNestedPackageBoundary(physicalRoot, physicalSource, importPath);
             return resolved;
         }
 
@@ -402,20 +428,28 @@ public final class OresProjectConfig {
         return Optional.empty();
     }
 
-    private static void rejectNestedRelativePackage(
+    private static void rejectNestedPackageBoundary(
             Path physicalRoot,
             Path physicalSource,
             String importPath) {
         for (Path cursor = physicalSource.getParent();
                 cursor != null && !cursor.equals(physicalRoot);
                 cursor = cursor.getParent()) {
-            Path marker = cursor.resolve(MANIFEST_NAME);
-            if (Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) {
+            if (hasPackageMarker(cursor)) {
                 throw new IllegalArgumentException(
-                        "relative import '" + importPath
+                        "source import '" + importPath
                                 + "' crosses nested package boundary at '" + cursor + "'");
             }
         }
+    }
+
+    private static boolean hasPackageMarker(Path directory) {
+        return Files.exists(
+                        directory.resolve(PACKAGE_MANIFEST_NAME),
+                        LinkOption.NOFOLLOW_LINKS)
+                || Files.exists(
+                        directory.resolve(MANIFEST_NAME),
+                        LinkOption.NOFOLLOW_LINKS);
     }
 
     /**
@@ -601,23 +635,27 @@ public final class OresProjectConfig {
     }
 
     private static List<Path> parseEnvironmentPaths(Map<String, String> environment) {
-        String raw = environment.get(ENV_ORESLANG_PATH);
-        if (raw == null || raw.isBlank()) return List.of();
-
         LinkedHashSet<Path> paths = new LinkedHashSet<>();
-        String[] parts = raw.split(java.util.regex.Pattern.quote(File.pathSeparator), -1);
+        appendEnvironmentPaths(paths, environment.get(ENV_ORES_PATHS), ":");
+        appendEnvironmentPaths(paths, environment.get(ENV_ORESLANG_PATH), File.pathSeparator);
+        return List.copyOf(paths);
+    }
+
+    private static void appendEnvironmentPaths(
+            LinkedHashSet<Path> paths,
+            String raw,
+            String separator) {
+        if (raw == null || raw.isBlank()) return;
+
         Path cwd = Path.of("").toAbsolutePath().normalize();
-        for (String part : parts) {
+        for (String part : raw.split(java.util.regex.Pattern.quote(separator), -1)) {
             String trimmed = part.trim();
-            // Unlike PATH, an empty entry never means the current directory.
-            // That avoids accidental dependency injection via leading/trailing
-            // separators or "::".
+            // Empty entries never grant the current directory.
             if (trimmed.isEmpty()) continue;
             Path path = Path.of(trimmed);
             if (!path.isAbsolute()) path = cwd.resolve(path);
             paths.add(path.toAbsolutePath().normalize());
         }
-        return List.copyOf(paths);
     }
 
     private static List<Path> resolvePaths(Path base, List<String> values) {
