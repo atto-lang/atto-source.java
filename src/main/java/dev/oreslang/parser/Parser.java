@@ -11,6 +11,8 @@ public final class Parser {
     public static final String ROOT_MODULE = "__root__";
     /** Parser-only scope marker: $ is not a source identifier, so lexical variables cannot forge it. */
     public static final String PKG_ROOT_NAMESPACE = "$pkg_root$";
+    /** Explicitly imported callable bindings in this compilation unit, not ambient package search. */
+    public static final String IMPORTS_NAMESPACE = "$imports$";
 
     public record SyntaxWarning(int line, int column, String message) { }
 
@@ -4055,10 +4057,14 @@ public final class Parser {
                 // pkg::name is a compiler-resolved reference to this code
                 // unit's file-root declarations, never a receiver or import.
                 // pkg.name retains ordinary object/module member semantics.
-                if (qualifier == DOUBLE_COLON
-                        && expr instanceof Ast.NameExpr namespace
-                        && namespace.name().equals("pkg")) {
-                    expr = new Ast.MemberExpr(new Ast.NameExpr(PKG_ROOT_NAMESPACE), member);
+                if (qualifier == DOUBLE_COLON && expr instanceof Ast.NameExpr namespace) {
+                    if (namespace.name().equals("pkg")) {
+                        expr = new Ast.MemberExpr(new Ast.NameExpr(PKG_ROOT_NAMESPACE), member);
+                    } else if (namespace.name().equals("imports")) {
+                        expr = new Ast.MemberExpr(new Ast.NameExpr(IMPORTS_NAMESPACE), member);
+                    } else {
+                        expr = new Ast.MemberExpr(expr, member);
+                    }
                 } else {
                     expr = new Ast.MemberExpr(expr, member);
                 }
