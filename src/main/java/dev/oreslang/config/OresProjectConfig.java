@@ -8,10 +8,16 @@ import org.tomlj.TomlTable;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -22,13 +28,15 @@ import java.util.Optional;
 /**
  * Project-level Oreslang compiler configuration.
  *
- * <p>The nearest .oreslangc.cfg.toml found by walking upward from the source
- * file (or current working directory) owns the project. Manifest paths are
- * resolved relative to [project].root. Ambient ORESLANG_PATH entries are
- * process-relative and are searched after project-local roots.</p>
+ * <p>The nearest .ores.pkg.toml, or legacy .oreslangc.cfg.toml when no modern
+ * marker is present in that directory, owns the project. A modern package root
+ * is exactly the directory containing .ores.pkg.toml. Legacy manifests retain
+ * their historical [project].root behavior during migration.</p>
  */
 public final class OresProjectConfig {
+    public static final String PACKAGE_MANIFEST_NAME = ".ores.pkg.toml";
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String ENV_ORES_PATHS = "ORES_PATHS";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
@@ -101,8 +109,8 @@ public final class OresProjectConfig {
 
         Path searchFrom = directoryFor(start);
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
-            Path candidate = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            Path candidate = manifestInDirectory(cursor);
+            if (candidate != null) return load(candidate, environment);
         }
 
         Path root = searchFrom.toAbsolutePath().normalize();
@@ -116,6 +124,61 @@ public final class OresProjectConfig {
                 parseEnvironmentPaths(environment),
                 null,
                 LibraryProfile.STD);
+    }
+
+    private static Path manifestInDirectory(Path directory) {
+        Path modern = directory.resolve(PACKAGE_MANIFEST_NAME);
+        if (Files.exists(modern, LinkOption.NOFOLLOW_LINKS)) return modern;
+
+        Path legacy = directory.resolve(MANIFEST_NAME);
+        return Files.exists(legacy, LinkOption.NOFOLLOW_LINKS) ? legacy : null;
+    }
+
+    private static boolean isPackageManifest(Path manifest) {
+        return manifest != null
+                && manifest.getFileName() != null
+                && PACKAGE_MANIFEST_NAME.equals(manifest.getFileName().toString());
+    }
+
+    private static final int MAX_MANIFEST_BYTES = 65_536;
+
+    private static String readManifestSnapshot(Path manifest) throws IOException {
+        try (var channel = Files.newByteChannel(
+                manifest,
+                java.util.Set.<OpenOption>of(
+                        StandardOpenOption.READ,
+                        LinkOption.NOFOLLOW_LINKS))) {
+            long initialSize = channel.size();
+            if (initialSize > MAX_MANIFEST_BYTES) {
+                throw new IllegalArgumentException("project manifest exceeds 64 KiB: " + manifest);
+            }
+
+            ByteBuffer bytes = ByteBuffer.allocate(MAX_MANIFEST_BYTES + 1);
+            while (bytes.hasRemaining()) {
+                int count = channel.read(bytes);
+                if (count == -1) break;
+                if (count == 0) throw new IOException("project manifest read made no progress");
+            }
+            if (bytes.position() > MAX_MANIFEST_BYTES) {
+                throw new IllegalArgumentException("project manifest exceeds 64 KiB: " + manifest);
+            }
+            if (channel.size() != bytes.position()) {
+                throw new IOException("project manifest changed while being read: " + manifest);
+            }
+
+            bytes.flip();
+            try {
+                return StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(CodingErrorAction.REPORT)
+                        .decode(bytes)
+                        .toString();
+            } catch (CharacterCodingException invalid) {
+                throw new IllegalArgumentException(
+                        "project manifest requires valid UTF-8: " + manifest,
+                        invalid);
+            }
+        }
     }
 
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
