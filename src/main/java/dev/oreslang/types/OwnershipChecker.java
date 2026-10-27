@@ -231,6 +231,19 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        // v1 only admits lexical, directly named InvertedArray owners. A
+        // callable signature must not expose storage or a nested wrapper to
+        // host, callback, async, or module callers lacking that provenance.
+        if (containsInvertedArrayStorage(fn.returnType())) {
+            throw error("function '" + fn.name()
+                    + "' cannot return InvertedArray storage in v1");
+        }
+        for (Ast.Param param : fn.parameters()) {
+            if (containsInvertedArrayStorage(param.type())) {
+                throw error("function '" + fn.name()
+                        + "' cannot receive InvertedArray storage by parameter in v1");
+            }
+        }
         for (Ast.GenericParameter spec : fn.genericSpecs()) {
             if (spec.defaultType() != null && containsBorrowType(spec.defaultType())) {
                 throw error("function '" + fn.name()
@@ -262,6 +275,10 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
+            if (containsInvertedArrayStorage(fieldType)) {
+                throw error("class/actor field '" + klass.name() + "." + field.name()
+                        + "' cannot retain InvertedArray storage in v1");
+            }
             if (fieldType != null && containsBorrowType(fieldType)) {
                 throw error("field '" + klass.name() + "." + field.name()
                         + "' cannot store a borrowed reference, including inside nested owned wrappers; "
@@ -581,6 +598,9 @@ public final class OwnershipChecker {
                     }
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (containsInvertedArrayStorage(returned.type)) {
+                    throw error("cannot return InvertedArray storage or wrapped storage in v1");
+                }
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
@@ -596,6 +616,9 @@ public final class OwnershipChecker {
                 throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
             }
             ValueInfo value = checkExpr(yielded.value(), scope, true);
+            if (containsInvertedArrayStorage(value.type)) {
+                throw error("cannot yield InvertedArray storage or wrapped storage in v1");
+            }
             if (isBorrowValue(value)) {
                 throw error(yielded.delegated()
                         ? "borrowed values cannot cross a yield* delegation boundary"
@@ -1219,6 +1242,9 @@ public final class OwnershipChecker {
             return switch (runtime.operation()) {
                 case "borrow" -> {
                     BorrowPlace place = borrowPlace(argument, scope);
+                    if (containsInvertedArrayStorage(place.type())) {
+                        throw error("rt borrow cannot expose InvertedArray storage in v1");
+                    }
                     validateBorrow(place.owner(), false);
                     yield new ValueInfo(
                             Ast.TypeRef.borrowed(place.type(), false),
@@ -1244,6 +1270,9 @@ public final class OwnershipChecker {
                                 + "owner or replace the field explicitly");
                     }
                     ValueInfo taken = checkExpr(argument, scope, true);
+                    if (containsInvertedArrayStorage(taken.type)) {
+                        throw error("rt take cannot transfer InvertedArray storage in v1");
+                    }
                     if (isBorrowValue(taken)) {
                         throw error("rt take requires owned data; a borrow cannot regain ownership");
                     }
@@ -1258,6 +1287,9 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    if (containsInvertedArrayStorage(source.type)) {
+                        throw error("rt copy cannot duplicate InvertedArray storage in v1");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
@@ -1267,6 +1299,9 @@ public final class OwnershipChecker {
                 }
                 case "share" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    if (containsInvertedArrayStorage(source.type)) {
+                        throw error("rt share cannot expose InvertedArray storage in v1");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt share of move-only values requires the owning Shared<T> convergence; "
@@ -2786,6 +2821,10 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (containsInvertedArrayStorage(argument.type)) {
+            throw error(callable + " argument " + position
+                    + " cannot pass InvertedArray storage across a callable boundary in v1");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
