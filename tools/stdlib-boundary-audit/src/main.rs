@@ -240,7 +240,33 @@ const TYPECHECKER_FORBIDDEN_SURFACE: &[&str] = &[
     "name.name().equals(\"print\")",
 ];
 
+fn contains_java_unicode_escape(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] != b'\\' || bytes[i + 1] != b'u' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < bytes.len() && bytes[j] == b'u' {
+            j += 1;
+        }
+        if j + 4 <= bytes.len() && bytes[j..j + 4].iter().all(u8::is_ascii_hexdigit) {
+            return true;
+        }
+        i = j;
+    }
+    false
+}
+
 fn normalize_java(source: &str, strip_literals: bool) -> Result<String, String> {
+    // Java translates Unicode escapes before comments and string literals are
+    // tokenized. Reject them outright in strict-audit targets so an escape
+    // cannot synthesize a newline/identifier and bypass this source gate.
+    if contains_java_unicode_escape(source) {
+        return Err("Java Unicode escapes are forbidden in strict audit targets".into());
+    }
     #[derive(Clone, Copy, PartialEq)]
     enum State {
         Code,
@@ -582,6 +608,20 @@ mod tests {
         let normalized = normalize_java(source, true).unwrap();
         assert!(!EVAL_FORBIDDEN_CODE.iter().any(|needle| normalized.contains(*needle)));
     }
+    #[test]
+    fn java_unicode_escape_preprocessing_is_rejected() {
+        assert!(normalize_java(
+            r#"// escape before lexing: \\u000a context.nativeIo().submit(() -> work());"#,
+            true
+        )
+        .is_err());
+        assert!(normalize_java(
+            r#"String value = "\\u0066s.read_text";"#,
+            true
+        )
+        .is_err());
+    }
+
     #[test]
     fn java_code_edge_guard_rejects_blocking_dispatch() {
         let source = "return context.nativeIo().submit(() -> NativeIo.readText(path));";
