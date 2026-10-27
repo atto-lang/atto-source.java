@@ -512,8 +512,7 @@ final class PinnedHttpTransport implements AutoCloseable {
                     OutboundEgressPolicy.Resolver.system(),
                     SSLContext.getDefault(),
                     maxResponseBytes,
-                    sharedBudget,
-                    null);
+                    sharedBudget);
         } catch (Exception failure) {
             throw new IllegalStateException(
                     "default TLS context unavailable",
