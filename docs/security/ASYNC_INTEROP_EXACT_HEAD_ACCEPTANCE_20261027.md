@@ -85,8 +85,8 @@ prove OS/process isolation.
 
 The exact-head script now executes `clean test` in offline Maven mode so
 stale class files or reports cannot satisfy the gate, and executes
-`tests/test_verify_async_interop_junit.py` first. The Python suite has
-10 independent source-free adversarial tests. The additional verifier
+`tests/test_verify_async_interop_junit.py` first. The Python suite now has
+15 independent source-free adversarial tests. The additional verifier
 `tools/verify_async_interop_junit.py` refuses a JVM success receipt unless
 these four unskipped JUnit reports contain the expected counts, identities,
 and distinct method records:
@@ -100,7 +100,8 @@ and distinct method records:
 | **Total** | **42** |
 
 A missing, symlinked, malformed, duplicate, skipped, failed, or misattributed
-report denies the JVM proof. The counts are frozen to this implementation
+report denies the JVM proof. Unexpected extra TEST-*.xml reports, DTD-bearing XML,
+and JUnit reports exceeding 4 MiB each are also rejected. The counts are frozen to this implementation
 revision and must be reviewed again if test classes change. The verifier
 is a *receipt sanity gate*; it does not independently authenticate a
 malicious Maven plugin, source code under test, or the runner.
@@ -169,3 +170,27 @@ Standalone [draft source-free canary PR #2172](https://github.com/ores-truffle-o
 **DEPRECATED:** `oreslang-isolated-ephemeral` was used by historical PR-triggered workflows that remained queued. Never assign this label to a new runner. The reviewed source-free canary instead requires `oreslang-isolated-canary-2172-v2`. Provision a purpose-specific disposable worker with the **v2 label only**, plus built-in `self-hosted`, `linux`, `x64`, in a restrictive runner group for approved workflows. This provides label-level separation from the three legacy queued jobs, but it does not independently verify GitHub's runner-group restrictions, host credentials, or network isolation.
 
 The Actions administrator still must cancel all old queued PR-controlled workflows (runs 40546884149, 40546920891, 40547417920) and verify no equivalent pending jobs, establish enforced `main` protection and independent review, then merge ONLY the approved canary workflow to the protected default branch. Do not register a runner or run any source-bearing job as a shortcut. The Java application PR must remain draft until actual JVM/AOT proof. Do not put the v2 label on any PR-triggered workflow.
+
+## 2026-10-27: additional fail-closed XML admission checks
+
+At Java draft PR #2153, the focused receipt gate now rejects **unexpected extra**
+`TEST-*.xml` files in `target/surefire-reports`, DTD declarations, and JUnit
+XML reports over **4 MiB** each, in addition to the pre-existing four-suite,
+42-test exact-count/identity/no-skips requirements. The input ceiling limits
+parsing of untrusted test-report bytes; the control does not authenticate a
+compromised Maven plugin or a maliciously crafted runner image.
+
+Five independent new source-free adversarial checks cover extra suites,
+an extra zero-test report despite the correct total, forbidden DTD, oversized
+XML, and a hidden per-test skip. Both source-free Python files were executed
+locally via `python3 -m unittest discover -s tests -p
+ 'test_verify_async_interop_junit.py' -v` with **15/15 passed**, then committed
+and compared by exact Git blob SHA to the locally executed bytes:
+
+- `tools/verify_async_interop_junit.py`: `5a2e49d7cd22eb596ba64c54fd8fd3f61f466296`
+- `tests/test_verify_async_interop_junit.py`: `e35e0d1aa7d0e166394adb5e0ed7852a70e79ba3`
+
+These source-free tests are **not** the Java JUnit suites, executable guest
+conformance, full Maven validation, GraalVM Native Image, or physical Task
+retirement proof. Keep all those release gates pending until an approved
+source-org runner actually executes them and records nonzero job steps.
