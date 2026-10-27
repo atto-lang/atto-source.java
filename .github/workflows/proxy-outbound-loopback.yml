@@ -6,11 +6,15 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ProxyLoopbackBridge.java'
       - 'src/main/java/dev/oreslang/runtime/OutboundHttpRequest.java'
       - 'src/main/java/dev/oreslang/runtime/OutboundEgressPolicy.java'
+      - 'src/main/java/dev/oreslang/runtime/PinnedHttpTransport.java'
       - 'src/test/java/dev/oreslang/runtime/Proxy*Check.java'
       - 'src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackSuiteTest.java'
       - 'src/test/java/dev/oreslang/runtime/ProxyLoopbackBridgeContractTest.java'
       - 'src/test/java/dev/oreslang/runtime/OutboundHttpRequestGuestTest.java'
       - 'src/test/java/dev/oreslang/runtime/OutboundEgressPolicyTest.java'
+      - 'src/test/java/dev/oreslang/runtime/PinnedHttpTransportTest.java'
+      - 'src/test/resources/tls/origin-example-cert.pem'
+      - 'src/test/resources/tls/origin-example-key.pem'
       - 'scripts/test-proxy-outbound-loopback.sh'
       - '.github/workflows/proxy-outbound-loopback.yml'
   workflow_dispatch:
@@ -45,7 +49,7 @@ jobs:
           javac -version
           javac -version 2>&1 | grep -Eq '^javac 25([.]|$)'
       - name: Maven real-socket transport and guest-client suite
-        run: mvn -B -ntp -Dtest=ProxyOutboundLoopbackSuiteTest,OutboundHttpRequestGuestTest,OutboundEgressPolicyTest test
+        run: mvn -B -ntp -Dtest=ProxyOutboundLoopbackSuiteTest,OutboundHttpRequestGuestTest,OutboundEgressPolicyTest,PinnedHttpTransportTest test
       - name: Compile current-runtime bridge contract
         run: mvn -B -ntp -Dtest=ProxyLoopbackBridgeContractTest test
       - name: Real loopback socket/race regression
