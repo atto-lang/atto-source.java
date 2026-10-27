@@ -44,6 +44,8 @@ public final class ActorNativeArena implements AutoCloseable {
 
     @FunctionalInterface
     interface Budget {
+        // Refund callbacks must be retryable: throwing must leave their charge
+        // unchanged. A successful return commits the refund exactly once.
         Runnable reserve(int bytes);
     }
 
@@ -154,6 +156,8 @@ public final class ActorNativeArena implements AutoCloseable {
     private long committed;
     private long allocated;
     private boolean closed;
+    private boolean cleanupComplete;
+    private boolean cleanupInProgress;
     /** Lazy per-actor byte-addressed guest heap; no other actor can access it. */
     private ActorLinearMemory linearMemory;
 
@@ -780,6 +784,8 @@ public final class ActorNativeArena implements AutoCloseable {
         private final int capacity;
         private final long baseOffset;
         private final Runnable release;
+        private boolean budgetReleased;
+        private boolean releasing;
         private int readLeases;
         private Region(ByteBuffer memory, int capacity, long baseOffset, Runnable release) {
             this.memory = memory;
@@ -1006,11 +1012,21 @@ public final class ActorNativeArena implements AutoCloseable {
         }
 
         private void revoke() {
-            if (memory == null) return;
-            releaseNative(memory);
-            memory = null;
-            committed -= capacity;
-            release.run();
+            if (releasing) throw new IllegalStateException("recursive native region release");
+            releasing = true;
+            try {
+                if (memory != null) {
+                    releaseNative(memory);
+                    memory = null;
+                    committed -= capacity;
+                }
+                if (!budgetReleased) {
+                    release.run();
+                    budgetReleased = true;
+                }
+            } finally {
+                releasing = false;
+            }
         }
         @Override public void close() {
             synchronized (ActorNativeArena.this) {
@@ -1419,7 +1435,8 @@ public final class ActorNativeArena implements AutoCloseable {
      * preserve the whole arena so its outstanding lease can release safely.
      */
     @Override public synchronized void close() {
-        if (closed) return;
+        if (cleanupComplete) return;
+        if (cleanupInProgress) throw new IllegalStateException("recursive native arena cleanup");
         for (Region region : regions) {
             if (region.readLeases != 0) {
                 throw new IllegalStateException(
@@ -1427,25 +1444,45 @@ public final class ActorNativeArena implements AutoCloseable {
             }
         }
         closed = true;
-        if (linearMemory != null) linearMemory.forgetReleasedPages();
-        for (Region region : regions) region.revoke();
-        regions.clear();
-        for (ByteBuffer slab : slabs) releaseNative(slab);
-        for (Runnable release : releases) release.run();
-        slabs.clear();
-        slabBases.clear();
-        releases.clear();
-        referencesByOffset.clear();
-        referenceRefCounts.clear();
-        referenceOffsets.clear();
-        capabilityRefCounts.clear();
-        capabilitiesById.clear();
-        capabilityIds.clear();
-        issuedNativeCapabilities.clear();
-        issuedNativeOffsets.clear();
-        committed = 0;
+        cleanupInProgress = true;
+        try {
+            if (linearMemory != null) linearMemory.forgetReleasedPages();
+            for (Region region : regions) region.revoke();
+            regions.clear();
+            for (int i = 0; i < slabs.size(); i++) {
+                ByteBuffer slab = slabs.get(i);
+                if (slab != null) {
+                    releaseNative(slab);
+                    slabs.set(i, null);
+                    committed -= slab.capacity();
+                }
+            }
+            for (int i = 0; i < releases.size(); i++) {
+                Runnable release = releases.get(i);
+                if (release != null) {
+                    release.run();
+                    releases.set(i, null);
+                }
+            }
+            slabs.clear();
+            slabBases.clear();
+            releases.clear();
+            referencesByOffset.clear();
+            referenceRefCounts.clear();
+            referenceOffsets.clear();
+            capabilityRefCounts.clear();
+            capabilitiesById.clear();
+            capabilityIds.clear();
+            issuedNativeCapabilities.clear();
+            issuedNativeOffsets.clear();
+            committed = 0;
+            cleanupComplete = true;
+        } finally {
+            cleanupInProgress = false;
+        }
     }
 
     private static native ByteBuffer allocateNative(int bytes);
     private static native void releaseNative(ByteBuffer memory);
 }
+
