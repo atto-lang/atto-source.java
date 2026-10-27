@@ -37,6 +37,7 @@ final class VerifyNioFocusedReports {
                     "NioReadinessGroupTest", java.util.Set.of(
                             "stalledTcpReadDoesNotOccupyTheOnlyCompletionCarrierAndCancelRearms",
                             "outboundConnectUsesSelectorAndTransfersNonblockingChannel",
+                            "concurrentReadAndWriteShareOneRegistrationAndRetireIndependently",
                             "unresolvedConnectFailsClosedBeforeReactorOrDnsAdmission",
                             "refusedConnectRetiresLeaseAndDoesNotPoisonLaterConnect"),
                     "VmNioTcpConnectionTest", java.util.Set.of(
