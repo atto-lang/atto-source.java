@@ -297,14 +297,26 @@ public final class InvertedColumnStore implements AutoCloseable {
             reserve(next);
         }
         int row = length;
-        int slot = freeCount != 0 ? reusable[--freeCount] : slotCount++;
-        if (generations[slot] == 0) generations[slot] = 1;
+        // Issue the capability BEFORE committing any logical row state.
+        // The allocation in new Handle can fail (e.g. OOME); publishing the
+        // row first would leave an unreachable live row after push throws.
+        // reserve() may have increased spare capacity, but length, slot
+        // ownership and free-list membership must remain unchanged on
+        // handle issuance failure.
+        int slot = freeCount != 0 ? reusable[freeCount - 1] : slotCount;
+        long generation = generations[slot] == 0 ? 1 : generations[slot];
+        Handle issued = new Handle(capability, owner, slot, generation);
+        // The remaining writes are fixed-capacity primitive stores, with
+        // widths and values validated before this publication sequence.
+        if (freeCount != 0) freeCount--;
+        else slotCount++;
+        generations[slot] = generation;
         for (int i = 0; i < kinds.length; i++) store(i, row, values[i]);
         rowSlots[row] = slot;
         slotRows[slot] = row;
         live[slot] = true;
         length++;
-        return new Handle(capability, owner, slot, generations[slot]);
+        return issued;
     }
 
     /** Unordered O(column-count) erase, preserving surviving logical handles. */
