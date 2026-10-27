@@ -140,6 +140,59 @@ final class ActorGroupManagedWorkersReconciliationTest {
     }
 
     @Test
+    void runtimeShutdownKeepsWorkerDoneSnapshotLiveWhileRefsAreHidden() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch exit = new CountDownLatch(1);
+        ActorRuntime.ActorGroup group = runtime.createActorGroup();
+        ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
+                ActorRuntime.ActorKind.SHARED,
+                IsolatePolicy.developer(),
+                ctx -> (value, turn) -> {
+                    entered.countDown();
+                    while (exit.getCount() != 0) {
+                        try {
+                            exit.await(50, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException ignored) {
+                            // Runtime carrier shutdown may interrupt the host
+                            // thread. Keep the turn alive until the fixture
+                            // explicitly releases it so the lifecycle barrier
+                            // can be observed during sealed shutdown.
+                        }
+                    }
+                });
+
+        worker.send(1);
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+        Thread closer = Thread.ofVirtual().start(runtime::close);
+        try {
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!group.closed() && System.nanoTime() < until) Thread.yield();
+            assertTrue(group.closed(), "runtime shutdown must seal group observation");
+            assertEquals(0, group.workerCount());
+            assertTrue(group.workers().isEmpty(),
+                    "sealed runtime must not re-expose retained ActorRefs");
+
+            OresFuture<java.util.List<Void>> doneSnapshot = group.workersDone();
+            assertFalse(doneSnapshot.isDone(),
+                    "runtime admission sealing must not turn an active worker barrier into an empty completed snapshot");
+
+            exit.countDown();
+            try {
+                doneSnapshot.get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException expectedCancellation) {
+                // Runtime shutdown may settle the worker as cancelled; either
+                // terminal outcome is valid, but it must not precede retirement.
+            }
+        } finally {
+            exit.countDown();
+            closer.join(TimeUnit.SECONDS.toMillis(5));
+        }
+        assertFalse(closer.isAlive(), "runtime close must finish after the worker retires");
+    }
+
+    @Test
     void rejectedInitializationReleasesWorkerAndCannotAdoptForeignRuntime() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime foreignRuntime = new ActorRuntime()) {
