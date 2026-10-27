@@ -117,3 +117,47 @@ from the focused script alone.
 empty and `main` has not been verified protected. A GitHub connector
 Git-tree write to another organization remains a private-source export
 requiring the independent policy approval, irrespective of Actions minutes.
+
+## 2026-10-27 safety correction: DO NOT attach a runner to queued PR jobs
+
+The first source-free canary workflow was automatically triggered via
+`pull_request` and could therefore dispatch an unreviewed PR-supplied
+workflow onto a self-hosted runner. Subsequent pre-fix revisions also
+contained a malformed shell quote and duplicate receipt markers. Those
+versions **must not** be trusted as an admission check.
+
+**Three pre-fix runs remained queued when inspected:**
+
+- `40546884149` (head `a8faa62d3e71e22c5b6256db99f9485cdf8c4d50`)
+- `40546920891` (head `567d1e4308747e61367c4625abc37ee078b2bd92`)
+- `40547417920` (head `6d335236a8c6b86326e82b8d0e44f3d750796bf3`)
+
+**Administrator must cancel all queued pre-fix runs and verify no similar
+unreviewed self-hosted jobs remain before registering any matching runner.**
+An old queued workflow can execute after a runner becomes available, even
+if a newer PR revision removes its automatic trigger. The GitHub connector
+currently used to inspect this issue cannot cancel runs or register runners;
+issue comments and draft code changes alone do not do either.
+
+The updated canary workflow now has **only `workflow_dispatch`**, empty
+job permissions, no checkout, a `refs/heads/main` guard, and Bash syntax
+validated locally. It checks Java/Javac 25, Maven, Python and GraalVM
+Native Image tooling. A developer cannot dispatch this draft-only workflow
+safely: GitHub manual dispatch requires the workflow file to exist on
+the default branch. Protect source `main`, obtain independent CODEOWNER
+review and merge the *source-free* canary into the default branch under
+approved governance before manually dispatching it there.
+
+Do not merge the source-bearing implementation PR to solve that workflow
+availability issue, and do not run PR-supplied workflow definitions on
+self-hosted workers. Runner registration or service activation must be
+performed by the authorized source-organization administrator. Any
+scheduled job is separately subject to no-secrets/egress isolation checks.
+
+The checked-in focused source-free JUnit XML validator and its tests were
+reconstructed in a local ephemeral directory and verified **byte-for-byte
+against their Git blob SHAs**, then run via the corrected Python unittest
+discovery command: **10/10 passed**. Separately the canary YAML parsed and
+its embedded Bash passed `bash -n`. Neither proves JVM compilation,
+source-facing guest execution, physical Task retirement, AOT or source-org
+runner capability.
