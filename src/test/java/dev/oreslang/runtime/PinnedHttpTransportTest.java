@@ -814,9 +814,7 @@ final class PinnedHttpTransportTest {
                 OutboundEgressPolicy.Policy.loopbackOnly(),
                 resolver,
                 SSLContext.getDefault(),
-                1024,
-                null,
-                resolver);
+                1024);
 
         AtomicReference<Throwable> requestFailure =
                 new AtomicReference<>();
@@ -861,6 +859,7 @@ final class PinnedHttpTransportTest {
             Thread.sleep(5);
         }
         assertEquals(0, resolver.activeResolutions());
+        resolver.close();
         nativeIo.close();
     }
 
