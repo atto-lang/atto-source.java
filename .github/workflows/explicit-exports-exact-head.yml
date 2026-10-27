@@ -13,12 +13,15 @@ on:
       - "src/main/java/dev/oreslang/compiler/IncrementalCompiler.java"
       - "src/main/java/dev/oreslang/compiler/ImportGraph.java"
       - "src/main/java/dev/oreslang/types/TypeChecker.java"
+      - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
       - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
       - "src/test/java/dev/oreslang/ExplicitExportSyntaxTest.java"
       - "src/test/java/dev/oreslang/ExplicitExportSemanticMatrixTest.java"
       - "src/test/java/dev/oreslang/ExplicitVisibilityContractTest.java"
       - "src/test/java/dev/oreslang/ExplicitExportLinkedImportTest.java"
       - "src/test/java/dev/oreslang/ModuleContractHardeningTest.java"
+      - "src/test/java/dev/oreslang/IncrementalFunctorStaticTest.java"
+      - "src/test/java/dev/oreslang/FileRootPublicClassImportTest.java"
       - ".github/workflows/explicit-exports-exact-head.yml"
   workflow_dispatch:
 
@@ -55,5 +58,5 @@ jobs:
       - name: Run explicit export v1 tests
         run: >-
           mvn -B -ntp
-          -Dtest=ExplicitExportSyntaxTest,ExplicitExportSemanticMatrixTest,ExplicitVisibilityContractTest,ExplicitExportLinkedImportTest,ModuleContractHardeningTest
+          -Dtest=ExplicitExportSyntaxTest,ExplicitExportSemanticMatrixTest,ExplicitVisibilityContractTest,ExplicitExportLinkedImportTest,ModuleContractHardeningTest,IncrementalFunctorStaticTest,FileRootPublicClassImportTest
           test
