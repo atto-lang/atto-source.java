@@ -331,15 +331,30 @@ final class InvertedArrayTest {
                 end
                 """);
 
-        try (var array = InvertedArray.fromClass(expected, 0)) {
+        try (var array = InvertedArray.fromClass(expected, 0);
+                var kindMismatch = InvertedArray.fromClass(wrongKind, 0);
+                var orderMismatch = InvertedArray.fromClass(wrongOrder, 0)) {
             assertDoesNotThrow(() -> array.schema().requireMatches(expected));
+            assertEquals(
+                    array.schema().physicalFingerprint(),
+                    InvertedArray.Schema.fromClass(expected).physicalFingerprint());
+            assertNotEquals(
+                    array.schema().physicalFingerprint(),
+                    kindMismatch.schema().physicalFingerprint());
+            assertNotEquals(
+                    array.schema().physicalFingerprint(),
+                    orderMismatch.schema().physicalFingerprint());
             assertThrows(IllegalStateException.class,
                     () -> array.schema().requireMatches(wrongKind));
             assertThrows(IllegalStateException.class,
                     () -> array.schema().requireMatches(wrongOrder));
         }
 
-        try (var array = InvertedArray.fromClass(wrongRecord, 0)) {
+        try (var array = InvertedArray.fromClass(wrongRecord, 0);
+                var other = InvertedArray.fromClass(otherRecord, 0)) {
+            assertNotEquals(
+                    array.schema().physicalFingerprint(),
+                    other.schema().physicalFingerprint());
             assertThrows(IllegalStateException.class,
                     () -> array.schema().requireMatches(otherRecord));
         }
