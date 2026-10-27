@@ -549,6 +549,73 @@ final class SourceLoopSoftPreemptionTest {
                 "while must lower to the same resumable budgeted backedge");
     }
 
+    @Test
+    void cpuHeavyGeneratorUsesSameBoundedReductionQuantumAsSourceTasks()
+            throws Exception {
+        String output = run("""
+                generator fnc values(): int {
+                  let total = 0;
+                  while total < 6000 do
+                    total = total + 1;
+                  done
+                  yield total;
+                  return;
+                }
+                pub async routine main(): void {
+                  for const value of values() do
+                    stdio.stdout.write(value);
+                  done
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("6000|"), output);
+        long cooperates = Long.parseLong(output.substring("6000|".length()));
+        assertTrue(cooperates > 0,
+                "generator CPU loop must yield an owned virtual carrier "
+                        + "without an explicit source rt cooperate");
+    }
+
+    @Test
+    void automaticGeneratorCooperationDefersUntilMutexGuardIsReleased()
+            throws Exception {
+        String output = run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                generator fnc values(): int {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  let under_guard = 0;
+                  while under_guard < 1024 do
+                    under_guard = under_guard + 1;
+                  done
+                  guard.release();
+                  yield process.descriptor.source_loop_cooperates;
+                  let after_guard = 0;
+                  while after_guard < 2048 do
+                    after_guard = after_guard + 1;
+                  done
+                  yield process.descriptor.source_loop_cooperates;
+                  return;
+                }
+                pub async routine main(): void {
+                  for const value of values() do
+                    stdio.stdout.write(value);
+                    stdio.stdout.write("|");
+                  done
+                  return;
+                }
+                """);
+        String[] values = output.split("\\|");
+        assertEquals(2, values.length, output);
+        assertEquals("0", values[0],
+                "automatic generator preemption must not cross an active MutexGuard");
+        assertTrue(Long.parseLong(values[1]) > 0,
+                "released MutexGuard should restore generator scheduler cooperation");
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
