@@ -500,6 +500,39 @@ final class GeneratorLanguageTest {
     }
 
     @Test
+    void yieldExpressionCannotCreateOrDelegateBorrowAcrossSuspension() {
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                          pub val int value = 1;
+                        end
+                        fnc gen* bad(Box box): Iterator<&Box> {
+                          yield &box;
+                          return;
+                        }
+                        """));
+        assertTrue(direct.getMessage().contains("borrowed references cannot be yielded"),
+                direct::getMessage);
+
+        IllegalArgumentException delegated = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                          pub val int value = 1;
+                        end
+                        fnc gen* bad(Iterator<&Box> source): Iterator<&Box> {
+                          yield* source;
+                          return;
+                        }
+                        """));
+        assertTrue(delegated.getMessage().contains("borrowed yield*")
+                        || delegated.getMessage().contains("borrowed iterables"),
+                delegated::getMessage);
+    }
+
+
+    @Test
     void synchronousForAwaitAdapterStillRejectsLiveBorrows() {
         var error = assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define class Box as
