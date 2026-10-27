@@ -94,6 +94,29 @@ final class PackageRootModernizationTest {
                 config.manifestPath().orElseThrow());
     }
 
+
+    @Test
+    void modernManifestSnapshotRejectsOversizeAndInvalidUtf8() throws Exception {
+        Path root = Files.createDirectories(temp.resolve("modern-manifest-bytes"));
+        Path source = root.resolve("main.ores");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+        Path manifest = root.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+
+        Files.writeString(manifest, "x".repeat(65_537));
+        IllegalArgumentException oversized = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(source, Map.of()));
+        assertTrue(oversized.getMessage().contains("64 KiB"),
+                oversized.getMessage());
+
+        Files.write(manifest, new byte[] {(byte) 0xc3, (byte) 0x28});
+        IllegalArgumentException invalidUtf8 = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(source, Map.of()));
+        assertTrue(invalidUtf8.getMessage().contains("valid UTF-8"),
+                invalidUtf8.getMessage());
+    }
+
     @Test
     void modernPackageRootIsManifestDirectoryNotProjectRootRedirect() throws Exception {
         Path root = Files.createDirectories(temp.resolve("modern-root-fixed"));
