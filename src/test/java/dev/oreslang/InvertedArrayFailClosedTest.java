@@ -51,4 +51,67 @@ final class InvertedArrayFailClosedTest {
                 failure.getMessage().contains("row projection cannot escape"),
                 failure::getMessage);
     }
+
+    @Test
+    void callableSignaturesCannotTransferOrWrapInvertedStorage() {
+        String prefix = """
+                define inverted class Particle as
+                  val f64 x;
+                end
+                """;
+        String[][] invalid = {
+                {
+                    "fnc bad(InvertedArray<Particle> particles): void { return; }",
+                    "cannot receive InvertedArray storage by parameter"
+                },
+                {
+                    "fnc bad(Future<InvertedArray<Particle>> pending): void { return; }",
+                    "cannot receive InvertedArray storage by parameter"
+                },
+                {
+                    "fnc bad(): InvertedArray<Particle> {"
+                            + " return new InvertedArray<Particle>(); }",
+                    "cannot return InvertedArray storage"
+                },
+                {
+                    "type Hidden = InvertedArray<Particle>;"
+                            + " fnc bad(Hidden particles): void { return; }",
+                    "cannot receive InvertedArray storage by parameter"
+                }
+        };
+        for (String[] input : invalid) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(prefix + input[0]),
+                    input[0]);
+            assertTrue(failure.getMessage().contains(input[1]),
+                    () -> input[0] + ": " + failure.getMessage());
+        }
+    }
+
+    @Test
+    void runtimeOwnershipOperationsCannotLaunderInvertedStorage() {
+        for (String operation : new String[] {"borrow", "take", "share", "copy"}) {
+            String source = """
+                    define inverted class Particle as
+                      val f64 x;
+                    end
+                    fnc bad(): void {
+                      let mut InvertedArray<Particle> particles =
+                          new InvertedArray<Particle>();
+                      val hidden = rt %s particles;
+                      return;
+                    }
+                    """.formatted(operation);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source),
+                    operation);
+            assertTrue(
+                    failure.getMessage().contains(
+                            "rt " + operation + " cannot "),
+                    failure::getMessage);
+        }
+    }
+
 }
