@@ -168,6 +168,27 @@ final class ImportPhysicalContainmentTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void existingNonDirectoryConfiguredRootCannotFallThrough() throws Exception {
+        Path app = temp.resolve("app-root-file");
+        Files.createDirectories(app);
+        Path main = app.resolve("main.ores");
+        Files.writeString(main, "pub fnc main(): void { return; }\n");
+
+        Path invalidRoot = temp.resolve("configured-root-file");
+        Files.writeString(invalidRoot, "not a directory\n");
+        OresProjectConfig config = OresProjectConfig.discover(
+                main,
+                Map.of(OresProjectConfig.ENV_ORESLANG_PATH, invalidRoot.toString()));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> config.resolveImport(main, "missing"));
+        assertTrue(failure.getMessage().contains("configured search root does not resolve to a directory"),
+                failure.getMessage());
+    }
+
     private static void requireSymlink(Path link, Path target) throws IOException {
         try {
             Files.createSymbolicLink(link, target);
