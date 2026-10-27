@@ -163,7 +163,8 @@ public final class ScalarSourceEffectFactsV1 {
             if (expr instanceof Ast.LiteralExpr literal) {
                 Object v = literal.value();
                 if (v instanceof String) direct.add(EffectContracts.Effect.ALLOC);
-                else if (!(v instanceof Number) && !(v instanceof Boolean)) {
+                else if (!(v instanceof Integer) && !(v instanceof Long)
+                        && !(v instanceof Boolean)) {
                     direct.add(EffectContracts.Effect.UNKNOWN_CALL);
                 }
             } else if (expr instanceof Ast.CallExpr call) {
