@@ -308,6 +308,11 @@ public final class TaskPipeline {
 
                 Object value = resume.value();
                 while (next < chain.size()) {
+                    // Scope/parent revocation can arrive while a synchronous
+                    // stage is running. TaskHandle delays result cancellation
+                    // until that turn unwinds, so the bridge alone is not a
+                    // sufficient cancellation check between deferred stages.
+                    TaskHandle.checkCurrentCancellationCheckpoint();
                     OresFuture<T> exposed = exposedRef.get();
                     if (exposed != null && exposed.isCancelled()) {
                         throw new UpstreamCancelled();

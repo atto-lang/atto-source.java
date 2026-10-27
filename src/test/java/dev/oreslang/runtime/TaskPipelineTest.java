@@ -470,6 +470,52 @@ final class TaskPipelineTest {
         }
     }
 
+
+    @Test
+    void scopeCancellationDuringSyncStagePreventsNextStageBeforePhysicalRetirement()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger laterStageCalls = new AtomicInteger();
+        OresFuture<Integer> borrowed = OresFuture.completed(20);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskPipeline.PipelineHandle<Integer> pipeline = TaskPipeline.startInScope(
+                    scope, borrowed, List.of(
+                            value -> {
+                                entered.countDown();
+                                if (!release.await(5, TimeUnit.SECONDS)) {
+                                    throw new IllegalStateException("stage gate timed out");
+                                }
+                                return ((Integer) value) + 1;
+                            },
+                            value -> {
+                                laterStageCalls.incrementAndGet();
+                                return ((Integer) value) * 2;
+                            }));
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertTrue(scope.cancel("owner stopped during synchronous stage"));
+                assertFalse(pipeline.result().isDone(),
+                        "running turn defers task result cancellation until unwind");
+                assertFalse(pipeline.getDone().isDone(),
+                        "physical retirement must wait for the running stage");
+                assertFalse(scope.getDone().isDone(),
+                        "owning scope must still join the running pipeline");
+            } finally {
+                release.countDown();
+            }
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    pipeline.getDone().get(5, TimeUnit.SECONDS));
+            assertNull(scope.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(pipeline.result().isCancelled());
+            assertEquals(0, laterStageCalls.get(),
+                    "scope revocation must be checked before the next stage");
+            assertFalse(borrowed.isCancelled());
+            assertEquals(20, borrowed.get(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void cancellingOwningTaskScopeCancelsPipelineButNotBorrowedInput()
             throws Exception {
