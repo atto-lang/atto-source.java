@@ -1,0 +1,37 @@
+name: Source-org isolated runner capability canary (no checkout)
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/async-interop-source-org-runner-canary.yml'
+      - 'tools/verify-async-interop-exact-head.sh'
+      - 'tools/verify_async_interop_junit.py'
+      - 'tests/test_verify_async_interop_junit.py'
+  workflow_dispatch:
+
+# Never fetch code or pass secrets into this runner-discovery job.
+permissions: {}
+
+jobs:
+  source-free-runner-canary:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.number == 2153 && github.event.pull_request.head.repo.full_name == github.repository)
+    # Requires a purpose-built source-org worker: no shared organizational
+    # runners, no production secrets, no outbound network for source execution.
+    # This workflow itself performs NO checkout and NO source execution.
+    runs-on: [self-hosted, linux, x64, oreslang-isolated-ephemeral]
+    timeout-minutes: 5
+    steps:
+      - name: Prove real step execution and inspect prerequisite tools only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${GITHUB_TOKEN:-}"
+          test -z "${GH_TOKEN:-}"
+          command -v java
+          command -v mvn
+          command -v python3
+          java -version
+          python3 --version
+          echo "ASYNC_INTEROP_SOURCE_FREE_RUNNER_EXECUTED=true"
+          echo "ASYNC_INTEROP_PRIVATE_SOURCE_CHECKOUT=false"
+          echo "ASYNC_INTEROP_JVM_TESTS_EXECUTED=false"
+          echo "ASYNC_INTEROP_ISOLATION_REQUIRES_ADMIN_ATTESTATION=true"
