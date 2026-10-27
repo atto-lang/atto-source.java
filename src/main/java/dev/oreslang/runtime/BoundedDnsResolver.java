@@ -69,7 +69,24 @@ final class BoundedDnsResolver
                         .name("ores-dns-", 0)
                         .factory(),
                 new ThreadPoolExecutor.AbortPolicy());
-        nativeIo.register(this);
+        try {
+            nativeIo.register(this);
+        } catch (Throwable registrationFailure) {
+            try {
+                close();
+            } catch (Throwable cleanupFailure) {
+                registrationFailure.addSuppressed(cleanupFailure);
+            }
+            if (registrationFailure instanceof Exception checked) {
+                throw checked;
+            }
+            if (registrationFailure instanceof Error error) {
+                throw error;
+            }
+            throw new IllegalStateException(
+                    "DNS resolver registration failed",
+                    registrationFailure);
+        }
     }
 
     static BoundedDnsResolver system(
