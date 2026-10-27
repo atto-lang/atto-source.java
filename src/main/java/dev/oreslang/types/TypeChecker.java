@@ -1633,7 +1633,7 @@ public final class TypeChecker {
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
                                     + "actor APIs require owned/sendable nominal message values");
                 }
-                if (param.structural() && method.async()) {
+                if (param.structural() && (method.async() || method.suspends())) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                     + "pass an owned nominal value or copy the required fields");
