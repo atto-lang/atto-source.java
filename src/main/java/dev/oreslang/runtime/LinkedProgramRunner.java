@@ -440,7 +440,7 @@ public final class LinkedProgramRunner {
             java.util.Optional<OresProjectConfig.ResolvedSource> target =
                     projectConfig.resolveImportSource(normalized, imported.path());
             if (target.isEmpty()) {
-                if (isExplicitFilesystemImport(raw) || Path.of(raw).isAbsolute()) {
+                if (ImportRules.isExplicitRelativePath(raw) || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
                             "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
                 }
@@ -586,14 +586,6 @@ public final class LinkedProgramRunner {
                     budget, depth + 1);
         }
     }
-
-    private static boolean isExplicitFilesystemImport(String unixPath) {
-        return ".".equals(unixPath)
-                || "..".equals(unixPath)
-                || unixPath.startsWith("./")
-                || unixPath.startsWith("../");
-    }
-
     private static void recordImportResolution(
             Map<String, Map<String, String>> importResolutions,
             String importerId,
