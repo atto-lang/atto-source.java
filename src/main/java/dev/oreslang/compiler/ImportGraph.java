@@ -53,8 +53,9 @@ final class ImportGraph {
         }
 
         String raw = imported.path().replace('\\', '/');
+        boolean explicitRelative = ImportRules.isExplicitRelativePath(raw);
         Path parent = Path.of(unitId).getParent();
-        Path candidatePath = raw.startsWith(".")
+        Path candidatePath = explicitRelative
                 ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                 : Path.of(raw).normalize();
         String candidate = normalizeUnitId(candidatePath.toString());
@@ -64,7 +65,7 @@ final class ImportGraph {
         }
         rejectSelfImport(normalizedUnitId, imported.path(), candidate);
         if (available.contains(candidate)) return candidate;
-        if (raw.startsWith(".")) {
+        if (explicitRelative) {
             throw new IllegalArgumentException("relative import '" + imported.path() + "' from '" + unitId
                     + "' does not resolve to a supplied Oreslang/mixed source unit");
         }
