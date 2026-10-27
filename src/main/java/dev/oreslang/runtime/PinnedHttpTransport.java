@@ -9,7 +9,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -27,15 +26,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.regex.Pattern;
-import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
-import javax.net.ssl.SSLSocket;
 
 /**
- * Blocking host-side HTTP/1.1 transport for native-I/O workers.
+ * Selector-driven host-side HTTP/1.1 transport for native-I/O workers.
  *
  * <p>The security boundary is an {@link OutboundEgressPolicy.ResolvedTarget}.
  * Every physical connection resolves and authorizes exactly once, then connects
@@ -77,14 +74,29 @@ final class PinnedHttpTransport implements AutoCloseable {
     private final OutboundEgressPolicy.Purpose purpose;
     private final OutboundEgressPolicy.Policy policy;
     private final OutboundEgressPolicy.Resolver resolver;
+    enum PhysicalPhase {
+        NEW,
+        RESOLVING,
+        CONNECTING,
+        TLS_HANDSHAKE,
+        WRITING_HEADERS,
+        READING_HEADERS,
+        STREAMING_BODY,
+        RETIRING,
+        RETIRED
+    }
+
     private final SSLContext sslContext;
     private final long maxResponseBytes;
     private final ConnectionBudget budget;
-    private final Set<Socket> liveSockets =
+    private final AutoCloseable resolverOwner;
+    private final Set<SelectorTransportConnection> liveConnections =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
     private final Set<Response> liveResponses =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicReference<PhysicalPhase> phase =
+            new AtomicReference<>(PhysicalPhase.NEW);
 
     private static final class OriginLimiter {
         final Semaphore permits;
@@ -198,7 +210,7 @@ final class PinnedHttpTransport implements AutoCloseable {
 
     static final class Response implements AutoCloseable {
         private final PinnedHttpTransport owner;
-        private final Socket socket;
+        private final SelectorTransportConnection connection;
         private final BufferedInputStream input;
         private final ConnectionLease lease;
         private final int status;
@@ -213,7 +225,7 @@ final class PinnedHttpTransport implements AutoCloseable {
 
         private Response(
                 PinnedHttpTransport owner,
-                Socket socket,
+                SelectorTransportConnection connection,
                 BufferedInputStream input,
                 ConnectionLease lease,
                 ParsedHead head,
@@ -221,7 +233,7 @@ final class PinnedHttpTransport implements AutoCloseable {
                 Duration bodyIdleTimeout,
                 long maxResponseBytes) {
             this.owner = owner;
-            this.socket = socket;
+            this.connection = connection;
             this.input = input;
             this.lease = lease;
             this.status = head.status();
@@ -255,6 +267,7 @@ final class PinnedHttpTransport implements AutoCloseable {
         long streamBody(OutputStream target, BooleanSupplier cancelled)
                 throws IOException {
             Objects.requireNonNull(target, "target");
+            owner.phase.set(PhysicalPhase.STREAMING_BODY);
             Objects.requireNonNull(cancelled, "cancelled");
             if (!consumed.compareAndSet(false, true)) {
                 throw new IllegalStateException(
@@ -356,24 +369,27 @@ final class PinnedHttpTransport implements AutoCloseable {
         }
 
         private void configureBodyReadTimeout() throws IOException {
-            socket.setSoTimeout(timeoutMillis(
-                    bodyIdleTimeout,
-                    deadlineNanos,
-                    "body idle/overall deadline"));
+            if (System.nanoTime() >= deadlineNanos) {
+                throw new SocketTimeoutException(
+                        "pinned HTTP overall deadline expired");
+            }
+            connection.setReadTimeout(bodyIdleTimeout);
         }
 
         @Override
         public void close() throws IOException {
             if (!closed.compareAndSet(false, true)) return;
+            owner.phase.set(PhysicalPhase.RETIRING);
             IOException failure = null;
             try {
-                socket.close();
+                connection.close();
             } catch (IOException closeFailure) {
                 failure = closeFailure;
             } finally {
                 owner.liveResponses.remove(this);
-                owner.liveSockets.remove(socket);
+                owner.liveConnections.remove(connection);
                 lease.release();
+                owner.phase.set(PhysicalPhase.RETIRED);
             }
             if (failure != null) throw failure;
         }
@@ -445,6 +461,7 @@ final class PinnedHttpTransport implements AutoCloseable {
                 resolver,
                 sslContext,
                 maxResponseBytes,
+                null,
                 null);
     }
 
@@ -455,6 +472,24 @@ final class PinnedHttpTransport implements AutoCloseable {
             SSLContext sslContext,
             long maxResponseBytes,
             ConnectionBudget sharedBudget) {
+        this(
+                purpose,
+                policy,
+                resolver,
+                sslContext,
+                maxResponseBytes,
+                sharedBudget,
+                null);
+    }
+
+    private PinnedHttpTransport(
+            OutboundEgressPolicy.Purpose purpose,
+            OutboundEgressPolicy.Policy policy,
+            OutboundEgressPolicy.Resolver resolver,
+            SSLContext sslContext,
+            long maxResponseBytes,
+            ConnectionBudget sharedBudget,
+            AutoCloseable resolverOwner) {
         this.purpose = Objects.requireNonNull(purpose, "purpose");
         this.policy = Objects.requireNonNull(policy, "policy");
         this.resolver = Objects.requireNonNull(resolver, "resolver");
@@ -468,6 +503,7 @@ final class PinnedHttpTransport implements AutoCloseable {
                 ? new ConnectionBudget(policy.limits())
                 : sharedBudget;
         this.budget.requireCompatible(policy.limits());
+        this.resolverOwner = resolverOwner;
     }
 
     static PinnedHttpTransport systemDefault(
@@ -493,8 +529,39 @@ final class PinnedHttpTransport implements AutoCloseable {
                     OutboundEgressPolicy.Resolver.system(),
                     SSLContext.getDefault(),
                     maxResponseBytes,
-                    sharedBudget);
+                    sharedBudget,
+                    null);
         } catch (Exception failure) {
+            throw new IllegalStateException(
+                    "default TLS context unavailable",
+                    failure);
+        }
+    }
+
+    static PinnedHttpTransport systemDefault(
+            OutboundEgressPolicy.Purpose purpose,
+            OutboundEgressPolicy.Policy policy,
+            long maxResponseBytes,
+            ConnectionBudget sharedBudget,
+            AsyncNativeIo nativeIo) {
+        BoundedDnsResolver bounded =
+                BoundedDnsResolver.system(
+                        Objects.requireNonNull(nativeIo, "nativeIo"),
+                        policy.limits().connectTimeout());
+        try {
+            return new PinnedHttpTransport(
+                    purpose,
+                    policy,
+                    bounded,
+                    SSLContext.getDefault(),
+                    maxResponseBytes,
+                    sharedBudget,
+                    bounded);
+        } catch (RuntimeException | Error failure) {
+            bounded.close();
+            throw failure;
+        } catch (Exception failure) {
+            bounded.close();
             throw new IllegalStateException(
                     "default TLS context unavailable",
                     failure);
@@ -524,26 +591,30 @@ final class PinnedHttpTransport implements AutoCloseable {
         String origin =
                 canonical.getScheme() + "://" + canonical.getRawAuthority();
         ConnectionLease lease = acquire(origin);
-        Socket socket = null;
+        SelectorTransportConnection connection = null;
         boolean transferred = false;
         long deadlineNanos = deadlineAfter(policy.limits().overallTimeout());
         try {
-            // Admission precedes DNS so exhausted origin/global capacity cannot
-            // be bypassed into an unbounded resolver stampede.
+            phase.set(PhysicalPhase.RESOLVING);
             OutboundEgressPolicy.ResolvedTarget resolved =
                     OutboundEgressPolicy.resolveForConnection(
                             canonical,
                             purpose,
                             policy,
-                            resolver);
-            socket = connect(resolved, deadlineNanos);
+                            resolver,
+                            deadlineNanos,
+                            closed::get);
+            connection = connect(resolved, deadlineNanos);
             if (closed.get()) {
                 throw new RejectedExecutionException(
                         "pinned HTTP transport closed during connect");
             }
 
+            phase.set(PhysicalPhase.WRITING_HEADERS);
+            connection.setWriteTimeout(
+                    policy.limits().headerTimeout());
             BufferedOutputStream output =
-                    new BufferedOutputStream(socket.getOutputStream());
+                    new BufferedOutputStream(connection.output());
             writeRequest(
                     output,
                     resolved,
@@ -551,12 +622,11 @@ final class PinnedHttpTransport implements AutoCloseable {
                     requestHeaders);
             output.flush();
 
-            socket.setSoTimeout(timeoutMillis(
-                    policy.limits().headerTimeout(),
-                    deadlineNanos,
-                    "header/overall deadline"));
+            phase.set(PhysicalPhase.READING_HEADERS);
+            connection.setReadTimeout(
+                    policy.limits().headerTimeout());
             BufferedInputStream input =
-                    new BufferedInputStream(socket.getInputStream());
+                    new BufferedInputStream(connection.input());
             ParsedHead head = readFinalHead(
                     input,
                     method,
@@ -564,7 +634,7 @@ final class PinnedHttpTransport implements AutoCloseable {
 
             Response response = new Response(
                     this,
-                    socket,
+                    connection,
                     input,
                     lease,
                     head,
@@ -581,24 +651,26 @@ final class PinnedHttpTransport implements AutoCloseable {
             return response;
         } catch (SocketTimeoutException timeout) {
             throw new IOException(
-                    "pinned HTTP connect/header deadline expired",
+                    "pinned HTTP transport deadline expired",
                     timeout);
         } finally {
             if (!transferred) {
-                if (socket != null) {
-                    liveSockets.remove(socket);
+                phase.set(PhysicalPhase.RETIRING);
+                if (connection != null) {
+                    liveConnections.remove(connection);
                     try {
-                        socket.close();
+                        connection.close();
                     } catch (IOException ignored) {
                         // Preserve the primary admission/transport failure.
                     }
                 }
                 lease.release();
+                phase.set(PhysicalPhase.RETIRED);
             }
         }
     }
 
-    private Socket connect(
+    private SelectorTransportConnection connect(
             OutboundEgressPolicy.ResolvedTarget target,
             long deadlineNanos)
             throws IOException {
@@ -608,66 +680,45 @@ final class PinnedHttpTransport implements AutoCloseable {
                 throw new RejectedExecutionException(
                         "pinned HTTP transport closed before connect");
             }
-            Socket active = new Socket();
-            liveSockets.add(active);
+            SelectorTransportConnection active = null;
             try {
-                active.setTcpNoDelay(true);
-                int timeout = timeoutMillis(
-                        policy.limits().connectTimeout(),
-                        deadlineNanos,
-                        "connect/overall deadline");
-                InetSocketAddress address = target.connectAddress(attempt);
-                active.connect(address, timeout);
+                active = SelectorTransportConnection.open(
+                        deadlineNanos);
+                liveConnections.add(active);
+
+                phase.set(PhysicalPhase.CONNECTING);
+                InetSocketAddress address =
+                        target.connectAddress(attempt);
+                active.connect(
+                        address,
+                        policy.limits().connectTimeout());
                 if (closed.get()) {
                     throw new RejectedExecutionException(
                             "pinned HTTP transport closed during connect");
                 }
-                if (!target.scheme().equals("https")) {
-                    return active;
-                }
 
-                Socket raw = active;
-                SSLSocket tls = (SSLSocket) sslContext
-                        .getSocketFactory()
-                        .createSocket(
-                                raw,
-                                target.host(),
-                                target.port(),
-                                true);
-                active = tls;
-                // Publish the wrapper before removing the raw alias so a
-                // concurrent close never observes a gap with no revocable
-                // handle for this physical connection.
-                liveSockets.add(active);
-                liveSockets.remove(raw);
-                if (closed.get()) {
-                    throw new RejectedExecutionException(
-                            "pinned HTTP transport closed during TLS wrapping");
+                if (target.scheme().equals("https")) {
+                    phase.set(PhysicalPhase.TLS_HANDSHAKE);
+                    active.startTls(
+                            sslContext,
+                            target.host(),
+                            target.port(),
+                            !isIpLiteral(target.host()),
+                            policy.limits().connectTimeout());
+                    if (closed.get()) {
+                        throw new RejectedExecutionException(
+                                "pinned HTTP transport closed during TLS handshake");
+                    }
                 }
-                tls.setUseClientMode(true);
-                SSLParameters parameters = tls.getSSLParameters();
-                parameters.setEndpointIdentificationAlgorithm("HTTPS");
-                if (!isIpLiteral(target.host())) {
-                    parameters.setServerNames(
-                            List.of(new SNIHostName(target.host())));
-                }
-                tls.setSSLParameters(parameters);
-                tls.setSoTimeout(timeoutMillis(
-                        policy.limits().connectTimeout(),
-                        deadlineNanos,
-                        "TLS/overall deadline"));
-                tls.startHandshake();
-                if (closed.get()) {
-                    throw new RejectedExecutionException(
-                            "pinned HTTP transport closed during TLS handshake");
-                }
-                return tls;
+                return active;
             } catch (IOException | RuntimeException connectFailure) {
-                liveSockets.remove(active);
-                try {
-                    active.close();
-                } catch (IOException suppressed) {
-                    connectFailure.addSuppressed(suppressed);
+                if (active != null) {
+                    liveConnections.remove(active);
+                    try {
+                        active.close();
+                    } catch (IOException suppressed) {
+                        connectFailure.addSuppressed(suppressed);
+                    }
                 }
                 if (connectFailure instanceof IOException io) {
                     failure = io;
@@ -1063,13 +1114,27 @@ final class PinnedHttpTransport implements AutoCloseable {
     }
 
     int activeSockets() {
-        return liveSockets.size();
+        return liveConnections.size();
+    }
+
+    PhysicalPhase phase() {
+        return phase.get();
     }
 
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        IOException failure = null;
+        phase.set(PhysicalPhase.RETIRING);
+        Exception failure = null;
+
+        if (resolverOwner != null) {
+            try {
+                resolverOwner.close();
+            } catch (Exception closeFailure) {
+                failure = closeFailure;
+            }
+        }
+
         for (Response response : List.copyOf(liveResponses)) {
             try {
                 response.close();
@@ -1078,12 +1143,13 @@ final class PinnedHttpTransport implements AutoCloseable {
                 else failure.addSuppressed(closeFailure);
             }
         }
-        // Catch sockets that are between connect() and response publication.
-        // Their request owner will release the connection lease when the close
-        // unblocks its current write/header/TLS operation.
-        for (Socket socket : List.copyOf(liveSockets)) {
+        // Catch connections that are between DNS/connect/TLS/header phases
+        // and response publication. Closing the selector/channel is a wakeup;
+        // the native-I/O worker still owns physical retirement.
+        for (SelectorTransportConnection connection
+                : List.copyOf(liveConnections)) {
             try {
-                socket.close();
+                connection.close();
             } catch (IOException closeFailure) {
                 if (failure == null) failure = closeFailure;
                 else failure.addSuppressed(closeFailure);
@@ -1091,8 +1157,9 @@ final class PinnedHttpTransport implements AutoCloseable {
         }
         if (failure != null) {
             throw new IllegalStateException(
-                    "pinned HTTP transport socket shutdown incomplete",
+                    "pinned HTTP transport shutdown incomplete",
                     failure);
         }
     }
+
 }
