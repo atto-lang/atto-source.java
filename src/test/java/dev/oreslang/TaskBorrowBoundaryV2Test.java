@@ -153,6 +153,36 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void ownedStorageBoundariesRejectBorrowValuesByProvenance() {
+        rejectsWith("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val loan = rt borrow owner;
+                  val wrapped = Some(loan);
+                  return;
+                }
+                """, "cannot store a borrow", "owned sum");
+
+        rejectsWith("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val loan = rt borrow owner;
+                  val lock = Mutex.new(loan);
+                  return;
+                }
+                """, "requires an owned value", "borrowed");
+
+        rejectsWith("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val loan = rt borrow owner;
+                  val moved = rt take loan;
+                  return;
+                }
+                """, "requires owned data", "borrow");
+    }
+
+    @Test
     void ordinaryImmutableBorrowCannotEscapeIntoEagerTask() {
         rejectsWith("""
                 pub async fnc main(): void {
