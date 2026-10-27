@@ -54,13 +54,13 @@ fnc adds(): TestOutcome {
   return expect_equal_int(2 + 2, 4, "addition");
 }
 
-pub routine main(): void {
+pub async routine main(): void {
   val TestSuite suite = new TestSuite(
     "math",
     arr[new TestCase("adds", adds, false, "")]
   );
   val TestOptions options = new TestOptions("", false, false);
-  val RunSummary summary = run_suite(&suite, &options);
+  val RunSummary summary = await run_suite(&suite, &options);
   require_success(&summary);
   return;
 }
