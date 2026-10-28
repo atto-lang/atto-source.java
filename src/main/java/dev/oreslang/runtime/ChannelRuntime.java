@@ -189,7 +189,8 @@ public final class ChannelRuntime {
             }
             long startNanos = System.nanoTime();
             OresFuture<SelectResult> selected =
-                    SelectSet.of(read(this)).selectAsync(SelectPolicy.PRIORITY);
+                    SelectSet.of(read(this))
+                            .selectAsyncWithin(SelectPolicy.PRIORITY, timeout, startNanos);
             return mapSelectionWithin(selected, result -> {
                 @SuppressWarnings("unchecked")
                 T value = (T) result.value();
@@ -223,7 +224,7 @@ public final class ChannelRuntime {
             requireValue(value);
             OresFuture<SelectResult> selected =
                     SelectSet.of(write(this, value))
-                            .selectAsync(SelectPolicy.PRIORITY);
+                            .selectAsyncWithin(SelectPolicy.PRIORITY, timeout, startNanos);
             return mapSelectionWithin(selected, ignored -> null,
                     timeout, timer, startNanos);
         }
@@ -369,6 +370,20 @@ public final class ChannelRuntime {
                     new SelectRegistration(
                             this,
                             Objects.requireNonNull(policy, "policy"));
+            registration.start(false);
+            return registration.future;
+        }
+
+        /**
+         * Private timed select registration used by channel read/write.
+         * A monotonic deadline is installed BEFORE registering the waiter,
+         * so a delayed timer can never deliver an already-expired payload.
+         */
+        private OresFuture<SelectResult> selectAsyncWithin(
+                SelectPolicy policy, Duration timeout, long startedNanos) {
+            SelectRegistration registration =
+                    new SelectRegistration(this, Objects.requireNonNull(policy, "policy"));
+            registration.setDeadline(timeout, startedNanos);
             registration.start(false);
             return registration.future;
         }
@@ -525,6 +540,36 @@ public final class ChannelRuntime {
         private final OresFuture<SelectResult> future;
         private boolean decided;
         private boolean registered;
+        private boolean timed;
+        private long deadlineStartNanos;
+        private long deadlineBudgetNanos;
+
+        private void setDeadline(Duration duration, long startedNanos) {
+            Objects.requireNonNull(duration, "duration");
+            if (duration.isNegative()) {
+                throw new IllegalArgumentException("channel wait timeout is negative");
+            }
+            timed = true;
+            deadlineStartNanos = startedNanos;
+            try {
+                deadlineBudgetNanos = duration.toNanos();
+            } catch (ArithmeticException overflow) {
+                deadlineBudgetNanos = Long.MAX_VALUE;
+            }
+        }
+
+        private boolean deadlineExpiredLocked() {
+            return timed && deadlineBudgetNanos > 0
+                    && System.nanoTime() - deadlineStartNanos >= deadlineBudgetNanos;
+        }
+
+        private void expireDeadlineLocked(List<Runnable> completions) {
+            if (decided) return;
+            decided = true;
+            unregisterLocked(this);
+            completions.add(() -> future.failFromRuntime(
+                    new TimeoutException("channel wait timeout")));
+        }
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
@@ -573,6 +618,11 @@ public final class ChannelRuntime {
                             completions);
                 }
 
+                // A zero budget is a try-now operation: an immediately
+                // committable read/write succeeds, but never leaves a waiter.
+                if (!decided && timed && deadlineBudgetNanos == 0L) {
+                    expireDeadlineLocked(completions);
+                }
                 if (!decided && immediateOnly) {
                     decided = true;
                     unregisterLocked(this);
@@ -636,6 +686,11 @@ public final class ChannelRuntime {
 
             for (SelectRegistration selection : List.copyOf(ACTIVE)) {
                 if (selection.decided) continue;
+                if (selection.deadlineExpiredLocked()) {
+                    selection.expireDeadlineLocked(completions);
+                    progressed = true;
+                    break;
+                }
 
                 CaseRegistration chosen =
                         preferredCommittableCaseLocked(selection);
