@@ -273,6 +273,84 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void consumingMoveOnlyAssignmentResultsRequireDestinationInvalidation() {
+        for (String statement : new String[] {
+                "val Box result = (slot = new Box());",
+                "consume(slot = new Box());",
+                "return (slot = new Box());"
+        }) {
+            String source = """
+                    define class Box as
+                      pub let int value = 7;
+                    end
+                    fnc consume(Box value): void { return; }
+                    fnc rejected(): Box {
+                      let Box slot = new Box();
+                      %s
+                      %s
+                    }
+                    """.formatted(statement,
+                            statement.startsWith("return") ? "" : "return new Box();");
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains("cannot consume move-only assignment result"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void discardedAssignmentsAndCopyAssignmentResultsRemainValid() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                fnc allowed(): int {
+                  let Box slot = new Box();
+                  slot = new Box();
+                  val Box moved = rt take slot;
+                  let int scalar = 1;
+                  val int copied = (scalar = 2);
+                  return moved.value + scalar + copied;
+                }
+                """)));
+    }
+
+    @Test
+    void rtSharePreservesProvenScalarBinaryResults() throws Exception {
+        assertEquals("14:3.5:true:ab", run("""
+                pub routine main(): void {
+                  val int sum = rt share (7 + 7);
+                  val float quotient = rt share (7 / 2);
+                  val bool comparison = rt share ((2 + 3) == 5);
+                  val string joined = rt share ("a" + "b");
+                  stdio.stdout.write(sum);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(quotient);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(comparison);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(joined);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rtShareScalarProofDoesNotCertifyUnknownOrHandleOperands() {
+        for (String parameter : new String[] {"SelectSet value", "Unknown value"}) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                    fnc rejected(%s): void {
+                      val result = rt share (value + value);
+                      return;
+                    }
+                    """.formatted(parameter))));
+            assertTrue(failure.getMessage().contains("statically proven Share capability"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
     void rtTakeStillAcceptsIndependentFreshRvalue() {
         assertDoesNotThrow(() ->
                 dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
@@ -514,3 +592,4 @@ final class PointerlessFncOwnershipTest {
         return output.toString(StandardCharsets.UTF_8);
     }
 }
+

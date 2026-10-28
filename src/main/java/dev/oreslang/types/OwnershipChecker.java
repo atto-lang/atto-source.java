@@ -1240,6 +1240,13 @@ public final class OwnershipChecker {
             if (!directRebind) {
                 checkAssignmentTarget(assignment.target(), scope);
             }
+            // Assignment installs the RHS in a live destination. Its result
+            // is not a second independent owner, even when the RHS was fresh.
+            // Discarded assignments and Copy results remain valid.
+            if (consuming && assigned.kind != ValueKind.COPY) {
+                throw error("cannot consume move-only assignment result without "
+                        + "destination invalidation; assign first, then take the named owner");
+            }
             if (assignment.target() instanceof Ast.NameExpr name) {
                 ownershipRoot(requireState(scope, name.name())).moved = false;
             }
@@ -1263,16 +1270,21 @@ public final class OwnershipChecker {
                     source.borrowSource);
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            checkExpr(binary.left(), scope, false);
+            ValueInfo left = checkExpr(binary.left(), scope, false);
+            ValueInfo right;
             if (binary.operator().equals("&&")) {
                 Scope rightScope = new Scope(scope);
-                defineConditionAliases(binary.left(), rightScope, scope);
-                checkExpr(binary.right(), rightScope, false);
-                rightScope.close();
+                try {
+                    defineConditionAliases(binary.left(), rightScope, scope);
+                    right = checkExpr(binary.right(), rightScope, false);
+                } finally {
+                    rightScope.close();
+                }
             } else {
-                checkExpr(binary.right(), scope, false);
+                right = checkExpr(binary.right(), scope, false);
             }
-            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
+            return new ValueInfo(binaryScalarType(binary.operator(), left.type, right.type),
+                    ValueKind.COPY, null);
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             checkExpr(conditional.condition(), scope, false);
@@ -4708,6 +4720,54 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
+    /** Preserve proven scalar results for the independent Share check.
+     * Unknown, borrowed and shadowed types must not acquire a scalar proof.
+     * Numeric widening is shared with TypeChecker; division follows its
+     * int/int -> float rule. This does not replace frontend type validation.
+     */
+    private Ast.TypeRef binaryScalarType(String operator, Ast.TypeRef left, Ast.TypeRef right) {
+        Types.Type a = ownershipScalarType(left);
+        Types.Type b = ownershipScalarType(right);
+        if (a == Types.Unknown.INSTANCE || b == Types.Unknown.INSTANCE) {
+            return Ast.TypeRef.inferred();
+        }
+        boolean numeric = Types.isNumeric(a) && Types.isNumeric(b);
+        boolean strings = a == Types.Primitive.STRING && b == Types.Primitive.STRING;
+        Types.Type result = switch (operator) {
+            case "&&", "||", "^^" -> a == Types.Primitive.BOOL && b == Types.Primitive.BOOL
+                    ? Types.Primitive.BOOL : Types.Unknown.INSTANCE;
+            case "eq", "neq", "==", "!=" -> a == b || numeric
+                    ? Types.Primitive.BOOL : Types.Unknown.INSTANCE;
+            case "<", "<=", ">", ">=" -> numeric || strings
+                    ? Types.Primitive.BOOL : Types.Unknown.INSTANCE;
+            case "&", "|", "^", "<<", ">>", ">>>" -> a == Types.Primitive.INT && b == Types.Primitive.INT
+                    ? Types.Primitive.INT : Types.Unknown.INSTANCE;
+            case "+" -> strings ? Types.Primitive.STRING : Types.numericJoin(a, b);
+            case "-", "*", "%" -> Types.numericJoin(a, b);
+            case "/" -> {
+                Types.Type joined = Types.numericJoin(a, b);
+                yield joined == Types.Primitive.INT ? Types.Primitive.FLOAT : joined;
+            }
+            default -> Types.Unknown.INSTANCE;
+        };
+        if (!(result instanceof Types.Primitive primitive)) return Ast.TypeRef.inferred();
+        return Ast.TypeRef.simple(primitive.name().toLowerCase(java.util.Locale.ROOT));
+    }
+
+    private Types.Type ownershipScalarType(Ast.TypeRef type) {
+        if (!isCopyType(type) || !type.arguments().isEmpty()) return Types.Unknown.INSTANCE;
+        return switch (type.name()) {
+            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint"
+                    -> Types.Primitive.INT;
+            case "f32", "f64", "float" -> Types.Primitive.FLOAT;
+            case "decimal" -> Types.Primitive.DECIMAL;
+            case "complex64", "complex128", "complex" -> Types.Primitive.COMPLEX;
+            case "bool", "Bool" -> Types.Primitive.BOOL;
+            case "string", "String" -> Types.Primitive.STRING;
+            default -> Types.Unknown.INSTANCE;
+        };
+    }
+
     private Ast.TypeRef joinConditionalType(Ast.TypeRef left, Ast.TypeRef right) {
         if (left == null) return right == null ? Ast.TypeRef.inferred() : right;
         if (right == null) return left;
@@ -5038,3 +5098,4 @@ public final class OwnershipChecker {
         }
     }
 }
+
