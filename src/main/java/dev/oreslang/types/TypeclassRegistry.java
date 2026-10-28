@@ -159,7 +159,9 @@ public final class TypeclassRegistry {
     private record Term(String atom, List<Term> arguments, boolean variable) { }
     private static Term term(TypeRef type, String side) {
         if (type.variable()) return new Term(side + type.name(), List.of(), true);
-        return new Term(type.module() + "::" + type.name(),
+        // Unification atoms must be injective: raw module::name conflates
+        // ("a::b", "c") with ("a", "b::c") and falsely rejects disjoint impls.
+        return new Term(type.module().length() + ":" + type.module() + type.name(),
                 type.arguments().stream().map(arg -> term(arg, side)).toList(), false);
     }
 
