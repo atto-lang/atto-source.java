@@ -123,4 +123,41 @@ final class ActorControlHandleIsolationTest {
         }
     }
 
+
+    @Test
+    void forgedSameIdentityActorRefCannotControlLiveActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Integer> victim = runtime.spawnPrivateTrusted(
+                    factory -> (message, context) -> { });
+            victim.getReady().get(5, TimeUnit.SECONDS);
+            // Reconstruct an object with the same logical UUID, kind and
+            // generation. It must remain a different, unauthorized ActorRef.
+            var constructor = ActorRuntime.ActorRef.class.getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<Integer> forgery =
+                    (ActorRuntime.ActorRef<Integer>) constructor.newInstance(
+                            runtime, victim.id(), victim.kind(), victim.generation());
+            assertNotSame(victim, forgery);
+            assertEquals(victim.id(), forgery.id());
+            assertEquals(victim.generation(), forgery.generation());
+
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.stop(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.cancel(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.gracefulStop(forgery));
+            assertTrue(victim.isAlive(), "forged reference must not change target lifecycle");
+
+            // Exact runtime-minted reference retains its legitimate authority.
+            victim.stop();
+            assertTrue(victim.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
