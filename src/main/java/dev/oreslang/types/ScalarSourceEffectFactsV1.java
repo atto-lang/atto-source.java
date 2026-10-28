@@ -4,6 +4,11 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.Objects;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,13 +31,28 @@ public final class ScalarSourceEffectFactsV1 {
     private static final int MAX_NODES = 100_000;
     private static final int MAX_NESTING = 64;
 
-    public record Report(Map<String, Set<EffectContracts.Effect>> closure) {
-        public Report {
+    /**
+     * A source-bound informational result, not a runtime capability.
+     * Construction is compiler-owned: public record constructors would allow
+     * clients to forge an empty effect set and call requireNoEffects().
+     */
+    public static final class Report {
+        private final Map<String, Set<EffectContracts.Effect>> closure;
+        private final String sourceSha256;
+
+        private Report(Map<String, Set<EffectContracts.Effect>> closure, String sourceSha256) {
             var copy = new LinkedHashMap<String, Set<EffectContracts.Effect>>();
-            closure.forEach((k, v) -> copy.put(k, Set.copyOf(v)));
-            closure = Collections.unmodifiableMap(copy);
+            Objects.requireNonNull(closure, "closure").forEach(
+                    (k, v) -> copy.put(Objects.requireNonNull(k), Set.copyOf(v)));
+            this.closure = Collections.unmodifiableMap(copy);
+            this.sourceSha256 = Objects.requireNonNull(sourceSha256, "source sha256");
         }
 
+        public Map<String, Set<EffectContracts.Effect>> closure() {
+            return closure;
+        }
+
+        /** Informational compiler summary; does not authorize external code. */
         public Set<EffectContracts.Effect> effectsOf(String functionName) {
             Set<EffectContracts.Effect> effects = closure.get(ROOT + functionName + "/0");
             if (effects == null) throw new IllegalArgumentException("unknown scalar function");
@@ -40,15 +60,29 @@ public final class ScalarSourceEffectFactsV1 {
         }
 
         /**
-         * Source-derived effect-free subset only. This does not prove bounded
-         * CPU time, memory, scheduler, machine-code AOT, or target safety.
+         * Reject using a proof from another source revision. Empty effects
+         * alone do not establish bounded CPU, termination or hard-RT admission.
          */
-        public void requireNoEffects(String functionName) {
+        public void requireNoEffects(String functionName, String checkedSource) {
+            if (!sourceSha256.equals(sha256(checkedSource))) {
+                throw new IllegalArgumentException("source identity differs from checked effect facts");
+            }
             var effects = effectsOf(functionName);
             if (!effects.isEmpty()) {
                 throw new IllegalArgumentException(
                         "unproven scalar effect closure for " + functionName + ": " + effects);
             }
+        }
+    }
+
+    private static String sha256(String source) {
+        Objects.requireNonNull(source, "source");
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(source.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is required for compiler source identity", unavailable);
         }
     }
 
@@ -102,7 +136,7 @@ public final class ScalarSourceEffectFactsV1 {
             graph.add(EffectContracts.Callable.inferred(
                     entry.getKey(), scanner.direct, scanner.calls));
         }
-        return new Report(graph.infer());
+        return new Report(graph.infer(), sha256(source));
     }
 
     private static final class Scanner {
