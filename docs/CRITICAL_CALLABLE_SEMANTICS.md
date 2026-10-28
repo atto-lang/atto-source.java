@@ -31,12 +31,12 @@ pub critical fnc file_counter(): int {
   It is not a JVM-global lock crossing separate tenants or isolated VMs.
 - `critical static fnc` uses one gate per declaring class.
 - `suspend` and `suspends` are equivalent suspension-effect spellings.
-- `suspend critical` **always** yields one logical scheduler turn before
-  starting its body, even when its permit is immediately available. The
-  already-completed admission Future is still awaited; the scheduler requeues
-  the same continuation **after** its current guest turn has left the carrier.
-  This removes observable fast-path Zalgo at the declared suspension boundary.
-  No physical thread sleeps and no OS mutex spans the handoff.
+- `suspend critical` / `critical suspends` **can enter inline** when
+  uncontended. The declared suspension effect is a *possibility*, not an
+  unconditional handoff: actual channel backpressure, `await`, or contended
+  critical admission suspends the logical task without parking its carrier.
+  This supersedes the legacy always-yield behavior proposed in Java PR #632;
+  the change needs an instrumented execution-turn regression before merge.
 - A plain synchronous `critical` callable enters immediately when free.
   When contended on an actor/scheduler carrier it fails fast (no invisible
   promotion of a sync call into async); external host sync calls retain their
@@ -47,6 +47,64 @@ pub critical fnc file_counter(): int {
 - Queue is FIFO, bounded to 8192 waiting invocations. Overflow fails closed.
 - On normal return, exception, cancellation, and actor/task teardown, the
   runtime releases the invocation ticket and wakes the next waiter.
+
+
+## Critical annotations and bounded waits (October 27, 2026 increment)
+
+Timeouts are configured on the declaration rather than changing its return
+type dynamically. First compiler/runtime slice:
+
+```ores
+@Critical(queue_timeout_ms=75)
+pub critical suspends fnc process(Channel<int> requests): int {
+    const next = await (nb readch requests);
+    return next;
+}
+```
+
+**Implemented on this draft branch only:** `@Critical(queue_timeout_ms=N)`
+with a nonnegative signed-64 integer literal on a critical file function or
+instance method. The compiler rejects duplicated annotations, unknown keys,
+missing `critical`, and unsupported policy fields. A zero budget admits
+immediately when free and fails if it must queue. The Java runtime uses a
+VM-context-owned, lazily activated timer; it never executes guest code.
+The gate returns a timeout failure for an expired queued ticket and removes
+that ticket without admitting it later. The syntax is `=N`, in integer
+milliseconds, because duration literal metadata is not yet implemented.
+
+**Specified but NOT IMPLEMENTED:** `execution_timeout_ms`,
+`total_timeout_ms`, `channel_wait_timeout_ms` and nested deadline
+inheritance. Those fields are *rejected*, not silently accepted. Future work
+should provide readable duration literals and an `@Critical` form with
+`queue_timeout`, `execution_timeout`, `channel_wait_timeout` and
+`total_timeout`, after the parser and compiler support them.
+
+The planned full policy distinguishes:
+
+| Clock | Starts | What may time out | Safe outcome |
+| --- | --- | --- | --- |
+| Queue | At invocation admission | Queued ticket only | Remove waiter; no ownership granted |
+| Execution | After admission | Owner task and its awaited operations | Request cancellation, await safe exit; **do not** release permit early |
+| Channel | At each potentially blocking `readch` / `writech` | Channel registration | Atomic delivered-vs-cancelled outcome, no ghost receive/late send |
+| Total | At invocation start | Queue + execution + channel waits | Earliest inherited deadline, safe termination and cleanup |
+
+A `critical fnc` may use a synchronous channel read/write only on an
+explicitly blocking-eligible host thread. A carrier/reactor cannot park.
+A `critical suspends fnc` can instead perform channel send/receive as
+compiler-lowered suspension points, retaining its **logical** exclusive
+ticket but never retaining an unsafe physical mutable-state borrow across
+the wait. Channel sends/receives must have a linear cancellation/commit
+outcome and bounded backpressure; actor deadlock cycles must fail closed.
+A pending asynchronous channel read cannot be mistaken for an immediate
+`try readch` probe. Cross-gate wait cycles, callbacks that reenter the same
+critical region, and downstream channel dependencies require static checks
+where possible and runtime cycle/deadline enforcement otherwise.
+
+The queue timer is not a hard interrupt: it cannot revoke an already
+admitted critical invocation. Its deadline engine is a Java slice, not
+backend parity or a hard-real-time certification. Cancellation settlement,
+remote side effects, exact actor-state loans, and hot-reload generation
+quiescence remain separate release gates.
 
 ## Blocking and notification protocol (capacity-one logical queue)
 
@@ -174,5 +232,4 @@ admission/handoff. The frontend currently accepts a narrow i64-only language
 subset and rejects actor and async lowering. Compiler lowering, actor class
 allocation, source task continuations, cleanup/unwind integration, and
 cross-thread stress testing are still required before enabling `critical`
-declarations. Use the exact-source-tree funded CI mirror when original GitHub
-Actions cannot allocate a runner.
+declarations. Do not transfer private source between GitHub organizations without explicit security approval, protected-main governance, an approved carrier contract and an independently reviewed test plan. Zero-step Actions are NOT_EXECUTED; no private-source CI proof is claimed here.
