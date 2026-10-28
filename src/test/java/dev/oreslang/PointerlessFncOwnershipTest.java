@@ -218,6 +218,24 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void rtTakeConditionalCopyOwnerCannotEscapeSourceInvalidation() {
+        // Even two Copy bindings need explicit source-place invalidation
+        // when the programmer requests *take* instead of copy/share.
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () ->
+                    dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                    fnc invalid(bool choose): int {
+                      val int first = 11;
+                      val int second = 12;
+                      val int moved = rt take (choose ? first : second);
+                      return moved;
+                    }
+                    """)));
+        assertTrue(error.getMessage().contains("path-aware partial-move"),
+                error.getMessage());
+    }
+
+    @Test
     void rtTakeCannotLaunderAnAssignmentResult() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
