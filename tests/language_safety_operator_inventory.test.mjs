@@ -34,6 +34,6 @@ test("scans template interpolation but not inert template text", () => {
     {kind: "percent", line: 1, column: 8}
   ]);
   assert.deepEqual(scanLegacyOperators("`^ outside % ${fn(`nested ${a ^ b}`)}`"), [
-    {kind: "caret", line: 1, column: 30}
+    {kind: "caret", line: 1, column: 31}
   ]);
 });
