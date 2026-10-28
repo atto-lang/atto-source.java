@@ -144,6 +144,17 @@ final class SourceTimerLanguageTest {
     }
 
     @Test
+    void actorTimerRegistrationCannotBypassActorLifecycleAuthority() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub actor fnc unsafe_actor_timer(int n): void {
+                            time.sleep(1ms);
+                            return;
+                        }
+                        """));
+    }
+
+    @Test
     void unsupportedTimeoutAndCallbackAPIsAreFailClosed() {
         for (String call : new String[]{
                 "time.timeout(1ms, time.after(2ms))",
