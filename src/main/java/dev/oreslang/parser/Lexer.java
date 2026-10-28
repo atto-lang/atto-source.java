@@ -239,8 +239,22 @@ public final class Lexer {
             if (!isDigit(peek())) throw error("malformed exponent");
             while (isDigit(peek()) || peek() == '_') advance();
         }
-        if (peek() == 'i') { advance(); add(IMAG); }
-        else add(floating ? FLOAT : INT);
+        if (peek() == 'i') { advance(); add(IMAG); return; }
+        if (isIdentStart(peek())) {
+            int suffixStart = current;
+            while (isIdentPart(peek())) advance();
+            String suffix = source.substring(suffixStart, current);
+            // Use a closed suffix set. No unknown unit can silently become a
+            // multiplication, method name, or an unvalidated integer literal.
+            if (!floating && (suffix.equals("ns") || suffix.equals("us")
+                    || suffix.equals("ms") || suffix.equals("s")
+                    || suffix.equals("m") || suffix.equals("h"))) {
+                add(DURATION);
+                return;
+            }
+            throw error("unknown or fractional duration suffix '" + suffix + "'");
+        }
+        add(floating ? FLOAT : INT);
     }
 
     private void identifier() {
