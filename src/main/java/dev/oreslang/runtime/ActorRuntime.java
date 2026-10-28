@@ -2484,7 +2484,7 @@ public final class ActorRuntime implements AutoCloseable {
          * Constructor/factory failures complete this Future exceptionally.
          */
         public OresFuture<Void> ready() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = liveCellForExactRef(this);
             if (cell != null && !cell.stopped.get()) cell.schedule();
             return readyFuture;
         }
@@ -2536,7 +2536,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = liveCellForExactRef(this);
             if (cell == null) return true;
             cell.awaitFinalized(unit.toNanos(timeout));
             return cell.finalized();
@@ -2591,14 +2591,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public Optional<ActorId> parentId() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = liveCellForExactRef(this);
             return cell == null || cell.parent == null
                     ? Optional.empty()
                     : Optional.of(cell.parent.ref.id());
         }
 
         public List<ActorId> childIds() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = liveCellForExactRef(this);
             if (cell == null) return List.of();
             return cell.children.stream().map(child -> child.ref.id()).toList();
         }
@@ -2696,7 +2696,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public Optional<ActorId> parentId() {
             requireControlInspection("inspect an actor control handle parent");
-            ActorCell<?> cell = actors.get(ref.id());
+            ActorCell<?> cell = liveCellForExactRef(ref);
             return cell == null || cell.parent == null
                     ? Optional.empty()
                     : Optional.of(cell.parent.ref.id());
@@ -2704,7 +2704,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public List<ActorId> childIds() {
             requireControlInspection("inspect actor control handle children");
-            ActorCell<?> cell = actors.get(ref.id());
+            ActorCell<?> cell = liveCellForExactRef(ref);
             return cell == null
                     ? List.of()
                     : cell.children.stream()
@@ -5574,10 +5574,24 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * A live actor is accessible only through its runtime-issued reference.
+     * UUID/generation metadata is a diagnostic address, not actor authority.
+     * Preserve completed legitimate references as settled observers.
+     */
+    private ActorCell<?> liveCellForExactRef(ActorRef<?> ref) {
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell != null && cell.ref != ref) {
+            throw new ActorInvalidReferenceException(
+                    "stale or forged ActorRef cannot observe a live actor");
+        }
+        return cell;
+    }
+
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = liveCellForExactRef(ref);
         return cell != null && !cell.stopped.get();
     }
 
