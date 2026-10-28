@@ -72,6 +72,10 @@ pub critical suspends fnc process(Channel<int> requests): int {
   a deadline to each directly registered `readch` / `writech` operation,
   including `nb` registrations and deferred channel callbacks.
   It preserves the logical critical ticket while the channel task suspends.
+  The SourceTask cancels its privately owned direct blocking channel waits and
+  syntactically inline `await (nb readch/writech ...)` registrations during
+  physical retirement. Separately stored/shared Future observations are only
+  detached, never implicitly producer-cancelled.
 - Either field may be independently supplied; both may be combined.
   All fields require nonnegative signed-64 integer millisecond metadata.
   Unknown/duplicate/invalid fields or a channel deadline without a
