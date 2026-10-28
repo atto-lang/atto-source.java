@@ -200,6 +200,18 @@ final class ActorNativeStorageStandaloneTest {
                 rightMemory.writeLong(0, 224L);
                 assertEquals(111L, leftMemory.readLong(0));
                 assertEquals(224L, rightMemory.readLong(0));
+                long leftPinnedCharge = leftCharge.get();
+                long rightPinnedCharge = rightCharge.get();
+                assertThrows(IllegalStateException.class, left::close);
+                assertFalse(left.closed());
+                assertEquals(leftPinnedCharge, leftCharge.get(),
+                        "outstanding loan must prevent physical refund");
+                assertEquals(rightPinnedCharge, rightCharge.get());
+                assertEquals(111L, leftLoan.readLong(0));
+                rightMemory.writeLong(0, 226L);
+                assertEquals(226L, rightMemory.readLong(0),
+                        "peer remains writable while retirement is blocked");
+                rightMemory.writeLong(0, 224L);
             }
             leftMemory.writeLong(0, 112L);
             assertEquals(112L, leftMemory.readLong(0));
