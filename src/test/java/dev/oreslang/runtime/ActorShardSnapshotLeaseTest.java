@@ -125,10 +125,10 @@ final class ActorShardSnapshotLeaseTest {
                         ActorShardColumns shard = null;
                         List<ActorShardColumns.ColumnSnapshot> snapshots = new ArrayList<>();
                         try {
-                            // 524,288 doubles = 4 MiB. Shard + three snapshots
-                            // exactly consume this actor's 16 MiB shard budget.
+                            // Leave room for the live mailbox envelope: shard and
+                            // snapshots share the actor's total heap budget.
                             shard = new ActorShardColumns(
-                                    ActorShardColumns.Layout.SOA, 524_288, 1, 1);
+                                    ActorShardColumns.Layout.SOA, 524_280, 1, 1);
                             for (int i = 0; i < 3; i++) {
                                 snapshots.add(shard.snapshotColumnLeased(0));
                             }
