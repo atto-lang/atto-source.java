@@ -10,6 +10,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -121,6 +122,76 @@ public final class OresTimers implements AutoCloseable {
 
     public OresFuture<Void> sleepNanos(long delayNanos) {
         return afterNanos(delayNanos);
+    }
+
+    /**
+     * Observe a Future with a monotonic deadline, WITHOUT taking ownership of
+     * its producer. No new source Task or carrier is required: the clock only
+     * settles a separate observer Future, and await re-enters its own scheduler.
+     *
+     * <p>Canceling this observer or reaching its deadline detaches the observer
+     * and revokes its timer, but never cancels the input Future. An owned Task
+     * requires separate cancellation authority and physical retirement fencing.
+     * This host primitive is not yet a guest time.timeout builtin.</p>
+     */
+    public <T> OresFuture<T> timeoutNanos(long delayNanos, OresFuture<T> source) {
+        if (delayNanos < 0) throw new IllegalArgumentException("negative timer delay");
+        Objects.requireNonNull(source, "source");
+
+        final AtomicReference<OresFuture<Void>> clock = new AtomicReference<>();
+        final AtomicReference<OresFuture.RuntimeWaiterRegistration<T>> observation =
+                new AtomicReference<>();
+        final OresFuture<T> bounded = new OresFuture<>(() -> {
+            OresFuture<Void> timer = clock.getAndSet(null);
+            if (timer != null) timer.cancel(false);
+        });
+
+        // Both success and terminal failure must release the timer and detach
+        // the observer; cancellation additionally runs the same revoker.
+        bounded.whenCompleteRuntime((value, failure) -> {
+            OresFuture.RuntimeWaiterRegistration<T> subscription =
+                    observation.getAndSet(null);
+            if (subscription != null) subscription.detach();
+            OresFuture<Void> timer = clock.getAndSet(null);
+            if (timer != null) timer.cancel(false);
+        });
+
+        // Subscribe first: an already-settled producer wins even for delay=0.
+        OresFuture.RuntimeWaiterRegistration<T> subscription =
+                source.whenCompleteRuntimeCancellable((value, failure) -> {
+                    if (source.isCancelled()) bounded.cancel(false);
+                    else if (failure != null) bounded.failFromRuntime(
+                            OresFuture.unwrap(failure));
+                    else bounded.completeFromRuntime(value);
+                });
+        observation.set(subscription);
+        if (bounded.isDone()) {
+            subscription.detach();
+            observation.compareAndSet(subscription, null);
+            return bounded;
+        }
+
+        final OresFuture<Void> timer;
+        try {
+            timer = afterNanos(delayNanos);
+        } catch (RuntimeException | Error rejected) {
+            subscription.detach();
+            observation.compareAndSet(subscription, null);
+            if (bounded.isDone()) return bounded;
+            throw rejected;
+        }
+        clock.set(timer);
+        if (bounded.isDone()) timer.cancel(false);
+
+        // Timer thread is never permitted to run guest code. Completion only
+        // races the observer's terminal state; producer state is untouched.
+        timer.whenCompleteRuntime((ignored, failure) -> {
+            if (failure == null) bounded.failFromRuntime(
+                    new TimeoutException("timer deadline exceeded"));
+            else if (timer.isCancelled()) bounded.cancel(false);
+            else bounded.failFromRuntime(OresFuture.unwrap(failure));
+        });
+        return bounded;
     }
 
     /**
