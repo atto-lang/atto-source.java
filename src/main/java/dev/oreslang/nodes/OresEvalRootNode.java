@@ -864,6 +864,7 @@ public final class OresEvalRootNode extends RootNode {
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
             private final CriticalGate.Ticket criticalTicket;
+            private final CriticalAnnotationPolicy criticalPolicy;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -874,6 +875,9 @@ public final class OresEvalRootNode extends RootNode {
                     List<?> arguments) {
                 this.function = Objects.requireNonNull(function, "function");
                 this.criticalTicket = function.critical() ? fileCriticalGate.newTicket() : null;
+                this.criticalPolicy = function.critical()
+                        ? CriticalAnnotationPolicy.from(function.annotations(), true,
+                                function.suspends() || function.async(), function.name()) : null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
@@ -888,6 +892,9 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = Objects.requireNonNull(method, "method");
                 this.criticalTicket = method.critical()
                         ? methodGate(method, receiver).newTicket() : null;
+                this.criticalPolicy = method.critical()
+                        ? CriticalAnnotationPolicy.from(method.annotations(), true,
+                                method.suspends() || method.async(), method.name()) : null;
                 this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
@@ -900,6 +907,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.criticalTicket = null;
+                this.criticalPolicy = null;
                 this.arguments = List.of();
             }
 
@@ -930,13 +938,11 @@ public final class OresEvalRootNode extends RootNode {
                         // AnnotationExpander before execution. The admission
                         // timer is owned by this VM context and never runs
                         // guest code, even if an admission times out.
-                        CriticalAnnotationPolicy policy = function != null
-                                ? CriticalAnnotationPolicy.from(function.annotations(), true, function.name())
-                                : CriticalAnnotationPolicy.from(method.annotations(), true, method.name());
-                        OresFuture<Void> ready = policy == null
+                        OresFuture<Void> ready = criticalPolicy == null
+                                || criticalPolicy.queueTimeout() == null
                                 ? criticalTicket.enterAsync()
                                 : criticalTicket.enterAsyncWithin(
-                                        policy.queueTimeout(), context.criticalAdmissionTimer());
+                                        criticalPolicy.queueTimeout(), context.criticalAdmissionTimer());
                         // Fast-path admission is synchronous even for a
                         // suspends callable: only actual contention or a
                         // suspending body operation unwinds this task turn.
@@ -4544,7 +4550,7 @@ public final class OresEvalRootNode extends RootNode {
             if (critical != null) {
                 CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
                         fn.annotations(), true, fn.name());
-                if (policy == null) critical.enterSync();
+                if (policy == null || policy.queueTimeout() == null) critical.enterSync();
                 else critical.enterSyncWithin(policy.queueTimeout());
             }
             try {
@@ -4637,7 +4643,7 @@ public final class OresEvalRootNode extends RootNode {
             if (critical != null) {
                 CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
                         method.annotations(), true, method.name());
-                if (policy == null) critical.enterSync();
+                if (policy == null || policy.queueTimeout() == null) critical.enterSync();
                 else critical.enterSyncWithin(policy.queueTimeout());
             }
             try {
@@ -6968,7 +6974,7 @@ public final class OresEvalRootNode extends RootNode {
             if (critical != null) {
                 CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
                         fn.annotations(), true, fn.name());
-                if (policy == null) critical.enterSync();
+                if (policy == null || policy.queueTimeout() == null) critical.enterSync();
                 else critical.enterSyncWithin(policy.queueTimeout());
             }
             try {
