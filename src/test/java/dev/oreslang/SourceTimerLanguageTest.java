@@ -234,10 +234,10 @@ final class SourceTimerLanguageTest {
     }
 
     @Test
-    void actorReceiveSuspendsAndResumesInsideItsMailboxTurn() throws Exception {
-        // This is guest execution, not merely parsing an actor receive hook.
-        // An actor's synchronous receive is already scheduler-owned; an
-        // asynchronous channel send must not require a nested source Task.
+    void actorReceiveAwaitsAChannelFutureInsideItsMailboxTurn() throws Exception {
+        // This executes the actor guest method rather than merely parsing it.
+        // The buffered channel Future can already be settled at await time;
+        // a separate pending-Future/physical-retirement race is still needed.
         String program = """
                 define actor Worker as
                     receive(ActorMail<String> mail): void {
