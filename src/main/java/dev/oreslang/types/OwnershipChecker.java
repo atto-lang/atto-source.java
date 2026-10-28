@@ -1183,6 +1183,16 @@ public final class OwnershipChecker {
                     yield taken;
                 }
                 case "copy" -> {
+                    // Standalone ownership checking must not silently classify
+                    // an unknown NameExpr as Copy merely because unresolved
+                    // names use a permissive placeholder for other analyses.
+                    // Imported/global values require a linked immutable-value
+                    // proof before explicit duplication is admitted.
+                    if (argument instanceof Ast.NameExpr name
+                            && scope.lookup(name.name()) == null) {
+                        throw error("rt copy requires a statically tracked Copy binding '"
+                                + name.name() + "'; unknown symbols have no Copy proof");
+                    }
                     ValueInfo source = checkExpr(argument, scope, false);
                     if (source.kind != ValueKind.COPY) {
                         throw error(
