@@ -29,7 +29,11 @@ test("does not treat escaped string delimiter as code, or double count ^^", () =
   ]);
 });
 
-test("exposes inventory-only limitations: template interpolation is not parsed", () => {
-  // This scanner deliberately cannot replace the Oreslang lexer or semantic tests.
-  assert.deepEqual(scanLegacyOperators("`x=${a % b}`"), []);
+test("scans template interpolation but not inert template text", () => {
+  assert.deepEqual(scanLegacyOperators("`x=${a % b}`"), [
+    {kind: "percent", line: 1, column: 8}
+  ]);
+  assert.deepEqual(scanLegacyOperators("`^ outside % ${fn(`nested ${a ^ b}`)}`"), [
+    {kind: "caret", line: 1, column: 30}
+  ]);
 });
