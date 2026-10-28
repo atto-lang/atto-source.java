@@ -169,6 +169,38 @@ final class OresTimersTest {
     }
 
     @Test
+    void inlineIntervalObserverSeesPublishedTickBeforeReentrantNext() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresTimers.Interval interval = timers.intervalNanos(
+                     TimeUnit.MILLISECONDS.toNanos(60))) {
+            CountDownLatch observed = new CountDownLatch(1);
+            AtomicReference<OresFuture<Long>> second = new AtomicReference<>();
+            AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+            OresFuture<Long> first = interval.next();
+            first.whenCompleteRuntime((value, failure) -> {
+                try {
+                    assertNull(failure);
+                    assertEquals(1L, value.longValue());
+                    // Must be published BEFORE the Future invokes observers,
+                    // including a callback that synchronously requests tick 2.
+                    assertEquals(value.longValue(), interval.delivered());
+                    second.set(interval.next());
+                } catch (Throwable error) {
+                    callbackFailure.set(error);
+                } finally {
+                    observed.countDown();
+                }
+            });
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(), "inline callback saw stale interval state");
+            assertEquals(1L, first.get(5, TimeUnit.SECONDS));
+            assertNotNull(second.get(), "reentrant next never armed");
+            assertEquals(2L, second.get().get(5, TimeUnit.SECONDS));
+            assertEquals(2L, interval.delivered());
+        }
+    }
+
+    @Test
     void intervalCapabilityChargesAndReleasesGlobalSlotsExactlyOnce() {
         int before = OresTimers.availableGlobalIntervalSlots();
         try (OresTimers first = new OresTimers();
