@@ -3,7 +3,13 @@ package dev.oreslang.runtime;
 import java.util.ArrayDeque;
 import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.time.Duration;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * FIFO, non-thread-affine critical section for one object or one code unit.
@@ -46,6 +52,66 @@ public final class CriticalGate {
          */
         public OresFuture<Void> enterAsync() {
             return request(false);
+        }
+
+        /**
+         * Bound only admission wait, not the duration of an admitted critical
+         * invocation. The caller supplies its VM-owned timer executor; a
+         * rejected timer registration fails closed rather than leaving an
+         * unbounded waiter. The timer never executes guest code.
+         *
+         * <p>The fast path acquires immediately, including for a zero-duration
+         * budget. On contention the timer atomically removes the waiting
+         * ticket; it cannot revoke an already-granted owner. Total/execution
+         * deadlines must cancel the owning task and await safe teardown,
+         * rather than releasing this gate directly.</p>
+         */
+        public OresFuture<Void> enterAsyncWithin(
+                Duration timeout, ScheduledExecutorService timer) {
+            Objects.requireNonNull(timeout, "timeout");
+            Objects.requireNonNull(timer, "timer");
+            if (timeout.isNegative()) {
+                throw new IllegalArgumentException("critical admission timeout is negative");
+            }
+            OresFuture<Void> ready = request(false);
+            if (ready.isDone()) return ready;
+            if (timeout.isZero()) {
+                expireQueued();
+                return ready;
+            }
+            long nanos;
+            try {
+                nanos = timeout.toNanos();
+            } catch (ArithmeticException overflow) {
+                nanos = Long.MAX_VALUE;
+            }
+            try {
+                ScheduledFuture<?> scheduled = timer.schedule(
+                        this::expireQueued, nanos, TimeUnit.NANOSECONDS);
+                ready.whenCompleteRuntime((ignored, failure) -> scheduled.cancel(false));
+            } catch (RejectedExecutionException rejected) {
+                failQueued(new IllegalStateException(
+                        "critical admission deadline could not be scheduled", rejected));
+            }
+            return ready;
+        }
+
+        private void expireQueued() {
+            failQueued(new TimeoutException("critical admission queue timeout"));
+        }
+
+        /** Only an ungranted ticket can lose admission to timeout. */
+        private void failQueued(Throwable failure) {
+            java.util.concurrent.CountDownLatch signal;
+            synchronized (COORDINATOR) {
+                if (!requested || granted || closed) return;
+                closed = true;
+                waiters.remove(this);
+                WAITING_ON.remove(logicalOwner, CriticalGate.this);
+                signal = synchronousWaiter;
+            }
+            if (signal != null) signal.countDown();
+            admitted.failFromRuntime(failure);
         }
 
         private OresFuture<Void> request(boolean synchronous) {
