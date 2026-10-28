@@ -1338,6 +1338,11 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                if (consuming && valueKind != ValueKind.COPY) {
+                    throw error("cannot consume move-only record/struct field '"
+                            + member.member() + "' by value without "
+                            + "path-aware partial-move tracking; borrow or replace it");
+                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -1348,9 +1353,17 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
-                    if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
-                        throw error("cannot move actor-owned field '" + member.member()
-                                + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
+                    if (consuming && fieldKind != ValueKind.COPY) {
+                        // A by-value call, constructor argument, return or
+                        // aggregate builder must not silently duplicate an
+                        // owned field. No slot-level partial-move state exists,
+                        // even when the member is declared mutable. This rule
+                        // is wider than explicit rt take: implicit transfers
+                        // must enforce the same source-place invalidation.
+                        throw error("cannot consume move-only class field '"
+                                + target.owner().name() + "." + member.member()
+                                + "' by value without path-aware partial-move tracking; "
+                                + "borrow it or use a checked replace operation");
                     }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
@@ -1367,9 +1380,10 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (consuming && elementKind != ValueKind.COPY
-                    && isRootedAtActorSelf(indexed.receiver(), scope)) {
-                throw error("cannot move actor-owned indexed state out of its mailbox turn");
+            if (consuming && elementKind != ValueKind.COPY) {
+                throw error("cannot consume move-only indexed element by value "
+                        + "without path-aware element removal/invalidation; "
+                        + "borrow it or use a checked replacement");
             }
             // Ordinary projection is an aliasing read, not an implicit partial
             // move. Explicit ownership transfer remains spelled rt take; indexed
