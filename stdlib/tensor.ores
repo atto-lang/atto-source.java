@@ -1,0 +1,116 @@
+// Native Oreslang tensor geometry predicates, no host language numerical code.
+// Descriptors do NOT grant allocation, ownership, accelerator or alias authority.
+// All calculations are signed-i64 checked before they are evaluated.
+define module tensor as
+  pub define class TensorView2D as
+    pub val int rows;
+    pub val int cols;
+    pub val int row_stride;
+    pub val int col_stride;
+    pub val int element_bytes;
+    pub val int capacity_bytes;
+    pub val bool mutable;
+  end
+
+  // This is a rank-2 non-negative-stride view, not a general tensor allocator.
+  // Mutable views use a conservative row-major no-overlap sufficient proof.
+  // Read-only views may broadcast with zero strides.
+  pub fnc valid_tensor_view_2d(&TensorView2D view): bool {
+    if view.rows < 0 || view.cols < 0; do
+      return false;
+    fi
+    if view.row_stride < 0 || view.col_stride < 0; do
+      return false;
+    fi
+    if view.element_bytes <= 0 || view.capacity_bytes < 0; do
+      return false;
+    fi
+    if view.rows == 0 || view.cols == 0; do
+      return true;
+    fi
+
+    if view.mutable && view.rows > 1 && view.row_stride == 0; do
+      return false;
+    fi
+    if view.mutable && view.cols > 1 && view.col_stride == 0; do
+      return false;
+    fi
+
+    // The two guarded products cannot overflow i64.
+    if view.rows > 1; do
+      if view.row_stride > 9223372036854775807 / (view.rows - 1); do
+        return false;
+      fi
+    fi
+    if view.cols > 1; do
+      if view.col_stride > 9223372036854775807 / (view.cols - 1); do
+        return false;
+      fi
+    fi
+
+    // Reject possibly overlapping mutable non-contiguous views rather than
+    // accepting based solely on the last indexed byte.
+    if view.mutable && view.rows > 1 && view.cols > 1; do
+      if view.col_stride > 9223372036854775807 / view.cols; do
+        return false;
+      fi
+      if view.row_stride < view.cols * view.col_stride; do
+        return false;
+      fi
+    fi
+
+    val int row_span = (view.rows - 1) * view.row_stride;
+    val int col_span = (view.cols - 1) * view.col_stride;
+    if row_span > 9223372036854775807 - col_span; do
+      return false;
+    fi
+    val int last_index = row_span + col_span;
+    if last_index == 9223372036854775807; do
+      return false;
+    fi
+    val int required_elements = last_index + 1;
+    if view.element_bytes > 9223372036854775807 / required_elements; do
+      return false;
+    fi
+    return required_elements * view.element_bytes <= view.capacity_bytes;
+  }
+
+  // An exact row-major, canonical, owned-layout descriptor. Byte capacity
+  // must match the logical matrix size exactly; no padding or hidden bytes.
+  pub fnc valid_contiguous_tensor_2d(&TensorView2D view): bool {
+    if !valid_tensor_view_2d(&view); do
+      return false;
+    fi
+    if view.col_stride != 1 || view.row_stride != view.cols; do
+      return false;
+    fi
+    if view.rows == 0 || view.cols == 0; do
+      return view.capacity_bytes == 0;
+    fi
+    if view.rows > 9223372036854775807 / view.cols; do
+      return false;
+    fi
+    val int elements = view.rows * view.cols;
+    if view.element_bytes > 9223372036854775807 / elements; do
+      return false;
+    fi
+    return view.capacity_bytes == elements * view.element_bytes;
+  }
+
+  // Broadcasting is a pure shape check. No buffer allocation, shared borrow,
+  // implicit GPU/CPU conversion, or elementwise evaluation is authorized.
+  pub fnc can_broadcast_2d(
+    int lhs_rows, int lhs_cols, int rhs_rows, int rhs_cols
+  ): bool {
+    if lhs_rows < 0 || lhs_cols < 0 || rhs_rows < 0 || rhs_cols < 0; do
+      return false;
+    fi
+    if lhs_rows != rhs_rows && lhs_rows != 1 && rhs_rows != 1; do
+      return false;
+    fi
+    if lhs_cols != rhs_cols && lhs_cols != 1 && rhs_cols != 1; do
+      return false;
+    fi
+    return true;
+  }
+end
