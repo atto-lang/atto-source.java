@@ -1249,7 +1249,10 @@ public final class OwnershipChecker {
                     throw error("imports::" + member.member()
                             + " requires an explicitly named import fnc binding");
                 }
-                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
+                // Until the linker supplies a typed lifetime/effect signature,
+                // this callable may not escape into an indirect Fnc invocation.
+                throw error("imports::" + member.member()
+                        + " is direct-call-only without a linked fnc lifetime signature");
             }
             if (member.receiver() instanceof Ast.NameExpr root
                     && root.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE)) {
@@ -1705,10 +1708,10 @@ public final class OwnershipChecker {
             // The imported fnc's parameter lifetimes and scheduling effects
             // are opaque to this per-unit pass. Never transfer a borrow or
             // lexical mutex guard across that unresolved ABI boundary.
-            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
-                throw error("imports::" + imported.member()
-                        + " cannot run while holding a MutexGuard");
-            }
+            // A function imported across a code-unit boundary may execute a
+            // task or call unknown code even if its surface is non-suspends.
+            // Do not allow a live lexical loan across this opaque boundary.
+            checkSuspensionBorrows(scope, "call imports::" + imported.member());
             for (Ast.Expr argument : call.arguments()) {
                 ValueInfo passed = checkExpr(argument, scope, true);
                 if (isBorrowValue(passed) || passed.borrowSource != null
