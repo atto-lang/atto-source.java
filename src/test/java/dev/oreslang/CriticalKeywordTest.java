@@ -216,6 +216,56 @@ final class CriticalKeywordTest {
         assertEquals(java.time.Duration.ofMillis(90), policy.totalTimeout());
     }
 
+    @Test void annotatedExecutionAndTotalDeadlinesExecuteUncontendedSource() throws Exception {
+        String code = """
+                @Critical(queue_timeout_ms=100, execution_timeout_ms=1000,
+                          total_timeout_ms=2000)
+                pub critical suspends fnc guarded(): int {
+                    return 17;
+                }
+                async fnc invoke(): int { return guarded(); }
+                pub fnc main(): void {
+                    stdio.stdout.write(await invoke());
+                    return;
+                }
+                """;
+        dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(code);
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        try (var context = org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(org.graalvm.polyglot.Source
+                    .newBuilder(OresLanguage.ID, code, "critical-total-execution.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("17", output.toString().strip());
+    }
+
+    @Test void zeroTotalBudgetFailsBeforeCriticalSourceBodyRuns() throws Exception {
+        String code = """
+                @Critical(total_timeout_ms=0)
+                pub critical suspends fnc forbidden(): int {
+                    stdio.stdout.write("SHOULD_NOT_RUN");
+                    return 23;
+                }
+                async fnc invoke(): int { return forbidden(); }
+                pub fnc main(): void {
+                    stdio.stdout.write(await invoke());
+                    return;
+                }
+                """;
+        dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(code);
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        try (var context = org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertThrows(RuntimeException.class, () -> context.eval(
+                    org.graalvm.polyglot.Source
+                            .newBuilder(OresLanguage.ID, code, "critical-zero-total.ores")
+                            .mimeType(OresLanguage.MIME_TYPE).build()));
+        }
+        assertFalse(output.toString().contains("SHOULD_NOT_RUN"),
+                "zero total budget must not execute the critical body");
+    }
+
     @Test void criticalPolicyAppliesToInstanceMethodsAsWellAsFileFunctions() {
         Ast.Program checked = dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
                 define class Box as
