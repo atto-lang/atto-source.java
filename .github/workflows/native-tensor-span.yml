@@ -4,6 +4,8 @@ on:
     paths:
       - 'stdlib/tensor.ores'
       - 'examples/native-compute-tensor-span.ores'
+      - 'examples/native-tensor-owned-array.ores'
+      - 'src/test/java/dev/oreslang/TensorOwnedArrayAdmissionTest.java'
       - 'formal/tensor/**'
       - '.github/workflows/native-tensor-span.yml'
   workflow_dispatch:
@@ -48,3 +50,15 @@ jobs:
           set -o pipefail
           mvn -B -ntp exec:java -Dexec.args="examples/native-compute-tensor-span.ores" | tee "${RUNNER_TEMP}/tensor-span-guest.out"
           grep -Fx 'COMPUTE-TENSOR-SPAN-OK' "${RUNNER_TEMP}/tensor-span-guest.out"
+      - name: Compile and execute real memory-backed Oreslang tensor guest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          mvn -B -ntp exec:java -Dexec.args="examples/native-tensor-owned-array.ores" | tee "${RUNNER_TEMP}/tensor-owned-guest.out"
+          grep -Fx 'TENSOR-OWNED-ARRAY-GUEST-OK' "${RUNNER_TEMP}/tensor-owned-guest.out"
+      - name: Reject stale owner and unsafe array use at type-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=TensorOwnedArrayAdmissionTest test
