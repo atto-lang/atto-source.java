@@ -12,6 +12,8 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -74,6 +76,22 @@ public final class OresScheduler implements AutoCloseable {
      */
     public interface DeadlineController {
         void failAtDeadline(TimeoutException expired);
+
+        /** Propagate the earlier deadline to child tasks created by this task. */
+        void publishChildDeadline(long budgetNanos, ScheduledExecutorService timer);
+    }
+
+    private record InheritedDeadline(
+            long startedNanos, long budgetNanos, ScheduledExecutorService timer) {
+        private InheritedDeadline {
+            Objects.requireNonNull(timer, "timer");
+            if (budgetNanos < 0) throw new IllegalArgumentException("negative deadline budget");
+        }
+
+        long remainingNanos() {
+            long elapsed = Math.max(0L, System.nanoTime() - startedNanos);
+            return Math.max(0L, budgetNanos - elapsed);
+        }
     }
 
     public static DeadlineController currentDeadlineController() {
@@ -452,6 +470,9 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
         private final AtomicBoolean physicalRetirementNotified = new AtomicBoolean();
+        private final AtomicReference<InheritedDeadline> propagatedDeadline =
+                new AtomicReference<>();
+        private volatile ScheduledFuture<?> inheritedTimer;
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -462,14 +483,58 @@ public final class OresScheduler implements AutoCloseable {
 
         private TaskRunner(Task<T> task) {
             this.task = task;
+            Object parent = CURRENT_TASK_DOMAIN.get();
+            if (parent instanceof TaskRunner<?> ancestor) {
+                // Snapshot the effective earlier parent deadline. Parent
+                // policy is immutable for this child after construction.
+                propagatedDeadline.set(ancestor.propagatedDeadline.get());
+            }
             this.completion = new OresFuture<>(this::cancelFromFuture);
+        }
+
+        @Override
+        public void publishChildDeadline(
+                long budgetNanos, ScheduledExecutorService timer) {
+            Objects.requireNonNull(timer, "timer");
+            InheritedDeadline next =
+                    new InheritedDeadline(System.nanoTime(), budgetNanos, timer);
+            for (;;) {
+                InheritedDeadline previous = propagatedDeadline.get();
+                if (previous != null
+                        && previous.remainingNanos() <= next.remainingNanos()) return;
+                if (propagatedDeadline.compareAndSet(previous, next)) return;
+            }
         }
 
         private void scheduleInitial() {
             if (!phase.compareAndSet(NEW, QUEUED)) {
                 throw new IllegalStateException("scheduler task was already started");
             }
-            enqueueTurn();
+            InheritedDeadline inherited = propagatedDeadline.get();
+            if (inherited != null) {
+                long remaining = inherited.remainingNanos();
+                if (remaining == 0L) {
+                    failAtDeadline(new TimeoutException(
+                            "inherited critical deadline exceeded before admission"));
+                    return;
+                }
+                try {
+                    inheritedTimer = inherited.timer().schedule(
+                            () -> failAtDeadline(new TimeoutException(
+                                    "inherited critical deadline exceeded")),
+                            remaining, TimeUnit.NANOSECONDS);
+                } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                    failTerminal(new IllegalStateException(
+                            "inherited critical deadline timer could not be scheduled", rejected));
+                    return;
+                }
+                // A timer can expire while schedule(...) publishes its handle.
+                if (phase.get() == TERMINAL) {
+                    inheritedTimer.cancel(false);
+                    return;
+                }
+            }
+            if (phase.get() == QUEUED) enqueueTurn();
         }
 
         private void enqueueTurn() {
@@ -560,9 +625,13 @@ public final class OresScheduler implements AutoCloseable {
 
         private void notifyPhysicalRetirementIfSafe() {
             if (phase.get() != TERMINAL || executing.get()) return;
-            if (!(task instanceof PhysicalRetirementListener listener)) return;
             if (!physicalRetirementNotified.compareAndSet(false, true)) return;
-            listener.onPhysicallyRetired();
+            ScheduledFuture<?> timer = inheritedTimer;
+            inheritedTimer = null;
+            if (timer != null) timer.cancel(false);
+            if (task instanceof PhysicalRetirementListener listener) {
+                listener.onPhysicallyRetired();
+            }
         }
 
         private void armCooperate() {
