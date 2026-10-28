@@ -112,6 +112,15 @@ final class ScalarSourceEffectFactsV1Test {
     }
 
     @Test
+    void dynamicTopTypeAndGenericResultCannotSilentlyProveNoAllocation() {
+        // A scalar literal does not prove how an any/unknown/union
+        // return value is represented or whether dynamic boxing occurs.
+        assertThrows(IllegalArgumentException.class, () -> analyze("""
+                fnc boxed(): any { return 42; }
+                """));
+    }
+
+    @Test
     void syntacticCallChainsDoNotProveTerminationOrHardRealtime() {
         // Effect closure is independent of termination: this zero-direct-effect
         // recursive program would still fail hard-RT recursion/WCET checking.
