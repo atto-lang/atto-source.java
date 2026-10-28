@@ -4374,6 +4374,17 @@ public final class ActorRuntime implements AutoCloseable {
     private void requireCallerRuntimeAffinity(String operation) {
         requireNoForceCancellationHookReentry(operation);
         ActorRuntime caller = currentActorRuntime();
+        // The carrier and physical ActorCell are tracked independently of the
+        // logical execution record. Clearing one ThreadLocal must not turn
+        // an active actor callback into a trusted host call.
+        if (isActorCarrierThread() && caller == null) {
+            throw new SecurityException(
+                    "actor cannot " + operation + " with missing execution identity");
+        }
+        if (currentActor.get() != null && caller != this) {
+            throw new SecurityException(
+                    "actor cannot " + operation + " with inconsistent runtime identity");
+        }
         if (caller != null && caller != this) {
             throw new SecurityException(
                     "actor cannot " + operation + " through another ActorRuntime");
@@ -4404,7 +4415,7 @@ public final class ActorRuntime implements AutoCloseable {
     private void requireSupervisorContext(String operation) {
         requireNoForceCancellationHookReentry(operation);
         requireNotActorGroupMailman(operation);
-        if (inActorExecution()) {
+        if (inActorExecution() || isActorCarrierThread() || currentActor.get() != null) {
             throw new SecurityException(
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
         }
@@ -4412,6 +4423,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
+                || isActorCarrierThread()
+                || currentActor.get() != null
                 || inActorGroupMailmanExecution()
                 || OresScheduler.current() != null) {
             throw new SecurityException(
