@@ -146,6 +146,23 @@ final class ActorControlHandleIsolationTest {
             assertEquals(victim.id(), forgery.id());
             assertEquals(victim.generation(), forgery.generation());
 
+            // Read/observer operations must not use a forged UUID as authority.
+            // In particular, ready() must not schedule the victim's live cell.
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::isAlive);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.isAlive(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::ready);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::readyRef);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::parentId);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::childIds);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> forgery.awaitTermination(0, TimeUnit.NANOSECONDS));
+
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> runtime.stop(forgery));
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
