@@ -2484,7 +2484,7 @@ public final class ActorRuntime implements AutoCloseable {
          * Constructor/factory failures complete this Future exceptionally.
          */
         public OresFuture<Void> ready() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = requireExactLiveActorCell(this);
             if (cell != null && !cell.stopped.get()) cell.schedule();
             return readyFuture;
         }
@@ -2536,7 +2536,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = requireExactLiveActorCell(this);
             if (cell == null) return true;
             cell.awaitFinalized(unit.toNanos(timeout));
             return cell.finalized();
@@ -2591,14 +2591,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public Optional<ActorId> parentId() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = requireExactLiveActorCell(this);
             return cell == null || cell.parent == null
                     ? Optional.empty()
                     : Optional.of(cell.parent.ref.id());
         }
 
         public List<ActorId> childIds() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = requireExactLiveActorCell(this);
             if (cell == null) return List.of();
             return cell.children.stream().map(child -> child.ref.id()).toList();
         }
@@ -2675,6 +2675,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void requireControlInspection(String operation) {
             requireSupervisorContext(operation);
             requireCallerRuntimeAffinity(operation);
+            requireExactLiveActorCell(ref);
         }
 
         public ActorId id() {
@@ -5574,10 +5575,27 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Ref identity, not an actor ID/generation tuple, authorizes live lookup.
+     * This must also guard observer operations: querying a same-ID lookalike
+     * must not schedule, inspect, or block on the real actor's cell. */
+    private ActorCell<?> requireExactLiveActorCell(ActorRef<?> ref) {
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell != null && cell.ref != ref) {
+            throw new ActorInvalidReferenceException(
+                    "stale or forged ActorRef does not match the live incarnation");
+        }
+        return cell;
+    }
+
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = requireExactLiveActorCell(ref);
         return cell != null && !cell.stopped.get();
     }
 
