@@ -101,50 +101,20 @@ final class SourceActorNativeStorageTest {
                     actors = OresContext.get(null).actors();
                     actors.enableNativeActorStorage();
                 } finally { context.leave(); }
-                String program = """
-                        define %s Counter as
-                          let int count;
-                          on_start(): void { self.count = 0; return; }
-                          receive(ActorMail<String> mail): void {
-                            if mail.value == "inc"; do
-                              self.count = self.count + 1;
-                              self.send(self.count);
-                            fi
-                            if mail.value == "stop"; do
-                              self.end();
-                            fi
-                            return;
-                          }
-                        end
-                        pub async routine main(): void {
-                          val a = spawn Counter();
-                          val b = spawn Counter();
-                          await a.get_ready();
-                          await b.get_ready();
-                          a.send("inc");
-                          b.send("inc");
-                          val firstA = (await a.outputs.next()).value.unwrap();
-                          val firstB = (await b.outputs.next()).value.unwrap();
-                          stdio.stdout.write(firstA.value);
-                          stdio.stdout.write("|");
-                          stdio.stdout.write(firstB.value);
-                          a.send("stop");
-                          // This promise must not settle until A is physically
-                          // quiescent and its native actor storage is reclaimed.
-                          await a.get_done();
-                          b.send("inc");
-                          val secondB = (await b.outputs.next()).value.unwrap();
-                          stdio.stdout.write("|");
-                          stdio.stdout.write(secondB.value);
-                          b.send("stop");
-                          await b.get_done();
-                          return;
-                        }
-                        """.formatted(kind);
+                // Load one byte-identical .ores fixture for both actor kinds.
+                // It is compiled by the production guest engine, not reimplemented
+                // by Java host test logic.
+                String program;
+                try (var resource = SourceActorNativeStorageTest.class.getResourceAsStream(
+                        "/actor/native-same-kind-survivor.ores")) {
+                    assertNotNull(resource, "compiled .ores survivor fixture is missing");
+                    program = new String(resource.readAllBytes(), StandardCharsets.UTF_8)
+                            .formatted(kind);
+                }
                 context.eval(Source.newBuilder(OresLanguage.ID,
                         program, "native-same-kind-survivor.ores").build());
-                assertEquals("1|1|2", output.toString(StandardCharsets.UTF_8),
-                        "B must retain private mutable guest state after A reaches done");
+                assertEquals("1|1|2|2", output.toString(StandardCharsets.UTF_8),
+                        "A reaches 2 while B remains at 1, then B reaches 2 after A is done");
                 assertEquals(2, actors.nativeActorArenasCreated(),
                         "simultaneous same-kind actors must allocate distinct native arenas");
                 assertEquals(0, actors.nativeActorMemoryBytes(),
