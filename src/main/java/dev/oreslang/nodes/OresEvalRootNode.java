@@ -575,7 +575,12 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
-            OresObject object = new OresObject(this, klass, fields);
+            // Actor state gets its immutable owner identity before any
+            // initializer or on_start() code can expose self.
+            context.actors().requireCurrentSourceActorReceiverLease(
+                    actorContext.self().id());
+            OresObject object = new OresObject(
+                    this, klass, fields, actorContext.self().id());
 
             // Field initializers are actor-local state construction. They run
             // only after ActorRuntime has installed this actor's execution
@@ -639,6 +644,8 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor mailbox dispatch does not match actor-owned state");
             }
 
+            requireSourceActorReceiverLease(state.object());
+
             Ast.MethodDecl receive =
                     findMethod(
                             state.object().klass,
@@ -690,6 +697,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new SecurityException(
                         "source actor tear_down does not match actor-owned state");
             }
+            requireSourceActorReceiverLease(state.object());
+
             Ast.MethodDecl teardown = findMethod(
                     state.object().klass,
                     CallableSelector.instance("tear_down", 0));
@@ -1290,6 +1299,11 @@ public final class OresEvalRootNode extends RootNode {
                 cooperationQuantum.beginDispatch();
                 nextStep = null;
 
+                // Every physical resume of an actor receiver must hold the
+                // *same* actor's runtime carrier lease. No saved self/field
+                // continuation can re-enter from a root/foreign actor domain.
+                requireSourceActorReceiverLease(receiver);
+
                 // Revalidate immutable launch identity on every physical child
                 // dispatch. This is deliberately independent of scheduler trust:
                 // a malformed/replayed Resume must never turn a stale source
@@ -1744,10 +1758,31 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /**
+         * Actor-owned state is not an ordinary class receiver: it can only
+         * execute on its exact owner actor's current physical carrier. A
+         * SourceTask holds the original OresObject strongly while suspended,
+         * and the actor runtime must retain the turn/storage lease until
+         * every such task has physically retired.
+         */
+        private void requireSourceActorReceiverLease(OresObject receiver) {
+            if (receiver == null
+                    || receiver.klass.actorKind() == Ast.ActorKind.NONE) return;
+            if (receiver.ownerActorId == null) {
+                throw new SecurityException(
+                        "source actor receiver has no stamped owner identity");
+            }
+            context.actors().requireCurrentSourceActorReceiverLease(
+                    receiver.ownerActorId);
+        }
+
         private OresFuture<Object> startSourceMethodTask(
                 Ast.MethodDecl method,
                 OresObject receiver,
                 List<?> arguments) {
+            // Do not create, register or enqueue the child continuation until
+            // the source actor receiver is proven local to this physical turn.
+            requireSourceActorReceiverLease(receiver);
             SourceTask task = new SourceTask(method, receiver, arguments);
             OresFuture<Object> future;
             if (ActorRuntime.inActorExecution()) {
@@ -6062,6 +6097,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 if (value instanceof OresObject object) {
+                    // Copying a sealed actor receiver would sever its single-
+                    // writer lease and permit unowned mutation from another
+                    // scheduled Task. ActorRef is the transportable handle.
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new SecurityException(
+                                "actor receiver/state cannot cross a detached async task boundary");
+                    }
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
@@ -6256,6 +6298,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethodRaw(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            requireSourceActorReceiverLease(receiver);
             if (receiver.klass.actorKind() != Ast.ActorKind.NONE
                     && method.name().equals("tear_down")) {
                 throw new SecurityException(
@@ -11075,6 +11118,11 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor type name cannot be blank");
             }
             Objects.requireNonNull(object, "object");
+            if (!ownerActorId.equals(object.ownerActorId)
+                    || object.klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new SecurityException(
+                        "source actor state does not carry its owner's immutable receiver identity");
+            }
         }
     }
 
@@ -11082,10 +11130,24 @@ public final class OresEvalRootNode extends RootNode {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
+        // Null only for an ordinary, non-actor class instance.
+        private final ActorRuntime.ActorId ownerActorId;
+
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
-            this.owner = owner;
-            this.klass = klass;
-            this.fields = fields;
+            this(owner, klass, fields, null);
+        }
+
+        private OresObject(
+                Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields,
+                ActorRuntime.ActorId ownerActorId) {
+            this.owner = Objects.requireNonNull(owner, "source object owner");
+            this.klass = Objects.requireNonNull(klass, "source object class");
+            this.fields = Objects.requireNonNull(fields, "source object fields");
+            if ((klass.actorKind() == Ast.ActorKind.NONE) != (ownerActorId == null)) {
+                throw new SecurityException(
+                        "source actor state must be created with an actor owner identity");
+            }
+            this.ownerActorId = ownerActorId;
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
         @Override public String toString() { return CycleSafeDisplay.render(this); }
