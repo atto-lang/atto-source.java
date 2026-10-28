@@ -97,6 +97,9 @@ final class ActorNativeRuntimeIntegrationTest {
                 ref.ready().get(5, TimeUnit.SECONDS);
                 assertThrows(SecurityException.class, () -> region.get().readLong(0));
                 assertThrows(SecurityException.class, () -> arena.get().acquireLifetimePin());
+                assertThrows(IllegalStateException.class, arena.get()::close,
+                        "an external holder cannot free an actor's live heap");
+                assertFalse(arena.get().closed());
                 // A valid turn for another actor must not authorize this arena.
                 ActorRuntime.ActorRef<String> foreign = runtime.spawnSharedTrusted(context -> {
                     assertThrows(SecurityException.class, () -> region.get().readLong(0));
