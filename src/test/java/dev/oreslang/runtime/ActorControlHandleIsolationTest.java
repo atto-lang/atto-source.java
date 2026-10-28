@@ -166,4 +166,58 @@ final class ActorControlHandleIsolationTest {
         }
     }
 
+
+    @Test
+    void forgedStructuredChildHandleCannotCancelItsLiveLookalike() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> parent = runtime.spawnSharedTrusted(
+                    factory -> (message, context) -> {
+                        try {
+                            ActorRuntime.ActorHandle<Integer> real =
+                                    context.runtime().spawnChildShared(
+                                            childFactory -> (value, childContext) -> { });
+                            ActorRuntime.ActorRef<Integer> child = real.ref();
+                            var refConstructor = ActorRuntime.ActorRef.class.getDeclaredConstructor(
+                                    ActorRuntime.class,
+                                    ActorRuntime.ActorId.class,
+                                    ActorRuntime.ActorKind.class,
+                                    long.class);
+                            refConstructor.setAccessible(true);
+                            @SuppressWarnings("unchecked")
+                            ActorRuntime.ActorRef<Integer> forgedRef =
+                                    (ActorRuntime.ActorRef<Integer>) refConstructor.newInstance(
+                                            runtime, child.id(), child.kind(), child.generation());
+
+                            var ownerField = ActorRuntime.ActorHandle.class.getDeclaredField("ownerCell");
+                            ownerField.setAccessible(true);
+                            Object actualOwnerCell = ownerField.get(real);
+                            var handleConstructor = ActorRuntime.ActorHandle.class.getDeclaredConstructors()[0];
+                            handleConstructor.setAccessible(true);
+                            @SuppressWarnings("unchecked")
+                            ActorRuntime.ActorHandle<Integer> forgedHandle =
+                                    (ActorRuntime.ActorHandle<Integer>) handleConstructor.newInstance(
+                                            runtime, forgedRef, actualOwnerCell);
+
+                            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                                    forgedHandle::cancel);
+                            assertTrue(child.isAlive(),
+                                    "forged child lifecycle authority must not cancel real child");
+                            assertTrue(real.cancel(),
+                                    "original handle must retain parent-owned cancellation rights");
+                        } catch (Throwable failure) {
+                            unexpected.set(failure);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+
+            parent.send(1);
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(unexpected.get(), "structured child authority must be exact-incarnation");
+            parent.stop();
+        }
+    }
+
 }
