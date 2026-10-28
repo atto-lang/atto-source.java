@@ -238,4 +238,54 @@ final class CriticalGateTest {
         }
     }
 
+
+    @Test void timedHostWaitFailsWithoutParkingAnActorCarrier() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.newTicket();
+        owner.enterAsync();
+        var timed = gate.newTicket();
+        var failed = assertThrows(IllegalStateException.class,
+                () -> timed.enterSyncWithin(java.time.Duration.ofMillis(20)));
+        assertInstanceOf(java.util.concurrent.TimeoutException.class, failed.getCause());
+        assertEquals(0, gate.queuedCount());
+        owner.close();
+    }
+
+    @Test void expiredTicketIsRejectedAtHandoffEvenWhenTimerThreadIsBusy() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        try (var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()) {
+            var blockerStarted = new java.util.concurrent.CountDownLatch(1);
+            var unblockTimer = new java.util.concurrent.CountDownLatch(1);
+            timer.execute(() -> {
+                blockerStarted.countDown();
+                try {
+                    unblockTimer.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(blockerStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            try {
+                var owner = gate.newTicket();
+                owner.enterAsync();
+                var stale = gate.newTicket();
+                var staleWait = stale.enterAsyncWithin(java.time.Duration.ofMillis(20), timer);
+                var next = gate.newTicket();
+                next.enterAsync();
+                Thread.sleep(50);
+                owner.close();
+                var rejected = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> staleWait.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertInstanceOf(java.util.concurrent.TimeoutException.class, rejected.getCause());
+                assertFalse(stale.isHeld());
+                assertTrue(next.isHeld());
+                next.close();
+                assertEquals(0, gate.queuedCount());
+                assertFalse(gate.held());
+            } finally {
+                unblockTimer.countDown();
+            }
+        }
+    }
+
 }
