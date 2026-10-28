@@ -8,9 +8,13 @@ import { fileURLToPath } from "node:url";
 
 export function scanLegacyOperators(source) {
   const matches = [];
-  let state = "code", line = 1, col = 1;
+  // Nested template interpolations are scanned as code, not skipped. Strings
+  // and comments remain inert. This is still an inventory, not a parser.
+  const stack = [{ kind: "code" }];
+  let line = 1, col = 1;
   for (let i = 0; i < source.length;) {
     const c = source[i], next = source[i + 1];
+    const frame = stack[stack.length - 1];
     const advance = (n = 1) => {
       for (let j = 0; j < n; j++) {
         if (source[i] === "\n") { line++; col = 1; }
@@ -18,32 +22,40 @@ export function scanLegacyOperators(source) {
         i++;
       }
     };
-    if (state === "line-comment") {
-      if (c === "\n") state = "code";
+    if (frame.kind === "line-comment") {
+      if (c === "\n") stack.pop();
       advance(); continue;
     }
-    if (state === "block-comment") {
-      if (c === "*" && next === "/") { advance(2); state = "code"; }
+    if (frame.kind === "block-comment") {
+      if (c === "*" && next === "/") { advance(2); stack.pop(); }
       else advance();
       continue;
     }
-    if (state === "single" || state === "double" || state === "template") {
+    if (frame.kind === "single" || frame.kind === "double") {
       if (c === "\\") { advance(next === undefined ? 1 : 2); continue; }
-      if ((state === "single" && c === "'") ||
-          (state === "double" && c === '"') ||
-          (state === "template" && c === "`")) state = "code";
-      // Template interpolation requires full parser treatment; inventory errs
-      // on the side of not claiming this scan is comprehensive.
+      if ((frame.kind === "single" && c === "'") ||
+          (frame.kind === "double" && c === '"')) stack.pop();
       advance(); continue;
     }
-    if (c === "/" && next === "/") { state = "line-comment"; advance(2); continue; }
-    if (c === "/" && next === "*") { state = "block-comment"; advance(2); continue; }
-    if (c === "'") { state = "single"; advance(); continue; }
-    if (c === '"') { state = "double"; advance(); continue; }
-    if (c === "`") { state = "template"; advance(); continue; }
+    if (frame.kind === "template") {
+      if (c === "\\") { advance(next === undefined ? 1 : 2); continue; }
+      if (c === "$" && next === "{") { stack.push({kind: "interpolation", depth: 1}); advance(2); continue; }
+      if (c === "`") stack.pop();
+      advance(); continue;
+    }
+    // Normal source or code inside an interpolated template expression.
+    if (frame.kind === "interpolation") {
+      if (c === "{") { frame.depth++; advance(); continue; }
+      if (c === "}") { frame.depth--; if (frame.depth === 0) stack.pop(); advance(); continue; }
+    }
+    if (c === "/" && next === "/") { stack.push({kind: "line-comment"}); advance(2); continue; }
+    if (c === "/" && next === "*") { stack.push({kind: "block-comment"}); advance(2); continue; }
+    if (c === "'") { stack.push({kind: "single"}); advance(); continue; }
+    if (c === '"') { stack.push({kind: "double"}); advance(); continue; }
+    if (c === "`") { stack.push({kind: "template"}); advance(); continue; }
     if (c === "%" || c === "^") {
       const kind = c === "%" ? "percent" : (next === "^" ? "double-caret" : "caret");
-      matches.push({ kind, line, column: col });
+      matches.push({kind, line, column: col});
       advance(kind === "double-caret" ? 2 : 1); continue;
     }
     advance();
