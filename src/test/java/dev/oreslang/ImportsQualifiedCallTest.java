@@ -75,19 +75,17 @@ final class ImportsQualifiedCallTest {
     }
 
     @Test
-    void eligibleImportedFunctionCanBeUsedAsAnExplicitQualifiedValue() throws Exception {
-        Files.writeString(temp.resolve("lib.ores"), """
-                pub fnc roodles(int x): int { return x + 1; }
-                """);
-        Path entry = temp.resolve("function-value.ores");
-        Files.writeString(entry, """
-                import fnc roodles from "./lib.ores";
-                pub routine main(): void {
-                  val r = imports::roodles;
-                  stdio.stdout.write(r(41));
-                }
-                """);
-        assertEquals("42", run(entry));
+    void opaqueImportedFunctionCannotEscapeAsAnUntypedCallableValue() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import fnc roodles from "./lib.ores";
+                        pub routine main(): void {
+                          val r = imports::roodles;
+                          r(41);
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("imports::roodles")
+                && failure.getMessage().contains("lifetime"), failure.getMessage());
     }
 
     @Test
@@ -218,6 +216,22 @@ final class ImportsQualifiedCallTest {
                 });
         assertTrue(rejected.getMessage().contains("borrow")
                 || rejected.getMessage().contains("signature"), rejected.getMessage());
+    }
+
+    @Test
+    void opaqueImportedCallsRejectUnrelatedLiveLexicalBorrows() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import fnc consume from "./lib.ores";
+                        pub fnc test(): void {
+                          let int value = 1;
+                          val borrowed = rt borrow value;
+                          imports::consume(123);
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("ordinary borrow is live")
+                && failure.getMessage().contains("imports::consume"), failure.getMessage());
     }
 
     @Test
