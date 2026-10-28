@@ -125,4 +125,67 @@ final class CriticalKeywordTest {
         assertEquals("6|7", stdout.toString().strip());
     }
 
+
+    @Test void criticalQueueTimeoutAnnotationIsStaticallyChecked() {
+        String valid = """
+                @Critical(queue_timeout_ms=50)
+                pub critical suspends fnc permitted(): int { return 7; }
+                """;
+        Ast.Program checked = dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(valid);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) checked.modules().getFirst()
+                .declarations().getFirst();
+        var policy = dev.oreslang.ast.CriticalAnnotationPolicy.from(
+                fn.annotations(), fn.critical(), fn.name());
+        assertEquals(java.time.Duration.ofMillis(50), policy.queueTimeout());
+
+        String immediateOnly = """
+                @Critical(queue_timeout_ms=0)
+                pub critical fnc immediate(): int { return 1; }
+                """;
+        assertDoesNotThrow(() -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(immediateOnly));
+    }
+
+    @Test void criticalPolicyMustNotSilentlyIgnoreUnsafeFields() {
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        @Critical(queue_timeout_ms=10)
+                        pub fnc missing_modifier(): void { return; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        @Critical(total_timeout_ms=10)
+                        pub critical suspends fnc unsupported(): void { return; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        @Critical(channel_wait_timeout_ms=10)
+                        pub critical suspends fnc unsupported_channel(): void { return; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        @Critical(queue_timeout_ms=10, queue_timeout_ms=20)
+                        pub critical fnc duplicate(): void { return; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        @Critical(queue_timeout_ms="ten")
+                        pub critical fnc non_numeric(): void { return; }
+                        """));
+    }
+
+    @Test void criticalPolicyAppliesToInstanceMethodsAsWellAsFileFunctions() {
+        Ast.Program checked = dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                    @Critical(queue_timeout_ms=15)
+                    pub critical get(): int { return 1; }
+                end
+                """);
+        Ast.ClassDecl klass = (Ast.ClassDecl) checked.modules().getFirst()
+                .declarations().getFirst();
+        var method = klass.methods().getFirst();
+        var policy = dev.oreslang.ast.CriticalAnnotationPolicy.from(
+                method.annotations(), method.critical(), method.name());
+        assertEquals(java.time.Duration.ofMillis(15), policy.queueTimeout());
+    }
+
 }
