@@ -151,10 +151,15 @@ final class CriticalKeywordTest {
                         @Critical(queue_timeout_ms=10)
                         pub fnc missing_modifier(): void { return; }
                         """));
+        assertDoesNotThrow(
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        @Critical(execution_timeout_ms=50, total_timeout_ms=100)
+                        pub critical suspends fnc bounded(): void { return; }
+                        """));
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
                         @Critical(total_timeout_ms=10)
-                        pub critical suspends fnc unsupported(): void { return; }
+                        pub critical fnc non_preemptible(): void { return; }
                         """));
         assertDoesNotThrow(
                 () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
@@ -191,6 +196,24 @@ final class CriticalKeywordTest {
                 fn.annotations(), fn.critical(), fn.suspends() || fn.async(), fn.name());
         assertEquals(java.time.Duration.ofMillis(50), policy.queueTimeout());
         assertEquals(java.time.Duration.ofMillis(15), policy.channelWaitTimeout());
+    }
+
+    @Test void sourceCriticalExecutionAndTotalBudgetsAreStaticallyPreserved() {
+        Ast.Program checked = dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                @Critical(queue_timeout_ms=25, execution_timeout_ms=70,
+                          total_timeout_ms=90, channel_wait_timeout_ms=40)
+                pub critical suspends fnc bounded(Channel<int> input): int {
+                    return await (nb readch input);
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) checked.modules().getFirst()
+                .declarations().getFirst();
+        var policy = dev.oreslang.ast.CriticalAnnotationPolicy.from(
+                fn.annotations(), fn.critical(), fn.suspends() || fn.async(), fn.name());
+        assertEquals(java.time.Duration.ofMillis(25), policy.queueTimeout());
+        assertEquals(java.time.Duration.ofMillis(40), policy.channelWaitTimeout());
+        assertEquals(java.time.Duration.ofMillis(70), policy.executionTimeout());
+        assertEquals(java.time.Duration.ofMillis(90), policy.totalTimeout());
     }
 
     @Test void criticalPolicyAppliesToInstanceMethodsAsWellAsFileFunctions() {
