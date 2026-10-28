@@ -945,6 +945,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 OresScheduler.DeadlineController controller =
                         OresScheduler.currentDeadlineController();
+                // Child tasks created inside this critical invocation inherit
+                // the earliest parent execution/total budget. Their timer is
+                // scheduler-owned even when the child has no @Critical policy.
+                controller.publishChildDeadline(nanos, context.criticalAdmissionTimer());
                 try {
                     return context.criticalAdmissionTimer().schedule(
                             () -> controller.failAtDeadline(
