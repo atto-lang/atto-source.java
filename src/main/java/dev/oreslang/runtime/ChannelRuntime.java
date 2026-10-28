@@ -182,6 +182,11 @@ public final class ChannelRuntime {
          */
         public OresFuture<T> readAsyncWithin(
                 Duration timeout, ScheduledExecutorService timer) {
+            Objects.requireNonNull(timeout, "timeout");
+            Objects.requireNonNull(timer, "timer");
+            if (timeout.isNegative()) {
+                throw new IllegalArgumentException("channel wait timeout is negative");
+            }
             long startNanos = System.nanoTime();
             OresFuture<SelectResult> selected =
                     SelectSet.of(read(this)).selectAsync(SelectPolicy.PRIORITY);
@@ -209,6 +214,11 @@ public final class ChannelRuntime {
          */
         public OresFuture<Void> writeAsyncWithin(
                 T value, Duration timeout, ScheduledExecutorService timer) {
+            Objects.requireNonNull(timeout, "timeout");
+            Objects.requireNonNull(timer, "timer");
+            if (timeout.isNegative()) {
+                throw new IllegalArgumentException("channel wait timeout is negative");
+            }
             long startNanos = System.nanoTime();
             requireValue(value);
             OresFuture<SelectResult> selected =
