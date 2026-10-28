@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -78,6 +79,26 @@ final class ActorContinuationLedgerIntegrationTest {
             future.completeFromRuntime(1);
             assertEquals(0, callbacks.get(),
                     "retired actor may not be resurrected by a stale Future completion");
+        }
+    }
+
+    @Test
+    void aTargetCannotBeUsedThroughAnotherRuntime() throws Exception {
+        CountDownLatch captured = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ContinuationTarget> target = new AtomicReference<>();
+        try (ActorRuntime owner = new ActorRuntime();
+             ActorRuntime foreign = new ActorRuntime()) {
+            var actor = owner.<String>spawnShared(() -> (message, context) -> {
+                target.set(owner.captureCurrentContinuationTarget());
+                captured.countDown();
+                context.self().stop();
+            });
+            actor.send("capture");
+            assertTrue(captured.await(5, TimeUnit.SECONDS));
+            assertThrows(SecurityException.class, () ->
+                    foreign.enqueueOnCompletion(new OresFuture<Integer>(), target.get(),
+                            (value, failure) -> {}));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
 }
