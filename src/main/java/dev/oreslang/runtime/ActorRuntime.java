@@ -8401,7 +8401,8 @@ public final class ActorRuntime implements AutoCloseable {
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
-                if ((stopped.get() && !gracefulTeardownPending) || forceKillFenced || closed.get() || scheduled.get()) return;
+                if ((stopped.get() && !gracefulTeardownPending && !sourceStopCleanupActive)
+                        || forceKillFenced || closed.get() || scheduled.get()) return;
                 // Atomically claim the actor lane and publish a fresh identity.
                 dispatchTicket = new Object();
                 scheduledDispatchToken = dispatchTicket;
@@ -8458,7 +8459,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // Prevent obsolete queued runnables impersonating the
                     // next actor turn after scheduled was cleared and re-claimed.
                     if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
-                    if ((stopped.get() && !gracefulTeardownPending) || closed.get() || forceKillFenced) return;
+                    if ((stopped.get() && !gracefulTeardownPending && !sourceStopCleanupActive)
+                            || closed.get() || forceKillFenced) return;
                     if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
                         throw new IllegalStateException(
                                 "actor physical carrier already occupied for " + ref.id());
@@ -8550,7 +8552,10 @@ public final class ActorRuntime implements AutoCloseable {
                             reschedule = !forceKillFenced
                                     && !closed.get()
                                     && !finalized
-                                    && (stopped.get() ? gracefulTeardownPending : hasQueuedWorkLocked());
+                                    && (stopped.get()
+                                            ? gracefulTeardownPending
+                                                || (sourceStopCleanupActive && hasQueuedWorkLocked())
+                                            : hasQueuedWorkLocked());
                         }
                         lifecycleLock.notifyAll();
                     }
