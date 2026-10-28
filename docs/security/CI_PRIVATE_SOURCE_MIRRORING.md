@@ -266,8 +266,11 @@ exact-tree attestation never substitutes for live branch protection.
 
 ## Active disclosure incidents
 
-Platform-conformance incidents #22, #77, #127, #171 and #172 remain the
-canonical private-source exposure and retention gates. Resetting branch
+Platform-conformance incidents #22, #77, #127, #171, #172, #198 and #200 remain
+the canonical private-source exposure and retention gates. The ClaimGraph
+carrier implicated by #198/#200 is quarantined by both exact slug and immutable
+repository ID; resolving those incidents does not silently make that destination
+eligible for private-source transfer. Resetting branch
 references does **not** remove Git objects, and repository-private state does
 not prove provider caches, Actions logs/artifacts, forks, clones, or other
 copies were purged. Every blocking incident must have an independently pinned

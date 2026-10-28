@@ -166,7 +166,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_quarantined_repository_ids_rejected_even_after_slug_rename(self):
         for repository_id in (
-            1323575966, 1323598260, 1412142815, 1370782550, 1324139596
+            1323575966, 1323598260, 1412142815, 1370782550, 1324139596,
+            1350751074,
         ):
             with self.subTest(repository_id=repository_id):
                 renamed = (
@@ -200,6 +201,24 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         pub.checked_repo(
                             "renamed-owner/renamed-carrier", repository_id
                         )
+
+    def test_quarantined_claimgraph_carrier_rejected_case_insensitively_before_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "claimgraph-TEST/CLAIMGRAPH-e2e", self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
 
     def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
         with (

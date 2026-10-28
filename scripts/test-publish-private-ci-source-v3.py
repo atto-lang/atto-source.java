@@ -737,6 +737,20 @@ class PrivateCiV3Test(unittest.TestCase):
                 },
                 "quarantined repository ID",
             ),
+            (
+                {
+                    "trusted/ci": carrier(42),
+                    "ClaimGraph-test/claimgraph-e2e": carrier(1350751074),
+                },
+                "quarantined destination",
+            ),
+            (
+                {
+                    "trusted/ci": carrier(42),
+                    "renamed/claimgraph": carrier(1350751074),
+                },
+                "quarantined repository ID",
+            ),
         )
         for carriers, message in cases:
             with self.subTest(message=message):
@@ -2966,6 +2980,16 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertNotIn("review-attested carrier mode", text)
         for incident in ("#22", "#77", "#127", "#171", "#172", "#198", "#200"):
             self.assertIn(incident, text)
+
+    def test_active_disclosure_docs_cover_every_blocking_p0(self):
+        path = SCRIPT.parent.parent / "docs" / "security" / "CI_PRIVATE_SOURCE_MIRRORING.md"
+        text = path.read_text()
+        marker = "## Active disclosure incidents"
+        self.assertIn(marker, text)
+        active = text.split(marker, 1)[1]
+        for number in v3.legacy.BLOCKING_INCIDENTS:
+            with self.subTest(number=number):
+                self.assertIn("#" + str(number), active)
 
     def test_checked_in_incident_registry_covers_every_blocking_p0(self):
         path = (
