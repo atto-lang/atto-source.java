@@ -1,6 +1,6 @@
 # Actor / supervisor security boundary (draft acceptance contract)
 
-Status: security design and one Java host regression; NOT a claim of guest-compiled,
+Status: security design and several unexecuted Java host regressions; NOT a claim of guest-compiled,
 Native Image, OS, or cross-backend protection. Do not treat this document as proof
 that arbitrary native or Java embedder code is sandboxed.
 
@@ -89,8 +89,10 @@ to operate on another ActorRuntime as a trusted host.
 For local ActorRef admission, a matching ActorId, ActorKind and generation
 is not sufficient. A live reference must be the **exact runtime-issued Java
 ActorRef object** for lifecycle admission, DATA send, drain observation, and
-control-handle acquisition. Tests construct same-ID/same-generation lookalikes
-by reflection and prove these entry points reject them. The tests also
+control-handle acquisition. Structured child lifecycle handles are bound to
+the exact owning parent ActorCell and exact referenced child ActorRef, not just
+to reusable logical IDs. Tests construct same-ID/same-generation lookalikes
+by reflection and assert these entry points reject them. The tests also
 capture a host ActorControlHandle inside a real actor turn and attempt to
 read control metadata or execute control operations.
 
