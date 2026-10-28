@@ -6,12 +6,123 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class OresTimersTest {
+    @Test
+    void timeoutObservesCompletedSourceWithoutArmingTimer() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            int before = OresTimers.availableGlobalTimerSlots();
+            OresFuture<Integer> result = timers.timeoutNanos(0, OresFuture.completed(42));
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(before, OresTimers.availableGlobalTimerSlots());
+        }
+    }
+
+    @Test
+    void timeoutOnlyCancelsObserverAndNeverSharedProducer() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> observer = timers.timeoutNanos(
+                    TimeUnit.HOURS.toNanos(1), producer);
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+            assertTrue(observer.cancel(false));
+            assertThrows(CancellationException.class,
+                    () -> observer.get(5, TimeUnit.SECONDS));
+            assertFalse(producer.isDone(), "observer cancellation killed its producer");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+            producer.completeFromRuntime(42);
+            assertEquals(42, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void timeoutFailureDetachesProducerWithoutCancellingIt() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            int permits = OresTimers.availableGlobalTimerSlots();
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> observer = timers.timeoutNanos(0, producer);
+            ExecutionException timedOut = assertThrows(ExecutionException.class,
+                    () -> observer.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TimeoutException.class, timedOut.getCause());
+            assertFalse(producer.isDone(), "timeout must not cancel a shared producer");
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "expired observer retained the producer's callback");
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(permits, OresTimers.availableGlobalTimerSlots());
+            producer.completeFromRuntime(7);
+            assertEquals(7, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void successfulObservedFutureRevokesDeadlineAndPreservesValue() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> bounded = timers.timeoutNanos(
+                    TimeUnit.HOURS.toNanos(1), producer);
+            producer.completeFromRuntime(12);
+            assertEquals(12, bounded.get(5, TimeUnit.SECONDS));
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void timeoutAwaitResumesOnSchedulerWithoutSecondTask() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger turns = new AtomicInteger();
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                if (turns.getAndIncrement() == 0) {
+                    return OresScheduler.await(timers.timeoutNanos(
+                            TimeUnit.HOURS.toNanos(1), producer));
+                }
+                assertSame(scheduler, OresScheduler.current());
+                assertNull(resume.failure());
+                assertEquals(23, resume.value());
+                return OresScheduler.done(23);
+            });
+            producer.completeFromRuntime(23);
+            assertEquals(23, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, turns.get());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void ownerCloseCancelsTimeoutObserverButNotSharedProducer() throws Exception {
+        OresTimers timers = new OresTimers();
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> observer = timers.timeoutNanos(
+                TimeUnit.HOURS.toNanos(1), producer);
+        timers.close();
+        assertThrows(CancellationException.class,
+                () -> observer.get(5, TimeUnit.SECONDS));
+        assertFalse(producer.isDone());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, timers.activeTimerCount());
+    }
+
+    @Test
+    void invalidTimeoutNeverRegistersAnObserver() {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            assertThrows(IllegalArgumentException.class,
+                    () -> timers.timeoutNanos(-1, producer));
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
     @Test
     void timerExpirationReentersOnlyThroughOwningScheduler() throws Exception {
         try (OresTimers timers = new OresTimers();
