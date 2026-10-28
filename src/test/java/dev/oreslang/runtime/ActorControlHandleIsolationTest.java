@@ -158,6 +158,22 @@ final class ActorControlHandleIsolationTest {
                     () -> runtime.drain(forgery));
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> runtime.controlHandle(forgery));
+            // Observer APIs must not bypass exact-ref authorization, especially
+            // ready(), which otherwise schedules the victim by its forged ID.
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::getReady);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::readyRef);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> forgery.awaitTermination(0, TimeUnit.NANOSECONDS));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::parentId);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::childIds);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::isAlive);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.isAlive(forgery));
             assertTrue(victim.isAlive(), "forged reference must not change target lifecycle");
 
             // Exact runtime-minted reference retains its legitimate authority.
