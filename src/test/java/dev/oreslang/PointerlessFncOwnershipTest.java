@@ -276,7 +276,7 @@ final class PointerlessFncOwnershipTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc update(borrow mut Array<int> values): void { values.add(7); return; }
                 fnc ok(): void {
-                  val Array<int> values = new Array<int>();
+                  let mut Array<int> values = new Array<int>();
                   update(rt mut borrow values);
                   return;
                 }
