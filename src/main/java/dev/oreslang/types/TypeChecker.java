@@ -4817,7 +4817,7 @@ public final class TypeChecker {
                 || modules.containsKey("Integer")
                 || findClass("Integer") != null) return null;
         return switch (member.member()) {
-            case "rem", "mod", "pow", "bitXor" -> member.member();
+            case "rem", "mod", "pow", "bitXor", "toFloatExact" -> member.member();
             default -> null;
         };
     }
@@ -4831,6 +4831,17 @@ public final class TypeChecker {
         if (call.typeArgumentsPresent()) {
             throw new IllegalArgumentException(
                     "Integer." + name + " does not accept type arguments");
+        }
+        if (name.equals("toFloatExact")) {
+            if (call.arguments().size() != 1
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "Integer.toFloatExact expects exactly one int argument");
+            }
+            requireInteger(
+                    deref(typeOf(call.arguments().getFirst(), env, generics, self)),
+                    "Integer.toFloatExact argument");
+            return Primitive.FLOAT;
         }
         if (call.arguments().size() != 2) {
             throw new IllegalArgumentException(
