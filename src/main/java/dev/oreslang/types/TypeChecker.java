@@ -47,7 +47,7 @@ public final class TypeChecker {
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
             "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
-            "Channel", "Future", "Fnc", "Function",
+            "Channel", "Future", "Duration", "Fnc", "Function",
             "HttpClientResponse", "HttpClientBody");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
@@ -2398,6 +2398,9 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof dev.oreslang.runtime.OresDuration) {
+                return new Named("Duration", List.of());
+            }
             if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
                 // Userland identities need tenant-scoped exports before an untrusted
                 // actor may compile a reference to them. Never silently intern them.
@@ -2430,6 +2433,7 @@ public final class TypeChecker {
                     || name.name().equals("network")
                     || name.name().equals("net")
                     || name.name().equals("http")
+                    || name.name().equals("time")
                     || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
             }
@@ -2859,6 +2863,28 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr timerCall
+                    && timerCall.receiver() instanceof Ast.NameExpr clock
+                    && clock.name().equals("time")
+                    && env.lookup("time") == null) {
+                if (call.typeArgumentsPresent()
+                        || !(timerCall.member().equals("sleep")
+                                || timerCall.member().equals("after"))) {
+                    throw new IllegalArgumentException(
+                            "only time.sleep/after(Duration) are enabled in this source slice");
+                }
+                if (call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "time." + timerCall.member() + " expects exactly one Duration");
+                }
+                Type duration = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                if (!new Named("Duration", List.of()).equals(duration)) {
+                    throw new IllegalArgumentException(
+                            "time." + timerCall.member() + " expects Duration, got " + duration);
+                }
+                return new Named("Future", List.of(Primitive.VOID));
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -3813,6 +3839,15 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
+            }
+            if (member.receiver() instanceof Ast.NameExpr timeName
+                    && timeName.name().equals("time") && env.lookup("time") == null) {
+                if (member.member().equals("sleep") || member.member().equals("after")) {
+                    return new Function(List.of(new Named("Duration", List.of())),
+                            new Named("Future", List.of(Primitive.VOID)));
+                }
+                throw new IllegalArgumentException(
+                        "only time.sleep/after(Duration) are enabled in this source slice");
             }
             if (member.receiver() instanceof Ast.NameExpr clockName && clockName.name().equals("process")
                     && env.lookup("process") == null
