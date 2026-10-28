@@ -95,14 +95,30 @@ pub critical suspends fnc process(Channel<int> requests): int {
 }
 ```
 
-**Still NOT IMPLEMENTED:** `execution_timeout_ms`, `total_timeout_ms`,
-automatically inherited child deadlines, critical policy on static-select
-arms and arbitrary dynamically composed/select channel operations, as well
-as full source actor loan/lifecycle integration. Those fields are rejected,
-not ignored. A full `@Critical` duration-literal syntax remains future work.
-The initial `=N` syntax uses integer milliseconds, not a new duration
-literal. The Java host channel tests and single-carrier scheduler model are
-committed but lack executed exact-head Maven/Graal proof.
+**Additional Java/Graal draft implementation (October 28):**
+`execution_timeout_ms=N` and `total_timeout_ms=N` are now accepted only
+on suspending/async critical callables. A total budget begins when the
+source invocation frame is created (including admission); an execution
+budget begins when the critical body starts after admission. Timers request
+a `TimeoutException` through the task's scheduler-owned deadline
+controller. The public result is published only after the carrier unwinds,
+and the critical permit is retained until physical retirement. Timers are
+cancelled when the task retires; timer callbacks never execute guest code.
+A zero remaining budget fails closed before starting the body.
+
+**These timers are cooperative, NOT preemptive.** A running non-cooperative
+CPU loop/native function can exceed its budget while still holding the
+critical permit. A timer cannot abort arbitrary host code or roll back
+remote side effects. Full bounded-work, safe-point and sandbox termination
+proofs remain necessary for real-time or untrusted FaaS workloads.
+
+**Still NOT IMPLEMENTED:** automatically inherited child deadlines,
+critical policy on static-select arms and arbitrary dynamically composed
+select operations, hard elapsed-time fences at channel commit, and full
+source actor loan/lifecycle integration. Those remain release gates. A full
+`@Critical` duration-literal syntax is future work. The initial `=N`
+syntax uses integer milliseconds. The Java tests are authored but lack
+executed exact-head Maven/Graal/Native Image evidence.
 
 The planned full policy distinguishes:
 
