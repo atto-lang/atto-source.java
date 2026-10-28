@@ -31,9 +31,12 @@ public final class CriticalGate {
     private Ticket owner;
 
     public final class Ticket implements AutoCloseable {
-        // Cancellation of a pending admission retracts its queue slot. A granted
-        // admission is already settled and therefore cannot be cancelled.
-        private final OresFuture<Void> admitted = new OresFuture<>(this::close);
+        // Cancellation and handoff arbitrate under COORDINATOR, not against
+        // Future settlement timing. A granted ticket may still have a pending
+        // completion notification; cancelling that notification MUST NOT
+        // revoke ownership of a critical body that can already start.
+        private final OresFuture<Void> admitted =
+                new OresFuture<>(this::cancelQueuedAdmission, () -> { });
         private boolean requested;
         // Monotonic queue deadline is checked at handoff as well as by the
         // timer: a delayed/saturated timer cannot admit a stale waiter.
@@ -49,6 +52,24 @@ public final class CriticalGate {
         private java.util.concurrent.CountDownLatch synchronousWaiter;
 
         private Ticket() { }
+
+        /**
+         * Only a queued (or never-requested) ticket may be cancelled through
+         * its admission Future. Granted permits must be released by physical
+         * task completion, never by an observer cancelling admission.
+         */
+        private boolean cancelQueuedAdmission() {
+            java.util.concurrent.CountDownLatch signal;
+            synchronized (COORDINATOR) {
+                if (closed || granted) return false;
+                closed = true;
+                waiters.remove(this);
+                if (logicalOwner != null) WAITING_ON.remove(logicalOwner, CriticalGate.this);
+                signal = synchronousWaiter;
+            }
+            if (signal != null) signal.countDown();
+            return true;
+        }
 
         /**
          * Nonblocking admission. Each scheduler task has a stable logical id
