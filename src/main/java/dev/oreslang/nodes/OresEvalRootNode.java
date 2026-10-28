@@ -849,7 +849,8 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        private final class SourceTask implements OresScheduler.Task<Object>,
+                OresScheduler.PhysicalRetirementListener {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             private static final int LOOP_SAFEPOINT_INTERVAL = 32;
@@ -1062,8 +1063,9 @@ public final class OresEvalRootNode extends RootNode {
                             this::finishSourceFlow);
             }
 
-            private void releaseCriticalOnCompletion(OresFuture<?> completion) {
-                if (criticalTicket != null) criticalTicket.releaseOnCompletion(completion);
+            @Override
+            public void onPhysicallyRetired() {
+                if (criticalTicket != null) criticalTicket.close();
             }
 
             private void scheduleLoopContinuation(
@@ -1219,7 +1221,6 @@ public final class OresEvalRootNode extends RootNode {
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
-            task.releaseCriticalOnCompletion(future);
             return future;
         }
 
@@ -1252,7 +1253,6 @@ public final class OresEvalRootNode extends RootNode {
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
-            task.releaseCriticalOnCompletion(future);
             return future;
         }
 
