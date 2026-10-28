@@ -23,6 +23,7 @@
 # GitHub applies last matching CODEOWNERS rule, so keep these after broad rules.
 /.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
+/.github/private-ci-incident-dispositions.json @ORESoftware
 /.github/private-ci-carrier-contracts.json @ORESoftware
 /scripts/check-private-ci-destination.sh @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware

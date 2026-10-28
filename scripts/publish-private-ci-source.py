@@ -41,16 +41,25 @@ BLOCKING_INCIDENT_IDS = {
 BLOCKING_INCIDENTS = (22, 77, 127, 171, 172)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
+    "scintilla-run-test/gleam-runner-conformance",
+    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
     "agent-pontifex-test/agent-pontifex-e2e-tests",
     "led-dynamo/leddy-e2e",
 )
-QUARANTINED_DESTINATION_IDS = (1323575966,)
+QUARANTINED_DESTINATION_IDS = (
+    1323575966,  # zed-pkg-test/java-app (#22)
+    1323598260,  # scintilla-run-test/gleam-runner-conformance (#77)
+    1412142815,  # ores-dummy-org-oreslang-stack/... (#127)
+    1370782550,  # agent-pontifex-test/agent-pontifex-e2e-tests (#171)
+    1324139596,  # led-dynamo/leddy-e2e (#172)
+)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
 SECURITY_CODEOWNER_PATHS = (
     "/.github/CODEOWNERS",
     "/.github/private-ci-approved-repositories.txt",
+    "/.github/private-ci-incident-dispositions.json",
     "/.github/private-ci-carrier-contracts.json",
     "/scripts/check-private-ci-destination.sh",
     "/scripts/run-in-private-ci-destination.sh",
@@ -299,6 +308,7 @@ def _parse_policy_approval(contents, repository, label):
     lines = canonical_security_lines(contents, label)
     approved_id = None
     seen = set()
+    seen_ids = set()
     for line in lines:
         if not line or line.startswith("#"):
             continue
@@ -312,7 +322,10 @@ def _parse_policy_approval(contents, repository, label):
         key = slug.casefold()
         if key in seen:
             raise Denied(label + " contains duplicate repository identities")
+        if candidate_id in seen_ids:
+            raise Denied(label + " contains duplicate numeric repository IDs")
         seen.add(key)
+        seen_ids.add(candidate_id)
         if key == repository.casefold():
             approved_id = candidate_id
     if approved_id is None:
@@ -368,11 +381,13 @@ def _require_strict_source_protection(protection):
     administrators = protection.get("enforce_admins")
     force_pushes = protection.get("allow_force_pushes")
     deletions = protection.get("allow_deletions")
+    conversation = protection.get("required_conversation_resolution")
     contexts = checks.get("contexts") if isinstance(checks, dict) else None
     named_checks = checks.get("checks") if isinstance(checks, dict) else None
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
+            or reviews.get("require_last_push_approval") is not True
             or not isinstance(reviews.get("required_approving_review_count"), int)
             or isinstance(reviews["required_approving_review_count"], bool)
             or reviews["required_approving_review_count"] < 1
@@ -390,10 +405,13 @@ def _require_strict_source_protection(protection):
             or not isinstance(force_pushes, dict)
             or force_pushes.get("enabled") is not False
             or not isinstance(deletions, dict)
-            or deletions.get("enabled") is not False):
+            or deletions.get("enabled") is not False
+            or not isinstance(conversation, dict)
+            or conversation.get("enabled") is not True):
         raise Denied(
             "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
-            "strict required CI, administrator protection and deny forced pushes/deletions")
+            "last-push approval, strict required CI, conversation resolution, "
+            "administrator protection and deny forced pushes/deletions")
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
         if (not isinstance(bypasses, dict)
@@ -409,6 +427,7 @@ def _require_strict_source_protection(protection):
     return (
         reviews["require_code_owner_reviews"],
         reviews["dismiss_stale_reviews"],
+        reviews["require_last_push_approval"],
         reviews["required_approving_review_count"],
         checks["strict"],
         tuple(sorted(contexts)),
@@ -416,6 +435,7 @@ def _require_strict_source_protection(protection):
         administrators["enabled"],
         force_pushes["enabled"],
         deletions["enabled"],
+        conversation["enabled"],
     )
 
 

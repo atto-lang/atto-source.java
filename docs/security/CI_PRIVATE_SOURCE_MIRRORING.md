@@ -18,6 +18,19 @@ carrier workflow blob, and exact test-plan blob/PR sets. Carrier `main`
 advance, repository delete/recreate, workflow change, or test-plan change
 fails closed until the source policy is reviewed again.
 
+Blocking private-source incidents have a separate protected authority file:
+`.github/private-ci-incident-dispositions.json`. Closing a GitHub issue, even
+with `state_reason=completed`, is not sufficient to resume export. Every
+blocking incident must also be marked `resolved` in that protected-main file,
+and the entry must pin an exact `@ORESoftware` issue-comment ID, immutable
+reviewer identity, comment `updated_at`, and SHA-256 of the complete comment
+body. The live comment must contain the exact
+`PRIVATE_CI_INCIDENT_DISPOSITION_RESOLVED issue=#N` marker. V3 revalidates
+the registry and live pinned comments before source read/export admission and
+again through the per-write governance recheck. Reopening an incident, editing
+or deleting a disposition comment, changing its author/body/timestamp, or
+changing the protected registry therefore revokes further writes.
+
 V3 requires **protected source `main` for every private-source export**.
 If GitHub reports source `main protected: true`, V3 delegates to the legacy
 protected-origin verifier. It requires CODEOWNER review, stale-review dismissal,
@@ -30,28 +43,27 @@ run cannot substitute for live source-main protection. If source `main`
 reports `protected: false` or the required protection cannot be verified,
 private export is denied.
 
-Carrier `main` has a separate fail-closed choice: the unprotected fallback
-is bound by the **carrier contract**, not by an implicit trusted branch. If the
-carrier reports `protected: true`, V3 requires CODEOWNER review, stale-review
-dismissal, at least one approval, administrator enforcement, no review
-bypasses, no force pushes, no deletion, and the exact security CODEOWNERS file.
-If those private-repository protections are unavailable, the protected source
-contract must include an exact positive `review_pr`. That PR must be a
-same-repository PR merged to carrier `main`, authored by an account other than
-immutable reviewer ID `11139560` / login `ORESoftware`, and the latest
-review from that reviewer must be `APPROVED` on the PR's exact head before
-merge. V3 then requires the **entire final carrier main root-tree SHA** to equal
-the reviewed PR head root-tree SHA and requires the exact carrier CODEOWNERS
-bytes. Thus path, Git mode, or blob drift after review fails closed.
+Carrier `main` must also be live-protected. There is deliberately **no
+review-history fallback** for a carrier. V3 requires CODEOWNER review,
+stale-review dismissal, last-push approval, at least one approval, strict
+non-empty required status checks, conversation resolution, administrator
+enforcement, no review bypasses, no force pushes, no deletion, and the exact
+security CODEOWNERS file. A prior merged PR or historical approval can never
+substitute for these live controls.
 
-The exact carrier-main SHA is rechecked before every source-bearing destination
-write. Full carrier review/tree attestation is repeated at initial admission,
-immediately before executable refs, and again while the source-bearing payload
-ref is still inert before creating the one-use authorization ref. Handoff ref
-cleanup is attempted for ordinary authorization failures, transport ambiguity,
-interrupts, and unexpected exceptions; both payload and authorization refs are
-removed when they still point to the exact handoff commit, and incomplete
-rollback fails closed.
+The exact carrier-main SHA and full protection contract are rechecked before
+every source-bearing destination write, immediately before executable refs,
+and again while the source-bearing payload ref is still inert before creating
+the one-use authorization ref. Handoff **ref cleanup** is attempted for ordinary
+authorization failures, transport ambiguity, interrupts, and unexpected
+exceptions; payload and authorization refs are removed only when they still
+point to the exact handoff commit. Before a new source read/export begins, V3
+also requires both reserved handoff namespaces (`ci/oreslang-*` and
+`ci/authorized-*`) to be empty using bounded matching-ref listings, and
+rechecks them before source-object writes and executable-ref publication.
+This cleanup is not object rollback or secure deletion: source-bearing blobs,
+trees, commits, or other Git objects may remain retained even when all handoff
+refs are absent.
 
 At the 2026-10-20 audit, source `main` still reported `protected: false`,
 and GitHub reported private-repository rulesets unavailable on the current
@@ -95,8 +107,14 @@ The caller does not choose the executable carrier branch. After proving the
 complete source Git tree, the dispatcher derives exactly
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
 the current head of the named open PR against source `main`, with the latest
-immutable security-owner review approving that exact head. V3 validates that
-authorization before reading source and again before **every source-bearing Git
+immutable security-owner review approving that exact head. Before reading
+private source bytes, V3 additionally requires the live protected-`main`
+authority commit to be an ancestor of that exact PR head; a stale or diverged
+head is denied even when the PR still targets `main`. The PR head and base
+repository are also bound to the immutable source repository ID, not only its
+`owner/name`. The ancestry authority is mandatory on every exact-PR
+revalidation, including per-write and pre-executable-ref checks. V3 validates
+that authorization before reading source and again before **every source-bearing Git
 object write**. Each per-write check also reattests the original protected-main
 authority and the reviewed control-plane/carrier-contract bytes. Weakening
 source protection, moving source `main`, changing the reviewed control plane or
@@ -220,7 +238,7 @@ the private destination; a follow-up retention policy is still needed.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
-guarantee that the source directory itself is free of secrets. Run only from a checkout whose private-CI governance exactly matches the protected-main or review-attested authority accepted by V3, using narrowly scoped credentials.
+guarantee that the source directory itself is free of secrets. Run only from a checkout whose private-CI governance exactly matches the live protected-main authority accepted by V3, using narrowly scoped credentials.
 There is no permission to use a public repository when CI minutes run out.
 
 Test without network access or sending any source:
@@ -236,14 +254,18 @@ API operations. V3 tests additionally prove protected carrier-contract parsing,
 source-free base enforcement, exact open-PR binding, receipt construction,
 tree-derived branch naming, and dispatcher-authorization ref creation. The
 real allowlist remains empty and **no destination is authorized** unless
-separately reviewed and either protected-main enforcement or the exact-tree
-review-attested carrier mode is satisfied.
+it is separately reviewed, present by immutable repository ID in the protected
+allowlist and carrier contract, and its `main` branch satisfies the enforced
+protected-main contract. Review history, a previously merged review PR, or an
+exact-tree attestation never substitutes for live branch protection.
 
-## Active disclosure incident
+## Active disclosure incidents
 
-Private issue #832 tracks source-bearing commits in a public CI repository.
-Resetting branch references did **not** remove the Git objects: commits were
-still retrievable by SHA. Administrators must restrict public access and seek
-GitHub Support assistance for retained Git objects, Actions caches/logs, and
-other copies before resolving the incident.
+Platform-conformance incidents #22, #77, #127, #171 and #172 remain the
+canonical private-source exposure and retention gates. Resetting branch
+references does **not** remove Git objects, and repository-private state does
+not prove provider caches, Actions logs/artifacts, forks, clones, or other
+copies were purged. Every blocking incident must have an independently pinned
+resolved disposition in the protected incident registry before export can
+resume.
 
