@@ -3220,6 +3220,78 @@ public final class TypeChecker {
                     return checkedFunction.result();
                 }
 
+                // P0: Future callback combinators are direct-call typed operations.
+                // Returning Future<U> from map produces Future<Future<U>>; only
+                // explicitly invoked compose/flatMap removes that inner layer.
+                // The old synthetic Future<Unknown> member signature allowed an
+                // incompatible callback result to masquerade as any Future<T>.
+                if (receiver instanceof Named typedFuture
+                        && typedFuture.name().equals("Future")
+                        && typedFuture.arguments().size() == 1
+                        && Set.of("map", "compose", "flatMap", "onSuccess")
+                                .contains(member.member())) {
+                    String operation = "Future." + member.member();
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                operation + " does not accept call-site type arguments");
+                    }
+                    if (call.arguments().size() != 1
+                            || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException(
+                                operation + " expects exactly one callable");
+                    }
+                    Type element = typedFuture.arguments().getFirst();
+                    Ast.Expr callbackArgument = call.arguments().getFirst();
+                    Type callbackType;
+                    if (member.member().equals("onSuccess")
+                            && callbackArgument instanceof Ast.LambdaExpr lambda) {
+                        // Multi-statement observer callbacks are valid, but
+                        // they must statically return void, never a payload.
+                        Function expected = new Function(List.of(element), Primitive.VOID);
+                        validateLambdaAgainstExpected(lambda, expected, env, generics, self);
+                        callbackType = expected;
+                    } else {
+                        callbackType = typeOf(callbackArgument, env, generics, self);
+                    }
+                    if (!(callbackType instanceof Function callback)
+                            || callback.parameters().size() != 1
+                            || callback.async()
+                            || callback.mutableParameters().contains(true)) {
+                        throw new IllegalArgumentException(
+                                operation + " expects a synchronous non-mutating one-argument callable");
+                    }
+                    requireAssignable(element, callback.parameters().getFirst(),
+                            operation + " callback input");
+                    requireAssignable(callback.parameters().getFirst(), element,
+                            operation + " callback input");
+                    Type mapped = callback.result();
+                    if (member.member().equals("onSuccess")) {
+                        if (mapped != Primitive.VOID) {
+                            throw new IllegalArgumentException(
+                                    "Future.onSuccess callback must return void");
+                        }
+                        return typedFuture;
+                    }
+                    // Unknown generic results cannot prove either wrapper
+                    // identity or the callback's declared future layer count.
+                    if (containsUnknown(mapped)) {
+                        throw new IllegalArgumentException(
+                                operation + " callback result is not statically known");
+                    }
+                    if (member.member().equals("map")) {
+                        return new Named("Future", List.of(mapped));
+                    }
+                    if (!(mapped instanceof Named nested)
+                            || !nested.name().equals("Future")
+                            || nested.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                operation + " callback must return Future<T>");
+                    }
+                    // Flatten exactly the Future layer explicitly returned by
+                    // this callback; deeper Future layers remain intact.
+                    return mapped;
+                }
+
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
