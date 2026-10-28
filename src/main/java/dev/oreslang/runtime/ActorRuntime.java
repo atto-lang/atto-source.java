@@ -8615,11 +8615,12 @@ public final class ActorRuntime implements AutoCloseable {
                 };
 
                 teardownContext = context;
-                // External stop may have sealed the user mailbox before this
-                // reserved lifecycle turn began. Never initialize or receive.
-                if (stopped.get()) return;
+                // STOP forbids fresh initialization and user mail, but the
+                // scheduler's already-admitted cancellation cleanup still
+                // needs this physical actor turn to retire its memory loans.
+                if (stopped.get() && !sourceStopCleanupActive) return;
 
-                if (behavior == null && codeActorState == null) {
+                if (!stopped.get() && behavior == null && codeActorState == null) {
                     if (codeExecutor != null) {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
