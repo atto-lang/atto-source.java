@@ -266,9 +266,9 @@ final class ImplicitSelfMethodCallTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         fnc roodles(): void { return; }
-                        pub shared actor Worker {
-                          pub fnc work(): void { pkg::roodles(); }
-                        }
+                        define actor Worker as
+                          pub work(): void { pkg::roodles(); }
+                        end
                         """)));
         assertTrue(failure.getMessage().contains("actor")
                 && failure.getMessage().contains("module"), failure.getMessage());
