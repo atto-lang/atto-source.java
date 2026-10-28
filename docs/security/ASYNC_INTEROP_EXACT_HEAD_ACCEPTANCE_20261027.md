@@ -304,3 +304,27 @@ No private actor branch blob or tree was transferred in these probes.
 The isolated source-org canary remains the preferred non-export route
 after required approvals, runner-group provisioning, and cancellation of
 old queued PR-controlled jobs.
+
+### Private alternate-carrier executable-step check
+
+The related **private** repo
+`zed-pkg-test/oreslang-private-pr-validation-20261012`
+was also tested with an isolated, one-file, **source-free** temporary Git
+tree (no checkout and no private-source export).
+[Run 40609568869](https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/40609568869)
+finished **failure with 0 executed steps**. Thus success on the
+`zed-pkg-test` **public** repo cannot be treated as evidence that the
+private carrier can execute. A second pre-existing private-carrier
+workflow run 40609507166 also failed with 0 steps.
+
+The source-free private test tree SHA was
+`e9504158ccf577a188d9c982524473900c696c76`, containing only
+`.github/workflows/source-free-private-actions-probe-20261027.yml`.
+No Oreslang private actor branch source was placed in that tree.
+
+**No approved private destination with successful current executable-step
+evidence has been established.** An administrator must first restore
+or provision eligible private-repository runner capacity, and
+separately satisfy the Oreslang security approval/visibility/provenance
+gates. Do NOT push the Oreslang private tree into the tested public
+repo simply because its public workflow succeeds.
