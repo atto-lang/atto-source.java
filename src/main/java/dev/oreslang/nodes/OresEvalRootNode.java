@@ -866,6 +866,7 @@ public final class OresEvalRootNode extends RootNode {
             private final List<?> arguments;
             private final CriticalGate.Ticket criticalTicket;
             private final CriticalAnnotationPolicy criticalPolicy;
+            private volatile OresFuture<?> pendingOwnedChannelWait;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -987,6 +988,7 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
+                    pendingOwnedChannelWait = null;
                     if (continuation == null) {
                         throw new IllegalStateException(
                                 "source task resumed without a pending source continuation");
@@ -1065,6 +1067,13 @@ public final class OresEvalRootNode extends RootNode {
 
             @Override
             public void onPhysicallyRetired() {
+                // Blocking readch/writech registrations belong to the source
+                // frame. When the frame is cancelled while waiting, retract
+                // the private channel operation before releasing exclusion.
+                // NB registrations returned to callers are not owned here.
+                OresFuture<?> owned = pendingOwnedChannelWait;
+                pendingOwnedChannelWait = null;
+                if (owned != null) owned.cancel(false);
                 if (criticalTicket != null) criticalTicket.close();
             }
 
@@ -3722,6 +3731,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                 }
                             } else {
+                                t.pendingOwnedChannelWait = future;
                                 t.suspend(
                                         future,
                                         (t2, value, failure) ->
@@ -3832,6 +3842,7 @@ public final class OresEvalRootNode extends RootNode {
                                                     failure);
                                         }
                                     } else {
+                                        t2.pendingOwnedChannelWait = future;
                                         t2.suspend(
                                                 future,
                                                 (t3, ignored, failure) ->
