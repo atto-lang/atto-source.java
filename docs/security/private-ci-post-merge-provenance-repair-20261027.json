@@ -2,7 +2,7 @@
   "schema": "ores-private-ci-provenance-snapshot-v1",
   "source_repository": "ores-truffle-oreslang/oreslang-source.java",
   "source_repository_id": 1400792274,
-  "source_main_sha": "3df7d2a9433250dd831a7a6c50c78e561f2b5d79",
+  "source_main_sha": "3210aeff07597035a4ed815ebbdf39720a3266c1",
   "authorizes_source_transfer": false,
   "required_active_destinations": 0,
   "controls": [
