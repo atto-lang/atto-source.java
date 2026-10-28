@@ -236,6 +236,39 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void settledFutureFlattenCannotStartNestedTaskUnderLiveMutexGuard()
+            throws Exception {
+        // Future.flatten is a built-in INVOKABLE with a declared Future
+        // result, but its implementation starts a new scheduler Task even
+        // when the source Future has already settled. Its admission must
+        // therefore fail before invocation, not at a later implicit await.
+        assertGuardedCallRejectedWithoutOutput("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("stop");
+                  await worker.get_done();
+                  val completed = worker.get_done();
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  val future = completed.flatten();
+                  guard.release();
+                  stdio.stdout.write("ILLEGAL_FUTURE_CHAIN_STARTED");
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void guardedReceiverMethodRejectsBeforeEvaluatingEffectfulArguments()
             throws Exception {
         // The receiver is a MutexGuard, not a direct OresObject. Resolving
