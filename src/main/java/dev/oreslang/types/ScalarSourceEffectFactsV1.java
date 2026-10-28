@@ -90,22 +90,13 @@ public final class ScalarSourceEffectFactsV1 {
         if (source == null || source.length() > 1_048_576) {
             throw new IllegalArgumentException("source exceeds effect-analysis budget");
         }
-        Ast.Program checked = TypeChecker.check(Parser.parse(source));
-        // Only the unqualified, unannotated root module has compiler-local
-        // symbol identity in this first-pass proof. Namespaces, contracts and
-        // module annotations can change lookup/dispatch semantics and cannot
-        // be ignored while constructing a closed effect graph.
-        if (checked.namespace() != null || !checked.imports().isEmpty()
-                || checked.modules().size() != 1) {
-            throw new IllegalArgumentException(
-                    "scalar effect proof requires one unqualified root module without imports");
-        }
-        Ast.ModuleDecl module = checked.modules().getFirst();
-        if (!Parser.ROOT_MODULE.equals(module.name())
-                || !module.annotations().isEmpty() || !module.contracts().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "scalar effect proof forbids module annotations, contracts and non-root modules");
-        }
+        Ast.Program parsed = Parser.parse(source);
+        // Admission runs both before and after type checking: frontend
+        // normalization must not erase a namespace or module contract that
+        // changes source-level symbol identity.
+        requireClosedRoot(parsed);
+        Ast.Program checked = TypeChecker.check(parsed);
+        Ast.ModuleDecl module = requireClosedRoot(checked);
 
         var declarations = module.declarations();
         var symbols = new LinkedHashMap<String, Ast.FunctionDecl>();
@@ -145,6 +136,23 @@ public final class ScalarSourceEffectFactsV1 {
                     entry.getKey(), scanner.direct, scanner.calls));
         }
         return new Report(graph.infer(), sha256(source));
+    }
+
+    private static Ast.ModuleDecl requireClosedRoot(Ast.Program program) {
+        // This checker knows only the unqualified unannotated file-root
+        // namespace, not imported or annotated module lookup.
+        if (program.namespace() != null || !program.imports().isEmpty()
+                || program.modules().size() != 1) {
+            throw new IllegalArgumentException(
+                    "scalar effect proof requires one unqualified root module without imports");
+        }
+        Ast.ModuleDecl module = program.modules().getFirst();
+        if (!Parser.ROOT_MODULE.equals(module.name())
+                || !module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "scalar effect proof forbids module annotations, contracts and non-root modules");
+        }
+        return module;
     }
 
     private static final class Scanner {
