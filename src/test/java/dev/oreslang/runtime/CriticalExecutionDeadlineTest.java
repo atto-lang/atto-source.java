@@ -61,6 +61,34 @@ final class CriticalExecutionDeadlineTest {
         }
     }
 
+    @Test void childWithoutCriticalAnnotationInheritsParentsEarlierDeadline()
+            throws Exception {
+        var channel = new ChannelRuntime.Channel<Integer>(0);
+        var nested = new java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>>();
+        var registered = new CountDownLatch(1);
+        try (var timers = Executors.newSingleThreadScheduledExecutor();
+             var scheduler = new OresScheduler(1)) {
+            var parent = scheduler.start(resume -> {
+                if (!resume.initial()) throw new AssertionError("parent did not await");
+                OresScheduler.currentDeadlineController().publishChildDeadline(
+                        TimeUnit.MILLISECONDS.toNanos(35), timers);
+                nested.set(scheduler.start(childResume -> {
+                    if (!childResume.initial()) {
+                        throw new AssertionError("inherited deadline did not terminate child");
+                    }
+                    registered.countDown();
+                    return OresScheduler.await(channel.readAsync());
+                }));
+                return OresScheduler.done(7);
+            });
+            assertEquals(7, parent.get(5, TimeUnit.SECONDS));
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            var inherited = assertThrows(ExecutionException.class,
+                    () -> nested.get().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TimeoutException.class, inherited.getCause());
+        }
+    }
+
     @Test void runningCriticalTurnIsNotPreemptedOrReleasedByDeadlineThread() throws Exception {
         var gate = new CriticalGate();
         var entered = new CountDownLatch(1);
