@@ -63,4 +63,64 @@ final class ActorControlHandleIsolationTest {
             assertFalse(leaked.isAlive());
         }
     }
+    @Test
+    void removingLogicalContextDoesNotGrantHostOrForeignRuntimeAuthority() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             ActorRuntime other = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Integer> protectedChild = runtime.spawnPrivateTrusted(
+                    factory -> (message, context) -> { });
+            ActorRuntime.ActorRef<Integer> foreignChild = other.spawnPrivateTrusted(
+                    factory -> (message, context) -> { });
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> attacker = runtime.spawnPrivateTrusted(
+                    factory -> (message, context) -> {
+                        try {
+                            java.lang.reflect.Field contextField =
+                                    ActorRuntime.class.getDeclaredField("CURRENT_ACTOR_EXECUTION");
+                            contextField.setAccessible(true);
+                            @SuppressWarnings("unchecked")
+                            ThreadLocal<Object> currentExecution =
+                                    (ThreadLocal<Object>) contextField.get(null);
+                            Object original = currentExecution.get();
+                            assertNotNull(original, "test requires a real actor execution");
+                            assertTrue(ActorRuntime.isActorCarrierThread());
+                            currentExecution.remove();
+                            try {
+                                assertThrows(SecurityException.class, runtime::rootSupervisor);
+                                assertThrows(SecurityException.class,
+                                        () -> runtime.controlHandle(protectedChild));
+                                assertThrows(SecurityException.class, runtime::createSupervisor);
+                                assertThrows(SecurityException.class, other::rootSupervisor);
+                                assertThrows(SecurityException.class,
+                                        () -> other.controlHandle(foreignChild));
+                                assertThrows(SecurityException.class, foreignChild::stop,
+                                        "an actor cannot become a foreign runtime host by erasing context");
+                                assertThrows(SecurityException.class,
+                                        () -> protectedChild.awaitTermination(0, TimeUnit.NANOSECONDS),
+                                        "a carrier cannot become a blocking host by erasing context");
+                            } finally {
+                                currentExecution.set(original);
+                            }
+                        } catch (Throwable failure) {
+                            unexpected.set(failure);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+
+            attacker.send(1);
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(unexpected.get(), "logical-context spoof must not promote actor authority");
+            assertTrue(protectedChild.isAlive());
+            assertTrue(foreignChild.isAlive());
+            // The same APIs remain available to an actual trusted host caller.
+            assertNotNull(runtime.rootSupervisor());
+            assertNotNull(other.rootSupervisor());
+            protectedChild.stop();
+            foreignChild.stop();
+        }
+    }
+
 }
