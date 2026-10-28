@@ -9,6 +9,32 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(30)
 final class ActorNativeRuntimeIntegrationTest {
     @Test
+    void liveOwnerCarrierCannotForceEarlyNativeArenaClose() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            runtime.enableNativeActorStorage();
+            ActorRuntime.ActorRef<String> ref = runtime.spawnSharedTrusted(context -> {
+                var arena = context.nativeStorage().orElseThrow();
+                var region = arena.region(32);
+                region.writeLong(0, 641L);
+                long before = arena.committedBytes();
+                // A genuine admitted physical actor turn is still not
+                // CONTROL's physical-retirement authority. No outstanding
+                // native loan is necessary to exercise the old early-free hole.
+                assertThrows(IllegalStateException.class, arena::close);
+                assertFalse(arena.closed());
+                assertEquals(before, arena.committedBytes());
+                assertEquals(641L, region.readLong(0));
+                return (message, turn) -> turn.self().stop();
+            });
+            ref.ready().get(5, TimeUnit.SECONDS);
+            ref.send("stop");
+            ref.done().get(5, TimeUnit.SECONDS);
+            assertTrue(ref.failure().isEmpty(), ref.failure().toString());
+            assertEquals(0, runtime.nativeActorMemoryBytes());
+        }
+    }
+
+    @Test
     void privateNativeRefundReceiptRemainsRetryableAfterAggregateFault() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             runtime.enableNativeActorStorage();
