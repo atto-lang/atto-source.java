@@ -967,6 +967,43 @@ public final class OwnershipChecker {
         scope.define(binding.name(), state);
     }
 
+    /**
+     * Syntactic fail-closed preflight for expressions whose *result* could
+     * alias a field/index storage place. A future path-aware move ledger may
+     * replace this with exact place extraction and slot invalidation.
+     *
+     * Do not walk unrelated operands of binary expressions or owned
+     * constructor/function results: those produce independent values under
+     * their separate expression and return-ownership contracts.
+     */
+    private void rejectUntrackedTakePlace(Ast.Expr expression) {
+        if (expression instanceof Ast.MemberExpr) {
+            throw error("rt take cannot transfer a field projection without "
+                    + "path-aware partial-move tracking; take the named owner or "
+                    + "replace the field through a checked operation");
+        }
+        if (expression instanceof Ast.IndexExpr) {
+            throw error("rt take cannot move an indexed projection until "
+                    + "projection-level move tracking is available");
+        }
+        if (expression instanceof Ast.AssignExpr) {
+            throw error("rt take of an assignment result cannot prove that the "
+                    + "written source place was invalidated; use a checked replace operation");
+        }
+        if (expression instanceof Ast.CastExpr cast) {
+            rejectUntrackedTakePlace(cast.value());
+        } else if (expression instanceof Ast.ConditionalExpr conditional) {
+            rejectUntrackedTakePlace(conditional.whenTrue());
+            rejectUntrackedTakePlace(conditional.whenFalse());
+        } else if (expression instanceof Ast.MatchExpr match) {
+            for (Ast.MatchValueArm arm : match.arms()) {
+                rejectUntrackedTakePlace(arm.value());
+            }
+        } else if (expression instanceof Ast.SpreadExpr spread) {
+            rejectUntrackedTakePlace(spread.expression());
+        }
+    }
+
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
@@ -1104,6 +1141,17 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    // A transfer must consume the *source place*. Checking only
+                    // the outer AST node misses aliases nested inside a cast,
+                    // conditional or value match. Reject those paths before
+                    // checking/evaluating the expression, including assignment
+                    // expressions that leave the written slot live.
+                    rejectUntrackedTakePlace(argument);
+                    if (argument instanceof Ast.NameExpr name
+                            && scope.lookup(name.name()) == null) {
+                        throw error("rt take requires a statically tracked owned binding '"
+                                + name.name() + "'; untracked globals and functions cannot move");
+                    }
                     // A projected field/index is not an independent tracked owner.
                     // The current checker does not record partial moves for
                     // class/record/struct slots or reinstate them on assignment.
