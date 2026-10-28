@@ -88,6 +88,57 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void rtShareCannotTreatCopyOnlyRuntimeHandleAsShareable() {
+        // SelectCase and SelectSet are copyable handles in the present
+        // ownership classifier, but deliberately do not derive Share (or
+        // Task Send) in the canonical compiler capability lattice.
+        for (String handleType : new String[] {"SelectCase", "SelectSet"}) {
+            String source = """
+                    fnc forbidden(%s handle): void {
+                      val %s copied = rt copy handle;
+                      val %s published = rt share handle;
+                      return;
+                    }
+                    """.formatted(handleType, handleType, handleType);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains(
+                    "rt share requires statically proven Share capability"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void rtShareChecksGenericPayloadSendBeforeCopyableChannelAlias() {
+        // A Channel<T> handle is Copy, but sharing it across domains needs a
+        // Send-safe payload. Rc<int> is explicitly non-Send/non-Share.
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        fnc forbidden(Channel<Rc<int>> channel): void {
+                          val Channel<Rc<int>> copied = rt copy channel;
+                          val Channel<Rc<int>> aliased = rt share channel;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains(
+                "rt share requires statically proven Share capability"),
+                failure.getMessage());
+    }
+
+    @Test
+    void rtShareAdmitsProvenSynchronizedChannelAndSharedMutexHandles() {
+        assertDoesNotThrow(() ->
+                dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        fnc allowed(Channel<int> channel, SharedMutex<int> guard): void {
+                          val Channel<int> channel_alias = rt share channel;
+                          val SharedMutex<int> guard_alias = rt share guard;
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
     void moveOnlyCopyAndShareFailClosedUntilTheirFullContractsConverge() {
         IllegalArgumentException copied = assertThrows(
                 IllegalArgumentException.class,
