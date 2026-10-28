@@ -54,12 +54,12 @@ jobs:
           java -version
           mvn -version
       - name: Execute actual timer host and guest JUnit regressions
-        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=SourceTimerLanguageTest,OresTimersTest,AsyncAwaitLanguageTest test
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=SourceTimerLanguageTest,OresTimersTest,AsyncAwaitLanguageTest,FuturePipelineProvenanceTest#typingPreservesProvenanceAndCurrentFutureBoundaries test
       - name: Verify each suite produced a real Surefire report
         shell: bash
         run: |
           set -euo pipefail
-          for suite in SourceTimerLanguageTest OresTimersTest AsyncAwaitLanguageTest; do
+          for suite in SourceTimerLanguageTest OresTimersTest AsyncAwaitLanguageTest FuturePipelineProvenanceTest; do
             file="$(find target/surefire-reports -maxdepth 1 -type f -name "TEST-*.${suite}.xml" -print -quit)"
             test -n "$file"
             grep -q '<testsuite ' "$file"
