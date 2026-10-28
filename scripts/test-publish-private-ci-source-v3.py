@@ -2964,8 +2964,27 @@ class PrivateCiV3Test(unittest.TestCase):
             text,
         )
         self.assertNotIn("review-attested carrier mode", text)
-        for incident in ("#22", "#77", "#127", "#171", "#172"):
+        for incident in ("#22", "#77", "#127", "#171", "#172", "#198", "#200"):
             self.assertIn(incident, text)
+
+    def test_checked_in_incident_registry_covers_every_blocking_p0(self):
+        path = (
+            SCRIPT.parent.parent
+            / ".github"
+            / "private-ci-incident-dispositions.json"
+        )
+        doc = json.loads(path.read_text())
+        incidents = doc["incidents"]
+        expected = {str(number) for number in v3.legacy.BLOCKING_INCIDENTS}
+        self.assertEqual(set(incidents), expected)
+        for number in v3.legacy.BLOCKING_INCIDENTS:
+            with self.subTest(number=number):
+                entry = incidents[str(number)]
+                self.assertEqual(
+                    entry["issue_id"],
+                    v3.legacy.BLOCKING_INCIDENT_IDS[number],
+                )
+                self.assertIn(entry["status"], ("hold", "resolved"))
 
     def test_checked_in_allowlist_has_no_review_attestation_fallback(self):
         path = SCRIPT.parent.parent / ".github" / "private-ci-approved-repositories.txt"
