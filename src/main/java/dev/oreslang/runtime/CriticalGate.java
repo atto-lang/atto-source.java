@@ -35,6 +35,11 @@ public final class CriticalGate {
         // admission is already settled and therefore cannot be cancelled.
         private final OresFuture<Void> admitted = new OresFuture<>(this::close);
         private boolean requested;
+        // Monotonic queue deadline is checked at handoff as well as by the
+        // timer: a delayed/saturated timer cannot admit a stale waiter.
+        private boolean timedAdmission;
+        private long admissionStartNanos;
+        private long admissionBudgetNanos;
         private boolean granted;
         private boolean closed;
         private Thread synchronousOwner;
@@ -73,21 +78,27 @@ public final class CriticalGate {
             if (timeout.isNegative()) {
                 throw new IllegalArgumentException("critical admission timeout is negative");
             }
-            OresFuture<Void> ready = request(false);
-            if (ready.isDone()) return ready;
-            if (timeout.isZero()) {
-                expireQueued();
-                return ready;
-            }
             long nanos;
             try {
                 nanos = timeout.toNanos();
             } catch (ArithmeticException overflow) {
                 nanos = Long.MAX_VALUE;
             }
+            timedAdmission = true;
+            admissionStartNanos = System.nanoTime();
+            admissionBudgetNanos = nanos;
+            OresFuture<Void> ready = request(false);
+            if (ready.isDone()) return ready;
+            if (timeout.isZero()) {
+                expireQueued();
+                return ready;
+            }
+            // Account for time spent contending/admitting/scheduling.
+            long elapsed = System.nanoTime() - admissionStartNanos;
+            long remaining = Math.max(0L, nanos - Math.max(0L, elapsed));
             try {
                 ScheduledFuture<?> scheduled = timer.schedule(
-                        this::expireQueued, nanos, TimeUnit.NANOSECONDS);
+                        this::expireQueued, remaining, TimeUnit.NANOSECONDS);
                 ready.whenCompleteRuntime((ignored, failure) -> scheduled.cancel(false));
             } catch (RejectedExecutionException rejected) {
                 failQueued(new IllegalStateException(
@@ -218,6 +229,7 @@ public final class CriticalGate {
         @Override
         public void close() {
             Ticket wake = null;
+            java.util.ArrayList<Ticket> expiredAtHandoff = new java.util.ArrayList<>();
             java.util.concurrent.CountDownLatch cancelledWaiter = null;
             synchronized (COORDINATOR) {
                 if (closed) return;
@@ -230,6 +242,13 @@ public final class CriticalGate {
                         Ticket candidate = waiters.removeFirst();
                         WAITING_ON.remove(candidate.logicalOwner, CriticalGate.this);
                         if (candidate.closed) continue;
+                        if (candidate.timedAdmission
+                                && System.nanoTime() - candidate.admissionStartNanos
+                                        >= candidate.admissionBudgetNanos) {
+                            candidate.closed = true;
+                            expiredAtHandoff.add(candidate);
+                            continue;
+                        }
                         owner = candidate;
                         candidate.granted = true;
                         wake = candidate;
@@ -242,6 +261,11 @@ public final class CriticalGate {
                 }
             }
             if (cancelledWaiter != null) cancelledWaiter.countDown();
+            for (Ticket expired : expiredAtHandoff) {
+                expired.admitted.failFromRuntime(
+                        new TimeoutException("critical admission queue timeout"));
+                if (expired.synchronousWaiter != null) expired.synchronousWaiter.countDown();
+            }
             if (!admitted.isDone()) {
                 admitted.failFromRuntime(new CancellationException("critical ticket released"));
             }
