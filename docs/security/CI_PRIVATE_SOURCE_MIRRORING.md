@@ -19,7 +19,12 @@ advance, repository delete/recreate, workflow change, or test-plan change
 fails closed until the source policy is reviewed again.
 
 Blocking private-source incidents have a separate protected authority file:
-`.github/private-ci-incident-dispositions.json`. Closing a GitHub issue, even
+`.github/private-ci-incident-dispositions.json`. The blocking set is closed and
+explicit: #22, #77, #127, #171, #172, #198, and #200. Newly discovered
+cross-organization source/governance placement incidents must be added to both
+the publisher's immutable incident-ID registry and this protected disposition
+file before any export can resume; an older resolved subset never authorizes
+around a newly known P0. Closing a GitHub issue, even
 with `state_reason=completed`, is not sufficient to resume export. Every
 blocking incident must also be marked `resolved` in that protected-main file,
 and the entry must pin an exact `@ORESoftware` issue-comment ID, immutable
