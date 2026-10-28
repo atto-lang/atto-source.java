@@ -5056,6 +5056,85 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Resolve a member call's source scheduling authority before any
+         * argument expression runs. A field-held Fnc / imported callable
+         * without a checked source effect summary must not be executed under
+         * a live no-yield guard merely because its Invocation is INVOKABLE.
+         * Built-in member protocols (notably MutexGuard.release) remain on
+         * the separate native path; never infer their safety from spelling.
+         */
+        private void requireGuardedMemberAdmission(
+                Env env, Object receiver, String name, int arity) {
+            if (!env.hasLiveMutexGuards()) return;
+            final String denied =
+                    "cannot launch or suspend an unverified member source callable while holding a live MutexGuard";
+            OresObject object = receiver instanceof OresObject source ? source : null;
+            if (receiver instanceof OresMutex.Guard<?> guard
+                    && !name.equals("release") && !name.equals("is_released")
+                    && guard.value() instanceof OresObject protectedObject) {
+                object = protectedObject;
+            }
+            if (object != null) {
+                Evaluator owner = object.owner;
+                Ast.MethodDecl method = owner.findMethod(
+                        object.klass, CallableSelector.instance(name, arity));
+                if (method != null) {
+                    if (method.async() || owner.methodContainsPotentialSuspension(method))
+                        throw new IllegalStateException(denied);
+                    return; // checked, synchronous source method
+                }
+                // A source object may instead store a closure in a field;
+                // that value has no proven no-suspension effect set.
+                if (object.fields.get(name) instanceof Invokable)
+                    throw new IllegalStateException(denied);
+                return;
+            }
+            if (receiver instanceof ClassFacade facade) {
+                Evaluator owner = facade.owner();
+                Ast.MethodDecl method = owner.findStaticFunction(
+                        facade.klass(), CallableSelector.staticFunction(name, arity));
+                if (method != null
+                        && (method.async() || owner.methodContainsPotentialSuspension(method)))
+                    throw new IllegalStateException(denied);
+                return;
+            }
+            if (receiver instanceof ModuleFacade module) {
+                boolean provenSync = false;
+                for (Ast.Decl declaration : module.module().declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && fn.name().equals(name) && fn.parameters().size() == arity
+                            && fn.visibility() == Ast.Visibility.PUBLIC) {
+                        if (fn.async() || module.owner().functionContainsPotentialSuspension(fn))
+                            throw new IllegalStateException(denied);
+                        provenSync = true;
+                    }
+                }
+                if (!provenSync) throw new IllegalStateException(denied);
+                return;
+            }
+            if (receiver instanceof ImportedNamespace namespace) {
+                Evaluator owner = namespace.owner();
+                Ast.FunctionDecl fn = owner.findFunction(name, arity);
+                if (fn == null || fn.async() || owner.functionContainsPotentialSuspension(fn))
+                    throw new IllegalStateException(denied);
+            }
+        }
+
+        private void requireGuardedNamedImportAdmission(
+                Env env, Ast.NameExpr name, int arity) {
+            if (!env.hasLiveMutexGuards()) return;
+            ImportedBinding imported = namedImports.get(name.name());
+            if (imported == null
+                    || imported.declaration().kind() != Ast.ImportKind.FUNCTION) return;
+            Evaluator owner = importedTarget(imported.declaration());
+            Ast.FunctionDecl fn = owner.findFunction(imported.sourceName(), arity);
+            if (fn == null || fn.async() || owner.functionContainsPotentialSuspension(fn)) {
+                throw new IllegalStateException(
+                        "cannot launch or suspend an imported source callable while holding a live MutexGuard");
+            }
+        }
+
         private void evalSuspendableCall(
                 SourceTask task,
                 Ast.CallExpr call,
@@ -5063,6 +5142,14 @@ public final class OresEvalRootNode extends RootNode {
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
+                // The imported target's scheduling effects belong to the
+                // exporting evaluator, not to the local lexical name.
+                try {
+                    requireGuardedNamedImportAdmission(env, name, call.arguments().size());
+                } catch (RuntimeException | Error denied) {
+                    continuation.accept(task, null, denied);
+                    return;
+                }
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, name.name());
@@ -5116,36 +5203,15 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
-                            // Once the instance receiver is known, check the
-                            // actual nominal method before evaluating argument
-                            // expressions. The latter may have observable
-                            // side effects even though the call itself is
-                            // inadmissible inside a no-yield region.
-                            if (env.hasLiveMutexGuards()) {
-                                Ast.MethodDecl selected = null;
-                                Evaluator selectedOwner = null;
-                                if (receiver instanceof OresObject object) {
-                                    selectedOwner = object.owner;
-                                    selected = object.owner.findMethod(
-                                            object.klass,
-                                            CallableSelector.instance(
-                                                    member.member(), call.arguments().size()));
-                                } else if (receiver instanceof ClassFacade klass) {
-                                    selectedOwner = klass.owner();
-                                    selected = klass.owner().findStaticFunction(
-                                            klass.klass(),
-                                            CallableSelector.staticFunction(
-                                                    member.member(), call.arguments().size()));
-                                }
-                                if (selected != null && selectedOwner != null
-                                        && (selected.async()
-                                                || selectedOwner.methodContainsPotentialSuspension(selected))) {
-                                    continuation.accept(
-                                            t, null,
-                                            new IllegalStateException(
-                                                    "cannot launch or suspend a source callable while holding a live MutexGuard"));
-                                    return;
-                                }
+                            // Includes nominal methods, field-held callbacks
+                            // and imported functions; reject before argument
+                            // evaluation or any nested Task admission.
+                            try {
+                                requireGuardedMemberAdmission(
+                                        env, receiver, member.member(), call.arguments().size());
+                            } catch (RuntimeException | Error denied) {
+                                continuation.accept(t, null, denied);
+                                return;
                             }
                             evalSuspendableArguments(
                                     t,
@@ -7030,6 +7096,7 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
+                requireGuardedNamedImportAdmission(env, directName, call.arguments().size());
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, directName.name());
@@ -7040,6 +7107,8 @@ public final class OresEvalRootNode extends RootNode {
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
+                requireGuardedMemberAdmission(
+                        env, receiver, methodCall.member(), call.arguments().size());
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OptionValue option
