@@ -192,6 +192,83 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void rtTakeCannotHideFieldExtractionInsideConditionalOrCast() {
+        String type = """
+                define class Box as
+                  pub let int value = 7;
+                end
+                """;
+        for (String expression : new String[] {
+                "condition ? box.value : 7",
+                "box.value as int"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(
+                            type + """
+                            fnc bad(bool condition): void {
+                              let mut Box box = new Box();
+                              val int escaped = rt take (%s);
+                              return;
+                            }
+                            """.formatted(expression))));
+            assertTrue(error.getMessage().contains("path-aware partial-move"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void rtTakeCannotLaunderAnAssignmentResult() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                fnc bad(): void {
+                  let mut Box box = new Box();
+                  val int stolen = rt take (box.value = 12);
+                  return;
+                }
+                """)));
+        assertTrue(error.getMessage().contains("checked replace"),
+                error.getMessage());
+    }
+
+    @Test
+    void rtTakeAndRtCopyRequireTrackedNames() {
+        for (String operation : new String[] {"take", "copy"}) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                    fnc bad(): void {
+                      val inferred = rt %s absentBinding;
+                      return;
+                    }
+                    """.formatted(operation))));
+            assertTrue(failure.getMessage().contains(
+                    operation.equals("take")
+                            ? "statically tracked owned binding"
+                            : "statically tracked Copy binding"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void rtTakeStillAcceptsIndependentFreshRvalue() {
+        assertDoesNotThrow(() ->
+                dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                fnc ok(): int {
+                  val Box fresh = rt take new Box();
+                  return fresh.value;
+                }
+                """)));
+    }
+
+    @Test
     void rtTakeFieldProjectionCannotDuplicateMoveOnlyOwner() {
         IllegalArgumentException rejected = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
