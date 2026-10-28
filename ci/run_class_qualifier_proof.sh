@@ -77,7 +77,17 @@ case "${CLASS_QUALIFIER_PROFILE:-jvm}" in
       || die "AOT guest namespace conformance mismatch: $aot_output"
     printf 'AOT_GUEST_SCOPES=PASS OUTPUT=7|7|99|23\n'
     ;;
-  *) die "unsupported CLASS_QUALIFIER_PROFILE, expected jvm or aot" ;;
+  hybrid)
+    command -v native-image >/dev/null || die "GraalVM native-image unavailable"
+    mvn -B -ntp -Pnative-hybrid -DskipTests package
+    [[ -x target/ores-hybrid ]] || die "native executable target/ores-hybrid missing"
+    hybrid_output="$(./target/ores-hybrid --mode=hybrid --platform=linux "$fixture")" \
+      || die "Hybrid guest namespace conformance execution failed"
+    [[ "$hybrid_output" == *"7|7|99|23"* ]] \
+      || die "Hybrid guest namespace conformance mismatch: $hybrid_output"
+    printf 'HYBRID_GUEST_SCOPES=PASS OUTPUT=7|7|99|23\n'
+    ;;
+  *) die "unsupported CLASS_QUALIFIER_PROFILE, expected jvm, aot or hybrid" ;;
 esac
 
 # The count is pinned to the currently committed 18 + 14 regression tests.
