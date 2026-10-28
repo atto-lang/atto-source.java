@@ -433,8 +433,16 @@ public final class OresTimers implements AutoCloseable {
                         if (nextIndex <= 0) {
                             result.failFromRuntime(new ArithmeticException(
                                     "interval tick counter overflow"));
-                        } else if (result.completeFromRuntime(nextIndex)) {
+                        } else {
+                            // A Future may invoke runtime observers inline during
+                            // settlement. Publish the monotonic sequence before
+                            // those observers can re-enter next()/delivered().
+                            // An external cancellation can beat the terminal CAS,
+                            // in which case roll back before releasing this lock.
                             delivered = nextIndex;
+                            if (!result.completeFromRuntime(nextIndex)) {
+                                delivered = nextIndex - 1;
+                            }
                         }
                     }
                 }
