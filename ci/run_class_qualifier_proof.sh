@@ -55,13 +55,13 @@ done
 # Executable guest-level fixture exercises all three scopes and the imported
 # file's public ABI. This is distinct from JUnit's in-process linked runner.
 fixture=ci/fixtures/class-qualifiers/main.ores
-[[ -f "$fixture" && -f ci/fixtures/class-qualifiers/imported.ores ]] \\
+[[ -f "$fixture" && -f ci/fixtures/class-qualifiers/imported.ores ]] \
   || die "linked namespace guest fixture missing"
-jvm_output="$(mvn -q -ntp -DskipTests exec:java -Dexec.args="$fixture")" \\
+jvm_output="$(mvn -q -ntp -DskipTests exec:java -Dexec.args="$fixture")" \
   || die "JVM guest namespace conformance execution failed"
-[[ "$jvm_output" == *"7|7|99|23"* ]] \\
+[[ "$jvm_output" == *"7|7|99|23"* ]] \
   || die "JVM guest namespace conformance mismatch: $jvm_output"
-printf 'JVM_GUEST_SCOPES=PASS OUTPUT=7|7|99|23\\n'
+printf 'JVM_GUEST_SCOPES=PASS OUTPUT=7|7|99|23\n'
 
 # The AOT proof is optional only for targeted JVM jobs. To claim Native Image
 # proof set CLASS_QUALIFIER_PROFILE=aot. Unsupported values fail closed.
@@ -71,11 +71,11 @@ case "${CLASS_QUALIFIER_PROFILE:-jvm}" in
     command -v native-image >/dev/null || die "GraalVM native-image unavailable"
     mvn -B -ntp -Pnative-aot -DskipTests package
     [[ -x target/ores-aot ]] || die "native executable target/ores-aot missing"
-    aot_output="$(./target/ores-aot --mode=aot --platform=linux "$fixture")" \\
+    aot_output="$(./target/ores-aot --mode=aot --platform=linux "$fixture")" \
       || die "AOT guest namespace conformance execution failed"
-    [[ "$aot_output" == *"7|7|99|23"* ]] \\
+    [[ "$aot_output" == *"7|7|99|23"* ]] \
       || die "AOT guest namespace conformance mismatch: $aot_output"
-    printf 'AOT_GUEST_SCOPES=PASS OUTPUT=7|7|99|23\\n'
+    printf 'AOT_GUEST_SCOPES=PASS OUTPUT=7|7|99|23\n'
     ;;
   *) die "unsupported CLASS_QUALIFIER_PROFILE, expected jvm or aot" ;;
 esac
