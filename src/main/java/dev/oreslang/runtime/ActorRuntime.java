@@ -740,7 +740,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException("ActorRef belongs to another runtime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = requireExactLiveActorCell(ref);
         if (cell == null) {
             throw new IllegalStateException("actor was not found or has finalized");
         }
@@ -791,7 +791,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("inspect actor placement");
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) throw new IllegalArgumentException("ActorRef belongs to another runtime");
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = requireExactLiveActorCell(ref);
         if (cell == null) return Optional.empty();
         if (dispatcherFor(cell.kind) instanceof ActorAffinityDispatcher lanes) {
             int cpu = lanes.cpuForLane(cell.dispatchLane);
@@ -904,7 +904,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "ActorRef belongs to a different ActorRuntime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = requireExactLiveActorCell(ref);
         return cell == null ? Optional.empty() : Optional.ofNullable(cell.codeImage);
     }
 
@@ -916,7 +916,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "ActorRef belongs to a different ActorRuntime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = requireExactLiveActorCell(ref);
         return cell != null
                 && cell.mailbox instanceof ChannelRuntime.Channel<?>
                 && cell.continuationMailbox instanceof ChannelRuntime.Channel<?>;
