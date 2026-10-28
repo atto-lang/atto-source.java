@@ -873,7 +873,12 @@ public final class TypeChecker {
         // root Task, so legacy non-async main() may await without spawning
         // a second source Task. Ordinary synchronous helpers may NOT await.
         // A nested synchronous lambda still clears this effect capability.
+        // A synchronous actor fnc also executes in a mailbox-owned,
+        // resumable actor turn. Keep that distinct from ordinary synchronous
+        // function calls; its own actor admission and ownership gates still
+        // apply, and no independent source Task is spawned for each await.
         currentMaySuspend = fn.async() || fn.suspends()
+                || fn.actorKind() != Ast.ActorKind.NONE
                 || (fn.name().equals("main")
                     && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE);
