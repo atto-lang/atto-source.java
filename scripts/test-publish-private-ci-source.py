@@ -1142,6 +1142,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_cross_platform_ambiguous_paths_are_rejected_portably(self):
         cases = (
             (["NUL.txt"], "reserved Windows"),
+            (["CONIN$"], "reserved Windows"),
+            (["conout$.log"], "reserved Windows"),
+            (["bad<name.ores"], "cross-platform"),
+            (["bad>name.ores"], "cross-platform"),
+            (['bad"name.ores'], "cross-platform"),
+            (["bad|name.ores"], "cross-platform"),
+            (["bad?name.ores"], "cross-platform"),
+            (["bad*name.ores"], "cross-platform"),
             (["bad."], "cross-platform"),
             (["trailing "], "cross-platform"),
             (["ads:stream"], "cross-platform"),

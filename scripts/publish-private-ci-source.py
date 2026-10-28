@@ -74,8 +74,10 @@ SECURITY_CODEOWNER_PATHS = (
 SECURITY_CODEOWNER = "@ORESoftware"
 MAX_SOURCE_PATH_BYTES = 4096
 WINDOWS_RESERVED_NAME = re.compile(
-    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", re.IGNORECASE
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]|CONIN\\$|CONOUT\\$)$",
+    re.IGNORECASE,
 )
+WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
 
 
 class Denied(RuntimeError):
@@ -102,7 +104,7 @@ def require_cross_platform_source_paths(paths):
             if (part.casefold() == ".git"
                     or part != unicodedata.normalize("NFC", part)
                     or part.rstrip(" .") != part
-                    or ":" in part):
+                    or any(ch in WINDOWS_INVALID_CHARS for ch in part)):
                 raise Denied("source path is not cross-platform canonical")
             stem = part.split(".", 1)[0]
             if WINDOWS_RESERVED_NAME.fullmatch(stem):
