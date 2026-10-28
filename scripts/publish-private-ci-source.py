@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import unicodedata
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 APPROVAL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$")
@@ -71,10 +72,59 @@ SECURITY_CODEOWNER_PATHS = (
     "/scripts/publish-private-ci-source-v3.py",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
+MAX_SOURCE_PATH_BYTES = 4096
+WINDOWS_RESERVED_NAME = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", re.IGNORECASE
+)
 
 
 class Denied(RuntimeError):
     pass
+
+
+def require_cross_platform_source_paths(paths):
+    """Reject Git paths that alias across supported checkout filesystems."""
+    if not isinstance(paths, (list, tuple)) or not paths:
+        raise Denied("source path set is missing or invalid")
+    originals = []
+    folded_files = {}
+    directory_prefixes = {}
+    for path in paths:
+        if (not isinstance(path, str) or not path
+                or len(path.encode("utf-8")) > MAX_SOURCE_PATH_BYTES
+                or path.startswith("/") or "\\" in path
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in path)):
+            raise Denied("source path is not cross-platform canonical")
+        parts = path.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise Denied("source path is not cross-platform canonical")
+        for part in parts:
+            if (part.casefold() == ".git"
+                    or part != unicodedata.normalize("NFC", part)
+                    or part.rstrip(" .") != part
+                    or ":" in part):
+                raise Denied("source path is not cross-platform canonical")
+            stem = part.split(".", 1)[0]
+            if WINDOWS_RESERVED_NAME.fullmatch(stem):
+                raise Denied("source path uses a reserved Windows name")
+        folded = path.casefold()
+        previous = folded_files.setdefault(folded, path)
+        if previous != path:
+            raise Denied("source paths collide case-insensitively")
+        originals.append(path)
+
+    file_keys = set(folded_files)
+    for path in originals:
+        parts = path.split("/")
+        for index in range(1, len(parts)):
+            prefix = "/".join(parts[:index])
+            folded = prefix.casefold()
+            previous = directory_prefixes.setdefault(folded, prefix)
+            if previous != prefix:
+                raise Denied("source directory prefixes collide case-insensitively")
+            if folded in file_keys:
+                raise Denied("source paths contain a file/directory conflict")
+    return True
 
 
 def safe_descriptor_flags_available():
@@ -636,7 +686,9 @@ def collect_source(root, trusted_root):
             os.close(fd)
     if not entries:
         raise Denied("source directory is empty")
-    return sorted(entries, key=lambda item: item[0])
+    entries = sorted(entries, key=lambda item: item[0])
+    require_cross_platform_source_paths([path for path, _data, _mode in entries])
+    return entries
 
 
 def verified_exact_source_tree(files, source_commit):
@@ -673,6 +725,7 @@ def verified_exact_source_tree(files, source_commit):
         if not isinstance(path, str) or not path or path in tracked:
             raise Denied("malformed/duplicate path in source Git tree")
         tracked[path] = (entry["mode"], valid_sha(entry.get("sha")))
+    require_cross_platform_source_paths(list(tracked))
     local = {}
     for path, data, mode in files:
         expected_blob = hashlib.sha1(
@@ -681,6 +734,7 @@ def verified_exact_source_tree(files, source_commit):
         if path in local:
             raise Denied("duplicate local source path")
         local[path] = (mode, expected_blob)
+    require_cross_platform_source_paths(list(local))
     if not local or local != tracked:
         raise Denied("source directory differs from pinned Git tree")
     return tree_sha
