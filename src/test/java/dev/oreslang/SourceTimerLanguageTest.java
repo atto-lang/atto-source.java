@@ -144,6 +144,18 @@ final class SourceTimerLanguageTest {
     }
 
     @Test
+    void builtinDurationAndTimeNamespaceCannotBeSpoofed() {
+        for (String source : new String[]{
+                "define class Duration as end",
+                "define interface Duration as end",
+                "define module time end"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source),
+                    "spoofed reserved timer builtin: " + source);
+        }
+    }
+
+    @Test
     void actorTimerRegistrationCannotBypassActorLifecycleAuthority() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
