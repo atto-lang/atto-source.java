@@ -5069,6 +5069,20 @@ public final class OresEvalRootNode extends RootNode {
             if (!env.hasLiveMutexGuards()) return;
             final String denied =
                     "cannot launch or suspend an unverified member source callable while holding a live MutexGuard";
+            // Future combinators are INVOKABLE builtins, not METHOD calls.
+            // map/flatMap/onSuccess/flatten start scheduler-owned Task work
+            // through chainFuture. The Future they return is marked a value
+            // by invocationDeclaresAsync(INVOKABLE), so the ordinary implicit
+            // await/guard gate would run too late (or not at all). Refuse
+            // before creating a task OR evaluating a callback argument.
+            if (receiver instanceof OresFuture<?>
+                    && (name.equals("map")
+                            || name.equals("compose")
+                            || name.equals("flatMap")
+                            || name.equals("flatten")
+                            || name.equals("onSuccess"))) {
+                throw new IllegalStateException(denied);
+            }
             OresObject object = receiver instanceof OresObject source ? source : null;
             if (receiver instanceof OresMutex.Guard<?> guard
                     && !name.equals("release") && !name.equals("is_released")
