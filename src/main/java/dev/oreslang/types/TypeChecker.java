@@ -4407,8 +4407,8 @@ public final class TypeChecker {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (!currentMaySuspend) {
                 throw new IllegalArgumentException(
-                        "await requires async/suspends, the actor receive mailbox turn, "
-                                + "or the scheduler-owned public main entrypoint");
+                        "await requires async/suspends, an actor mailbox turn, "
+                                + "or the scheduler-owned zero-argument main entrypoint");
             }
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
