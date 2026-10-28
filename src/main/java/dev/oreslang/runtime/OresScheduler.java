@@ -54,6 +54,17 @@ public final class OresScheduler implements AutoCloseable {
         Step<T> resume(Resume resume) throws Exception;
     }
 
+    /**
+     * Runtime-only physical retirement notification. Unlike the public
+     * result Future (which may be cancelled while a turn is in flight), this
+     * fires only after no source task turn can still run. Implementations
+     * may release logical critical permits and owned actor-state leases;
+     * they MUST NOT execute guest code from this callback.
+     */
+    public interface PhysicalRetirementListener {
+        void onPhysicallyRetired();
+    }
+
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
@@ -421,6 +432,7 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        private final AtomicBoolean physicalRetirementNotified = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -522,8 +534,16 @@ public final class OresScheduler implements AutoCloseable {
          */
         private void afterCarrierTurn() {
             executing.set(false);
+            notifyPhysicalRetirementIfSafe();
             publishTerminalIfReady();
             scheduleReadyResume();
+        }
+
+        private void notifyPhysicalRetirementIfSafe() {
+            if (phase.get() != TERMINAL || executing.get()) return;
+            if (!(task instanceof PhysicalRetirementListener listener)) return;
+            if (!physicalRetirementNotified.compareAndSet(false, true)) return;
+            listener.onPhysicallyRetired();
         }
 
         private void armCooperate() {
@@ -655,6 +675,10 @@ public final class OresScheduler implements AutoCloseable {
 
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
             tasks.remove(this);
+            // If a carrier already claimed RUNNING, even a momentary gap
+            // before executing=true belongs to that turn; only its
+            // afterCarrierTurn may retire the logical critical owner.
+            if (observed != RUNNING) notifyPhysicalRetirementIfSafe();
             if (!executing.get()) {
                 publishTerminalIfReady();
             }
@@ -685,6 +709,7 @@ public final class OresScheduler implements AutoCloseable {
             } while (!phase.compareAndSet(observed, TERMINAL));
             tasks.remove(this);
             pendingResume.set(null);
+            if (observed != RUNNING) notifyPhysicalRetirementIfSafe();
         }
 
         private void cancelFromSchedulerClose() {
