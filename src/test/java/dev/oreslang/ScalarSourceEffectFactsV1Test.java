@@ -112,9 +112,14 @@ final class ScalarSourceEffectFactsV1Test {
     }
 
     @Test
-    void dynamicTopTypeAndGenericResultCannotSilentlyProveNoAllocation() {
-        // A scalar literal does not prove how an any/unknown/union
-        // return value is represented or whether dynamic boxing occurs.
+    void unprovenReturnRepresentationsAreRejectedBySourceEffectAdmission() {
+        // A scalar literal does not establish the machine representation of
+        // every return type, including floating-point and dynamic boxing.
+        var rejected = assertThrows(IllegalArgumentException.class, () -> analyze("""
+                fnc floating(): float { return 3.5; }
+                """));
+        assertTrue(rejected.getMessage().contains("unsupported callable"),
+                "Must fail the source effect admission, not accidentally the parser");
         assertThrows(IllegalArgumentException.class, () -> analyze("""
                 fnc boxed(): any { return 42; }
                 """));
