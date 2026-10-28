@@ -172,11 +172,24 @@ final class SourceTimerLanguageTest {
     }
 
     @Test
-    void privateModuleFunctionNamedMainIsNotAnImplicitRootEntrypoint() {
+    void uniquelyResolvedPrivateModuleMainIsSchedulerOwned() throws Exception {
+        assertTrue(run("""
+                define module helper
+                  fnc main(): void {
+                    await time.after(0ms);
+                    stdio.println(46);
+                    return;
+                  }
+                end
+                """).contains("46"));
+    }
+
+    @Test
+    void nonEntrypointMainOverloadCannotAcquireSuspendEffect() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                     define module helper
-                      fnc main(): void {
+                      fnc main(int unused): void {
                         await time.after(0ms);
                         return;
                       }
