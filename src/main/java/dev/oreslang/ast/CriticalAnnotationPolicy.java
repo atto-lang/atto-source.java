@@ -1,17 +1,25 @@
 package dev.oreslang.ast;
 
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
- * Compiler-checked critical policy metadata with no runtime reflection.
+ * Compiler-checked critical policy metadata. Budgets are elapsed monotonic
+ * durations, not wall-clock instants. An absent field inherits the enclosing
+ * runtime policy; it does NOT silently disable tenant/supervisor quotas.
  *
- * <p>Queue and per-channel wait timeouts have executable Java/Graal lowering
- * on this draft branch. Execution and overall deadlines remain fail-closed
- * until physical task retirement/cancellation can be proven. A policy must
- * never silently degrade to unbounded waiting.</p>
+ * <p>Queue and channel admission can be revoked atomically before commit.
+ * Execution and total timeouts on suspended callables require scheduler-owned
+ * physical retirement, never premature public Future cancellation. These
+ * are cooperative elapsed deadlines, not arbitrary CPU preemption.</p>
  */
-public record CriticalAnnotationPolicy(Duration queueTimeout, Duration channelWaitTimeout) {
+public record CriticalAnnotationPolicy(
+        Duration queueTimeout,
+        Duration channelWaitTimeout,
+        Duration executionTimeout,
+        Duration totalTimeout) {
     public static CriticalAnnotationPolicy from(
             List<Ast.Annotation> annotations, boolean isCritical, String name) {
         return from(annotations, isCritical, true, name);
@@ -36,8 +44,11 @@ public record CriticalAnnotationPolicy(Duration queueTimeout, Duration channelWa
             throw new IllegalArgumentException(
                     "@Critical requires the critical callable modifier on '" + name + "'");
         }
-        Long queueMillis = null;
-        Long channelMillis = null;
+        Long queue = null;
+        Long channel = null;
+        Long execution = null;
+        Long total = null;
+        Set<String> seen = new HashSet<>();
         for (Ast.TypeRef arg : found.arguments()) {
             if (!arg.isNamedParameter()) {
                 throw new IllegalArgumentException(
@@ -45,16 +56,14 @@ public record CriticalAnnotationPolicy(Duration queueTimeout, Duration channelWa
             }
             String key = arg.namedParameterName();
             Ast.TypeRef value = arg.namedParameterValue();
-            if (!key.equals("queue_timeout_ms") && !key.equals("channel_wait_timeout_ms")) {
+            if (!Set.of("queue_timeout_ms", "channel_wait_timeout_ms",
+                    "execution_timeout_ms", "total_timeout_ms").contains(key)) {
                 throw new IllegalArgumentException(
-                        "unsupported @Critical policy '" + key
-                                + "': execution and total deadlines require task retirement support");
+                        "unsupported @Critical policy '" + key + "'");
             }
-            if (!value.isIntLiteral()
-                    || key.equals("queue_timeout_ms") && queueMillis != null
-                    || key.equals("channel_wait_timeout_ms") && channelMillis != null) {
+            if (!seen.add(key) || !value.isIntLiteral()) {
                 throw new IllegalArgumentException(
-                        "@Critical " + key + " must be one integer literal");
+                        "@Critical " + key + " must occur once with an integer literal");
             }
             long millis;
             try {
@@ -64,22 +73,29 @@ public record CriticalAnnotationPolicy(Duration queueTimeout, Duration channelWa
                         "@Critical " + key + " is outside signed 64-bit range", tooLarge);
             }
             if (millis < 0) {
-                throw new IllegalArgumentException(
-                        "@Critical " + key + " must be >= 0");
+                throw new IllegalArgumentException("@Critical " + key + " must be >= 0");
             }
-            if (key.equals("queue_timeout_ms")) queueMillis = millis;
-            else channelMillis = millis;
+            switch (key) {
+                case "queue_timeout_ms" -> queue = millis;
+                case "channel_wait_timeout_ms" -> channel = millis;
+                case "execution_timeout_ms" -> execution = millis;
+                case "total_timeout_ms" -> total = millis;
+                default -> throw new AssertionError(key);
+            }
         }
-        if (queueMillis == null && channelMillis == null) {
-            throw new IllegalArgumentException(
-                    "@Critical requires queue_timeout_ms or channel_wait_timeout_ms");
+        if (seen.isEmpty()) {
+            throw new IllegalArgumentException("@Critical requires at least one timeout policy");
         }
-        if (channelMillis != null && !suspensionAllowed) {
+        if (!suspensionAllowed && (channel != null || execution != null || total != null)) {
             throw new IllegalArgumentException(
-                    "@Critical channel_wait_timeout_ms requires a suspends/async critical callable");
+                    "@Critical channel/execution/total timeouts require suspends/async "
+                            + "critical callable; synchronous CPU work cannot be safely preempted");
         }
         return new CriticalAnnotationPolicy(
-                queueMillis == null ? null : Duration.ofMillis(queueMillis),
-                channelMillis == null ? null : Duration.ofMillis(channelMillis));
+                millis(queue), millis(channel), millis(execution), millis(total));
+    }
+
+    private static Duration millis(Long value) {
+        return value == null ? null : Duration.ofMillis(value);
     }
 }
