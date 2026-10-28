@@ -194,4 +194,41 @@ final class TaskFutureAdaptersTest {
             }
         }
     }
+
+    @Test
+    void adapterWaitsForSourceCancellationRevocationBeforeRetirement()
+            throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        OresFuture<Integer> source = new OresFuture<>(() -> {
+            entered.countDown();
+            try {
+                if (!release.await(3, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("adapter revocation test timeout");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+        try (OresScheduler scheduler = new OresScheduler(1);
+                var pool = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var cancellation = pool.submit(() -> source.cancel(false));
+            TaskHandle<Integer> adapter;
+            try {
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                adapter = TaskFutureAdapters.fromFuture(scheduler, source);
+                assertFalse(adapter.getDone().isDone(),
+                        "dependent Task must await producer's cancellation revoker");
+                assertEquals(1, source.pendingRuntimeWaiterCount());
+            } finally {
+                release.countDown();
+            }
+            assertTrue(cancellation.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    adapter.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+        }
+    }
+
 }
