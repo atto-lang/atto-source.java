@@ -112,7 +112,7 @@ public final class ScalarSourceEffectFactsV1 {
                     || fn.structural() || fn.nonLexical() || !fn.effects().isEmpty()
                     || !hasAdmittedReturnType(fn.returnType())) {
                 throw new IllegalArgumentException(
-                        "scalar effect proof does not admit generic/parametric/annotated callables");
+                        "scalar effect proof does not admit unsupported callable kind, signature, metadata or result type");
             }
             String key = ROOT + fn.name() + "/0";
             if (symbols.putIfAbsent(key, fn) != null) {
