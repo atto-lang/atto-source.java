@@ -70,6 +70,19 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           echo "SOURCE_COMMIT=$GITHUB_SHA"
           echo "SOURCE_TREE=$APPROVED_TREE"
+      - name: Verify Node.js 22 for private CI admission regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          test "$(node -p 'process.versions.node.split(".")[0]')" = '22'
+      - name: Execute exact-main source-free admission and mutation regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f tests/private-exact-main-admission.test.mjs
+          test ! -L tests/private-exact-main-admission.test.mjs
+          node --test tests/private-exact-main-admission.test.mjs
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           distribution: graalvm
