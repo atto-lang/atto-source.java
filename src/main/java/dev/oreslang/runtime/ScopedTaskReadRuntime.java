@@ -127,8 +127,7 @@ public final class ScopedTaskReadRuntime {
                 allocation.domain(),
                 allocationId,
                 generation);
-        register(key);
-        return new ReadLease(key);
+        return register(key);
     }
 
     /**
@@ -165,6 +164,8 @@ public final class ScopedTaskReadRuntime {
         Objects.requireNonNull(program, "checked Program");
         Objects.requireNonNull(allocation, "allocation");
         AllocationKey key = key(program, allocation);
+        // Prepare the receipt before publishing exclusive ownership.
+        WriteLease lease = new WriteLease(key);
         ACCESS.compute(key, (ignored, current) -> {
             if (current != null) {
                 if (current == WRITE_HELD) {
@@ -184,12 +185,12 @@ public final class ScopedTaskReadRuntime {
             }
             return WRITE_HELD;
         });
-        return new WriteLease(key);
+        return lease;
     }
 
     /**
      * Check-only diagnostic helper. Callers that will actually mutate storage
-     * must use {@link #acquireWrite(ScopedTaskReadAuthority.AllocationIdentity)}
+     * must use {@link #acquireWrite(Ast.Program, ScopedTaskReadAuthority.AllocationIdentity)}
      * so reader admission and WRITE acquisition are linearized.
      */
     public static void requireWritable(
@@ -223,20 +224,25 @@ public final class ScopedTaskReadRuntime {
     }
 
     static boolean writeHeldForTesting(
+            Ast.Program program,
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
-        return Integer.valueOf(WRITE_HELD).equals(ACCESS.get(key(allocation)));
+        return Integer.valueOf(WRITE_HELD).equals(ACCESS.get(key(program, allocation)));
     }
 
 
     private static AllocationKey key(
+            Ast.Program program,
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
         return new AllocationKey(
+                program,
                 allocation.domain(),
                 allocation.allocationId(),
                 allocation.generation());
     }
 
     private static ReadLease register(AllocationKey key) {
+        // No allocation may fail after the READ count has been published.
+        ReadLease lease = new ReadLease(key);
         Integer readers = ACCESS.compute(key, (ignored, current) -> {
             if (current != null && current == WRITE_HELD) {
                 throw new IllegalStateException(
@@ -261,7 +267,7 @@ public final class ScopedTaskReadRuntime {
             throw new IllegalStateException(
                     "scoped Task READ registration failed");
         }
-        return new ReadLease(key);
+        return lease;
     }
 
     public static final class ReadLease implements AutoCloseable {
