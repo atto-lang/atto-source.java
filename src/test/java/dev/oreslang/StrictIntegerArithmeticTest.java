@@ -48,6 +48,22 @@ final class StrictIntegerArithmeticTest {
     }
 
     @Test
+    void checkedIntToFloatDoesNotMistakeSaturatingLongCastForExactness() {
+        assertEquals(0.0d, StrictIntegerArithmetic.toFloatExact(0));
+        assertEquals(42.0d, StrictIntegerArithmetic.toFloatExact(42));
+        assertEquals((double) Long.MIN_VALUE,
+                StrictIntegerArithmetic.toFloatExact(Long.MIN_VALUE));
+        assertEquals(9007199254740992.0d,
+                StrictIntegerArithmetic.toFloatExact(9007199254740992L));
+        assertThrows(ArithmeticException.class,
+                () -> StrictIntegerArithmetic.toFloatExact(9007199254740993L));
+        assertThrows(ArithmeticException.class,
+                () -> StrictIntegerArithmetic.toFloatExact(Long.MAX_VALUE));
+        assertThrows(ArithmeticException.class,
+                () -> StrictIntegerArithmetic.toFloatExact(Long.MIN_VALUE + 1));
+    }
+
+    @Test
     void randomizedRemainderAndModMatchIndependentBigIntegerOracle() {
         Random random = new Random(0x0A51);
         for (int i = 0; i < 10_000; i++) {
@@ -124,6 +140,33 @@ final class StrictIntegerArithmeticTest {
             assertThrows(IllegalArgumentException.class,
                     () -> LinkedProgramRunner.validate(entry), invalidCall);
         }
+    }
+
+    @Test
+    void guestIntToFloatExactIsStaticallyTypedAndChecksPrecision() throws Exception {
+        Path entry = temp.resolve("to-float.ores");
+        Files.writeString(entry, """
+                pub routine main(): void {
+                  val float exactly = Integer.toFloatExact(42);
+                  val float min = Integer.toFloatExact(-9223372036854775808);
+                  stdio.println(exactly);
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
+        Path invalid = temp.resolve("to-float-lossy.ores");
+        Files.writeString(invalid, """
+                pub routine main(): void {
+                  val float wrong = Integer.toFloatExact(9007199254740993);
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(invalid),
+                "lossy conversion is a checked runtime error, not static literal narrowing");
+        assertThrows(org.graalvm.polyglot.PolyglotException.class, () ->
+                LinkedProgramRunner.run(invalid, IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
     }
 
     @Test
