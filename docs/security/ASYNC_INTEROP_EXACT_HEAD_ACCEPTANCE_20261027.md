@@ -228,3 +228,37 @@ network access still require external administrative verification.
 Only the v2-label manual source-free canary may be considered once
 those gates are met. Its exact bytes have been synchronized to the
 Java draft PR; keep both PRs draft until authorized independent review.
+
+## 2026-10-27: exact 42-method identity gate
+
+The focused JUnit receipt verifier previously permitted any 42 distinct non-skipped
+testcase names under the four expected classnames. Such a count-only report
+was insufficient to show that the **intended** regression methods actually ran.
+
+A frozen, reviewed `EXPECTED_CASES` registry now names every Java `@Test`
+method (10 + 11 + 14 + 7 = **42**), identified from these actual source classes:
+
+- `dev.oreslang.runtime.OresFutureObserverTest` — 10 exact names
+- `dev.oreslang.runtime.TaskFutureAdaptersTest` — 11 exact names
+- `dev.oreslang.runtime.OneShotObservableTest` — 14 exact names
+- `dev.oreslang.FutureFromInlineTaskLanguageTest` — 7 exact names
+
+Reports with fabricated, renamed, missing or substituted methods fail even
+when all per-suite counters and the total remain correct. If a Java test is
+renamed or added, update the registry and review the change **before**
+claiming exact-head JVM proof. The stored exact method names correspond to
+the four current Java test source files; no `@DisplayName`,
+`@RepeatedTest`, or parameterized tests were present at inspection.
+
+Local Python 3.13 test execution used the corrected discovery command;
+**18/18 source-free verifier tests passed** (including three new adversarial
+method-name tests), and the exact Git blob identities of the two committed
+files match those locally executed:
+
+- `tools/verify_async_interop_junit.py` — `332020e57465a4eb2b126d30d80db3e5c6d91e93`
+- `tests/test_verify_async_interop_junit.py` — `3d19135ee491f9bb9f947e690f4384256a4bf67f`
+
+This is a verifier-unit-test result **only**. It does not authenticate a
+compromised test toolchain, prove a real source-org runner executed, or
+establish Java/GraalVM JUnit, guest-language, Native AOT, or five-backend
+conformance passes.
