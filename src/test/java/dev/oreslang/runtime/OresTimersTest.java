@@ -193,9 +193,9 @@ final class OresTimersTest {
             });
             assertTrue(observed.await(5, TimeUnit.SECONDS));
             assertNull(callbackFailure.get(), "inline callback saw stale interval state");
-            assertEquals(1L, first.get(5, TimeUnit.SECONDS));
+            assertEquals(1L, first.get(5, TimeUnit.SECONDS).longValue());
             assertNotNull(second.get(), "reentrant next never armed");
-            assertEquals(2L, second.get().get(5, TimeUnit.SECONDS));
+            assertEquals(2L, second.get().get(5, TimeUnit.SECONDS).longValue());
             assertEquals(2L, interval.delivered());
         }
     }
