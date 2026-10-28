@@ -161,6 +161,30 @@ final class SourceTimerLanguageTest {
     }
 
     @Test
+    void nonPublicRootMainRetainsImplicitSchedulerAwait() throws Exception {
+        assertTrue(run("""
+                fnc main(): void {
+                    await time.after(0ms);
+                    stdio.println(45);
+                    return;
+                }
+                """).contains("45"));
+    }
+
+    @Test
+    void privateModuleFunctionNamedMainIsNotAnImplicitRootEntrypoint() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    define module helper
+                      fnc main(): void {
+                        await time.after(0ms);
+                        return;
+                      }
+                    end
+                    """));
+    }
+
+    @Test
     void actorFncAwaitKeepsExistingMailboxContinuation() throws Exception {
         // Unlike an ordinary synchronous helper, an actor fnc is already
         // scheduler-owned and its Future await must not create a nested Task.
