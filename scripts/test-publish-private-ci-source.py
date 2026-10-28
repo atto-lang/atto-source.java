@@ -54,13 +54,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.addCleanup(self.source_tree_guard.stop)
 
     def incident_api(self, states=None, repository_id=None, issue_ids=None):
-        states = states or {
-            22: ("closed", "completed"),
-            77: ("closed", "completed"),
-            127: ("closed", "completed"),
-            171: ("closed", "completed"),
-            172: ("closed", "completed"),
-        }
+        if states is None:
+            states = {
+                number: ("closed", "completed")
+                for number in pub.BLOCKING_INCIDENTS
+            }
         repository_id = (
             pub.BLOCKING_INCIDENT_REPOSITORY_ID
             if repository_id is None else repository_id
@@ -105,6 +103,24 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_blocking_p0_incidents_accept_only_completed_closure(self):
         with patch.object(pub, "gh_api", side_effect=self.incident_api()):
             ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_every_blocking_incident_rejects_reopening_and_identity_drift(self):
+        for number in pub.BLOCKING_INCIDENTS:
+            with self.subTest(number=number, case="reopened"):
+                states = {
+                    incident: ("closed", "completed")
+                    for incident in pub.BLOCKING_INCIDENTS
+                }
+                states[number] = ("open", None)
+                with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+                    with self.assertRaisesRegex(pub.Denied, f"#{number} remains unresolved"):
+                        ORIGINAL_REQUIRE_RESOLVED()
+            with self.subTest(number=number, case="identity drift"):
+                ids = dict(pub.BLOCKING_INCIDENT_IDS)
+                ids[number] += 1
+                with patch.object(pub, "gh_api", side_effect=self.incident_api(issue_ids=ids)):
+                    with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                        ORIGINAL_REQUIRE_RESOLVED()
 
     def test_blocking_p0_incidents_reject_open_issue(self):
         states = {
@@ -1000,7 +1016,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
                     [("hello.ores", data, "100644"),
                      ("untracked.secret", b"secret", "100644")], A)
-            with self.assertRaisesRegex(pub.Denied, "differs"):
+            with self.assertRaisesRegex(pub.Denied, "source path set is missing or invalid"):
                 ORIGINAL_VERIFY_EXACT_SOURCE_TREE([], A)
         self.assertTrue(seen)
 
@@ -1154,8 +1170,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             (["trailing "], "cross-platform"),
             (["ads:stream"], "cross-platform"),
             (["cafe\u0301.ores"], "cross-platform"),
-            (["\\ud800.ores"], "valid UTF-8"),
-            (["\\ufdd0.ores"], "Unicode noncharacter"),
+            ([chr(0xD800) + ".ores"], "valid UTF-8"),
+            ([chr(0xFDD0) + ".ores"], "Unicode noncharacter"),
             (["a" * 256], "component exceeds"),
             (["/".join(["b" * 250] * 17)], "cross-platform"),
             (["Case.ores", "case.ores"], "case-insensitively"),

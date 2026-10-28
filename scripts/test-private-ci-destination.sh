@@ -49,7 +49,8 @@ for quarantined_slug in \
   SCINTILLA-RUN-TEST/GLEAM-RUNNER-CONFORMANCE \
   ORES-DUMMY-ORG-ORESLANG-STACK/ORES-DUMMY-ORG-ORESLANG-STACK-INFRA \
   AGENT-PONTIFEX-TEST/AGENT-PONTIFEX-E2E-TESTS \
-  LED-DYNAMO/LEDDY-E2E
+  LED-DYNAMO/LEDDY-E2E \
+  CLAIMGRAPH-TEST/CLAIMGRAPH-E2E
 do
   if "$script_dir/check-private-ci-destination.sh" "$quarantined_slug" > "$work/out" 2>&1; then
     echo 'Unsafe quarantined slug approval' >&2
@@ -75,7 +76,7 @@ printf 'trusted/ci 246810\r\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
-for quarantined_id in 1323575966 1323598260 1412142815 1370782550 1324139596; do
+for quarantined_id in 1323575966 1323598260 1412142815 1370782550 1324139596 1350751074; do
   printf 'trusted/ci %s\n' "$quarantined_id" > "$policy"
   export MOCK_REPOSITORY_ID="$quarantined_id"
   expect_fail trusted/ci
