@@ -1,6 +1,9 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.OresDuration;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -36,6 +39,27 @@ final class SourceTimerLanguageTest {
                 """;
         assertFalse(source.contains("task {"));
         assertTrue(run(source).contains("42"));
+    }
+
+    @Test
+    void lexerParserPreserveExactNanosecondsWithoutFloatRounding() {
+        var program = Parser.parse("""
+                pub fnc value(): Duration {
+                    return 1_500ms;
+                }
+                """);
+        Ast.FunctionDecl function = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("value"))
+                .findFirst().orElseThrow();
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, function.body().getFirst());
+        Ast.LiteralExpr literal = assertInstanceOf(
+                Ast.LiteralExpr.class, returned.value());
+        OresDuration duration = assertInstanceOf(OresDuration.class, literal.value());
+        assertEquals(1_500_000_000L, duration.nanos());
     }
 
     @Test
