@@ -81,6 +81,13 @@ zero executed steps cannot establish these tests as passed.
 - Job 123114526128 has actual checkout, JDK21 setup, javac + java smoke,
   and Maven test steps. Logs: 9 smoke checks; 6 JUnit tests passed,
   0 failures, 0 errors, BUILD SUCCESS.
+- The follow-up matrix https://github.com/honeypot-r-us-test/hnpt-lib-core/actions/runs/40773114902
+  ran actual steps independently on Temurin JDK21 (job 123115257939)
+  and Temurin JDK25.0.5 (job 123115257699). Both report 9 smoke checks
+  and 6/6 JUnit tests passed with BUILD SUCCESS.
+- Source integration's foreign-runtime target rejection is covered by
+  an authored actor-dispatch integration test, but it has NOT executed
+  because the complete ActorRuntime dependency graph is not mirrored.
 
 The mirror proves only the exact standalone ledger class and unit tests,
 NOT ActorRuntime integration, Graal Native Image, actual guest .ores
