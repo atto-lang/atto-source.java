@@ -10,7 +10,9 @@ permissions: {}
 jobs:
   source-free-runner-canary:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, x64, oreslang-isolated-canary-2172-v2]
+    runs-on:
+      group: oreslang-isolated-canary-2172-v2
+      labels: [self-hosted, linux, x64, oreslang-isolated-canary-2172-v2]
     timeout-minutes: 5
     steps:
       - name: Verify isolated source-free runner state
@@ -22,6 +24,14 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/main"
           test "$RUNNER_OS" = "Linux"
           test "$RUNNER_ARCH" = "X64"
+          test "$RUNNER_ENVIRONMENT" = "self-hosted"
+          case "$RUNNER_NAME" in
+            oreslang-isolated-canary-2172-v2-*) ;;
+            *)
+              echo "::error::unexpected runner identity: $RUNNER_NAME"
+              exit 1
+              ;;
+          esac
           # Inspect actual runner-inherited environment (do not override it).
           for secret_var in GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GIT_ASKPASS \
               SSH_ASKPASS SSH_AUTH_SOCK AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
