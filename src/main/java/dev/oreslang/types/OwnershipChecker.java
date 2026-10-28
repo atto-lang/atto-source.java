@@ -1104,19 +1104,21 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    // A projected field/index is not an independent tracked owner.
+                    // The current checker does not record partial moves for
+                    // class/record/struct slots or reinstate them on assignment.
+                    // Returning the existing field value while leaving its
+                    // original path live would manufacture two owners (or two
+                    // copies of a transferable handle). Fail closed until
+                    // per-place move state and runtime extraction/replacement
+                    // are proved together; moving a named whole owner remains legal.
+                    if (argument instanceof Ast.MemberExpr) {
+                        throw error("rt take cannot transfer a field projection without "
+                                + "path-aware partial-move tracking; take the named owner or "
+                                + "replace the field through a checked operation");
+                    }
                     if (argument instanceof Ast.IndexExpr) {
                         throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
-                    }
-                    if (argument instanceof Ast.MemberExpr member) {
-                        Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
-                        if (ownerClass != null) {
-                            Ast.FieldDecl slot = findField(
-                                    ownerClass, member.member(), new LinkedHashSet<>());
-                            if (slot != null && slot.bindingKind() != Ast.BindingKind.LET) {
-                                throw error("cannot rt take immutable/final class field '"
-                                        + ownerClass.name() + "." + member.member() + "'");
-                            }
-                        }
                     }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW

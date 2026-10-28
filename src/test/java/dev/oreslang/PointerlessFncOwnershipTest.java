@@ -123,6 +123,85 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void rtTakeFieldProjectionCannotDuplicateMoveOnlyOwner() {
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Payload as
+                  pub let int count = 7;
+                end
+                define class Holder as
+                  pub let mut Payload slot;
+                  pub constructor(Payload p) { self.slot = p; }
+                end
+                fnc unsafe(): void {
+                  let mut Holder holder = new Holder(new Payload());
+                  val Payload escaped = rt take holder.slot;
+                  stdio.println(holder.slot.count);
+                  stdio.println(escaped.count);
+                  return;
+                }
+                """)));
+        assertTrue(rejected.getMessage().contains("path-aware partial-move"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void rtTakeFieldProjectionCannotDuplicateEvenCopyableHandle() {
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Holder as
+                  pub let int slot = 7;
+                end
+                fnc unsafe(): void {
+                  let mut Holder holder = new Holder();
+                  val int stolen = rt take holder.slot;
+                  stdio.println(holder.slot + stolen);
+                  return;
+                }
+                """)));
+        assertTrue(rejected.getMessage().contains("path-aware partial-move"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void rtTakeWholeNamedOwnerRemainsPermitted() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Payload as
+                  pub let int count = 7;
+                end
+                fnc ok(): int {
+                  let Payload original = new Payload();
+                  val Payload moved = rt take original;
+                  return moved.count;
+                }
+                """)));
+    }
+
+    @Test
+    void rtCopyShareBorrowAndTakeCannotManufactureOwnedAliasFromLoan() {
+        for (String operation : new String[] {
+                "rt copy view", "rt share view", "rt take view"
+        }) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                    define class Payload as
+                      pub let int count = 7;
+                    end
+                    fnc bad(): void {
+                      let Payload original = new Payload();
+                      val borrow Payload view = rt borrow original;
+                      val alias = %s;
+                      stdio.println(alias.count);
+                      return;
+                    }
+                    """.formatted(operation))));
+            assertTrue(rejected.getMessage().contains("rt ")
+                            || rejected.getMessage().contains("borrow"),
+                    rejected.getMessage());
+        }
+    }
+
+    @Test
     void groupedBorrowIsNotATupleAndExplicitSingletonUnpacks() throws Exception {
         for (String binding : new String[] {
                 "val borrowed = (rt borrow values);",
@@ -198,14 +277,14 @@ final class PointerlessFncOwnershipTest {
                 fnc update(borrow mut Array<int> values): void { values.add(7); return; }
                 fnc ok(): void {
                   val Array<int> values = new Array<int>();
-                  update(rt borrow mut values);
+                  update(rt mut borrow values);
                   return;
                 }
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
                   val Array<int> values = new Array<int>();
-                  val first = rt borrow mut values;
+                  val first = rt mut borrow values;
                   val second = rt borrow values;
                   return;
                 }
