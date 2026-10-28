@@ -182,4 +182,40 @@ public class OresFutureObserverTest {
         assertFalse(source.isDone());
         source.completeFromRuntime(42);
     }
+
+    @Test
+    void lateObserverWaitsForAuthenticatedCancellationRevocation() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        OresFuture<Integer> producer = new OresFuture<>(() -> {
+            entered.countDown();
+            try {
+                if (!release.await(3, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("revocation test release timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+        try (ExecutorService pool = Executors.newSingleThreadExecutor()) {
+            var cancellation = pool.submit(() -> producer.cancel(false));
+            OresFuture<Integer> observer;
+            try {
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertTrue(producer.isCancelled(),
+                        "cancellation CAS is visible before physical revocation");
+                observer = OresFuture.observe(producer);
+                assertFalse(observer.isDone(),
+                        "late observer must not publish before producer revocation");
+                assertEquals(1, producer.pendingRuntimeWaiterCount());
+            } finally {
+                release.countDown();
+            }
+            assertTrue(cancellation.get(3, TimeUnit.SECONDS));
+            assertTrue(observer.isCancelled());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
 }
