@@ -7612,9 +7612,12 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
-        /** Second accounting record for actor-owned continuation admission/lifetime. */
+        /**
+         * Separate actor-owned receipts: the currently RUNNING callback may
+         * coexist with a fully reserved continuation mailbox.
+         */
         private final ActorContinuationLedger continuationLedger =
-                new ActorContinuationLedger(INTERNAL_CONTINUATION_SLOTS);
+                new ActorContinuationLedger(INTERNAL_CONTINUATION_SLOTS + 1);
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -8715,6 +8718,9 @@ public final class ActorRuntime implements AutoCloseable {
             })) {
                 // Safe only after all source tasks and physical receipts retire.
             }
+            // Actor finalization is gated on physical retirement above; no
+            // stale producer may mint fresh cleanup receipts beyond this point.
+            continuationLedger.sealAll();
         }
 
         private void recordFinalizationFailure(Throwable failure) {
