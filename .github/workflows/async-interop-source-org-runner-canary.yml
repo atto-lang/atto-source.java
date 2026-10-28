@@ -33,12 +33,12 @@ jobs:
               ;;
           esac
           # Inspect actual runner-inherited environment (do not override it).
-          # Git accepts ephemeral credential and HTTP auth overrides via
-          # GIT_CONFIG_COUNT/KEY_*/VALUE_*, GIT_CONFIG_PARAMETERS, etc.
-          # These can escape a git config --global credential check. Reject
-          # every GIT_CONFIG_* variable by NAME, even with an empty value.
-          for config_var in "${!GIT_CONFIG_@}"; do
-            echo "::error::unexpected Git configuration environment variable: $config_var"
+          # Reject ALL inherited GIT_* variables. Git can use transient
+          # GIT_CONFIG_* injection, GIT_SSH_COMMAND, GIT_SSH, GIT_PROXY_COMMAND,
+          # GIT_SSL_NO_VERIFY, and other process-level overrides outside the
+          # global/system config files. Even empty values fail closed.
+          for git_var in "${!GIT_@}"; do
+            echo "::error::unexpected inherited Git environment variable: $git_var"
             exit 1
           done
           for secret_var in GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GIT_ASKPASS \
@@ -100,12 +100,12 @@ jobs:
           # The workflow intentionally has no checkout and no access to
           # private-source files; source validation uses a separate job.
           # Inspect actual runner-inherited environment (do not override it).
-          # Git accepts ephemeral credential and HTTP auth overrides via
-          # GIT_CONFIG_COUNT/KEY_*/VALUE_*, GIT_CONFIG_PARAMETERS, etc.
-          # These can escape a git config --global credential check. Reject
-          # every GIT_CONFIG_* variable by NAME, even with an empty value.
-          for config_var in "${!GIT_CONFIG_@}"; do
-            echo "::error::unexpected Git configuration environment variable: $config_var"
+          # Reject ALL inherited GIT_* variables. Git can use transient
+          # GIT_CONFIG_* injection, GIT_SSH_COMMAND, GIT_SSH, GIT_PROXY_COMMAND,
+          # GIT_SSL_NO_VERIFY, and other process-level overrides outside the
+          # global/system config files. Even empty values fail closed.
+          for git_var in "${!GIT_@}"; do
+            echo "::error::unexpected inherited Git environment variable: $git_var"
             exit 1
           done
           for secret_var in GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GIT_ASKPASS \
