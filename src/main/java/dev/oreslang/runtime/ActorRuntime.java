@@ -4438,11 +4438,16 @@ public final class ActorRuntime implements AutoCloseable {
     private void requireActorLifecycleAuthority(
             ActorRef<?> target,
             String operation) {
-        ActorCell<?> caller = currentActor.get();
-        if (caller == null) return;
-
+        // Logical UUID and generation are diagnostic metadata, never an
+        // authorization credential. Reject same-ID/same-generation lookalikes
+        // even for a trusted host, before evaluating parent/child authority.
         ActorCell<?> targetCell = actors.get(target.id());
-        if (targetCell == null) return;
+        if (targetCell != null && targetCell.ref != target) {
+            throw new ActorInvalidReferenceException(
+                    "stale or forged ActorRef does not match the live incarnation");
+        }
+        ActorCell<?> caller = currentActor.get();
+        if (caller == null || targetCell == null) return;
         if (caller == targetCell) return;
 
         for (ActorCell<?> ancestor = targetCell.parent;
