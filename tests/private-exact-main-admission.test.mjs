@@ -49,20 +49,20 @@ function verify(w, c) {
   ];
   const jobIf = v => {
     const fields = [...v.matchAll(/^    if: (.+)$/gm)];
-    assert.equal(fields.length, 1, 'exactly one active job condition required');
+    assert.equal(fields.length, 1, 'exactly one executable if condition');
     return fields[0][1];
   };
   assert.equal(jobIf(deny), '$' + '{{ ' + denyClauses.join(' || ') + ' }}');
   assert.equal(jobIf(allow), '$' + '{{ ' + allowClauses.join(' && ') + ' }}');
-  const runner = v => {
+  const jobRunner = v => {
     const fields = [...v.matchAll(/^    runs-on: (.+)$/gm)];
-    assert.equal(fields.length, 1, 'exactly one runner binding required');
+    assert.equal(fields.length, 1, 'exactly one runner binding');
     return fields[0][1];
   };
-  assert.equal(runner(deny), 'ubuntu-24.04');
+  assert.equal(jobRunner(deny), 'ubuntu-24.04');
   assert.doesNotMatch(deny, /actions\/checkout@/);
   assert.match(deny, /^\s+exit 1$/m);
-  assert.equal(runner(allow), '[self-hosted, linux, x64, oreslang-private-ephemeral]');
+  assert.equal(jobRunner(allow), '[self-hosted, linux, x64, oreslang-private-ephemeral]');
   const guard = allow.indexOf('Verify exact-main admission before source checkout');
   const checkout = allow.indexOf('actions/checkout@');
   const source = allow.indexOf('Verify source identity and immutable Git tree');
@@ -111,17 +111,7 @@ test('unsafe admission mutations rejected', () => {
     ['test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_TREE"', 'echo unchecked'],
     ['-DskipTests=false -Dmaven.test.skip=false clean verify', '-DskipTests=true package'],
     ["vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}",
-     "vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}\n    if: " + '
-  ]) {
-    assert.ok(yaml.includes(from), 'missing mutation anchor');
-    assert.throws(() => verify(yaml.replace(from, to), owners), undefined, 'unsafe mutation accepted');
-  }
-});
-test('CODEOWNERS tampering rejected', () => {
-  assert.throws(() => verify(yaml, owners.replace(
-    '/tests/private-exact-main-admission.test.mjs @ORESoftware', '')));
-});
- + '{{ true }}'],
+     "vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}\n    if: true"],
     ['    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]',
      '    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]\n    runs-on: ubuntu-24.04'],
   ]) {
