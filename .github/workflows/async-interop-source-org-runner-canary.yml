@@ -57,6 +57,9 @@ jobs:
           test -n "${GITHUB_WORKSPACE:-}"
           test -d "$GITHUB_WORKSPACE"
           test -r "$GITHUB_WORKSPACE"
+          # Reject a workspace symlink even when it resolves to an empty
+          # directory. A clean-looking redirected workspace is not isolation.
+          test ! -L "$GITHUB_WORKSPACE"
           # A failed find must fail the step, not be mistaken for an empty
           # workspace due to a pipeline's exit status.
           workspace_entry="$(find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
@@ -67,7 +70,9 @@ jobs:
           for credential_file in "$HOME/.git-credentials" "$HOME/.netrc" \
               "$HOME/.config/git/credentials" \
               "${XDG_CONFIG_HOME:-$HOME/.config}/git/credentials"; do
-            if test -e "$credential_file"; then
+            # -e alone ignores dangling symlinks; reject both existing
+            # credentials and symlink entries before admitting this runner.
+            if test -e "$credential_file" || test -L "$credential_file"; then
               echo "::error::persistent credential file present: $credential_file"
               exit 1
             fi
