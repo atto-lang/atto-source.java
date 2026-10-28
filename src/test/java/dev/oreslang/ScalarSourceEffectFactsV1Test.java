@@ -86,6 +86,46 @@ final class ScalarSourceEffectFactsV1Test {
     }
 
     @Test
+    void namespaceMustNotBeMistakenForUnqualifiedRootCallIdentity() {
+        assertThrows(IllegalArgumentException.class, () -> analyze("""
+                namespace workload;
+                fnc leaf(): int { return 42; }
+                fnc caller(): int { return leaf(); }
+                """));
+    }
+
+    @Test
+    void procedureCallableKindMustNotMasqueradeAsPureFunctionWitness() {
+        assertThrows(IllegalArgumentException.class, () -> analyze("""
+                routine worker(): void { return; }
+                fnc answer(): int { return 42; }
+                """));
+    }
+
+    @Test
+    void nonRootModuleMustNotContributeUnqualifiedCallIdentities() {
+        assertThrows(IllegalArgumentException.class, () -> analyze("""
+                define module handlers
+                  fnc leaf(): int { return 42; }
+                end
+                """));
+    }
+
+    @Test
+    void unprovenReturnRepresentationsAreRejectedBySourceEffectAdmission() {
+        // A scalar literal does not establish the machine representation of
+        // every return type, including floating-point and dynamic boxing.
+        var rejected = assertThrows(IllegalArgumentException.class, () -> analyze("""
+                fnc floating(): float { return 3.5; }
+                """));
+        assertTrue(rejected.getMessage().contains("unsupported callable"),
+                "Must fail the source effect admission, not accidentally the parser");
+        assertThrows(IllegalArgumentException.class, () -> analyze("""
+                fnc boxed(): any { return 42; }
+                """));
+    }
+
+    @Test
     void syntacticCallChainsDoNotProveTerminationOrHardRealtime() {
         // Effect closure is independent of termination: this zero-direct-effect
         // recursive program would still fail hard-RT recursion/WCET checking.

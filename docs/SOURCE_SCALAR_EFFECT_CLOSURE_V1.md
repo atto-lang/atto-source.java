@@ -11,8 +11,11 @@ constructing a compiler-owned `EffectContracts.Graph`. No caller may supply
 claimed-pure nodes, direct-call edges, arbitrary imported symbol tables,
 untrusted proof JSON or runtime reflection.
 
-The source slice is intentionally small: one root module, no imports, only
-zero-argument nongeneric named functions, and direct zero-argument calls.
+The source slice is intentionally small: one **unqualified, unannotated**
+file-root module, no namespace/imports/module contracts, only zero-argument
+nongeneric `fnc` declarations (not actor functions or `routine` declarations),
+and direct zero-argument calls. The file-root boundary is verified before and
+after type checking so normalization cannot erase its admission constraints.
 Integer/Boolean scalar literal returns are admitted with empty direct
 effects; string literals conservatively count as allocation. Optional block
 statements are traversed, and async/generator/suspending declarations,
@@ -22,7 +25,7 @@ bindings, methods, overloads, FFI, annotations and new or future AST nodes,
 yield `UNKNOWN_CALL` or refuse admission. That is deliberately restrictive
 until typed source/HIR proof of each node is implemented.
 
-The graph computes transitive effects to a finite fixed point through
+No source declarations in an unrecognized namespace, module or callable kind are eligible for a zero-effect summary. The graph computes transitive effects to a finite fixed point through
 recursion. It is not a termination proof; a recursive function with no
 observable effects can be effect-free and still be unbounded/RT-unsafe.
 
@@ -59,7 +62,7 @@ annotations.
 ## Test scope
 
 `ScalarSourceEffectFactsV1Test` exercises actual compiler-parsed positive
-function chains, source-derived allocation propagation, conservative
+function chains, namespace/module/routine negative admissions, source-derived allocation propagation, conservative
 rejection of unverified operators/local aliases, missing names and size
 limits, and a recursion example documenting the separation of effect
 closure and termination. Existing formal graph tests remain part of the

@@ -90,25 +90,29 @@ public final class ScalarSourceEffectFactsV1 {
         if (source == null || source.length() > 1_048_576) {
             throw new IllegalArgumentException("source exceeds effect-analysis budget");
         }
-        Ast.Program checked = TypeChecker.check(Parser.parse(source));
-        if (!checked.imports().isEmpty() || checked.modules().size() != 1
-                || !Parser.ROOT_MODULE.equals(checked.modules().getFirst().name())) {
-            throw new IllegalArgumentException(
-                    "scalar effect proof requires one closed root module without imports");
-        }
+        Ast.Program parsed = Parser.parse(source);
+        // Admission runs both before and after type checking: frontend
+        // normalization must not erase a namespace or module contract that
+        // changes source-level symbol identity.
+        requireClosedRoot(parsed);
+        Ast.Program checked = TypeChecker.check(parsed);
+        Ast.ModuleDecl module = requireClosedRoot(checked);
 
-        var declarations = checked.modules().getFirst().declarations();
+        var declarations = module.declarations();
         var symbols = new LinkedHashMap<String, Ast.FunctionDecl>();
         for (Ast.Decl declaration : declarations) {
             if (!(declaration instanceof Ast.FunctionDecl fn)) {
                 throw new IllegalArgumentException(
                         "scalar effect proof does not admit nominal declarations or actor code");
             }
-            if (!fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()
+            if (fn.kind() != Ast.CallableKind.FNC
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || !fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()
                     || !fn.genericSpecs().isEmpty() || !fn.annotations().isEmpty()
-                    || fn.structural() || fn.nonLexical() || !fn.effects().isEmpty()) {
+                    || fn.structural() || fn.nonLexical() || !fn.effects().isEmpty()
+                    || !hasAdmittedReturnType(fn.returnType())) {
                 throw new IllegalArgumentException(
-                        "scalar effect proof does not admit generic/parametric/annotated callables");
+                        "scalar effect proof does not admit unsupported callable kind, signature, metadata or result type");
             }
             String key = ROOT + fn.name() + "/0";
             if (symbols.putIfAbsent(key, fn) != null) {
@@ -127,16 +131,40 @@ public final class ScalarSourceEffectFactsV1 {
             if (fn.async() || fn.suspends() || fn.generator()) {
                 scanner.direct.add(EffectContracts.Effect.SUSPEND);
             }
-            if (fn.actorKind() != Ast.ActorKind.NONE) {
-                scanner.direct.add(EffectContracts.Effect.ACTOR);
-                scanner.direct.add(EffectContracts.Effect.SCHEDULER);
-            }
             if (fn.trapped()) scanner.direct.add(EffectContracts.Effect.UNKNOWN_CALL);
             scanner.statements(fn.body(), 0);
             graph.add(EffectContracts.Callable.inferred(
                     entry.getKey(), scanner.direct, scanner.calls));
         }
         return new Report(graph.infer(), sha256(source));
+    }
+
+    /** This v1 subset cannot prove boxing, union tags or dynamic returns. */
+    private static boolean hasAdmittedReturnType(Ast.TypeRef type) {
+        if (type == null || !type.arguments().isEmpty() || type.inferArguments()) {
+            return false;
+        }
+        return switch (type.name()) {
+            case "int", "bool", "void", "string" -> true;
+            default -> false;
+        };
+    }
+
+    private static Ast.ModuleDecl requireClosedRoot(Ast.Program program) {
+        // This checker knows only the unqualified unannotated file-root
+        // namespace, not imported or annotated module lookup.
+        if (program.namespace() != null || !program.imports().isEmpty()
+                || program.modules().size() != 1) {
+            throw new IllegalArgumentException(
+                    "scalar effect proof requires one unqualified root module without imports");
+        }
+        Ast.ModuleDecl module = program.modules().getFirst();
+        if (!Parser.ROOT_MODULE.equals(module.name())
+                || !module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "scalar effect proof forbids module annotations, contracts and non-root modules");
+        }
+        return module;
     }
 
     private static final class Scanner {
