@@ -17,6 +17,29 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(30)
 final class ActorNativeStorageStandaloneTest {
     @Test
+    void liveArenaCannotBePrematurelyClosedByFacadeHolder() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        ActorNativeArena a = arena(256 * 1024, charged, owner);
+        var region = a.region(32);
+        region.writeLong(0, 731L);
+        long before = charged.get();
+        // Even with no outstanding read-only loans, allocation ownership is
+        // not proof that the actor has physically left its execution carrier.
+        assertThrows(IllegalStateException.class, a::close);
+        assertFalse(a.closed());
+        assertEquals(before, charged.get());
+        assertEquals(731L, region.readLong(0));
+        owner.set(false);
+        assertThrows(IllegalStateException.class, a::close);
+        owner.set(true);
+        a.retire();
+        a.close();
+        assertEquals(0, charged.get());
+        assertThrows(IllegalStateException.class, () -> region.readLong(0));
+    }
+
+    @Test
     void retirementSealsAdmissionAndLastLoanNotifiesOutsideArenaMonitor() throws Exception {
         AtomicBoolean open = new AtomicBoolean(true);
         AtomicLong callbacks = new AtomicLong();
@@ -61,6 +84,7 @@ final class ActorNativeStorageStandaloneTest {
         a.region(64);
         var fields = a.fields(List.of("count"), new Object());
         fields.put("count", 4L);
+        a.retire();
         assertThrows(IllegalStateException.class, a::close);
         assertTrue(a.closed(), "failed cleanup must keep guest authority revoked");
         assertThrows(IllegalStateException.class, () -> region.readByte(0));
@@ -88,6 +112,7 @@ final class ActorNativeStorageStandaloneTest {
         assertThrows(IllegalStateException.class, region::close);
         assertTrue(region.closed());
         assertEquals(32, charged.get());
+        a.retire();
         a.close();
         assertEquals(0, charged.get());
         a.close();
@@ -106,6 +131,7 @@ final class ActorNativeStorageStandaloneTest {
             };
         });
         a.fields(List.of("count"), new Object());
+        a.retire();
         assertThrows(IllegalStateException.class, a::close);
         assertTrue(a.closed());
         assertEquals(0, a.committedBytes(), "native slab is freed before refund");
@@ -140,6 +166,7 @@ final class ActorNativeStorageStandaloneTest {
         owner.set(true);
         assertEquals(17L, fields.get("count"));
         assertTrue(charged.get() > 0);
+        a.retire();
         a.close();
         assertEquals(0, charged.get());
         assertThrows(IllegalStateException.class, () -> fields.get("count"));
@@ -162,6 +189,7 @@ final class ActorNativeStorageStandaloneTest {
             }
             first.writeLong(0, 112L);
             assertEquals(112L, first.readLong(0));
+            a.retire();
         }
         assertEquals(0, charged.get());
     }
@@ -183,6 +211,7 @@ final class ActorNativeStorageStandaloneTest {
             assertEquals(0x1122334455667788L, mem.readLong(spanning));
             assertThrows(IndexOutOfBoundsException.class, () -> mem.readByte(mem.byteLength()));
             assertThrows(IllegalArgumentException.class, () -> mem.grow(1));
+            a.retire();
         }
         assertEquals(0, charged.get());
     }
@@ -201,6 +230,8 @@ final class ActorNativeStorageStandaloneTest {
             assertSame(uninitialized, rightFields.get("foreign"));
             leftRegion.writeLong(0, 314L);
             assertEquals(314L, leftRegion.readLong(0));
+            left.retire();
+            right.retire();
         }
         assertEquals(0, leftCharge.get());
         assertEquals(0, rightCharge.get());
@@ -214,6 +245,7 @@ final class ActorNativeStorageStandaloneTest {
         var region = a.region(32);
         region.writeLong(0, 94L);
         var loan = region.leaseReadOnly(0, Long.BYTES);
+        a.retire();
         assertThrows(IllegalStateException.class, a::close);
         assertFalse(a.closed());
         assertEquals(94L, loan.readLong(0));
@@ -240,6 +272,7 @@ final class ActorNativeStorageStandaloneTest {
             }
             mem.writeLong(boundary, 0x1020304050607080L);
             assertEquals(0x1020304050607080L, mem.readLong(boundary));
+            a.retire();
         }
         assertEquals(0, charged.get());
     }
@@ -265,6 +298,7 @@ final class ActorNativeStorageStandaloneTest {
             for (int index = 0; index < 16; index++) {
                 assertEquals(91, mem.readUnsignedByte(destination + index));
             }
+            a.retire();
         }
         assertEquals(0, charged.get());
     }
@@ -281,6 +315,7 @@ final class ActorNativeStorageStandaloneTest {
             assertEquals(before, charged.get());
             mem.writeByte(0, (byte) 7);
             assertEquals(7, mem.readUnsignedByte(0));
+            a.retire();
         }
         assertEquals(0, charged.get());
     }
