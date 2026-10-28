@@ -2767,8 +2767,11 @@ public final class TypeChecker {
                     yield Primitive.BOOL;
                 }
                 case "<", "<=", ">", ">=" -> {
-                    if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
-                        throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
+                    boolean sameNumeric = Types.isNumeric(left) && left.equals(right);
+                    if (!sameNumeric && !(isStringLike(left) && isStringLike(right))) {
+                        throw new IllegalArgumentException(
+                                "comparison requires the same numeric type or two strings; "
+                                + "use an explicit checked conversion");
                     }
                     yield Primitive.BOOL;
                 }
@@ -7807,7 +7810,9 @@ public final class TypeChecker {
 
     private Type numericJoin(Type left, Type right, String op) {
         Type result = Types.numericJoin(left, right);
-        if (result == Unknown.INSTANCE) throw new IllegalArgumentException("operator '" + op + "' needs numeric operands");
+        if (result == Unknown.INSTANCE) throw new IllegalArgumentException(
+                "operator '" + op + "' needs identical numeric operand types; "
+                + "use an explicit checked conversion");
         return result;
     }
 
@@ -7818,7 +7823,12 @@ public final class TypeChecker {
     private void requireEqualityComparable(Type left, Type right) {
         Type a = deref(left);
         Type b = deref(right);
-        if (Types.isNumeric(a) && Types.isNumeric(b)) return;
+        if (Types.isNumeric(a) && Types.isNumeric(b)) {
+            if (a.equals(b)) return;
+            throw new IllegalArgumentException(
+                    "numeric equality requires identical operand types; "
+                    + "use an explicit checked conversion");
+        }
         if (isStringLike(a) && isStringLike(b)) return;
         if (typesMayOverlap(a, b) || assignable(a, b) || assignable(b, a)) return;
         throw new IllegalArgumentException(
