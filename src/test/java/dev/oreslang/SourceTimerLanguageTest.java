@@ -234,6 +234,35 @@ final class SourceTimerLanguageTest {
     }
 
     @Test
+    void actorReceiveSuspendsAndResumesInsideItsMailboxTurn() throws Exception {
+        // This is guest execution, not merely parsing an actor receive hook.
+        // An actor's synchronous receive is already scheduler-owned; an
+        // asynchronous channel send must not require a nested source Task.
+        String program = """
+                define actor Worker as
+                    receive(ActorMail<String> mail): void {
+                        val Channel<int> channel = Channel.new<int>(1);
+                        val Future<void> sent = nb writech channel, 7;
+                        await sent;
+                        self.send("resumed");
+                        self.end();
+                        return;
+                    }
+                end
+                pub async routine main(): void {
+                    val worker = spawn Worker();
+                    await worker.get_ready();
+                    worker.send("go");
+                    val output = (await worker.outputs.next()).value.unwrap();
+                    stdio.stdout.write(output.value);
+                    await worker.get_done();
+                    return;
+                }
+                """;
+        assertTrue(run(program).contains("resumed"));
+    }
+
+    @Test
     void actorStartupAndOrdinaryInstanceMethodCannotAwait() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
