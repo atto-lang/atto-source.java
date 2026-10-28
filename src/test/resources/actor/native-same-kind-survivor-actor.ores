@@ -1,0 +1,51 @@
+// Java/Graal compiled-guest integration fixture (current Java actor syntax).
+// Exact source fixture: actor, with no preprocessing or template expansion.
+// This does NOT prove OS isolation, general LLVM parity, or native memory
+// reclamation timing. These require independent runtime instrumentation.
+define actor Counter as
+  let int count;
+  on_start(): void { self.count = 0; return; }
+  receive(ActorMail<String> mail): void {
+    if mail.value == "inc"; do
+      self.count = self.count + 1;
+      self.send(self.count);
+    fi
+    if mail.value == "stop"; do
+      self.end();
+    fi
+    return;
+  }
+end
+
+pub async routine main(): void {
+  // Keep A and B simultaneously alive through the first two increments.
+  val a = spawn Counter();
+  val b = spawn Counter();
+  await a.get_ready();
+  await b.get_ready();
+
+  a.send("inc");
+  b.send("inc");
+  val first_a = (await a.outputs.next()).value.unwrap();
+  val first_b = (await b.outputs.next()).value.unwrap();
+  stdio.stdout.write(first_a.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(first_b.value);
+
+  // A advances to 2 while B remains at 1.
+  a.send("inc");
+  val second_a = (await a.outputs.next()).value.unwrap();
+  stdio.stdout.write("|");
+  stdio.stdout.write(second_a.value);
+
+  // B must retain its own state after A completes its lifecycle.
+  a.send("stop");
+  await a.get_done();
+  b.send("inc");
+  val second_b = (await b.outputs.next()).value.unwrap();
+  stdio.stdout.write("|");
+  stdio.stdout.write(second_b.value);
+  b.send("stop");
+  await b.get_done();
+  return;
+}
