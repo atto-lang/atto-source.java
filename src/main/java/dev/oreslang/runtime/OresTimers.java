@@ -124,6 +124,64 @@ public final class OresTimers implements AutoCloseable {
     }
 
     /**
+     * Observe a source Future until a monotonic deadline. This host primitive
+     * does not create a child Task or take ownership of the source producer.
+     * Cancellation and timeout only detach this observer. Actor guest bindings
+     * and lifecycle integration are separate work.
+     */
+    public <T> OresFuture<T> timeoutNanos(long delayNanos, OresFuture<T> source) {
+        if (delayNanos < 0) throw new IllegalArgumentException("negative timer delay");
+        Objects.requireNonNull(source, "source");
+        final AtomicReference<OresFuture<Void>> deadline = new AtomicReference<>();
+        final AtomicReference<OresFuture.RuntimeWaiterRegistration<T>> listener =
+                new AtomicReference<>();
+        OresFuture<T> observer = new OresFuture<>(() -> {
+            OresFuture<Void> timer = deadline.getAndSet(null);
+            if (timer != null) timer.cancel(false);
+        });
+        observer.whenCompleteRuntime((value, failure) -> {
+            OresFuture.RuntimeWaiterRegistration<T> subscription = listener.getAndSet(null);
+            if (subscription != null) subscription.detach();
+            OresFuture<Void> timer = deadline.getAndSet(null);
+            if (timer != null) timer.cancel(false);
+        });
+        OresFuture.RuntimeWaiterRegistration<T> subscription =
+                source.whenCompleteRuntimeCancellable((value, failure) -> {
+                    if (source.isCancelled()) observer.cancel(false);
+                    else if (failure != null) observer.failFromRuntime(OresFuture.unwrap(failure));
+                    else observer.completeFromRuntime(value);
+                });
+        listener.set(subscription);
+        if (observer.isDone()) {
+            subscription.detach();
+            listener.compareAndSet(subscription, null);
+            return observer;
+        }
+        final OresFuture<Void> timer;
+        try {
+            timer = afterNanos(delayNanos);
+        } catch (RuntimeException | Error rejected) {
+            subscription.detach();
+            listener.compareAndSet(subscription, null);
+            if (observer.isDone()) return observer;
+            throw rejected;
+        }
+        deadline.set(timer);
+        if (observer.isDone()) timer.cancel(false);
+        timer.whenCompleteRuntime((value, failure) -> {
+            if (failure == null) {
+                observer.failFromRuntime(new java.util.concurrent.TimeoutException(
+                        "timer deadline exceeded"));
+            } else if (timer.isCancelled()) {
+                observer.cancel(false);
+            } else {
+                observer.failFromRuntime(OresFuture.unwrap(failure));
+            }
+        });
+        return observer;
+    }
+
+    /**
      * Host-runtime one-shot callback substrate. This is NOT a guest-language
      * time.set_timer builtin and cannot bypass an actor's mailbox/CONTROL lane.
      * The passed scheduler must be the actual owner of the callback's lifetime.
