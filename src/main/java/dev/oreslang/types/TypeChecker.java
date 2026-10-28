@@ -9569,7 +9569,7 @@ public final class TypeChecker {
         if (Set.of("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                 "complex64", "complex128", "complex", "string", "String",
-                "void").contains(ref.name())
+                "void", "Duration").contains(ref.name())
                 && (ref.inferArguments() || !ref.arguments().isEmpty())) {
             throw new IllegalArgumentException(
                     "non-generic built-in type '" + ref.name() + "' cannot accept type arguments");
@@ -9587,6 +9587,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Duration" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Duration does not accept type arguments");
+                }
+                yield new Named("Duration", List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
