@@ -116,8 +116,15 @@ final class SourceActorNativeStorageTest {
                         "A reaches 2 while B remains at 1, then B reaches 2 after A is done");
                 assertEquals(2, actors.nativeActorArenasCreated(),
                         "simultaneous same-kind actors must allocate distinct native arenas");
+                // The live-actor arena sum alone can be zero after deregistration;
+                // also assert both independent, runtime-wide allocation ledgers
+                // have been refunded. This does not claim physical scrubbing.
                 assertEquals(0, actors.nativeActorMemoryBytes(),
-                        "both actors must physically refund their native storage");
+                        "no registered actor may retain native arena charges");
+                assertEquals(0, actors.privateMemoryBytes(),
+                        "all private actor heap reservations must be refunded");
+                assertEquals(0, actors.sharedMemoryBytes(),
+                        "shared-kind native actor reservations must be refunded");
             }
         }
     }
