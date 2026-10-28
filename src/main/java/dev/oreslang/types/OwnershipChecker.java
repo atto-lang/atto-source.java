@@ -1150,6 +1150,24 @@ public final class OwnershipChecker {
                                 "rt share of move-only values requires the owning Shared<T> convergence; "
                                         + "this current-main patch fails closed instead of manufacturing shared mutable aliasing");
                     }
+                    // Copy is NOT Share. A copyable handle (for example a
+                    // SelectSet or a Channel<T> whose payload is not Send)
+                    // cannot gain cross-domain aliasing authority merely
+                    // because its handle can be duplicated. Require the
+                    // independent compiler-derived Share proof for the
+                    // fully elaborated type, including nested generic data.
+                    // Reuse the same conservative closed-world trait lattice
+                    // used by Task capture admission; unknown or shadowed
+                    // nominals fail closed. This proves the *type* is eligible,
+                    // not that any unrelated actor/allocation domain has
+                    // acquired ownership of its backing storage.
+                    if (!taskCaptureCapabilities(
+                            source.type,
+                            java.util.Collections.newSetFromMap(
+                                    new IdentityHashMap<>())).share()) {
+                        throw error("rt share requires statically proven Share capability; "
+                                + "Copy alone is insufficient for this type");
+                    }
                     yield source;
                 }
                 default -> throw error("unknown runtime operation 'rt " + runtime.operation() + "'");
