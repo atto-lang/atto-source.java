@@ -1276,6 +1276,17 @@ public final class OwnershipChecker {
                 ValueKind valueKind = kindOfType(valueType);
                 return new ValueInfo(valueType, valueKind, null);
             }
+            // An actor ref exposes a VM-owned output stream, not a field on
+            // the actor's sealed state. Retain its nominal protocol type so
+            // an async for-of binding has a verifiable origin.
+            if (concreteReceiver != null && isVerifiedActorReference(concreteReceiver)
+                    && member.member().equals("outputs")
+                    && findClass("ActorOutputStream") == null
+                    && !hasLocalTypeAliasNamed("ActorOutputStream")) {
+                Ast.TypeRef outputStream = new Ast.TypeRef(
+                        "ActorOutputStream", List.of(Ast.TypeRef.inferred()), false);
+                return new ValueInfo(outputStream, ValueKind.MOVE_ONLY, null);
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             if (klass != null) {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
@@ -2103,6 +2114,17 @@ public final class OwnershipChecker {
         } else if (value instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             if (state != null) roots.add(ownershipRoot(state));
+        } else if (value instanceof Ast.MemberExpr member
+                && member.member().equals("value")
+                && member.receiver() instanceof Ast.NameExpr rootName
+                && isBuiltinActorEnvelopeValue(scope.lookup(rootName.name()))) {
+            // Built-in actor mail/output envelopes keep their payload alive
+            // throughout the synchronous formatting call. An unknown payload
+            // type is safe to *view* while the enclosing envelope is loaned,
+            // but it is NOT a proof for rt borrow, moving or storing the field.
+            VarState root = requireState(scope, rootName.name());
+            requireUsable(root, rootName.name(), false);
+            roots.add(ownershipRoot(root));
         } else if (value instanceof Ast.MemberExpr || value instanceof Ast.IndexExpr) {
             // Only a stable, checked projection may borrow an existing owner.
             roots.add(ownershipRoot(borrowPlace(value, scope).owner()));
@@ -2110,6 +2132,18 @@ public final class OwnershipChecker {
             VarState root = invocationLoanRoot(value, scope);
             if (root != null) roots.add(root);
         }
+    }
+
+    private boolean isBuiltinActorEnvelopeValue(VarState receiver) {
+        if (receiver == null || receiver.type == null) return false;
+        Ast.TypeRef type = receiver.type.isBorrow()
+                ? receiver.type.borrowedTarget() : receiver.type;
+        return (type.name().equals("ActorOutput") || type.name().equals("ActorMail"))
+                && type.arguments().size() == 1
+                // A user-defined nominal class or alias must never inherit
+                // privilege merely by spelling a VM protocol type's name.
+                && findClass(type.name()) == null
+                && !hasLocalTypeAliasNamed(type.name());
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Scope scope) {
@@ -4611,6 +4645,18 @@ public final class OwnershipChecker {
         if (asyncIteration && (concrete.name().equals("AsyncGenerator") || concrete.name().equals("AsyncIterator"))
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
+        }
+        // VM-native ActorOutputStream<T> yields ActorOutput<T>. The emitted
+        // payload may still be dynamically typed: preserving the envelope's
+        // nominal origin does not certify a projected payload borrow.
+        if (asyncIteration && concrete.name().equals("ActorOutputStream")
+                && concrete.arguments().size() == 1
+                && findClass("ActorOutputStream") == null
+                && !hasLocalTypeAliasNamed("ActorOutputStream")
+                && findClass("ActorOutput") == null
+                && !hasLocalTypeAliasNamed("ActorOutput")) {
+            return new Ast.TypeRef(
+                    "ActorOutput", List.of(concrete.arguments().getFirst()), false);
         }
         if ((concrete.name().equals("Array") || concrete.name().equals("List")
                         || concrete.name().equals("Generator") || concrete.name().equals("Iterator"))
