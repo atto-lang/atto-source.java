@@ -52,6 +52,25 @@ by the owning runtime.
 - No blocking `Thread.sleep` or virtual-thread-per-timer fallback is used
   in these two guest paths.
 
+## Suspension effects and actor mailbox turns
+
+An ordinary synchronous function or ordinary class method must declare
+`async` or `suspends` before directly awaiting a pending Future. An
+actor `receive(ActorMail<T>)` handler and a synchronous `actor fnc`
+already own a resumable actor mailbox turn and can await without being
+declared async. Actor `on_start` remains non-suspending until readiness.
+
+The zero-argument source `main` selected by the runtime's root-entrypoint
+resolution likewise already owns an implicit ROOT_TASK; this includes
+non-public root or uniquely resolved module main declarations. A function
+named `main` with arguments must not inherit that privilege.
+
+These existing actor suspension paths do **not** allow actor-local
+`time.after` or `time.sleep` yet: actor timer registration requires
+actor-owned CONTROL/generation/heap-retirement support. Borrow/loan failures
+must continue to produce their specific diagnostic when applicable; broader
+integration tests remain an admission gate.
+
 ## Required verification
 
 1. Exact branch/head snapshot, JDK 25 Maven compile and
