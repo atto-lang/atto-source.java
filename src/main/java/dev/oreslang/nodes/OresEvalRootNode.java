@@ -3006,10 +3006,18 @@ public final class OresEvalRootNode extends RootNode {
                                             null,
                                             failure);
                                 } else {
+                                    // An inline await of a freshly registered
+                                    // nb channel operation owns that registration.
+                                    // A Future first stored in a variable might
+                                    // be shared, and must only be observed.
+                                    boolean ownedChannelRegistration =
+                                            awaited.expression() instanceof Ast.ChannelOpExpr op
+                                            && op.mode() == Ast.WaitMode.NONBLOCKING;
                                     suspendOnAwaitable(
                                             t,
                                             value,
-                                            continuation);
+                                            continuation,
+                                            ownedChannelRegistration);
                                 }
                             });
                     return;
@@ -3607,7 +3615,8 @@ public final class OresEvalRootNode extends RootNode {
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
-                SourceValueCont continuation) {
+                SourceValueCont continuation,
+                boolean ownedChannelRegistration) {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
                 future = oresFuture;
@@ -3630,6 +3639,10 @@ public final class OresEvalRootNode extends RootNode {
                         new IllegalStateException(
                                 "awaitable projected a null Future"));
                 return;
+            }
+
+            if (ownedChannelRegistration && !future.isDone()) {
+                task.pendingOwnedChannelWait = future;
             }
 
             if (future.isDone()) {
