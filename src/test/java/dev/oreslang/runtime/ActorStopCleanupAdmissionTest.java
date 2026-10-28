@@ -148,7 +148,7 @@ final class ActorStopCleanupAdmissionTest {
                             @Override public OresScheduler.Step<Void> resume(
                                     OresScheduler.Resume resume) {
                                 if (state++ == 0) {
-                                    guard = mutex.lock();
+                                    guard = mutex.tryLock().orElseThrow();
                                     waiting.countDown();
                                     return OresScheduler.await(never);
                                 }
@@ -357,7 +357,7 @@ final class ActorStopCleanupAdmissionTest {
                             @Override public OresScheduler.Step<Void> resume(
                                     OresScheduler.Resume resume) {
                                 if (pc++ == 0) {
-                                    guard = mutex.lock();
+                                    guard = mutex.tryLock().orElseThrow();
                                     waiting.countDown();
                                     return OresScheduler.await(awaited);
                                 }
@@ -479,8 +479,8 @@ final class ActorStopCleanupAdmissionTest {
 
         try (ActorRuntime runtime = new ActorRuntime()) {
             var parent = runtime.<String>spawnShared(() -> (message, context) -> {
-                var child = context.runtime().<String>spawnShared(() ->
-                        (childMessage, childContext) -> { });
+                var child = context.runtime().<String>spawnShared(childContext ->
+                        (childMessage, childTurn) -> { });
                 childRef.set(child);
                 childAdmitted.countDown();
                 try {
@@ -634,8 +634,8 @@ final class ActorStopCleanupAdmissionTest {
                 defectiveHost);
         try {
             var parent = runtime.<String>spawnShared(() -> (message, context) -> {
-                context.runtime().<String>spawnShared(() ->
-                        (ignored, childContext) -> { });
+                context.runtime().<String>spawnShared(childContext ->
+                        (ignored, childTurn) -> { });
                 childSpawned.countDown();
             });
             parent.send("spawn");
@@ -910,8 +910,8 @@ final class ActorStopCleanupAdmissionTest {
 
         try (ActorRuntime runtime = new ActorRuntime()) {
             var parent = runtime.<String>spawnShared(() -> (message, context) -> {
-                var child = context.runtime().<String>spawnShared(() ->
-                        (childMessage, childContext) -> { });
+                var child = context.runtime().<String>spawnShared(childContext ->
+                        (childMessage, childTurn) -> { });
                 childRef.set(child);
                 context.runtime().ownCurrentActorFuture(new OresFuture<Void>(() -> {
                     revokerEntered.countDown();
