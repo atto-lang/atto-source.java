@@ -152,6 +152,12 @@ final class ActorControlHandleIsolationTest {
                     () -> runtime.cancel(forgery));
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> runtime.gracefulStop(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.send(forgery, 1));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.drain(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.controlHandle(forgery));
             assertTrue(victim.isAlive(), "forged reference must not change target lifecycle");
 
             // Exact runtime-minted reference retains its legitimate authority.
