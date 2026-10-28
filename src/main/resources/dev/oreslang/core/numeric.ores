@@ -31,4 +31,26 @@ define module numeric as
     return value;
   }
 
+  // Migration shims: old '%' is still used internally until all backends have
+  // equivalent named intrinsics. These APIs do not authorize deleting '%' yet.
+  pub fnc rem_int(int dividend, int divisor): int {
+    return dividend % divisor;
+  }
+
+  pub fnc mod_int(int dividend, int divisor): int {
+    const int r = dividend % divisor;
+    if r >= 0; do
+      return r;
+    fi
+    if divisor > 0; do
+      return r + divisor;
+    fi
+    return r - divisor;
+  }
+
+  // No caret syntax is necessary for native guest bitwise XOR.
+  pub fnc bit_xor_int(int left, int right): int {
+    return (left & ~right) | (~left & right);
+  }
+
 end
