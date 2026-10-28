@@ -2288,7 +2288,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (actors.get(cell.ref.id()) != cell || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
-                    "actor source cleanup continuation capacity exceeded for "
+                    "actor internal continuation queue overflow (source task cleanup) for "
                             + cell.ref.id()));
             return false;
         }
