@@ -1139,54 +1139,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_cross_platform_ambiguous_source_names_rejected_before_upload(self):
-        unsafe = (
-            "NUL.txt",
-            "bad.",
-            "trailing ",
-            "ads:stream",
-            "cafe\u0301.ores",
+    def test_cross_platform_ambiguous_paths_are_rejected_portably(self):
+        cases = (
+            (["NUL.txt"], "reserved Windows"),
+            (["bad."], "cross-platform"),
+            (["trailing "], "cross-platform"),
+            (["ads:stream"], "cross-platform"),
+            (["cafe\u0301.ores"], "cross-platform"),
+            (["Case.ores", "case.ores"], "case-insensitively"),
+            (["SRC/first.ores", "src/second.ores"], "directory prefixes"),
+            (["README", "readme/child.ores"], "file/directory conflict"),
         )
-        for name in unsafe:
-            with self.subTest(name=repr(name)):
-                target = self.source / name
-                target.write_text("unsafe")
-                try:
-                    with self.assertRaisesRegex(
-                        pub.Denied, "cross-platform|reserved Windows"
-                    ):
-                        self.publish()
-                finally:
-                    target.unlink()
-                self.assertFalse(
-                    any(m == "POST" for m, _, _ in self.route_calls)
-                )
+        for paths, message in cases:
+            with self.subTest(paths=paths):
+                with self.assertRaisesRegex(pub.Denied, message):
+                    pub.require_cross_platform_source_paths(paths)
 
-    def test_case_colliding_source_files_rejected_before_upload(self):
-        upper = self.source / "Case.ores"
-        lower = self.source / "case.ores"
-        upper.write_text("one")
-        lower.write_text("two")
-        with self.assertRaisesRegex(pub.Denied, "case-insensitively"):
-            self.publish()
+    def test_cross_platform_path_guard_runs_before_destination_write(self):
+        with patch.object(
+            pub,
+            "require_cross_platform_source_paths",
+            side_effect=pub.Denied("cross-platform path guard"),
+        ) as guard:
+            with self.assertRaisesRegex(pub.Denied, "cross-platform path guard"):
+                self.publish()
+        guard.assert_called()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
-
-    def test_case_colliding_directory_prefixes_rejected_before_upload(self):
-        upper = self.source / "SRC"
-        lower = self.source / "src"
-        upper.mkdir()
-        lower.mkdir()
-        (upper / "first.ores").write_text("one")
-        (lower / "second.ores").write_text("two")
-        with self.assertRaisesRegex(pub.Denied, "directory prefixes"):
-            self.publish()
-        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
-
-    def test_cross_platform_file_directory_alias_is_rejected(self):
-        with self.assertRaisesRegex(pub.Denied, "file/directory conflict"):
-            pub.require_cross_platform_source_paths(
-                ["README", "readme/child.ores"]
-            )
 
     def test_nested_regular_source_files_keep_expected_paths(self):
         directory = self.source / "nested"
