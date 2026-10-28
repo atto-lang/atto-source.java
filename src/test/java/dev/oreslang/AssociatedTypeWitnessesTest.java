@@ -149,4 +149,20 @@ final class AssociatedTypeWitnessesTest {
                 TypeclassRegistry.TypeRef.named("", "unqualified"));
     }
 
+    @Test void distinctNominalHeadsWithEmbeddedNamespaceDelimitersDoNotOverlap() {
+        var protocol = new TypeclassRegistry.Typeclass("m", "NominalHead", 1);
+        var witnesses = new AssociatedTypeWitnesses();
+        witnesses.define(protocol, Set.of("item"));
+        var left = named("a::b", "c");
+        var right = named("a", "b::c");
+        witnesses.register(new TypeclassRegistry.Instance(protocol, "m",
+                List.of(left), "m.left"), Map.of("item", left));
+        witnesses.register(new TypeclassRegistry.Instance(protocol, "m",
+                List.of(right), "m.right"), Map.of("item", right));
+        assertEquals(left, witnesses.resolve(protocol, List.of(left)).type("item"));
+        assertEquals(right, witnesses.resolve(protocol, List.of(right)).type("item"));
+        assertThrows(IllegalArgumentException.class, () ->
+                witnesses.resolve(protocol, List.of(named("a", "other"))));
+    }
+
 }
