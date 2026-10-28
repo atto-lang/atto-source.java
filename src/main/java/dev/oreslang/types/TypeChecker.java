@@ -2867,6 +2867,13 @@ public final class TypeChecker {
                     && timerCall.receiver() instanceof Ast.NameExpr clock
                     && clock.name().equals("time")
                     && env.lookup("time") == null) {
+                // Actor timer capabilities require actor-local CONTROL and
+                // lifecycle admission. The context-only substrate must not
+                // silently grant an actor an untracked timer registration.
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor time.* requires actor-owned timer lifecycle lowering");
+                }
                 if (call.typeArgumentsPresent()
                         || !(timerCall.member().equals("sleep")
                                 || timerCall.member().equals("after"))) {
@@ -3842,6 +3849,10 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr timeName
                     && timeName.name().equals("time") && env.lookup("time") == null) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor time.* requires actor-owned timer lifecycle lowering");
+                }
                 if (member.member().equals("sleep") || member.member().equals("after")) {
                     return new Function(List.of(new Named("Duration", List.of())),
                             new Named("Future", List.of(Primitive.VOID)));
