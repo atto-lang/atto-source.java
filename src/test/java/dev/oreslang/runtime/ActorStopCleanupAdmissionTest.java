@@ -62,8 +62,9 @@ final class ActorStopCleanupAdmissionTest {
                 return;
             }
             OresFuture<Void> resource = new OresFuture<>(() -> {
-                fixture.firstRevokerEntered.countDown();
                 fixture.bothRevokersEntered.countDown();
+                // Publish the counter before releasing the observer latch.
+                fixture.firstRevokerEntered.countDown();
                 try {
                     if (!fixture.releaseRevokers.await(5, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("test child revoker not released");
