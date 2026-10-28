@@ -143,6 +143,48 @@ final class ImportsQualifiedCallTest {
     }
 
     @Test
+    void importedBindingRemainsExplicitWhenLocalValueShadowsQualifierSpelling() throws Exception {
+        Files.writeString(temp.resolve("lib.ores"), """
+                pub fnc roodles(): int { return 23; }
+                """);
+        Path entry = temp.resolve("shadowed-imports.ores");
+        Files.writeString(entry, """
+                import fnc roodles from "./lib.ores";
+                pub routine main(): void {
+                  val imports = infer struct{roodles: 91};
+                  stdio.stdout.write(imports.roodles);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(imports::roodles());
+                }
+                """);
+        assertEquals("91|23", run(entry));
+    }
+
+    @Test
+    void actorMustUseExplicitImportRatherThanPkgImplicitDependency() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                import fnc externally_defined from "./lib.ores";
+                define actor Worker as
+                  pub work(): void {
+                    imports::externally_defined();
+                    return;
+                  }
+                end
+                """)));
+
+        IllegalArgumentException bypass = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import fnc externally_defined from "./lib.ores";
+                        fnc same_file(): void { return; }
+                        define actor Worker as
+                          pub work(): void { pkg::same_file(); return; }
+                        end
+                        """)));
+        assertTrue(bypass.getMessage().contains("actor")
+                && bypass.getMessage().contains("module"), bypass.getMessage());
+    }
+
+    @Test
     void importedPrivateFunctionCannotBypassExportValidation() throws Exception {
         Files.writeString(temp.resolve("lib.ores"), """
                 fnc roodles(): int { return 123; }
