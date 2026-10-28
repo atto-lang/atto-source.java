@@ -54,14 +54,18 @@ jobs:
           java -version
           mvn -version
       - name: Execute actual timer host and guest JUnit regressions
-        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=SourceTimerLanguageTest,OresTimersTest,AsyncAwaitLanguageTest,FuturePipelineProvenanceTest#typingPreservesProvenanceAndCurrentFutureBoundaries test
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=SourceTimerLanguageTest,OresTimersTest,AsyncAwaitLanguageTest,FuturePipelineProvenanceTest#typingPreservesProvenanceAndCurrentFutureBoundaries,MemberSuspensionLanguageTest#importedPolymorphicPullCannotSuspendWithBorrowedReceiver test
       - name: Verify each suite produced a real Surefire report
         shell: bash
         run: |
           set -euo pipefail
-          for suite in SourceTimerLanguageTest OresTimersTest AsyncAwaitLanguageTest FuturePipelineProvenanceTest; do
+          for suite in SourceTimerLanguageTest OresTimersTest AsyncAwaitLanguageTest FuturePipelineProvenanceTest MemberSuspensionLanguageTest; do
             file="$(find target/surefire-reports -maxdepth 1 -type f -name "TEST-*.${suite}.xml" -print -quit)"
             test -n "$file"
-            grep -q '<testsuite ' "$file"
-            echo "EXECUTED_SUITE=$suite REPORT=$file"
+            suite_line="$(grep -m1 '<testsuite ' "$file")"
+            # A generated report with zero tests is not execution proof.
+            grep -Eq 'tests="[1-9][0-9]*"' <<< "$suite_line"
+            grep -Eq 'errors="0"' <<< "$suite_line"
+            grep -Eq 'failures="0"' <<< "$suite_line"
+            echo "EXECUTED_SUITE=$suite REPORT=$file $suite_line"
           done
