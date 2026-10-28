@@ -49,3 +49,28 @@ test("26 vectors agree with independent exact BigInt mathematical semantics", ()
     assert.deepEqual(oracle(operation, a, b), expect, id);
   }
 });
+
+test("11 exact signed64 to binary64 vectors preserve IEEE754 bit patterns", () => {
+  const conversion = JSON.parse(readFileSync(
+    new URL("../contracts/v1/strict-integer-to-float-exact-v1.json", import.meta.url),
+    "utf8"));
+  assert.equal(conversion.contract, "oreslang.strict-integer-to-float-exact.v1");
+  assert.equal(conversion.cases.length, 11);
+  assert.equal(new Set(conversion.cases.map(c => c.id)).size, 11);
+  const bits = new DataView(new ArrayBuffer(8));
+  for (const {id, operation, operand, expect} of conversion.cases) {
+    assert.equal(operation, "toFloatExact", id);
+    const original = BigInt(operand);
+    assert.ok(original >= MIN && original <= MAX, id);
+    const converted = Number(original);
+    const inexact = converted >= 2 ** 63 || BigInt(converted) !== original;
+    if (inexact) {
+      assert.deepEqual(expect, {error: "INEXACT_CONVERSION"}, id);
+    } else {
+      bits.setFloat64(0, converted, false);
+      assert.deepEqual(expect, {
+        doubleBitsHex: bits.getBigUint64(0, false).toString(16).padStart(16, "0")
+      }, id);
+    }
+  }
+});
