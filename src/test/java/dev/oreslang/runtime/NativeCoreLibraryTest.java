@@ -64,7 +64,7 @@ final class NativeCoreLibraryTest {
 
 
     @Test
-    void everyPackagedStdModuleIsPureOreslangAndHasOnlyStdDependencies() throws Exception {
+    void everyPackagedStdModuleIsPureOreslangAndHasOnlyCanonicalDependencies() throws Exception {
         Path root = Path.of("stdlib");
         assertTrue(Files.isDirectory(root), "packaged stdlib source root must exist");
 
@@ -98,7 +98,8 @@ final class NativeCoreLibraryTest {
                 var program = dev.oreslang.parser.Parser.parse(unit.oresSource());
                 for (var imported : program.imports()) {
                     assertTrue(
-                            CoreLibrarySources.isCoreImport(imported.path()),
+                            CoreLibrarySources.isStdImport(imported.path())
+                                    || CoreLibrarySources.isOresCoreImport(imported.path()),
                             () -> relative + " depends on non-std module " + imported.path());
                 }
             }
