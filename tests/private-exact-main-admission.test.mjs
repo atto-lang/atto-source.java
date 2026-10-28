@@ -67,7 +67,15 @@ function verify(w, c) {
   const checkout = allow.indexOf('actions/checkout@');
   const source = allow.indexOf('Verify source identity and immutable Git tree');
   const setup = allow.indexOf('graalvm/setup-graalvm@');
-  assert.ok(guard >= 0 && guard < checkout && checkout < source && source < setup);
+  const nodeVersion = allow.indexOf('Verify Node.js 22 for private CI admission regression');
+  const nodeTest = allow.indexOf('Execute exact-main source-free admission and mutation regression');
+  assert.ok(guard >= 0 && guard < checkout && checkout < source &&
+    source < nodeVersion && nodeVersion < nodeTest && nodeTest < setup,
+    'trusted identity and security regressions must precede GraalVM tool setup');
+  assert.ok(allow.split('\n').some(v => v.trim() === "test \"$(node -p 'process.versions.node.split(\".\")[0]')\" = '22'"),
+    'exact Node 22 version gate missing');
+  assert.ok(allow.split('\n').some(v => v.trim() === 'node --test tests/private-exact-main-admission.test.mjs'),
+    'mandatory source-free regression execution missing');
   for (const line of [
     "test \"$GITHUB_REPOSITORY_ID\" = '1400792274'",
     "test \"$GITHUB_REF_PROTECTED\" = 'true'",
@@ -110,6 +118,8 @@ test('unsafe admission mutations rejected', () => {
     ['persist-credentials: false', 'persist-credentials: true'],
     ['test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_TREE"', 'echo unchecked'],
     ['-DskipTests=false -Dmaven.test.skip=false clean verify', '-DskipTests=true package'],
+    ["test \"$(node -p 'process.versions.node.split(\".\")[0]')\" = '22'", 'echo no-node-version-gate'],
+    ['node --test tests/private-exact-main-admission.test.mjs', 'echo bypassed-node-test'],
     ["vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}",
      "vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}\n    if: true"],
     ['    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]',
