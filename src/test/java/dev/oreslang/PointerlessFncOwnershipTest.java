@@ -109,6 +109,24 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void rtShareDoesNotLaunderCopyOnlyHandleThroughOptionWrapper() {
+        // Option<T> itself is Copy when T is Copy, but must not make an
+        // inner capability Share by recursively erasing its negative trait.
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        fnc forbidden(Option<SelectSet> wrapper): void {
+                          val Option<SelectSet> copy = rt copy wrapper;
+                          val Option<SelectSet> alias = rt share wrapper;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains(
+                "rt share requires statically proven Share capability"),
+                failure.getMessage());
+    }
+
+    @Test
     void rtShareChecksGenericPayloadSendBeforeCopyableChannelAlias() {
         // A Channel<T> handle is Copy, but sharing it across domains needs a
         // Send-safe payload. Rc<int> is explicitly non-Send/non-Share.
