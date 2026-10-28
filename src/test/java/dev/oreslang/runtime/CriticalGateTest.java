@@ -288,4 +288,37 @@ final class CriticalGateTest {
         }
     }
 
+
+    @Test void admissionFutureCannotRevokeAnAlreadyGrantedPermit() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.newTicket();
+        OresFuture<Void> admission = owner.enterAsync();
+        assertTrue(admission.isDone());
+        assertTrue(owner.isHeld());
+        assertFalse(admission.cancel(false),
+                "a settled or granted admission cannot cancel the executing critical body");
+        var waiter = gate.newTicket();
+        var pending = waiter.enterAsync();
+        assertFalse(pending.isDone());
+        assertTrue(owner.isHeld());
+        owner.close();
+        assertTrue(waiter.isHeld());
+        waiter.close();
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test void cancelledQueuedAdmissionNeverClaimsPermit() {
+        CriticalGate gate = new CriticalGate();
+        var first = gate.newTicket();
+        first.enterAsync();
+        var discarded = gate.newTicket();
+        OresFuture<Void> wait = discarded.enterAsync();
+        assertTrue(wait.cancel(false));
+        assertTrue(wait.isCancelled());
+        first.close();
+        assertFalse(discarded.isHeld());
+        assertFalse(gate.held());
+        assertEquals(0, gate.queuedCount());
+    }
+
 }
