@@ -1,0 +1,104 @@
+package dev.oreslang;
+
+import dev.oreslang.compiler.OresCompiler;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Guest source smoke for timer futures; does not certify Native Image AOT. */
+final class SourceTimerLanguageTest {
+    private static String run(String sourceText) throws Exception {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                OresLanguage.ID, sourceText, "source-timer-smoke.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            context.eval(source);
+        }
+        return stdout.toString(StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void asyncMainAwaitsSleepAndAfterWithoutExplicitTask() throws Exception {
+        String source = """
+                pub async fnc main(): void {
+                    await time.sleep(0ms);
+                    await time.after(1ms);
+                    stdio.println(42);
+                    return;
+                }
+                """;
+        assertFalse(source.contains("task {"));
+        assertTrue(run(source).contains("42"));
+    }
+
+    @Test
+    void allSupportedDurationUnitsAreCheckedAndAwaitable() throws Exception {
+        String source = """
+                pub async fnc main(): void {
+                    await time.after(0ns);
+                    await time.sleep(0us);
+                    await time.after(0ms);
+                    await time.sleep(0s);
+                    await time.after(0m);
+                    await time.sleep(0h);
+                    stdio.println(7);
+                    return;
+                }
+                """;
+        assertTrue(run(source).contains("7"));
+    }
+
+    @Test
+    void rawIntegersAreNotSilentlyAcceptedAsDurations() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async fnc main(): void {
+                            await time.sleep(1);
+                            return;
+                        }
+                        """));
+    }
+
+    @Test
+    void syncCallableCannotAwaitTimerFuture() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                            await time.after(1ms);
+                            return;
+                        }
+                        """));
+    }
+
+    @Test
+    void overflowAndUnsupportedDurationUnitsFailAtParseOrTypecheck() {
+        for (String duration : new String[]{
+                "9223372036854775807h", "1day", "1.5ms", "1__0ms", "-1ms"}) {
+            String program = "pub async fnc main(): void { await time.sleep("
+                    + duration + "); return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(program),
+                    "admitted invalid duration " + duration);
+        }
+    }
+
+    @Test
+    void unsupportedTimeoutAndCallbackAPIsAreFailClosed() {
+        for (String call : new String[]{
+                "time.timeout(1ms, time.after(2ms))",
+                "time.set_timer(1ms, 42)",
+                "time.interval(1ms)"}) {
+            String source = "pub async fnc main(): void { " + call + "; return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source),
+                    "timer operation bypassed staged source admission: " + call);
+        }
+    }
+}
