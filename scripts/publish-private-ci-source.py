@@ -73,6 +73,7 @@ SECURITY_CODEOWNER_PATHS = (
 )
 SECURITY_CODEOWNER = "@ORESoftware"
 MAX_SOURCE_PATH_BYTES = 4096
+MAX_SOURCE_COMPONENT_BYTES = 255
 WINDOWS_RESERVED_NAME = re.compile(
     r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]|CONIN\\$|CONOUT\\$)$",
     re.IGNORECASE,
@@ -92,8 +93,13 @@ def require_cross_platform_source_paths(paths):
     folded_files = {}
     directory_prefixes = {}
     for path in paths:
-        if (not isinstance(path, str) or not path
-                or len(path.encode("utf-8")) > MAX_SOURCE_PATH_BYTES
+        if not isinstance(path, str) or not path:
+            raise Denied("source path is not cross-platform canonical")
+        try:
+            encoded_path = path.encode("utf-8", "strict")
+        except UnicodeEncodeError as exc:
+            raise Denied("source path is not valid UTF-8") from exc
+        if (len(encoded_path) > MAX_SOURCE_PATH_BYTES
                 or path.startswith("/") or "\\" in path
                 or any(ord(ch) < 32 or ord(ch) == 127 for ch in path)):
             raise Denied("source path is not cross-platform canonical")
@@ -101,6 +107,18 @@ def require_cross_platform_source_paths(paths):
         if any(part in ("", ".", "..") for part in parts):
             raise Denied("source path is not cross-platform canonical")
         for part in parts:
+            try:
+                encoded_part = part.encode("utf-8", "strict")
+            except UnicodeEncodeError as exc:
+                raise Denied("source path component is not valid UTF-8") from exc
+            if len(encoded_part) > MAX_SOURCE_COMPONENT_BYTES:
+                raise Denied("source path component exceeds filesystem-safe limit")
+            if any(
+                0xFDD0 <= ord(ch) <= 0xFDEF
+                or (ord(ch) & 0xFFFF) in (0xFFFE, 0xFFFF)
+                for ch in part
+            ):
+                raise Denied("source path contains Unicode noncharacter")
             if (part.casefold() == ".git"
                     or part != unicodedata.normalize("NFC", part)
                     or part.rstrip(" .") != part
