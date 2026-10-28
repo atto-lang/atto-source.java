@@ -86,6 +86,32 @@ final class ScalarSourceEffectFactsV1Test {
     }
 
     @Test
+    void namespaceMustNotBeMistakenForUnqualifiedRootCallIdentity() {
+        assertThrows(IllegalArgumentException.class, () -> analyze("""
+                namespace workload;
+                fnc leaf(): int { return 42; }
+                fnc caller(): int { return leaf(); }
+                """));
+    }
+
+    @Test
+    void procedureCallableKindMustNotMasqueradeAsPureFunctionWitness() {
+        assertThrows(IllegalArgumentException.class, () -> analyze("""
+                routine worker(): void { return; }
+                fnc answer(): int { return 42; }
+                """));
+    }
+
+    @Test
+    void nonRootModuleMustNotContributeUnqualifiedCallIdentities() {
+        assertThrows(IllegalArgumentException.class, () -> analyze("""
+                define module handlers
+                  fnc leaf(): int { return 42; }
+                end
+                """));
+    }
+
+    @Test
     void syntacticCallChainsDoNotProveTerminationOrHardRealtime() {
         // Effect closure is independent of termination: this zero-direct-effect
         // recursive program would still fail hard-RT recursion/WCET checking.
