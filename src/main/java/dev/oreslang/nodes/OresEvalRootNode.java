@@ -4541,7 +4541,12 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             CriticalGate.Ticket critical = fn.critical() ? fileCriticalGate.newTicket() : null;
-            if (critical != null) critical.enterSync();
+            if (critical != null) {
+                CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
+                        fn.annotations(), true, fn.name());
+                if (policy == null) critical.enterSync();
+                else critical.enterSyncWithin(policy.queueTimeout());
+            }
             try {
                 Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
                 bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
@@ -4629,7 +4634,12 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             CriticalGate.Ticket critical = method.critical()
                     ? methodGate(method, receiver).newTicket() : null;
-            if (critical != null) critical.enterSync();
+            if (critical != null) {
+                CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
+                        method.annotations(), true, method.name());
+                if (policy == null) critical.enterSync();
+                else critical.enterSyncWithin(policy.queueTimeout());
+            }
             try {
                 Env env = new Env(null, false, declaringClass(method));
                 if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -6955,7 +6965,12 @@ public final class OresEvalRootNode extends RootNode {
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
             CriticalGate.Ticket critical = fn.critical()
                     ? methodGate(fn, null).newTicket() : null;
-            if (critical != null) critical.enterSync();
+            if (critical != null) {
+                CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
+                        fn.annotations(), true, fn.name());
+                if (policy == null) critical.enterSync();
+                else critical.enterSyncWithin(policy.queueTimeout());
+            }
             try {
                 Env env = new Env(null, false, declaringClass(fn));
                 bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());
