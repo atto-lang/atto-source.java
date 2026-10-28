@@ -7171,12 +7171,20 @@ public final class OresEvalRootNode extends RootNode {
                     || hostClasses.containsKey("Integer")
                     || hostFunctions.containsKey("Integer")) return null;
             return switch (member.member()) {
-                case "rem", "mod", "pow", "bitXor" -> member.member();
+                case "rem", "mod", "pow", "bitXor", "toFloatExact" -> member.member();
                 default -> null;
             };
         }
 
-        private long applyIntegerIntrinsic(String operation, List<Object> values) {
+        private Object applyIntegerIntrinsic(String operation, List<Object> values) {
+            if (operation.equals("toFloatExact")) {
+                if (values.size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Integer.toFloatExact expects exactly one int argument");
+                }
+                return dev.oreslang.runtime.StrictIntegerArithmetic.toFloatExact(
+                        integralLong(values.getFirst()));
+            }
             if (values.size() != 2) {
                 throw new IllegalArgumentException(
                         "Integer." + operation + " expects exactly two int arguments");
