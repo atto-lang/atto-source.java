@@ -4196,8 +4196,38 @@ public final class Parser {
         }
     }
 
+    private dev.oreslang.runtime.OresDuration parseDuration(Token token) {
+        String text = token.lexeme();
+        int end = 0;
+        while (end < text.length()
+                && (Character.isDigit(text.charAt(end)) || text.charAt(end) == '_')) {
+            end++;
+        }
+        if (end == 0 || end == text.length()) {
+            throw error(token, "malformed Duration literal: " + text);
+        }
+        String unit = text.substring(end);
+        long factor = switch (unit) {
+            case "ns" -> 1L;
+            case "us" -> 1_000L;
+            case "ms" -> 1_000_000L;
+            case "s" -> 1_000_000_000L;
+            case "m" -> 60_000_000_000L;
+            case "h" -> 3_600_000_000_000L;
+            default -> throw error(token, "unsupported Duration unit: " + unit);
+        };
+        long value = parseSignedI64(new Token(INT,
+                text.substring(0, end), token.line(), token.column()));
+        try {
+            return new dev.oreslang.runtime.OresDuration(Math.multiplyExact(value, factor));
+        } catch (ArithmeticException overflow) {
+            throw error(token, "Duration literal overflows signed nanoseconds: " + text);
+        }
+    }
+
     private Ast.Expr parsePrimary() {
         if (match(MATCH)) return parseValueMatch();
+        if (match(DURATION)) return new Ast.LiteralExpr(parseDuration(previous()));
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
