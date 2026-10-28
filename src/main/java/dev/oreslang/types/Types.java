@@ -359,12 +359,8 @@ public final class Types {
             return isAssignable(source.result(), target.result());
         }
 
-        return numericWidening(from, to);
-    }
-
-    private static boolean numericWidening(Type from, Type to) {
-        if (from == Primitive.INT && (to == Primitive.FLOAT || to == Primitive.DECIMAL || to == Primitive.COMPLEX)) return true;
-        if ((from == Primitive.FLOAT || from == Primitive.DECIMAL) && to == Primitive.COMPLEX) return true;
+        // Assignability never silently changes a numeric representation.
+        // Explicit numeric conversion and numeric arithmetic joins are separate operations.
         return false;
     }
 
