@@ -269,6 +269,54 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void implicitByValueCallCannotMoveClassFieldWithoutInvalidatingSlot() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                define class Holder as
+                  pub let Box item;
+                end
+                fnc consume(Box box): int { return box.value; }
+                fnc invalid(Holder holder): int {
+                  return consume(holder.item);
+                }
+                """)));
+        assertTrue(error.getMessage().contains(
+                "cannot consume move-only class field"), error.getMessage());
+    }
+
+    @Test
+    void returningIndexedMoveOnlyElementCannotLeaveArraySlotLive() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () ->
+                    dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                    define class Box as
+                      pub let int value = 7;
+                    end
+                    fnc invalid(Array<Box> items): Box {
+                      return items[0];
+                    }
+                    """)));
+        assertTrue(error.getMessage().contains(
+                "cannot consume move-only indexed element"), error.getMessage());
+    }
+
+    @Test
+    void copyingScalarFieldDoesNotRequirePartialMoveLedger() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                fnc inspect(Box box): int {
+                  val int detached = box.value;
+                  return detached;
+                }
+                """)));
+    }
+
+    @Test
     void rtTakeFieldProjectionCannotDuplicateMoveOnlyOwner() {
         IllegalArgumentException rejected = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
