@@ -14,7 +14,7 @@ import sys
 SCHEMA = "ores-private-ci-provenance-snapshot-v1"
 SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
-SOURCE_MAIN_SHA = "3df7d2a9433250dd831a7a6c50c78e561f2b5d79"
+SOURCE_MAIN_SHA = "3210aeff07597035a4ed815ebbdf39720a3266c1"
 MANIFEST = "docs/security/private-ci-post-merge-provenance-repair-20261027.json"
 LEDGER = ".github/private-ci-approved-repositories.txt"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
