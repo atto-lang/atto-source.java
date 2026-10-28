@@ -78,15 +78,16 @@ jobs:
             fi
           done
           command -v git
-          # Git permits credential and HTTP auth configuration at both
-          # global and system scopes. Includes may import authorization
-          # settings from other files; unscoped http.extraHeader is effective.
-          # Only exit status 1 (no matching keys) permits admission.
+          # This source-free disposable worker must start with NO global or
+          # system Git settings. An auth-key denylist misses core.askPass,
+          # core.sshCommand, http.proxy, http.cookieFile, and url.*.insteadOf.
+          # Reject even benign inherited config rather than guess what is safe.
+          # Exit 1 means no keys; exit 0 means configured; errors fail closed.
           for config_scope in --global --system; do
             git_config_status=0
-            git config "$config_scope" --get-regexp '^(credential\.|http\.extraheader$|http\..*\.extraheader$|include\.|includeif\.)' >/dev/null 2>&1 || git_config_status=$?
+            git config "$config_scope" --get-regexp '.' >/dev/null 2>&1 || git_config_status=$?
             if test "$git_config_status" -ne 1; then
-              echo "::error::unsafe or unreadable Git config scope: $config_scope"
+              echo "::error::unexpected or unreadable Git config scope: $config_scope"
               exit 1
             fi
           done
