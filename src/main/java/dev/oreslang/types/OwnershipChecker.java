@@ -990,17 +990,19 @@ public final class OwnershipChecker {
             throw error("rt take of an assignment result cannot prove that the "
                     + "written source place was invalidated; use a checked replace operation");
         }
-        if (expression instanceof Ast.CastExpr cast) {
-            rejectUntrackedTakePlace(cast.value());
-        } else if (expression instanceof Ast.ConditionalExpr conditional) {
-            rejectUntrackedTakePlace(conditional.whenTrue());
-            rejectUntrackedTakePlace(conditional.whenFalse());
-        } else if (expression instanceof Ast.MatchExpr match) {
-            for (Ast.MatchValueArm arm : match.arms()) {
-                rejectUntrackedTakePlace(arm.value());
-            }
-        } else if (expression instanceof Ast.SpreadExpr spread) {
-            rejectUntrackedTakePlace(spread.expression());
+        // A conditional/cast/value-match expression is not a uniquely
+        // addressable owned place. In particular, choosing between two Copy
+        // *bindings* does not move the selected binding under checkExpr:
+        // it would incorrectly let rt take preserve that source unchanged.
+        // Even when every branch happens to return a fresh value, require
+        // spelling the transfer on a tracked binding after materialization.
+        if (expression instanceof Ast.CastExpr
+                || expression instanceof Ast.ConditionalExpr
+                || expression instanceof Ast.MatchExpr
+                || expression instanceof Ast.SpreadExpr) {
+            throw error("rt take of a computed selection/cast result requires "
+                    + "path-aware partial-move tracking; bind the result first, "
+                    + "then take that named owner");
         }
     }
 
