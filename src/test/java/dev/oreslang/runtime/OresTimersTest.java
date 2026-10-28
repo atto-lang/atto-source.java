@@ -49,9 +49,12 @@ final class OresTimersTest {
             int permits = OresTimers.availableGlobalTimerSlots();
             OresFuture<Integer> producer = new OresFuture<>();
             OresFuture<Integer> observer = timers.timeoutNanos(0, producer);
+            CountDownLatch fullyDrained = new CountDownLatch(1);
+            observer.whenNotificationsDrainedRuntime(fullyDrained::countDown);
             ExecutionException timedOut = assertThrows(ExecutionException.class,
                     () -> observer.get(5, TimeUnit.SECONDS));
             assertInstanceOf(TimeoutException.class, timedOut.getCause());
+            assertTrue(fullyDrained.await(5, TimeUnit.SECONDS));
             assertFalse(producer.isDone(), "timeout must not cancel a shared producer");
             assertEquals(0, producer.pendingRuntimeWaiterCount(),
                     "expired observer retained the producer's callback");
@@ -59,6 +62,48 @@ final class OresTimersTest {
             assertEquals(permits, OresTimers.availableGlobalTimerSlots());
             producer.completeFromRuntime(7);
             assertEquals(7, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void observedProducerFailurePreservesOriginalCause() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> bounded = timers.timeoutNanos(
+                    TimeUnit.HOURS.toNanos(1), producer);
+            IllegalStateException original = new IllegalStateException("producer failed");
+            producer.failFromRuntime(original);
+            ExecutionException observed = assertThrows(ExecutionException.class,
+                    () -> bounded.get(5, TimeUnit.SECONDS));
+            assertSame(original, observed.getCause());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void concurrentTimeoutAndProducerSettlementClaimsExactlyOneWinner()
+            throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            int before = OresTimers.availableGlobalTimerSlots();
+            for (int i = 0; i < 100; i++) {
+                OresFuture<Integer> producer = new OresFuture<>();
+                OresFuture<Integer> bounded = timers.timeoutNanos(0, producer);
+                CountDownLatch drained = new CountDownLatch(1);
+                bounded.whenNotificationsDrainedRuntime(drained::countDown);
+                Thread completer = Thread.ofPlatform().start(
+                        () -> producer.completeFromRuntime(42));
+                try {
+                    assertEquals(42, bounded.get(5, TimeUnit.SECONDS));
+                } catch (ExecutionException failure) {
+                    assertInstanceOf(TimeoutException.class, failure.getCause());
+                }
+                completer.join();
+                assertTrue(drained.await(5, TimeUnit.SECONDS));
+                assertEquals(0, producer.pendingRuntimeWaiterCount());
+            }
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(before, OresTimers.availableGlobalTimerSlots());
         }
     }
 
