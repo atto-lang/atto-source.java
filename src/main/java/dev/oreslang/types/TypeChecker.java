@@ -743,6 +743,20 @@ public final class TypeChecker {
                     "suspends " + label + " requires an async or suspends caller");
     }
 
+    /**
+     * Mirror executeMain's actual entrypoint resolution, not an arbitrary
+     * visibility/name predicate. The selected zero-arity main already owns
+     * OresVM's ROOT_TASK even when the declaration is not public.
+     */
+    private boolean schedulerOwnedMain(Ast.FunctionDecl fn) {
+        if (!fn.name().equals("main") || !fn.parameters().isEmpty()
+                || fn.actorKind() != Ast.ActorKind.NONE) {
+            return false;
+        }
+        Ast.FunctionDecl root = findFunction(Parser.ROOT_MODULE + ".main", 0);
+        return (root != null ? root : findFunction("main", 0)) == fn;
+    }
+
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         if (fn.name().endsWith("_blocking") && !fn.suspends())
             throw new IllegalArgumentException(
@@ -879,10 +893,7 @@ public final class TypeChecker {
         // apply, and no independent source Task is spawned for each await.
         currentMaySuspend = fn.async() || fn.suspends()
                 || fn.actorKind() != Ast.ActorKind.NONE
-                || (fn.name().equals("main")
-                    && fn.actorKind() == Ast.ActorKind.NONE
-                    && (fn.visibility() == Ast.Visibility.PUBLIC
-                        || module.equals(Parser.ROOT_MODULE)));
+                || schedulerOwnedMain(fn);
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
