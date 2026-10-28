@@ -232,9 +232,13 @@ per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
 prevent parent-directory symlink swap races. It rejects symbolic links,
 hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
-filesystem objects. Directory enumeration is bounded to 4,096 entries,
-1,024 directories and a maximum depth of 64. It verifies every uploaded
-Git blob SHA-1 against the source bytes. It checks that the reviewed
+filesystem objects. Source paths must also be cross-platform canonical before
+publication: NFC-normalized Unicode only, no case-insensitive file or directory
+collisions, no file/directory prefix aliases, no Windows reserved names, no
+trailing dot/space components, and no alternate-data-stream `:` components.
+Directory enumeration is bounded to 4,096 entries, 1,024 directories and a
+maximum depth of 64. It verifies every uploaded Git blob SHA-1 against the
+source bytes. It checks that the reviewed
 destination policy has not changed
 before every API write, in addition to rechecking the destination's live
 private visibility. It does not print source contents in API failures.
