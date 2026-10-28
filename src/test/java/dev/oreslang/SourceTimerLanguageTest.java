@@ -264,7 +264,7 @@ final class SourceTimerLanguageTest {
 
     @Test
     void actorStartupAndOrdinaryInstanceMethodCannotAwait() {
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException startupFailure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                     define actor Worker as
                         on_start(): void {
@@ -279,7 +279,9 @@ final class SourceTimerLanguageTest {
                         }
                     end
                     """));
-        assertThrows(IllegalArgumentException.class,
+        assertTrue(startupFailure.getMessage().contains("await requires"),
+                "startup must fail for the suspension effect, not unrelated syntax");
+        IllegalArgumentException methodFailure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                     define class Helper as
                         pub execute(): void {
@@ -290,6 +292,8 @@ final class SourceTimerLanguageTest {
                         }
                     end
                     """));
+        assertTrue(methodFailure.getMessage().contains("await requires"),
+                "ordinary instance methods must fail specifically for unauthorized suspension");
     }
 
     @Test
