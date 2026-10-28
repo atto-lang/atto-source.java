@@ -218,4 +218,21 @@ public class OresFutureObserverTest {
         }
     }
 
+
+    @Test
+    void failedProducerRevocationStillNotifiesObserverButIsNotCleanRetirement() {
+        IllegalStateException revokerFailure =
+                new IllegalStateException("upstream revocation failed");
+        OresFuture<Integer> producer = new OresFuture<>(() -> {
+            throw revokerFailure;
+        });
+        OresFuture<Integer> observer = OresFuture.observe(producer);
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(producer.cancel(false));
+        assertTrue(observer.isCancelled());
+        assertSame(revokerFailure, producer.cancellationHookFailureFromRuntime(),
+                "cancelled is not proof of physically successful upstream cleanup");
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
 }
