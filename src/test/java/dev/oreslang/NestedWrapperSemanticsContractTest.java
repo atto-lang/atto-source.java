@@ -71,6 +71,80 @@ final class NestedWrapperSemanticsContractTest {
     }
 
     @Test
+    void futureMapPreservesCallbackReturnedFutureAsNestedFuture() {
+        String valid = """
+                pub async fnc base(): int { return 20; }
+                pub async fnc twice(int value): int { return value * 2; }
+                pub fnc main(): void {
+                    val Future<Future<int>> nested = base().map(|int n| -> {
+                        return twice(n);
+                    });
+                    val Future<int> inner = await nested;
+                    stdio.stdout.write(await inner);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(valid));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc base(): int { return 20; }
+                pub async fnc twice(int value): int { return value * 2; }
+                pub fnc main(): void {
+                    val Future<int> implicitlyFlattened = base().map(|int n| -> {
+                        return twice(n);
+                    });
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void onlyExplicitFutureFlatMapComposesCallbackFuture() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc base(): int { return 20; }
+                pub async fnc twice(int value): int { return value * 2; }
+                pub fnc main(): void {
+                    val Future<int> explicitlyFlattened = base().flatMap(|int n| -> {
+                        return twice(n);
+                    });
+                    stdio.stdout.write(await explicitlyFlattened);
+                    return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc base(): int { return 20; }
+                pub fnc main(): void {
+                    val Future<int> invalid = base().flatMap(|int n| -> {
+                        return n + 2;
+                    });
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void futureMapRejectsIncompatibleCallbackInputAndUncheckedResult() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc base(): int { return 20; }
+                pub fnc main(): void {
+                    val Future<int> invalid = base().map(|string n| -> {
+                        return 42;
+                    });
+                    return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc base(): int { return 20; }
+                pub fnc main(): void {
+                    val Future<int> invalid = base().map(|int n| -> {
+                        return MysteryValue;
+                    });
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void compilerAwaitRemovesOnlyOneFutureLayer() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub suspends fnc take(Future<Future<int>> nested): Future<int> {
