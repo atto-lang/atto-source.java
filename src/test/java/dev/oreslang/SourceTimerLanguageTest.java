@@ -122,13 +122,30 @@ final class SourceTimerLanguageTest {
 
     @Test
     void syncCallableCannotAwaitTimerFuture() {
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
-                        pub fnc main(): void {
+                        pub fnc ordinary_helper(): void {
                             await time.after(1ms);
                             return;
                         }
                         """));
+        assertTrue(failure.getMessage().contains("await requires"),
+                "must reject the suspension effect, not an unrelated syntax error");
+    }
+
+    @Test
+    void rootMainMayAwaitExistingTimerWithoutExplicitAsyncModifier() throws Exception {
+        // The root entrypoint already has a scheduler Task. Do not create
+        // another Task to bridge a timer or revoke legacy main semantics.
+        String source = """
+                pub routine main(): void {
+                    await time.sleep(0ms);
+                    stdio.println(44);
+                    return;
+                }
+                """;
+        assertTrue(run(source).contains("44"));
     }
 
     @Test
