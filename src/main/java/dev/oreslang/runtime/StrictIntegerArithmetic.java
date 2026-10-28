@@ -38,6 +38,20 @@ public final class StrictIntegerArithmetic {
         return result;
     }
 
+    /**
+     * Explicit, lossless int-to-float conversion. The guest `as` operator
+     * checks dynamic type identity; it does not perform representation
+     * conversion. In particular, (long)(double)Long.MAX_VALUE saturates in
+     * Java and therefore cannot alone prove exact round-trip identity.
+     */
+    public static double toFloatExact(long value) {
+        double converted = (double) value;
+        if (converted >= 0x1.0p63 || (long) converted != value) {
+            throw new ArithmeticException("int value cannot be represented exactly as float");
+        }
+        return converted;
+    }
+
     /** Bitwise XOR of exact two's-complement signed 64-bit bit patterns. */
     public static long bitXor(long left, long right) {
         return left ^ right;
