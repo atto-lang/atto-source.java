@@ -1,7 +1,7 @@
 // Compiled guest checks for the portable tensor span metadata contract.
 // A valid span is NOT a permission to read or write an actor/host/GPU buffer.
-import class TensorSpan from '../stdlib/compute';
-import fnc valid_tensor_span from '../stdlib/compute';
+import class TensorSpan from '../stdlib/tensor';
+import fnc valid_tensor_span from '../stdlib/tensor';
 
 pub routine main(): void {
   val TensorSpan full = new TensorSpan(8, 0, 8, 1);
