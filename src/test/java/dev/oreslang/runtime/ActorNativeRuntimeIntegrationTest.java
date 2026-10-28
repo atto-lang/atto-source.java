@@ -9,6 +9,36 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(30)
 final class ActorNativeRuntimeIntegrationTest {
     @Test
+    void privateNativeRefundReceiptRemainsRetryableAfterAggregateFault() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            runtime.enableNativeActorStorage();
+            // Host-only fault injection: force the aggregate ledger to reject
+            // a refund, then restore it. No production authority is exposed.
+            var field = ActorRuntime.class.getDeclaredField("privateMemoryBytes");
+            field.setAccessible(true);
+            var aggregate = (java.util.concurrent.atomic.AtomicLong) field.get(runtime);
+            ActorRuntime.ActorRef<String> ref = runtime.spawnPrivateTrusted(context -> {
+                var region = context.nativeStorage().orElseThrow().region(32);
+                long charged = aggregate.get();
+                assertEquals(32, charged);
+                aggregate.set(0);
+                try {
+                    assertThrows(IllegalStateException.class, region::close);
+                } finally { aggregate.set(charged); }
+                region.close();
+                assertEquals(0, aggregate.get(), "retry must refund before slice finalization");
+                region.close();
+                assertEquals(0, aggregate.get(), "successful refunds must not repeat");
+                return (message, turn) -> turn.self().stop();
+            });
+            ref.ready().get(5, TimeUnit.SECONDS);
+            ref.send("stop");
+            ref.done().get(5, TimeUnit.SECONDS);
+            assertTrue(ref.failure().isEmpty(), ref.failure().toString());
+        }
+    }
+
+    @Test
     void snapshotsAndOutputCannotOvercommitNativeActorBudget() throws Exception {
         IsolatePolicy policy = new IsolatePolicy(IsolatePolicy.developer().capabilities(),
                 16L * 1024 * 1024, 64, java.time.Duration.ofSeconds(20));

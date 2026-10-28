@@ -1211,8 +1211,12 @@ public final class ActorRuntime implements AutoCloseable {
         public long bytes() { return bytes; }
 
         @Override
-        public void close() {
-            if (released.compareAndSet(false, true)) slice.release(bytes);
+        public synchronized void close() {
+            if (released.get()) return;
+            // A failed aggregate refund restores the slice charge. Retain
+            // this receipt until the refund succeeds so native retirement can retry.
+            slice.release(bytes);
+            released.set(true);
         }
     }
 
