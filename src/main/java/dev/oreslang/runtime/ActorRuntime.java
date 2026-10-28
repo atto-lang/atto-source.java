@@ -1026,22 +1026,22 @@ public final class ActorRuntime implements AutoCloseable {
             if (bytes == 0) return new MemoryReservation(this, 0);
 
             synchronized (memoryBudgetLock) {
-            long current = usedBytes.get();
-            long next;
-            try {
-                next = Math.addExact(current, bytes);
-            } catch (ArithmeticException overflow) {
-                throw new IllegalStateException(purpose + " accounting overflow");
-            }
-            if (next > limitBytes - extraCharges.getAsLong()) {
-                throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
-            }
+                long current = usedBytes.get();
+                long next;
+                try {
+                    next = Math.addExact(current, bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(purpose + " accounting overflow");
+                }
+                if (next > limitBytes - extraCharges.getAsLong()) {
+                    throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                            + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
+                }
 
-            MemoryReservation receipt = new MemoryReservation(this, bytes);
-            reservePrivateRuntimeBytes(bytes, owner, purpose);
-            usedBytes.set(next);
-            return receipt;
+                MemoryReservation receipt = new MemoryReservation(this, bytes);
+                reservePrivateRuntimeBytes(bytes, owner, purpose);
+                usedBytes.set(next);
+                return receipt;
             }
         }
 
@@ -1323,7 +1323,7 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException("actor shard reservation overflow", overflow);
             }
-                if (total > cell.policy.maxHeapBytes() - (cell.kind == ActorKind.SHARED
+            if (total > cell.policy.maxHeapBytes() - (cell.kind == ActorKind.SHARED
                     ? cell.nativeReservedBytes + cell.sharedMailboxBytes.get() + cell.outputBytes.get() : 0)) {
                 throw new IllegalStateException("per-actor shard heap limit exceeded");
             }
@@ -1446,27 +1446,27 @@ public final class ActorRuntime implements AutoCloseable {
                 throw terminated(cell.ref);
             }
             synchronized (memoryBudgetLock) {
-            final long total = Math.addExact(cell.shardReservedBytes, bytes);
-            if (total > cell.policy.maxHeapBytes() - (cell.kind == ActorKind.SHARED
-                    ? cell.nativeReservedBytes + cell.sharedMailboxBytes.get() + cell.outputBytes.get() : 0)) {
-                throw new IllegalStateException("actor snapshot quota exceeded");
-            }
-            if (cell.memorySlice != null && bytes > cell.memorySlice.remainingBytes()
-                    - cell.outputBytes.get() - cell.snapshotReservedBytes.get())
-                throw new IllegalStateException("private actor snapshot quota exceeded");
-            reserveSharedRuntimeBytes(bytes, "actor column snapshot");
-            final double[] contents;
-            try {
-                contents = new double[rows];
-            } catch (RuntimeException | Error failure) {
-                releaseSharedRuntimeBytes(bytes);
-                throw failure;
-            }
-            ActorShardSnapshotLease lease = new ActorShardSnapshotLease(cell, contents, bytes);
-            cell.snapshotReservedBytes.addAndGet(bytes);
-            cell.shardReservedBytes = total;
-            cell.shardSnapshotLeases.add(lease);
-            return lease;
+                final long total = Math.addExact(cell.shardReservedBytes, bytes);
+                if (total > cell.policy.maxHeapBytes() - (cell.kind == ActorKind.SHARED
+                        ? cell.nativeReservedBytes + cell.sharedMailboxBytes.get() + cell.outputBytes.get() : 0)) {
+                    throw new IllegalStateException("actor snapshot quota exceeded");
+                }
+                if (cell.memorySlice != null && bytes > cell.memorySlice.remainingBytes()
+                        - cell.outputBytes.get() - cell.snapshotReservedBytes.get())
+                    throw new IllegalStateException("private actor snapshot quota exceeded");
+                reserveSharedRuntimeBytes(bytes, "actor column snapshot");
+                final double[] contents;
+                try {
+                    contents = new double[rows];
+                } catch (RuntimeException | Error failure) {
+                    releaseSharedRuntimeBytes(bytes);
+                    throw failure;
+                }
+                ActorShardSnapshotLease lease = new ActorShardSnapshotLease(cell, contents, bytes);
+                cell.snapshotReservedBytes.addAndGet(bytes);
+                cell.shardReservedBytes = total;
+                cell.shardSnapshotLeases.add(lease);
+                return lease;
             }
         }
     }
@@ -7796,8 +7796,8 @@ public final class ActorRuntime implements AutoCloseable {
                     synchronized (memoryBudgetLock) {
                         if (bytes > nativeReservedBytes)
                             throw new IllegalStateException("native actor quota refund underflow");
-                        nativeReservedBytes -= bytes;
                         releaseSharedRuntimeBytes(bytes);
+                        nativeReservedBytes -= bytes;
                     }
                 }
                 refunded = true;
@@ -8300,48 +8300,48 @@ public final class ActorRuntime implements AutoCloseable {
             }
             synchronized (lifecycleLock) {
                 synchronized (memoryBudgetLock) {
-                if (closed.get()) {
-                    throw new IllegalStateException("actor runtime is closed");
-                }
-                // self.end/self.endWithCleanup seals the mailbox immediately, but
-                // the current turn and its final cleanup retain the actor's output
-                // capability until finalization closes the stream.
-                if (!acceptsActorOutputLocked()) {
-                    throw terminated(ref);
-                }
+                    if (closed.get()) {
+                        throw new IllegalStateException("actor runtime is closed");
+                    }
+                    // self.end/self.endWithCleanup seals the mailbox immediately, but
+                    // the current turn and its final cleanup retain the actor's output
+                    // capability until finalization closes the stream.
+                    if (!acceptsActorOutputLocked()) {
+                        throw terminated(ref);
+                    }
 
-                long current = outputBytes.get();
-                long next;
-                try {
-                    next = Math.addExact(current, bytes);
-                } catch (ArithmeticException overflow) {
-                    throw new IllegalStateException(
-                            "actor output memory accounting overflow",
-                            overflow);
-                }
+                    long current = outputBytes.get();
+                    long next;
+                    try {
+                        next = Math.addExact(current, bytes);
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalStateException(
+                                "actor output memory accounting overflow",
+                                overflow);
+                    }
 
-                long actorAvailable = isPrivateKind(kind)
-                        ? Math.max(0L, memorySlice.remainingBytes() - snapshotReservedBytes.get() - current)
-                        : Math.max(
-                                0L,
-                                policy.maxHeapBytes()
-                                        - sharedMailboxBytes.get()
-                                        - nativeReservedBytes
-                                        - shardReservedBytes
-                                        - current);
-                if (bytes > actorAvailable) {
-                    throw new IllegalStateException(
-                            "actor output memory limit exceeded for "
-                                    + ref.id()
-                                    + ": requested=" + bytes
-                                    + " outputUsed=" + current
-                                    + " available=" + actorAvailable);
-                }
+                    long actorAvailable = isPrivateKind(kind)
+                            ? Math.max(0L, memorySlice.remainingBytes() - snapshotReservedBytes.get() - current)
+                            : Math.max(
+                                    0L,
+                                    policy.maxHeapBytes()
+                                            - sharedMailboxBytes.get()
+                                            - nativeReservedBytes
+                                            - shardReservedBytes
+                                            - current);
+                    if (bytes > actorAvailable) {
+                        throw new IllegalStateException(
+                                "actor output memory limit exceeded for "
+                                        + ref.id()
+                                        + ": requested=" + bytes
+                                        + " outputUsed=" + current
+                                        + " available=" + actorAvailable);
+                    }
 
-                reserveSharedRuntimeBytes(
-                        bytes,
-                        "actor output stream");
-                outputBytes.set(next);
+                    reserveSharedRuntimeBytes(
+                            bytes,
+                            "actor output stream");
+                    outputBytes.set(next);
                 }
             }
         }
@@ -8364,21 +8364,21 @@ public final class ActorRuntime implements AutoCloseable {
             if (bytes < 0) throw new IllegalArgumentException("shared mailbox reservation cannot be negative");
             synchronized (lifecycleLock) {
                 synchronized (memoryBudgetLock) {
-                if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-                if (stopped.get()) throw terminated(ref);
-                long current = sharedMailboxBytes.get();
-                long next;
-                try {
-                    next = Math.addExact(current, bytes);
-                } catch (ArithmeticException overflow) {
-                    throw new IllegalStateException("shared actor mailbox memory accounting overflow");
-                }
-                if (next > policy.maxHeapBytes() - nativeReservedBytes - outputBytes.get() - shardReservedBytes) {
-                    throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
-                            + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
-                }
-                reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
-                sharedMailboxBytes.set(next);
+                    if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                    if (stopped.get()) throw terminated(ref);
+                    long current = sharedMailboxBytes.get();
+                    long next;
+                    try {
+                        next = Math.addExact(current, bytes);
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalStateException("shared actor mailbox memory accounting overflow");
+                    }
+                    if (next > policy.maxHeapBytes() - nativeReservedBytes - outputBytes.get() - shardReservedBytes) {
+                        throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
+                                + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
+                    }
+                    reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
+                    sharedMailboxBytes.set(next);
                 }
             }
         }

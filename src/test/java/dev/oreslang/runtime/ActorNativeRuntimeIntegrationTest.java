@@ -9,6 +9,41 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(30)
 final class ActorNativeRuntimeIntegrationTest {
     @Test
+    void snapshotsAndOutputCannotOvercommitNativeActorBudget() throws Exception {
+        IsolatePolicy policy = new IsolatePolicy(IsolatePolicy.developer().capabilities(),
+                16L * 1024 * 1024, 64, java.time.Duration.ofSeconds(20));
+        for (boolean shared : new boolean[] {false, true}) {
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+                runtime.enableNativeActorStorage();
+                ActorRuntime.BehaviorFactory<String> factory = context -> {
+                    ActorNativeArena arena = context.nativeStorage().orElseThrow();
+                    // A snapshot is charged outside the private slice but must
+                    // still limit subsequent native allocation in either order.
+                    try (var snapshot = runtime.reserveActorShardSnapshot((int) (policy.maxHeapBytes() / 8))) {
+                        assertThrows(IllegalStateException.class, () -> arena.region(32));
+                    }
+                    try (var region = arena.region((int) policy.maxHeapBytes())) {
+                        assertThrows(IllegalStateException.class, () -> runtime.reserveActorShardSnapshot(1));
+                        assertThrows(IllegalStateException.class, () -> runtime.emitCurrentActorOutput(1L));
+                    }
+                    // An output charge must also constrain a later native allocation.
+                    runtime.emitCurrentActorOutput(1L);
+                    assertThrows(IllegalStateException.class,
+                            () -> arena.region((int) policy.maxHeapBytes()));
+                    return (message, turn) -> turn.self().stop();
+                };
+                ActorRuntime.ActorRef<String> ref = shared
+                        ? runtime.spawnSharedTrusted(policy, factory) : runtime.spawnPrivateTrusted(policy, factory);
+                ref.ready().get(5, TimeUnit.SECONDS);
+                ref.send("stop");
+                ref.done().get(5, TimeUnit.SECONDS);
+                assertTrue(ref.failure().isEmpty(), ref.failure().toString());
+                assertEquals(0, runtime.nativeActorMemoryBytes());
+            }
+        }
+    }
+
+    @Test
     void stopWaitsForOffCarrierLifetimeAndReadLoans() throws Exception {
         for (boolean shared : new boolean[] {false, true}) {
             try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {

@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -15,6 +16,36 @@ import org.junit.jupiter.api.Timeout;
  */
 @Timeout(30)
 final class ActorNativeStorageStandaloneTest {
+    @Test
+    void retirementSealsAdmissionAndLastLoanNotifiesOutsideArenaMonitor() throws Exception {
+        AtomicBoolean open = new AtomicBoolean(true);
+        AtomicLong callbacks = new AtomicLong();
+        AtomicReference<ActorNativeArena> holder = new AtomicReference<>();
+        ActorNativeArena a = new ActorNativeArena(1024, () -> {}, bytes -> () -> {}, () -> {
+            assertFalse(Thread.holdsLock(holder.get()));
+            callbacks.incrementAndGet();
+        }, open::get);
+        holder.set(a);
+        var region = a.region(32);
+        var pin = a.acquireLifetimePin();
+        var read = region.leaseReadOnly(0, 8);
+        open.set(false);
+        assertThrows(IllegalStateException.class, () -> a.region(8));
+        assertThrows(IllegalStateException.class, a::acquireLifetimePin);
+        assertThrows(IllegalStateException.class, () -> region.leaseReadOnly(0, 8));
+        a.retire();
+        assertThrows(IllegalStateException.class, a::close);
+        Thread release = new Thread(() -> { pin.close(); read.close(); });
+        release.start();
+        release.join();
+        assertEquals(1, callbacks.get());
+        pin.close();
+        read.close();
+        assertEquals(1, callbacks.get());
+        a.close();
+        assertTrue(a.cleanupComplete());
+    }
+
     @Test
     void arenaCleanupRetriesRefundFailureWithoutRestoringAccessOrDoubleFree() {
         AtomicLong charged = new AtomicLong();
