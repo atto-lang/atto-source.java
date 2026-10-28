@@ -112,13 +112,28 @@ critical permit. A timer cannot abort arbitrary host code or roll back
 remote side effects. Full bounded-work, safe-point and sandbox termination
 proofs remain necessary for real-time or untrusted FaaS workloads.
 
-**Still NOT IMPLEMENTED:** automatically inherited child deadlines,
-critical policy on static-select arms and arbitrary dynamically composed
-select operations, hard elapsed-time fences at channel commit, and full
-source actor loan/lifecycle integration. Those remain release gates. A full
-`@Critical` duration-literal syntax is future work. The initial `=N`
-syntax uses integer milliseconds. The Java tests are authored but lack
-executed exact-head Maven/Graal/Native Image evidence.
+**Additional scheduler and channel hardening (October 28):**
+the earliest total/execution deadline active on a scheduler task is
+snapshotted when it spawns a nested task, even if that child has no
+`@Critical` annotation. Each child gets its own scheduler-owned expiration
+registration; parent cancellation does not release a still-running child
+critical region before physical retirement. Existing children are not yet
+retroactively tightened if parent policies change after child creation.
+
+A timed channel selection now records its monotonic budget **before**
+entering the atomic select coordinator. The coordinator rejects expired
+single-channel reads/writes and rendezvous peers even if its timer executor
+is starved. Zero duration is an immediate attempt: commit only if ready,
+otherwise fail without leaving a waiting registration. This closes the
+stale-delivery gap that a timer-only cancellation could miss.
+
+**Still NOT IMPLEMENTED:** complete structured child cancellation ownership,
+critical timeouts on static-select arms and arbitrarily composed select
+operations, dynamic wait-for graph coverage, and full source actor
+`handle_state` loan/lifecycle integration. These are separate release gates.
+A full `@Critical` duration-literal syntax is future work; `=N` is
+integer milliseconds. Code and tests are authored, but exact-head
+Maven/Graal/Native Image tests have not executed.
 
 The planned full policy distinguishes:
 
