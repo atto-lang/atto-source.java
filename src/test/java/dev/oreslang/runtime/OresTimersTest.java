@@ -169,6 +169,60 @@ final class OresTimersTest {
     }
 
     @Test
+    void intervalCapabilityChargesAndReleasesGlobalSlotsExactlyOnce() {
+        int before = OresTimers.availableGlobalIntervalSlots();
+        try (OresTimers first = new OresTimers();
+             OresTimers second = new OresTimers()) {
+            OresTimers.Interval cancelled = first.intervalNanos(1);
+            OresTimers.Interval closedWithOwner = second.intervalNanos(1);
+            assertEquals(before - 2, OresTimers.availableGlobalIntervalSlots());
+            assertTrue(cancelled.cancel());
+            assertFalse(cancelled.cancel());
+            assertEquals(before - 1, OresTimers.availableGlobalIntervalSlots());
+            second.close();
+            assertFalse(closedWithOwner.cancel());
+            assertEquals(before, OresTimers.availableGlobalIntervalSlots());
+        }
+        assertEquals(before, OresTimers.availableGlobalIntervalSlots());
+    }
+
+    @Test
+    void globalIntervalBudgetCannotBeBypassedByCreatingMoreOwners() {
+        int before = OresTimers.availableGlobalIntervalSlots();
+        try (OresTimers a = new OresTimers();
+             OresTimers b = new OresTimers();
+             OresTimers c = new OresTimers();
+             OresTimers d = new OresTimers();
+             OresTimers overflow = new OresTimers()) {
+            OresTimers[] owners = {a, b, c, d};
+            for (int i = 0; i < before; i++) {
+                owners[i / 4096].intervalNanos(1);
+            }
+            assertEquals(0, OresTimers.availableGlobalIntervalSlots());
+            assertThrows(RejectedExecutionException.class,
+                    () -> overflow.intervalNanos(1));
+            a.close();
+            assertTrue(OresTimers.availableGlobalIntervalSlots() > 0);
+            assertNotNull(overflow.intervalNanos(1));
+        }
+        assertEquals(before, OresTimers.availableGlobalIntervalSlots());
+    }
+
+    @Test
+    void intervalCancellationRacingCloseNeverDoubleReleasesGlobalSlot()
+            throws Exception {
+        int before = OresTimers.availableGlobalIntervalSlots();
+        for (int i = 0; i < 100; i++) {
+            OresTimers owner = new OresTimers();
+            OresTimers.Interval interval = owner.intervalNanos(1);
+            Thread canceller = Thread.ofPlatform().start(interval::cancel);
+            owner.close();
+            canceller.join();
+            assertEquals(before, OresTimers.availableGlobalIntervalSlots());
+        }
+    }
+
+    @Test
     void timerExpirationReentersOnlyThroughOwningScheduler() throws Exception {
         try (OresTimers timers = new OresTimers();
              OresScheduler scheduler = new OresScheduler(1)) {
