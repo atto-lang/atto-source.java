@@ -8,7 +8,7 @@ provenance.
 ## Current protected-origin candidate
 
 Observed source `main` commit:
-`3df7d2a9433250dd831a7a6c50c78e561f2b5d79`
+`3210aeff07597035a4ed815ebbdf39720a3266c1`
 
 Observed source `main` branch state at preparation time:
 - GitHub reports `protected=false`;
@@ -93,14 +93,14 @@ authorized by this document.
 
 The source `main` authority candidate advanced after this repair PR was opened.
 The snapshot was re-read and repinned to
-`3df7d2a9433250dd831a7a6c50c78e561f2b5d79`. All seven governed control blobs are unchanged from the prior
+`3210aeff07597035a4ed815ebbdf39720a3266c1`. All seven governed control blobs are unchanged from the prior
 snapshot, and the approved-destination ledger still has zero active rows.
 This refresh does not change the non-authorizing status of this PR.
 
 
 ### 2026-10-28 refresh
 
-Source `main` advanced to `3df7d2a9433250dd831a7a6c50c78e561f2b5d79`. All seven governed private-CI
+Source `main` advanced to `3210aeff07597035a4ed815ebbdf39720a3266c1`. All seven governed private-CI
 control blobs were re-read at that exact commit and remain byte-identical to
 the prior snapshot; the active destination ledger still has zero uncommented
 rows. This refresh remains review-only and non-authorizing.
