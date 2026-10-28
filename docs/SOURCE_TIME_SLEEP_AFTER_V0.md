@@ -46,7 +46,9 @@ by the owning runtime.
   and actor-generation/heap-lifetime admission. Ordinary non-actor async
   callables are admitted. An actor cannot use the context timer to bypass its
   sealed heap or single-writer turn.
-- `await` remains legal only under existing async/suspends type rules.
+- `await` requires `async`/`suspends` authority or an already scheduler-owned
+  entrypoint (resolved zero-arity `main`, actor `receive`, or `actor fnc`).
+  Actor-owned `await` does **not** imply actor-owned `time.*` admission.
 - Source-owned cancellation/TaskScope deadline policy is not implicitly
   added by `time.sleep` or `time.after`.
 - No blocking `Thread.sleep` or virtual-thread-per-timer fallback is used
@@ -75,7 +77,14 @@ integration tests remain an admission gate.
 
 1. Exact branch/head snapshot, JDK 25 Maven compile and
    `SourceTimerLanguageTest`, `OresTimersTest`,
-   `AsyncAwaitLanguageTest` execution with real job steps.
+   `AsyncAwaitLanguageTest`, `FuturePipelineProvenanceTest`,
+   `MemberSuspensionLanguageTest`, and the loopback
+   `AsyncNativeIoTest.delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof`
+   regression with real executed job steps and nonempty passing Surefire reports.
+   The TCP test withholds bytes until an independent actor progresses on the
+   only shared carrier, proving a genuinely pending Future can release that
+   carrier. The buffered-channel `receive` guest smoke is only a
+   settled-Future/fast-path smoke; neither proves actor-local timers work.
 2. Verify later scheduler turn for zero Duration, callback-free clock
    execution, actor and timeout negative compiler cases, and global quotas.
 3. Native Image **compiled guest code**, not only an interpreter image.
