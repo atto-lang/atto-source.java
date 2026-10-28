@@ -39,6 +39,36 @@ final class SourceTimerLanguageTest {
     }
 
     @Test
+    void typedDurationAndFutureAreDistinctFromIntegers() throws Exception {
+        String source = """
+                pub async fnc main(): void {
+                    val Duration delay = 1ms;
+                    val Future<void> wake = time.after(delay);
+                    await wake;
+                    stdio.println(43);
+                    return;
+                }
+                """;
+        assertTrue(run(source).contains("43"));
+    }
+
+    @Test
+    void durationCannotMasqueradeAsNumericPayload() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc wrong(): int {
+                            return 1ms;
+                        }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc wrong(): Duration {
+                            return 5;
+                        }
+                        """));
+    }
+
+    @Test
     void allSupportedDurationUnitsAreCheckedAndAwaitable() throws Exception {
         String source = """
                 pub async fnc main(): void {
