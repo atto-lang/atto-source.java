@@ -462,6 +462,120 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void twoSourceActorsRetainDistinctReceiversAcrossHelperSuspension()
+            throws Exception {
+        // Both instances have the same source class but distinct immutable
+        // actor identities. Each cooperative helper mutates only its original
+        // receiver, even when physical carriers hand off between their tasks.
+        String output = run("""
+                define actor Worker as
+                  let int count;
+                  on_start(): void {
+                    self.count = 0;
+                    return;
+                  }
+                  count_in_helper(n: int): int {
+                    for (let i = 0; i < n; i = i + 1) do
+                      self.count = self.count + 1;
+                    done
+                    return self.count;
+                  }
+                  receive(ActorMail<int> mail): void {
+                    self.send(self.count_in_helper(mail.value));
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val left = spawn Worker();
+                  val right = spawn Worker();
+                  await left.get_ready();
+                  await right.get_ready();
+                  left.send(4096);
+                  right.send(3072);
+                  val first = (await left.outputs.next()).value.unwrap();
+                  val second = (await right.outputs.next()).value.unwrap();
+                  stdio.stdout.write(first.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.value);
+                  await left.get_done();
+                  await right.get_done();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("4096|3072|"),
+                "cooperating actor tasks lost their distinct sealed receivers: " + output);
+        long handoffs = Long.parseLong(output.substring("4096|3072|".length()));
+        assertTrue(handoffs > 0,
+                "actor helper continuation should safely resume after cooperation");
+    }
+
+    @Test
+    void cancelledNestedActorHelperPhysicallyRetiresBeforeDone()
+            throws Exception {
+        // A nested synchronous loop is an implicitly scheduled SourceTask.
+        // Cancellation of its parent must not free actor-owned state while
+        // the helper still owns a resumable receiver frame.
+        String setting = "ores.runtime.actor.shared.parallelism";
+        String previous = System.getProperty(setting);
+        System.setProperty(setting, "1");
+        try {
+            String output = run("""
+                    define actor Busy as
+                      let int spins;
+                      on_start(): void {
+                        self.spins = 0;
+                        return;
+                      }
+                      spin_forever(): void {
+                        while (true) do
+                          self.spins = self.spins + 1;
+                        done
+                      }
+                      receive(ActorMail<String> mail): void {
+                        self.send("entered");
+                        self.spin_forever();
+                        return;
+                      }
+                    end
+                    define actor Peer as
+                      receive(ActorMail<String> mail): void {
+                        self.send("peer");
+                        self.end();
+                        return;
+                      }
+                    end
+                    pub async routine main(): void {
+                      val busy = spawn Busy();
+                      val peer = spawn Peer();
+                      await busy.get_ready();
+                      await peer.get_ready();
+                      busy.send("start");
+                      val entered = (await busy.outputs.next()).value.unwrap();
+                      peer.send("start");
+                      val completed = (await peer.outputs.next()).value.unwrap();
+                      stdio.stdout.write(entered.value);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(completed.value);
+                      busy.stop();
+                      await busy.get_done();
+                      await peer.get_done();
+                      stdio.stdout.write("|retired");
+                      return;
+                    }
+                    """);
+            assertEquals("entered|peer|retired", output,
+                    "nested source helper cancellation must drain before actor done");
+        } finally {
+            if (previous == null) System.clearProperty(setting);
+            else System.setProperty(setting, previous);
+        }
+    }
+
+    @Test
     void synchronousReceiveLoopAutoPreemptsWithoutOvertakingLaterMailboxMessages()
             throws Exception {
         String output = run("""
