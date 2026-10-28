@@ -2753,6 +2753,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "ActorRef belongs to a different ActorRuntime");
         }
+        ActorCell<?> live = actors.get(ref.id());
+        if (live != null && live.ref != ref) {
+            throw new ActorInvalidReferenceException(
+                    "stale or forged ActorRef cannot mint a supervisor control handle");
+        }
         return new ActorControlHandle(ref);
     }
 
@@ -5773,6 +5778,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) return OresFuture.failed(terminated(ref));
+        if (cell.ref != ref) {
+            throw new ActorInvalidReferenceException(
+                    "stale or forged ActorRef cannot observe live actor messages");
+        }
         return cell.drainAcceptedMessages();
     }
 
@@ -5816,7 +5825,12 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell == null) throw terminated(ref);
+        if (cell.ref != ref) {
+            throw new ActorInvalidReferenceException(
+                    "stale or forged ActorRef cannot send to a live actor");
+        }
+        if (cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
