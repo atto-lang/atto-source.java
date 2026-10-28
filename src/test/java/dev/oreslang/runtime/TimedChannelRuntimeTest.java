@@ -79,6 +79,65 @@ final class TimedChannelRuntimeTest {
         assertTrue(channel.tryRead().isEmpty());
     }
 
+    @Test void expiredReadCannotCommitWhenTimerThreadIsStalled() throws Exception {
+        var channel = new ChannelRuntime.Channel<String>(1);
+        var unblockTimer = new java.util.concurrent.CountDownLatch(1);
+        var blocked = new java.util.concurrent.CountDownLatch(1);
+        try (var timer = Executors.newSingleThreadScheduledExecutor()) {
+            timer.execute(() -> {
+                blocked.countDown();
+                try {
+                    unblockTimer.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(blocked.await(5, TimeUnit.SECONDS));
+            try {
+                var expired = channel.readAsyncWithin(Duration.ofMillis(20), timer);
+                Thread.sleep(50);
+                assertTrue(channel.tryWrite("preserved"),
+                        "a stale timed reader cannot consume a later message");
+                var error = assertThrows(ExecutionException.class,
+                        () -> expired.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(TimeoutException.class, error.getCause());
+                assertEquals("preserved", channel.tryRead().orElseThrow());
+            } finally {
+                unblockTimer.countDown();
+            }
+        }
+    }
+
+    @Test void expiredWriteCannotRendezvousWhenTimerThreadIsStalled() throws Exception {
+        var channel = new ChannelRuntime.Channel<String>(0);
+        var unblockTimer = new java.util.concurrent.CountDownLatch(1);
+        var blocked = new java.util.concurrent.CountDownLatch(1);
+        try (var timer = Executors.newSingleThreadScheduledExecutor()) {
+            timer.execute(() -> {
+                blocked.countDown();
+                try {
+                    unblockTimer.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(blocked.await(5, TimeUnit.SECONDS));
+            try {
+                var expired = channel.writeAsyncWithin(
+                        "stale", Duration.ofMillis(20), timer);
+                Thread.sleep(50);
+                var reader = channel.readAsync();
+                assertFalse(reader.isDone(), "expired write must not satisfy a new reader");
+                var error = assertThrows(ExecutionException.class,
+                        () -> expired.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(TimeoutException.class, error.getCause());
+                reader.cancel(false);
+            } finally {
+                unblockTimer.countDown();
+            }
+        }
+    }
+
     @Test void negativeTimeoutIsRejectedBeforeChannelRegistration() {
         var channel = new ChannelRuntime.Channel<String>(1);
         assertTrue(channel.tryWrite("preserved"));
