@@ -63,6 +63,27 @@ function verify(w, c) {
   assert.doesNotMatch(deny, /actions\/checkout@/);
   assert.match(deny, /^\s+exit 1$/m);
   assert.equal(jobRunner(allow), '[self-hosted, linux, x64, oreslang-private-ephemeral]');
+  const stepMarker = '\n    steps:\n';
+  const stepStart = allow.indexOf(stepMarker);
+  const checkoutStep = allow.indexOf('      - uses: actions/checkout@');
+  assert.ok(stepStart >= 0 && checkoutStep > stepStart,
+    'missing ordered admission/checkout steps');
+  const precheckout = allow.slice(stepStart + stepMarker.length, checkoutStep);
+  assert.equal(precheckout.trimStart().split('\n')[0].trim(),
+    '- name: Verify exact-main admission before source checkout',
+    'first executable step must be the trusted admission guard');
+  assert.equal([...precheckout.matchAll(/^      - (?:name|uses):/gm)].length, 1,
+    'no executable command or action may precede admitted checkout');
+  const requiredPreflight = [
+    'set -euo pipefail',
+    "test \"$GITHUB_REPOSITORY_ID\" = '1400792274'",
+    "test \"$GITHUB_REF_PROTECTED\" = 'true'",
+    'test "$GITHUB_SHA" = "$APPROVED_SHA"',
+  ];
+  for (const line of requiredPreflight) {
+    assert.ok(precheckout.split('\n').some(v => v.trim() === line),
+      'missing executable pre-checkout guard: ' + line);
+  }
   const guard = allow.indexOf('Verify exact-main admission before source checkout');
   const checkout = allow.indexOf('actions/checkout@');
   const source = allow.indexOf('Verify source identity and immutable Git tree');
@@ -118,6 +139,10 @@ test('unsafe admission mutations rejected', () => {
     ['persist-credentials: false', 'persist-credentials: true'],
     ['test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_TREE"', 'echo unchecked'],
     ['-DskipTests=false -Dmaven.test.skip=false clean verify', '-DskipTests=true package'],
+    ['    steps:\n      - name: Verify exact-main admission before source checkout',
+     '    steps:\n      - name: Unreviewed preflight\n        run: echo preflight-bypassed\n      - name: Verify exact-main admission before source checkout'],
+    ['          test "$GITHUB_SHA" = "$APPROVED_SHA"',
+     '          # test "$GITHUB_SHA" = "$APPROVED_SHA"'],
     ["test \"$(node -p 'process.versions.node.split(\".\")[0]')\" = '22'", 'echo no-node-version-gate'],
     ['node --test tests/private-exact-main-admission.test.mjs', 'echo bypassed-node-test'],
     ["vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}",
