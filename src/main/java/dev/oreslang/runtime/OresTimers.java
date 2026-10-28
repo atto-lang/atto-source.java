@@ -30,6 +30,7 @@ public final class OresTimers implements AutoCloseable {
     // Per-context limits alone are insufficient when an untrusted application
     // creates thousands of timer owners against the shared host clock.
     static final int MAX_GLOBAL_ACTIVE_TIMERS = 16384;
+    static final int MAX_GLOBAL_LIVE_INTERVALS = 16384;
     // Callback timers are queued as scheduler tasks only; actor mailbox
     // admission remains a separate, unimplemented source-level integration.
     private static final ThreadLocal<Boolean> IN_CLOCK_THREAD =
@@ -38,6 +39,10 @@ public final class OresTimers implements AutoCloseable {
             new Semaphore(MAX_GLOBAL_ACTIVE_TIMERS);
     private static final Semaphore GLOBAL_CALLBACK_SLOTS =
             new Semaphore(MAX_GLOBAL_ACTIVE_TIMERS);
+    // An idle interval owns no scheduled tick, but still retains context
+    // capability/state. Many timer owners must not bypass that memory budget.
+    private static final Semaphore GLOBAL_INTERVAL_SLOTS =
+            new Semaphore(MAX_GLOBAL_LIVE_INTERVALS);
 
     static int availableGlobalCallbackSlots() {
         return GLOBAL_CALLBACK_SLOTS.availablePermits();
@@ -45,6 +50,10 @@ public final class OresTimers implements AutoCloseable {
 
     static int availableGlobalTimerSlots() {
         return GLOBAL_SLOTS.availablePermits();
+    }
+
+    static int availableGlobalIntervalSlots() {
+        return GLOBAL_INTERVAL_SLOTS.availablePermits();
     }
     private static final ScheduledThreadPoolExecutor CLOCK = createClock();
 
@@ -359,9 +368,17 @@ public final class OresTimers implements AutoCloseable {
             if (intervals.size() >= MAX_INTERVALS_PER_OWNER) {
                 throw new RejectedExecutionException("interval owner admission is full");
             }
-            Interval interval = new Interval(periodNanos);
-            intervals.add(interval);
-            return interval;
+            if (!GLOBAL_INTERVAL_SLOTS.tryAcquire()) {
+                throw new RejectedExecutionException("global interval admission is full");
+            }
+            try {
+                Interval interval = new Interval(periodNanos);
+                intervals.add(interval);
+                return interval;
+            } catch (RuntimeException | Error failure) {
+                GLOBAL_INTERVAL_SLOTS.release();
+                throw failure;
+            }
         }
     }
 
@@ -439,6 +456,9 @@ public final class OresTimers implements AutoCloseable {
             synchronized (admission) {
                 intervals.remove(this);
             }
+            // The interval capability, not only its current tick, is charged.
+            // The synchronized cancellation winner returns the slot once.
+            GLOBAL_INTERVAL_SLOTS.release();
             return true;
         }
 
