@@ -2668,12 +2668,32 @@ public final class ActorRuntime implements AutoCloseable {
             this.ref = Objects.requireNonNull(ref, "ref");
         }
 
-        public ActorId id() { return ref.id(); }
-        public ActorKind kind() { return ref.kind(); }
-        public boolean isAlive() { return ref.isAlive(); }
-        public Optional<Throwable> failure() { return ref.failure(); }
+        // A leaked control handle must not become an actor-visible inspection
+        // capability. Logical IDs and Java object references are not authority.
+        private void requireControlInspection(String operation) {
+            requireSupervisorContext(operation);
+            requireCallerRuntimeAffinity(operation);
+        }
+
+        public ActorId id() {
+            requireControlInspection("inspect an actor control handle ID");
+            return ref.id();
+        }
+        public ActorKind kind() {
+            requireControlInspection("inspect an actor control handle kind");
+            return ref.kind();
+        }
+        public boolean isAlive() {
+            requireControlInspection("inspect an actor control handle lifecycle");
+            return ref.isAlive();
+        }
+        public Optional<Throwable> failure() {
+            requireControlInspection("inspect an actor control handle failure");
+            return ref.failure();
+        }
 
         public Optional<ActorId> parentId() {
+            requireControlInspection("inspect an actor control handle parent");
             ActorCell<?> cell = actors.get(ref.id());
             return cell == null || cell.parent == null
                     ? Optional.empty()
@@ -2681,6 +2701,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public List<ActorId> childIds() {
+            requireControlInspection("inspect actor control handle children");
             ActorCell<?> cell = actors.get(ref.id());
             return cell == null
                     ? List.of()
@@ -2691,6 +2712,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         public boolean awaitTermination(long timeout, TimeUnit unit)
                 throws InterruptedException {
+            requireControlInspection("await actor control handle termination");
+            requireBlockingHostContext("await actor control handle termination");
             return ref.awaitTermination(timeout, unit);
         }
 
