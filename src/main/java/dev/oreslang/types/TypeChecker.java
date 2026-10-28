@@ -1692,7 +1692,12 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
-            currentMaySuspend = method.async() || method.suspends();
+            // Actor.receive is declared synchronously on purpose: the actor
+            // mailbox turn is already a resumable, owner-bound continuation.
+            // This does not authorize actor.on_start or arbitrary instance
+            // methods to await without an explicit suspends effect.
+            currentMaySuspend = method.async() || method.suspends()
+                    || actorReceiveHook;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
@@ -4379,11 +4384,15 @@ public final class TypeChecker {
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            // First validate the awaited operand. Invalid loans, channel
+            // operations and type errors must not be masked by a less precise
+            // outer suspension-effect diagnostic.
+            Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (!currentMaySuspend) {
                 throw new IllegalArgumentException(
-                        "await requires an async/suspends callable or the scheduler-owned public main entrypoint");
+                        "await requires async/suspends, the actor receive mailbox turn, "
+                                + "or the scheduler-owned public main entrypoint");
             }
-            Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
