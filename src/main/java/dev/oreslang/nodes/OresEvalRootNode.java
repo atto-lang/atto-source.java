@@ -866,6 +866,11 @@ public final class OresEvalRootNode extends RootNode {
             private final List<?> arguments;
             private final CriticalGate.Ticket criticalTicket;
             private final CriticalAnnotationPolicy criticalPolicy;
+            // Budget includes admission and all suspensions from source
+            // invocation creation. The timer never enters guest code.
+            private final long criticalInvocationStartNanos = System.nanoTime();
+            private volatile java.util.concurrent.ScheduledFuture<?> totalDeadlineTimer;
+            private volatile java.util.concurrent.ScheduledFuture<?> executionDeadlineTimer;
             private volatile OresFuture<?> pendingOwnedChannelWait;
             private Env initialBlockEnv;
 
@@ -913,6 +918,46 @@ public final class OresEvalRootNode extends RootNode {
                 this.arguments = List.of();
             }
 
+            /**
+             * Arm a cooperative task failure with the scheduler that owns
+             * this physical invocation. Cancellation does not release the
+             * critical permit until physical task retirement.
+             */
+            private java.util.concurrent.ScheduledFuture<?> armCriticalDeadline(
+                    java.time.Duration limit, boolean fromInvocation) {
+                long nanos;
+                try {
+                    nanos = limit.toNanos();
+                } catch (ArithmeticException overflow) {
+                    nanos = Long.MAX_VALUE;
+                }
+                if (fromInvocation) {
+                    long elapsed = Math.max(0L,
+                            System.nanoTime() - criticalInvocationStartNanos);
+                    nanos = Math.max(0L, nanos - elapsed);
+                }
+                String scope = fromInvocation ? "total" : "execution";
+                if (nanos == 0L) {
+                    throw new IllegalStateException(
+                            "critical " + scope + " deadline exceeded",
+                            new java.util.concurrent.TimeoutException(
+                                    "critical " + scope + " deadline exceeded"));
+                }
+                OresScheduler.DeadlineController controller =
+                        OresScheduler.currentDeadlineController();
+                try {
+                    return context.criticalAdmissionTimer().schedule(
+                            () -> controller.failAtDeadline(
+                                    new java.util.concurrent.TimeoutException(
+                                            "critical " + scope + " deadline exceeded")),
+                            nanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+                } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                    throw new IllegalStateException(
+                            "critical " + scope + " deadline could not be scheduled",
+                            rejected);
+                }
+            }
+
             private OresFuture<Object> criticalChannelRead(
                     ChannelRuntime.Channel<Object> channel) {
                 return criticalPolicy == null || criticalPolicy.channelWaitTimeout() == null
@@ -953,6 +998,10 @@ public final class OresEvalRootNode extends RootNode {
                 nextStep = null;
 
                 if (resume.initial()) {
+                    if (criticalPolicy != null && criticalPolicy.totalTimeout() != null) {
+                        totalDeadlineTimer =
+                                armCriticalDeadline(criticalPolicy.totalTimeout(), true);
+                    }
                     if (criticalTicket != null) {
                         // The source annotation is statically validated by
                         // AnnotationExpander before execution. The admission
@@ -1014,6 +1063,10 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private void startInitialBody() {
+                    if (criticalPolicy != null && criticalPolicy.executionTimeout() != null) {
+                        executionDeadlineTimer =
+                                armCriticalDeadline(criticalPolicy.executionTimeout(), false);
+                    }
                     Env params;
                     if (blockBody != null) {
                         params = initialBlockEnv != null
@@ -1067,6 +1120,15 @@ public final class OresEvalRootNode extends RootNode {
 
             @Override
             public void onPhysicallyRetired() {
+                // Retire timer capabilities before releasing critical ownership.
+                // Timer callbacks already racing retirement observe terminal
+                // scheduler state and cannot preempt a new ticket owner.
+                java.util.concurrent.ScheduledFuture<?> overall = totalDeadlineTimer;
+                java.util.concurrent.ScheduledFuture<?> execution = executionDeadlineTimer;
+                totalDeadlineTimer = null;
+                executionDeadlineTimer = null;
+                if (overall != null) overall.cancel(false);
+                if (execution != null) execution.cancel(false);
                 // Blocking readch/writech registrations belong to the source
                 // frame. When the frame is cancelled while waiting, retract
                 // the private channel operation before releasing exclusion.
