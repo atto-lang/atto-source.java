@@ -2615,11 +2615,13 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ActorHandle<M> {
         private final ActorRef<M> ref;
+        private final ActorCell<?> ownerCell;
         private final ActorId ownerActorId;
 
-        private ActorHandle(ActorRef<M> ref, ActorId ownerActorId) {
+        private ActorHandle(ActorRef<M> ref, ActorCell<?> ownerCell) {
             this.ref = Objects.requireNonNull(ref, "ref");
-            this.ownerActorId = Objects.requireNonNull(ownerActorId, "ownerActorId");
+            this.ownerCell = Objects.requireNonNull(ownerCell, "ownerCell");
+            this.ownerActorId = ownerCell.ref.id();
         }
 
         public ActorRef<M> ref() { return ref; }
@@ -2769,13 +2771,17 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorHandle belongs to a different ActorRuntime");
         }
         ActorCell<?> caller = currentActor.get();
-        if (caller == null || !caller.ref.id().equals(handle.ownerActorId)) {
+        if (caller == null || caller != handle.ownerCell) {
             throw new SecurityException(
                     "ActorHandle lifecycle authority is bound to spawning parent "
                             + handle.ownerActorId + "; cannot " + operation
                             + " from this execution context");
         }
         ActorCell<?> target = actors.get(handle.ref.id());
+        if (target != null && target.ref != handle.ref) {
+            throw new ActorInvalidReferenceException(
+                    "ActorHandle references a stale or forged child incarnation");
+        }
         if (target != null && target.parent != caller) {
             throw new SecurityException(
                     "ActorHandle no longer names a direct structured child");
@@ -4490,7 +4496,7 @@ public final class ActorRuntime implements AutoCloseable {
                 policy,
                 behaviorFactory,
                 false);
-        return new ActorHandle<>(ref, parent.ref.id());
+        return new ActorHandle<>(ref, parent);
     }
 
     public <M> ActorHandle<M> spawnChildPrivate(
