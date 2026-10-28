@@ -78,14 +78,18 @@ jobs:
             fi
           done
           command -v git
-          # Only exit status 1 (no matches) is permitted; unreadable or
-          # malformed config fails closed instead of masquerading as clean.
-          git_config_status=0
-          git config --global --get-regexp '^(credential\.|http\..*\.extraheader)' >/dev/null 2>&1 || git_config_status=$?
-          if test "$git_config_status" -ne 1; then
-            echo "::error::unexpected or unreadable global Git credential config"
-            exit 1
-          fi
+          # Git permits credential and HTTP auth configuration at both
+          # global and system scopes. Includes may import authorization
+          # settings from other files; unscoped http.extraHeader is effective.
+          # Only exit status 1 (no matching keys) permits admission.
+          for config_scope in --global --system; do
+            git_config_status=0
+            git config "$config_scope" --get-regexp '^(credential\.|http\.extraheader$|http\..*\.extraheader$|include\.|includeif\.)' >/dev/null 2>&1 || git_config_status=$?
+            if test "$git_config_status" -ne 1; then
+              echo "::error::unsafe or unreadable Git config scope: $config_scope"
+              exit 1
+            fi
+          done
           echo "ASYNC_INTEROP_SOURCE_FREE_WORKSPACE_CLEAN=true"
 
       - name: Verify source-free tooling prerequisites only
