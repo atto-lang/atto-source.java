@@ -62,22 +62,43 @@ pub critical suspends fnc process(Channel<int> requests): int {
 }
 ```
 
-**Implemented on this draft branch only:** `@Critical(queue_timeout_ms=N)`
-with a nonnegative signed-64 integer literal on a critical file function or
-instance method. The compiler rejects duplicated annotations, unknown keys,
-missing `critical`, and unsupported policy fields. A zero budget admits
-immediately when free and fails if it must queue. The Java runtime uses a
-VM-context-owned, lazily activated timer; it never executes guest code.
-The gate returns a timeout failure for an expired queued ticket and removes
-that ticket without admitting it later. The syntax is `=N`, in integer
-milliseconds, because duration literal metadata is not yet implemented.
+**Implemented on this draft branch (still unexecuted):**
 
-**Specified but NOT IMPLEMENTED:** `execution_timeout_ms`,
-`total_timeout_ms`, `channel_wait_timeout_ms` and nested deadline
-inheritance. Those fields are *rejected*, not silently accepted. Future work
-should provide readable duration literals and an `@Critical` form with
-`queue_timeout`, `execution_timeout`, `channel_wait_timeout` and
-`total_timeout`, after the parser and compiler support them.
+- `@Critical(queue_timeout_ms=N)` applies to synchronous and
+  asynchronous critical file/functions and instance methods, with FIFO
+  expiration checks at handoff even if the timer is delayed.
+- `@Critical(channel_wait_timeout_ms=N)` applies only to `suspends`
+  or `async` critical callables. The Graal SourceTask lowering attaches
+  a deadline to each directly registered `readch` / `writech` operation,
+  including `nb` registrations and deferred channel callbacks.
+  It preserves the logical critical ticket while the channel task suspends.
+- Either field may be independently supplied; both may be combined.
+  All fields require nonnegative signed-64 integer millisecond metadata.
+  Unknown/duplicate/invalid fields or a channel deadline without a
+  suspending declaration are rejected, never silently ignored.
+- The private channel selection's atomic cancellation arbiter determines
+  whether a timeout may withdraw a pending read/write. A committed
+  delivery wins over timeout; a withdrawn sender/receiver cannot later
+  perform channel I/O. The timer is context-owned and never executes
+  Oreslang guest code.
+
+Example:
+
+```ores
+@Critical(queue_timeout_ms=100, channel_wait_timeout_ms=500)
+pub critical suspends fnc process(Channel<int> requests): int {
+    return await (nb readch requests);
+}
+```
+
+**Still NOT IMPLEMENTED:** `execution_timeout_ms`, `total_timeout_ms`,
+automatically inherited child deadlines, critical policy on static-select
+arms and arbitrary dynamically composed/select channel operations, as well
+as full source actor loan/lifecycle integration. Those fields are rejected,
+not ignored. A full `@Critical` duration-literal syntax remains future work.
+The initial `=N` syntax uses integer milliseconds, not a new duration
+literal. The Java host channel tests and single-carrier scheduler model are
+committed but lack executed exact-head Maven/Graal proof.
 
 The planned full policy distinguishes:
 
