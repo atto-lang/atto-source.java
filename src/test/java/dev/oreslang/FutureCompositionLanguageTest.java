@@ -24,7 +24,7 @@ final class FutureCompositionLanguageTest {
                   return value * 2;
                 }
 
-                pub fnc main(): void {
+                pub suspends fnc main(): void {
                   val Future<int> mapped = base().map(|int value| -> {
                     return value + 1;
                   });
@@ -63,7 +63,7 @@ final class FutureCompositionLanguageTest {
                   return;
                 }
 
-                pub fnc main(): void {
+                pub suspends fnc main(): void {
                   val Future<void> observed = noValue().onSuccess(|void ignored| -> {
                     stdio.stdout.write("seen");
                     return;
@@ -82,7 +82,7 @@ final class FutureCompositionLanguageTest {
                 pub async fnc initial(): int { return 20; }
                 pub async fnc doubleIt(int value): int { return value * 2; }
 
-                pub fnc main(): void {
+                pub suspends fnc main(): void {
                     val Future<Future<int>> nested = initial().map(|int value| -> {
                         return doubleIt(value);
                     });
