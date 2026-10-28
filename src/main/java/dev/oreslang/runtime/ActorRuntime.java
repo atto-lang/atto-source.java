@@ -1861,6 +1861,28 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Compiler-only authority gate for a source actor's sealed receiver.
+     * An ActorId alone is not a physical lease: this also requires the exact
+     * runtime, actor cell and currently executing one-turn carrier token.
+     * Recheck before each resumed source method frame, not only at spawn.
+     *
+     * A stopped actor's cleanup may still own its physical turn; finalization
+     * cannot reclaim state until that carrier has exited.
+     */
+    public void requireCurrentSourceActorReceiverLease(ActorId expectedActorId) {
+        Objects.requireNonNull(expectedActorId, "expected source actor id");
+        ActorCell<?> cell = currentActor.get();
+        if (currentActorRuntime() != this
+                || cell == null
+                || !expectedActorId.equals(cell.ref.id())
+                || currentActorId().filter(expectedActorId::equals).isEmpty()
+                || !currentThreadOwnsActorExecutionLease()) {
+            throw new SecurityException(
+                    "source actor receiver requires its owning physical actor turn lease");
+        }
+    }
+
     public ContinuationTarget captureCurrentContinuationTarget() {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
