@@ -68,6 +68,25 @@ ActorContinuationLedgerIntegrationTest (concrete actor carrier/ordering
 and late completion). Run with the repo's Java/JDK25 build. Source CI with
 zero executed steps cannot establish these tests as passed.
 
+## Executed private exact-blob verification (2026-10-28)
+
+- Source ledger and private mirror blob SHA:
+  a153647eea23d15372a19f9fd24b493dc22d6d7c
+- Source JUnit ledger test and private mirror blob SHA:
+  a0804954fedbf1892aab8e2cd8c1dcdac499656e
+- Private mirror PR:
+  https://github.com/honeypot-r-us-test/hnpt-lib-core/pull/7
+- Executed private test run:
+  https://github.com/honeypot-r-us-test/hnpt-lib-core/actions/runs/40772904161
+- Job 123114526128 has actual checkout, JDK21 setup, javac + java smoke,
+  and Maven test steps. Logs: 9 smoke checks; 6 JUnit tests passed,
+  0 failures, 0 errors, BUILD SUCCESS.
+
+The mirror proves only the exact standalone ledger class and unit tests,
+NOT ActorRuntime integration, Graal Native Image, actual guest .ores
+execution, or exact JDK25 runtime behavior. Source-org test jobs on the
+current branch have failed before executing steps and are not passing tests.
+
 ## What phase 1 does not claim
 
 This is **Java host/runtime execution accounting**, not a compiler feature
