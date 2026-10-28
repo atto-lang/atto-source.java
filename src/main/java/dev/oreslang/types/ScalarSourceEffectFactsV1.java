@@ -109,7 +109,8 @@ public final class ScalarSourceEffectFactsV1 {
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()
                     || !fn.genericSpecs().isEmpty() || !fn.annotations().isEmpty()
-                    || fn.structural() || fn.nonLexical() || !fn.effects().isEmpty()) {
+                    || fn.structural() || fn.nonLexical() || !fn.effects().isEmpty()
+                    || !hasAdmittedReturnType(fn.returnType())) {
                 throw new IllegalArgumentException(
                         "scalar effect proof does not admit generic/parametric/annotated callables");
             }
@@ -136,6 +137,17 @@ public final class ScalarSourceEffectFactsV1 {
                     entry.getKey(), scanner.direct, scanner.calls));
         }
         return new Report(graph.infer(), sha256(source));
+    }
+
+    /** This v1 subset cannot prove boxing, union tags or dynamic returns. */
+    private static boolean hasAdmittedReturnType(Ast.TypeRef type) {
+        if (type == null || !type.arguments().isEmpty() || type.inferArguments()) {
+            return false;
+        }
+        return switch (type.name()) {
+            case "int", "bool", "void", "string" -> true;
+            default -> false;
+        };
     }
 
     private static Ast.ModuleDecl requireClosedRoot(Ast.Program program) {
