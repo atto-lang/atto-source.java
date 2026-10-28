@@ -101,18 +101,17 @@ final class SourceActorNativeStorageTest {
                     actors = OresContext.get(null).actors();
                     actors.enableNativeActorStorage();
                 } finally { context.leave(); }
-                // Load one byte-identical .ores fixture for both actor kinds.
-                // It is compiled by the production guest engine, not reimplemented
-                // by Java host test logic.
+                // Load the EXACT compiled .ores blob for this actor kind. No
+                // template expansion: a conformance receipt can identify the
+                // corresponding committed fixture by its Git blob SHA.
+                String fixture = "native-same-kind-survivor-" + kind + ".ores";
                 String program;
                 try (var resource = SourceActorNativeStorageTest.class.getResourceAsStream(
-                        "/actor/native-same-kind-survivor.ores")) {
-                    assertNotNull(resource, "compiled .ores survivor fixture is missing");
-                    program = new String(resource.readAllBytes(), StandardCharsets.UTF_8)
-                            .formatted(kind);
+                        "/actor/" + fixture)) {
+                    assertNotNull(resource, "compiled .ores survivor fixture is missing: " + fixture);
+                    program = new String(resource.readAllBytes(), StandardCharsets.UTF_8);
                 }
-                context.eval(Source.newBuilder(OresLanguage.ID,
-                        program, "native-same-kind-survivor.ores").build());
+                context.eval(Source.newBuilder(OresLanguage.ID, program, fixture).build());
                 assertEquals("1|1|2|2", output.toString(StandardCharsets.UTF_8),
                         "A reaches 2 while B remains at 1, then B reaches 2 after A is done");
                 assertEquals(2, actors.nativeActorArenasCreated(),
