@@ -91,20 +91,32 @@ public final class ScalarSourceEffectFactsV1 {
             throw new IllegalArgumentException("source exceeds effect-analysis budget");
         }
         Ast.Program checked = TypeChecker.check(Parser.parse(source));
-        if (!checked.imports().isEmpty() || checked.modules().size() != 1
-                || !Parser.ROOT_MODULE.equals(checked.modules().getFirst().name())) {
+        // Only the unqualified, unannotated root module has compiler-local
+        // symbol identity in this first-pass proof. Namespaces, contracts and
+        // module annotations can change lookup/dispatch semantics and cannot
+        // be ignored while constructing a closed effect graph.
+        if (checked.namespace() != null || !checked.imports().isEmpty()
+                || checked.modules().size() != 1) {
             throw new IllegalArgumentException(
-                    "scalar effect proof requires one closed root module without imports");
+                    "scalar effect proof requires one unqualified root module without imports");
+        }
+        Ast.ModuleDecl module = checked.modules().getFirst();
+        if (!Parser.ROOT_MODULE.equals(module.name())
+                || !module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "scalar effect proof forbids module annotations, contracts and non-root modules");
         }
 
-        var declarations = checked.modules().getFirst().declarations();
+        var declarations = module.declarations();
         var symbols = new LinkedHashMap<String, Ast.FunctionDecl>();
         for (Ast.Decl declaration : declarations) {
             if (!(declaration instanceof Ast.FunctionDecl fn)) {
                 throw new IllegalArgumentException(
                         "scalar effect proof does not admit nominal declarations or actor code");
             }
-            if (!fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()
+            if (fn.kind() != Ast.CallableKind.FNC
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || !fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()
                     || !fn.genericSpecs().isEmpty() || !fn.annotations().isEmpty()
                     || fn.structural() || fn.nonLexical() || !fn.effects().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -126,10 +138,6 @@ public final class ScalarSourceEffectFactsV1 {
             scanner.reset();
             if (fn.async() || fn.suspends() || fn.generator()) {
                 scanner.direct.add(EffectContracts.Effect.SUSPEND);
-            }
-            if (fn.actorKind() != Ast.ActorKind.NONE) {
-                scanner.direct.add(EffectContracts.Effect.ACTOR);
-                scanner.direct.add(EffectContracts.Effect.SCHEDULER);
             }
             if (fn.trapped()) scanner.direct.add(EffectContracts.Effect.UNKNOWN_CALL);
             scanner.statements(fn.body(), 0);
