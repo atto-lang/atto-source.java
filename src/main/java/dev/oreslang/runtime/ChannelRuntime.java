@@ -7,6 +7,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.time.Duration;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
@@ -170,6 +176,23 @@ public final class ChannelRuntime {
         }
 
         /**
+         * Bounded receive registration. A deadline may cancel only an
+         * uncommitted receive; it cannot steal a message once select has
+         * atomically committed. No producer or actor carrier is parked.
+         */
+        public OresFuture<T> readAsyncWithin(
+                Duration timeout, ScheduledExecutorService timer) {
+            long startNanos = System.nanoTime();
+            OresFuture<SelectResult> selected =
+                    SelectSet.of(read(this)).selectAsync(SelectPolicy.PRIORITY);
+            return mapSelectionWithin(selected, result -> {
+                @SuppressWarnings("unchecked")
+                T value = (T) result.value();
+                return value;
+            }, timeout, timer, startNanos);
+        }
+
+        /**
          * Scheduler-friendly send registration.
          */
         public OresFuture<Void> writeAsync(T value) {
@@ -178,6 +201,21 @@ public final class ChannelRuntime {
                     SelectSet.of(write(this, value))
                             .selectAsync(SelectPolicy.PRIORITY);
             return mapSelection(selected, ignored -> null);
+        }
+
+        /**
+         * Bounded send registration. Timeout cancels an uncommitted send,
+         * preventing late delivery after the caller observes timeout.
+         */
+        public OresFuture<Void> writeAsyncWithin(
+                T value, Duration timeout, ScheduledExecutorService timer) {
+            long startNanos = System.nanoTime();
+            requireValue(value);
+            OresFuture<SelectResult> selected =
+                    SelectSet.of(write(this, value))
+                            .selectAsync(SelectPolicy.PRIORITY);
+            return mapSelectionWithin(selected, ignored -> null,
+                    timeout, timer, startNanos);
         }
 
         private void requireValue(T value) {
@@ -891,6 +929,60 @@ public final class ChannelRuntime {
                 result.failFromRuntime(failure);
             }
         });
+        return result;
+    }
+
+    /**
+     * Deadline for a privately owned channel selection. The authoritative
+     * cancellation arbiter is SelectRegistration.cancelAdmission, which
+     * returns false once delivery has committed. A timer can only publish a
+     * TimeoutException after it has successfully retracted the selection.
+     *
+     * <p>Never use this wrapper on shared Future producers: the cancellation
+     * authority here is justified by private ownership of the select.</p>
+     */
+    private static <T> OresFuture<T> mapSelectionWithin(
+            OresFuture<SelectResult> source,
+            Function<SelectResult, T> mapper,
+            Duration timeout,
+            ScheduledExecutorService timer,
+            long startNanos) {
+        Objects.requireNonNull(timeout, "timeout");
+        Objects.requireNonNull(timer, "timer");
+        if (timeout.isNegative()) {
+            source.cancel(false);
+            throw new IllegalArgumentException("channel wait timeout is negative");
+        }
+        OresFuture<T> result = mapSelection(source, mapper);
+        if (result.isDone()) return result;
+
+        long budget;
+        try {
+            budget = timeout.toNanos();
+        } catch (ArithmeticException overflow) {
+            budget = Long.MAX_VALUE;
+        }
+        long elapsed = Math.max(0L, System.nanoTime() - startNanos);
+        long remaining = Math.max(0L, budget - elapsed);
+        if (remaining == 0L) {
+            if (source.cancel(false)) {
+                result.failFromRuntime(new TimeoutException("channel wait timeout"));
+            }
+            return result;
+        }
+        try {
+            ScheduledFuture<?> handle = timer.schedule(() -> {
+                if (source.cancel(false)) {
+                    result.failFromRuntime(new TimeoutException("channel wait timeout"));
+                }
+            }, remaining, TimeUnit.NANOSECONDS);
+            result.whenCompleteRuntime((ignored, failure) -> handle.cancel(false));
+        } catch (RejectedExecutionException rejected) {
+            if (source.cancel(false)) {
+                result.failFromRuntime(new IllegalStateException(
+                        "channel wait timer admission rejected", rejected));
+            }
+        }
         return result;
     }
 
