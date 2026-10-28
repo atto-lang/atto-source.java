@@ -174,6 +174,15 @@ final class ActorControlHandleIsolationTest {
                     forgery::isAlive);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> runtime.isAlive(forgery));
+            // Host/supervisor inspection is not authorized by UUID alone.
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.heapStatusFor(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.placementFor(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.codeImageFor(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.mailboxUsesChannelTransport(forgery));
             assertTrue(victim.isAlive(), "forged reference must not change target lifecycle");
 
             // Exact runtime-minted reference retains its legitimate authority.
