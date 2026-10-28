@@ -8137,6 +8137,15 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof TimeFacade clock) {
                 return switch (name) {
                     case "sleep", "after" -> (Invokable) args -> {
+                        // Type checking rejects lexical actor uses, but a
+                        // guest could carry this callable through an imported
+                        // helper, a closure, or a linked-module boundary. The
+                        // runtime is the final actor-lifetime authority.
+                        if (ActorRuntime.inActorExecution()
+                                || ActorRuntime.inActorGroupMailmanExecution()) {
+                            throw new IllegalStateException(
+                                    "actor time.* requires actor-owned timer lifecycle lowering");
+                        }
                         requireOne(args, "time." + name);
                         if (!(args.getFirst() instanceof OresDuration duration)) {
                             throw new IllegalArgumentException(
