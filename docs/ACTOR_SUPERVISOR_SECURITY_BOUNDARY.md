@@ -78,6 +78,37 @@ and a separately protected supervisor.
 - Attach exact commit/tree SHA, compiler binary digest, executed step logs,
   denial reason, and negative-test proof. Zero-step CI is NOT_EXECUTED.
 
+## October 28 current-main hardening slice (Java #2226)
+
+This draft adds independent guard checks for three runtime-owned execution
+identities: the logical actor execution record, the physical carrier marker,
+and the physical actor cell. Erasing the logical ThreadLocal alone must not
+promote an executing actor to host/supervisor authority, or permit an actor
+to operate on another ActorRuntime as a trusted host.
+
+For local ActorRef admission, a matching ActorId, ActorKind and generation
+is not sufficient. A live reference must be the **exact runtime-issued Java
+ActorRef object** for lifecycle admission, DATA send, drain observation, and
+control-handle acquisition. Tests construct same-ID/same-generation lookalikes
+by reflection and prove these entry points reject them. The tests also
+capture a host ActorControlHandle inside a real actor turn and attempt to
+read control metadata or execute control operations.
+
+This is defense in depth for supported runtime-managed Java guest turns,
+not a complete supervisor authorization architecture. In particular:
+
+- An actor capable of arbitrary Java/native execution may create an
+  unmarked thread, tamper with all relevant private fields or invoke host
+  internals. Caller-context checks do not authenticate those threads.
+- Supervisor CONTROL still needs explicit, runtime-minted rights separate
+  from logical identifiers, with authority never derivable from DATA bytes.
+- Source-compiled `define supervisor` and typed PANIC/STOPPED/RECLAIMED
+  dispatch, remote IPC integrity and OS process isolation remain separate
+  unresolved gates.
+- Exact-tree JUnit/JDK25, GraalVM AOT and cross-backend execution remain
+  NOT_EXECUTED until verified test steps and provenance exist; source-org
+  failed zero-step jobs provide neither positive nor negative source proof.
+
 ## Current limitations
 
 The mainline Java ActorRuntime has a host-admission check using thread-local
