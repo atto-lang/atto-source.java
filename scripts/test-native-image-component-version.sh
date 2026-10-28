@@ -14,14 +14,14 @@ printf 'native-image %s test\n' "${MOCK_NATIVE_IMAGE_VERSION:-25.3.4.1}"
 STUB
 chmod +x "$tmp/bin/native-image"
 PATH="$tmp/bin:$PATH" MOCK_NATIVE_IMAGE_VERSION=25.3.4.1 \
-  "$root/verify-native-image-component-version.sh" "$tmp/pom.xml"
+  bash "$root/verify-native-image-component-version.sh" "$tmp/pom.xml"
 if PATH="$tmp/bin:$PATH" MOCK_NATIVE_IMAGE_VERSION=25.0.4 \
-  "$root/verify-native-image-component-version.sh" "$tmp/pom.xml"; then
+  bash "$root/verify-native-image-component-version.sh" "$tmp/pom.xml"; then
   echo "version gate accepted incompatible GraalVM release" >&2
   exit 1
 fi
 if PATH="$tmp/bin:$PATH" MOCK_NATIVE_IMAGE_VERSION=25.3.4.10 \
-  "$root/verify-native-image-component-version.sh" "$tmp/pom.xml"; then
+  bash "$root/verify-native-image-component-version.sh" "$tmp/pom.xml"; then
   echo "version gate accepted prefix-only version match" >&2
   exit 1
 fi
@@ -29,7 +29,7 @@ cat >"$tmp/empty-pom.xml" <<'POM'
 <project><properties></properties></project>
 POM
 if PATH="$tmp/bin:$PATH" \
-  "$root/verify-native-image-component-version.sh" "$tmp/empty-pom.xml"; then
+  bash "$root/verify-native-image-component-version.sh" "$tmp/empty-pom.xml"; then
   echo "version gate accepted missing Maven pin" >&2
   exit 1
 fi
