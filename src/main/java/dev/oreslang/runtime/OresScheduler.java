@@ -11,6 +11,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -63,6 +64,24 @@ public final class OresScheduler implements AutoCloseable {
      */
     public interface PhysicalRetirementListener {
         void onPhysicallyRetired();
+    }
+
+    /**
+     * Runtime-only, non-preemptive task deadline request. May run on the VM
+     * timer thread, but cannot run guest code there or release a critical
+     * owner before its carrier unwinds. Source frontends install deadlines
+     * while executing the owning Task, not via public result cancellation.
+     */
+    public interface DeadlineController {
+        void failAtDeadline(TimeoutException expired);
+    }
+
+    public static DeadlineController currentDeadlineController() {
+        Object bound = CURRENT_TASK_DOMAIN.get();
+        if (!(bound instanceof DeadlineController deadline)) {
+            throw new IllegalStateException("critical deadline requires a scheduler-owned task");
+        }
+        return deadline;
     }
 
     /** Result of one resumable task turn. */
@@ -420,7 +439,7 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> implements BiConsumer<Object, Throwable>, DeadlineController {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
         private static final int RUNNING = 2;
@@ -698,6 +717,11 @@ public final class OresScheduler implements AutoCloseable {
 
         private void failBeforeStart(Throwable failure) {
             failTerminal(failure);
+        }
+
+        @Override
+        public void failAtDeadline(TimeoutException expired) {
+            failTerminal(Objects.requireNonNull(expired, "expired"));
         }
 
         private void cancelFromFuture() {
