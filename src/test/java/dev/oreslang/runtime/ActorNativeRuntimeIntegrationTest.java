@@ -67,6 +67,22 @@ final class ActorNativeRuntimeIntegrationTest {
                 ref.ready().get(5, TimeUnit.SECONDS);
                 assertThrows(SecurityException.class, () -> region.get().readLong(0));
                 assertThrows(SecurityException.class, () -> arena.get().acquireLifetimePin());
+                // A valid turn for another actor must not authorize this arena.
+                ActorRuntime.ActorRef<String> foreign = runtime.spawnSharedTrusted(context -> {
+                    assertThrows(SecurityException.class, () -> region.get().readLong(0));
+                    assertThrows(SecurityException.class, () -> arena.get().acquireLifetimePin());
+                    ActorNativeArena own = context.nativeStorage().orElseThrow();
+                    assertNotSame(arena.get(), own);
+                    try (var local = own.region(32)) {
+                        local.writeLong(0, 99L);
+                        assertEquals(99L, local.readLong(0));
+                    }
+                    return (message, turn) -> turn.self().stop();
+                });
+                foreign.ready().get(5, TimeUnit.SECONDS);
+                foreign.send("stop");
+                foreign.done().get(5, TimeUnit.SECONDS);
+                assertTrue(foreign.failure().isEmpty(), foreign.failure().toString());
                 assertThrows(IllegalStateException.class, runtime::enableNativeActorStorage);
                 ref.send("stop");
                 // awaitTermination observes the physical finalization gate.

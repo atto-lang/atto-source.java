@@ -13,6 +13,33 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(60)
 final class SourceActorNativeStorageTest {
     @Test
+    void nativeProfileRejectsUntrustedGuestActorBeforeArenaCreation() throws Exception {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            context.initialize(OresLanguage.ID);
+            ActorRuntime actors;
+            context.enter();
+            try {
+                actors = OresContext.get(null).actors();
+                actors.enableNativeActorStorage();
+            } finally { context.leave(); }
+            var failure = assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                    () -> context.eval(Source.newBuilder(OresLanguage.ID, """
+                            define untrusted actor Worker as
+                              receive(ActorMail<String> mail): void { self.end(); return; }
+                            end
+                            pub async routine main(): void {
+                              val worker = spawn Worker();
+                              await worker.get_ready();
+                              return;
+                            }
+                            """, "native-untrusted-rejected.ores").build()));
+            assertTrue(failure.getMessage().contains("not an untrusted isolate adapter"),
+                    failure.getMessage());
+            assertEquals(0, actors.nativeActorArenasCreated());
+        }
+    }
+
+    @Test
     void realGuestPrivateAndSharedFieldsUseDistinctNativeArenas() throws Exception {
         for (String kind : new String[] {"actor", "isoactor"}) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
