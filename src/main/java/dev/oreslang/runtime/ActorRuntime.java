@@ -1458,6 +1458,12 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             if (release != null) release.run();
+            // An aborted/STOP-drained continuation must release its actor-local
+            // receipt, not merely the mailbox slot. A running callback can
+            // retire only after its own finally executes.
+            if (continuation instanceof ActorContinuationLedger.Admission receipt) {
+                receipt.close();
+            }
         }
     }
 
@@ -1832,17 +1838,27 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ContinuationTarget {
         private final ActorId actorId;
+        // A Future callback must never keep a retired actor's heap alive.
+        // Exact cell identity also fences a reused actor id after hot reload.
+        private final java.lang.ref.WeakReference<ActorCell<?>> capturedCell;
 
-        private ContinuationTarget(ActorId actorId) {
-            this.actorId = Objects.requireNonNull(actorId, "actorId");
+        private ContinuationTarget(ActorCell<?> cell) {
+            this.actorId = cell.ref.id();
+            this.capturedCell = new java.lang.ref.WeakReference<>(cell);
         }
 
         public ActorId actorId() {
             return actorId;
         }
 
+        private ActorCell<?> currentCell() {
+            ActorCell<?> cell = capturedCell.get();
+            return cell != null && actors.get(actorId) == cell ? cell : null;
+        }
+
         private boolean enqueue(Runnable continuation) {
-            return enqueueContinuation(actorId, continuation);
+            ActorCell<?> cell = currentCell();
+            return cell != null && enqueueContinuation(cell, continuation);
         }
     }
 
@@ -1867,7 +1883,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "deferred actor continuation requires an executing actor turn");
         }
-        return new ContinuationTarget(cell.ref.id());
+        return new ContinuationTarget(cell);
     }
 
     /**
@@ -2268,7 +2284,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
 
-        ActorCell<?> cell = actors.get(target.actorId());
+        ActorCell<?> cell = target.currentCell();
         if (cell == null || !ownFuture(cell, future, false)) return;
 
         future.whenCompleteRuntime(
@@ -2300,11 +2316,19 @@ public final class ActorRuntime implements AutoCloseable {
                         || (cell.stopped.get()
                                 && !cell.sourceStopCleanupPending
                                 && !cell.sourceStopCleanupActive)) return false;
-                if (!cell.sourceTaskMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
-                    throw new IllegalStateException(
-                            "actor source continuation mailbox capacity invariant violated for "
-                                    + cell.ref.id());
+                ActorContinuationLedger.Admission receipt = cell.continuationLedger.admit(
+                        ActorContinuationLedger.Lane.SOURCE_TASK, continuation);
+                boolean published = false;
+                try {
+                    if (!cell.sourceTaskMailbox.tryWrite(
+                            MessageEnvelope.continuation(receipt))) {
+                        throw new IllegalStateException(
+                                "actor source continuation mailbox capacity invariant violated for "
+                                        + cell.ref.id());
+                    }
+                    published = true;
+                } finally {
+                    if (!published) receipt.close();
                 }
                 admitted = true;
                 if (currentActor.get() == cell) cell.sourceHandoffRequested = true;
@@ -2316,11 +2340,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
-        Objects.requireNonNull(actorId, "actorId");
+    private boolean enqueueContinuation(ActorCell<?> cell, Runnable continuation) {
+        Objects.requireNonNull(cell, "cell");
         Objects.requireNonNull(continuation, "continuation");
-        ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        ActorId actorId = cell.ref.id();
+        if (actors.get(actorId) != cell || cell.stopped.get() || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -2330,11 +2354,20 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.stopped.get() || cell.finalized || closed.get()) return false;
-                if (!cell.continuationMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
-                    throw new IllegalStateException(
-                            "actor continuation mailbox capacity invariant violated for " + actorId);
+                if (cell.stopped.get() || cell.finalized || closed.get()
+                        || actors.get(actorId) != cell) return false;
+                ActorContinuationLedger.Admission receipt = cell.continuationLedger.admit(
+                        ActorContinuationLedger.Lane.ORDINARY, continuation);
+                boolean published = false;
+                try {
+                    if (!cell.continuationMailbox.tryWrite(
+                            MessageEnvelope.continuation(receipt))) {
+                        throw new IllegalStateException(
+                                "actor continuation mailbox capacity invariant violated for " + actorId);
+                    }
+                    published = true;
+                } finally {
+                    if (!published) receipt.close();
                 }
                 admitted = true;
 
@@ -2383,7 +2416,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         future.whenCompleteRuntime((ignored, failure) -> {
-            if (!enqueueContinuation(cell.ref.id(), () -> {
+            if (!enqueueContinuation(cell, () -> {
                 long completedSequence;
                 synchronized (cell.lifecycleLock) {
                     completedSequence = cell.activeMail == null
@@ -7579,6 +7612,9 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        /** Second accounting record for actor-owned continuation admission/lifetime. */
+        private final ActorContinuationLedger continuationLedger =
+                new ActorContinuationLedger(INTERNAL_CONTINUATION_SLOTS);
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -8772,6 +8808,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
+                // STOP invalidates ordinary wake receipts before draining the
+                // queue; already-admitted SourceTask cleanup retains authority.
+                continuationLedger.sealOrdinary();
                 cleanupScheduler = sourceScheduler;
                 sourceStopCleanupPending = cleanupScheduler != null;
                 pendingOperationRevocationPending = true;
