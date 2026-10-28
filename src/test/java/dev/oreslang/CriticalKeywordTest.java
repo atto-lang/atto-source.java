@@ -100,8 +100,8 @@ final class CriticalKeywordTest {
     }
 
     @Test void uncontendedSuspendCriticalWithNoBodyAwaitStillCompletes() throws Exception {
-        // The admission Future is already complete. The SourceTask must yield
-        // anyway, resume with its logical gate ticket, and then return.
+        // An uncontended suspends critical callable may start inline without
+        // forcing a scheduler turn; its return/effect contract remains stable.
         String code = """
                 pub critical fnc synchronous(): int { return 6; }
                 suspend critical fnc guaranteed_handoff(): int { return 7; }
@@ -156,10 +156,15 @@ final class CriticalKeywordTest {
                         @Critical(total_timeout_ms=10)
                         pub critical suspends fnc unsupported(): void { return; }
                         """));
+        assertDoesNotThrow(
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        @Critical(channel_wait_timeout_ms=10)
+                        pub critical suspends fnc allowed_channel(): void { return; }
+                        """));
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
                         @Critical(channel_wait_timeout_ms=10)
-                        pub critical suspends fnc unsupported_channel(): void { return; }
+                        pub critical fnc no_suspending_effect(): void { return; }
                         """));
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
@@ -171,6 +176,21 @@ final class CriticalKeywordTest {
                         @Critical(queue_timeout_ms="ten")
                         pub critical fnc non_numeric(): void { return; }
                         """));
+    }
+
+    @Test void criticalChannelDeadlineIsPreservedInCheckedSourceSignature() {
+        Ast.Program program = dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                @Critical(queue_timeout_ms=50, channel_wait_timeout_ms=15)
+                pub critical suspends fnc receive(Channel<int> input): int {
+                    return await (nb readch input);
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) program.modules().getFirst()
+                .declarations().getFirst();
+        var policy = dev.oreslang.ast.CriticalAnnotationPolicy.from(
+                fn.annotations(), fn.critical(), fn.suspends() || fn.async(), fn.name());
+        assertEquals(java.time.Duration.ofMillis(50), policy.queueTimeout());
+        assertEquals(java.time.Duration.ofMillis(15), policy.channelWaitTimeout());
     }
 
     @Test void criticalPolicyAppliesToInstanceMethodsAsWellAsFileFunctions() {
