@@ -233,9 +233,13 @@ checkout**, and walks the source **through directory file descriptors** to
 prevent parent-directory symlink swap races. It rejects symbolic links,
 hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
 filesystem objects. Source paths must also be cross-platform canonical before
-publication: NFC-normalized Unicode only, no case-insensitive file or directory
-collisions, no file/directory prefix aliases, no Windows reserved names, no
-trailing dot/space components, and no alternate-data-stream `:` components.
+publication: strictly UTF-8-encodable NFC-normalized Unicode only, no Unicode
+noncharacters, no case-insensitive file or directory collisions, no
+file/directory prefix aliases, no Windows reserved names, no trailing dot/space
+components, and no Windows-invalid or alternate-data-stream characters.
+Complete paths are capped at 4,096 UTF-8 bytes and each component at 255 UTF-8
+bytes so an origin tree that cannot be represented safely on the supported
+checkout filesystems is denied before publication.
 Directory enumeration is bounded to 4,096 entries, 1,024 directories and a
 maximum depth of 64. It verifies every uploaded Git blob SHA-1 against the
 source bytes. It checks that the reviewed
