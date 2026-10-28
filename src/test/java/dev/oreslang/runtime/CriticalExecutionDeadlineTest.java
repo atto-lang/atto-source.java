@@ -55,8 +55,11 @@ final class CriticalExecutionDeadlineTest {
             successorAdmission.get(5, TimeUnit.SECONDS);
             assertTrue(successor.isHeld());
             successor.close();
-            assertTrue(channel.tryWrite(99), "expired receive cannot steal later value");
-            assertEquals(99, channel.tryRead().orElseThrow());
+            assertFalse(channel.tryWrite(99),
+                    "no receiver remains on this rendezvous channel");
+            var freshRead = channel.readAsync();
+            assertTrue(channel.tryWrite(99));
+            assertEquals(99, freshRead.get(5, TimeUnit.SECONDS));
             assertFalse(gate.held());
         }
     }

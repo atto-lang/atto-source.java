@@ -46,7 +46,9 @@ pub critical fnc file_counter(): int {
   continuation migration must never release or reacquire exclusion.
 - Queue is FIFO, bounded to 8192 waiting invocations. Overflow fails closed.
 - On normal return, exception, cancellation, and actor/task teardown, the
-  runtime releases the invocation ticket and wakes the next waiter.
+  runtime releases the invocation ticket at physical task retirement and
+  wakes the next waiter. Public result cancellation alone does not transfer
+  ownership or establish quiescence.
 
 
 ## Critical annotations and bounded waits (October 27, 2026 increment)
@@ -101,7 +103,8 @@ on suspending/async critical callables. A total budget begins when the
 source invocation frame is created (including admission); an execution
 budget begins when the critical body starts after admission. Timers request
 a `TimeoutException` through the task's scheduler-owned deadline
-controller. The public result is published only after the carrier unwinds,
+controller. Runtime success and deadline failure are published only after
+the carrier unwinds and the retirement callback finishes,
 and the critical permit is retained until physical retirement. Timers are
 cancelled when the task retires; timer callbacks never execute guest code.
 A zero remaining budget fails closed before starting the body.
@@ -175,8 +178,8 @@ machinery but retain a separate internal admission queue.
 2. Otherwise append a distinct, cancellation-aware ticket to a bounded FIFO
    queue; park the **logical continuation** in the scheduler's WAITING state.
    Never occupy a worker/carrier thread to wait on a permit.
-3. On return, throw, panic, cancellation or teardown, release the invocation's
-   token exactly once. Under the short mutex, atomically transfer the permit
+3. After physical retirement on return, throw, panic, cancellation or teardown,
+   release the invocation's token exactly once. Under the short mutex, transfer the permit
    to the oldest non-cancelled ticket, then unlock.
 4. Publish the admitted ticket to the scheduler's **internal control/resume
    queue**, not the actor's ordinary user-message mailbox. This must not be
@@ -185,10 +188,10 @@ machinery but retain a separate internal admission queue.
 5. On resume, verify the ticket still owns the gate (cancellation may have won
    after handoff). Never run guest code directly from a Future completion or
    while holding the host mutex.
-6. Waiting-ticket cancellation removes the ticket from FIFO. If cancellation
-   races with ownership handoff, it must release the newly acquired permit and
-   wake the next eligible caller. Capacity excludes the single owner; 8192
-   waiting tickets are permitted.
+6. Waiting-ticket cancellation removes the ticket from FIFO. If ownership
+   handoff has already won, cancellation of the admission Future must fail;
+   only the owning invocation's physical retirement may close the granted
+   ticket. Capacity excludes the single owner; 8192 waiting tickets are permitted.
 7. Host/embedder *synchronous* callers may use a targeted blocking signal.
    Synchronous **actor** and scheduler callers must never park a carrier;
    without compiler-lowered suspension, contention fails closed with a
@@ -289,3 +292,39 @@ subset and rejects actor and async lowering. Compiler lowering, actor class
 allocation, source task continuations, cleanup/unwind integration, and
 cross-thread stress testing are still required before enabling `critical`
 declarations. Do not transfer private source between GitHub organizations without explicit security approval, protected-main governance, an approved carrier contract and an independently reviewed test plan. Zero-step Actions are NOT_EXECUTED; no private-source CI proof is claimed here.
+
+## Retirement and deadline refinement (draft implementation; not validated)
+
+The scheduler now fences runtime terminal publication on completion of its
+retirement callback, serializes carrier claim with retirement eligibility,
+and checks effective task deadlines at dispatch. Source body entry checks
+the deadline again after admission. Focused tests are authored but unexecuted.
+The following contract still includes unresolved release gates.
+
+- Distinguish result cancellation, terminal intent, carrier exit, and completed
+  physical retirement. Public cancellation may settle immediately; it is not a
+  quiescence receipt. Runtime success/deadline failure must be published only
+  after carrier exit and completion of retirement cleanup.
+- A claimed carrier turn remains in flight even before its execution flag is
+  published. Retirement is complete only after its callback returns, not when
+  a notification-once flag is set. Cleanup failure must produce an observable
+  terminal failure and retain exclusion if protected state is not safe.
+- Withdraw privately owned pending channel operations before ticket handoff.
+  A committed channel operation is not rolled back by invocation timeout.
+  Shared Future observation detaches without cancelling its producer.
+- Retaining a critical ticket does not extend ordinary borrows or MutexGuard
+  lifetimes. Actor self is permitted only under the actor execution-lease
+  contract; aliases and handle_state loans require independent checking.
+- The effective invocation deadline must be checked before post-admission
+  body entry and each resumed guest segment. Inherited deadlines must also be
+  checked at child dispatch. Timers provide wakeups, not the sole expiration
+  authority. These checks do not promise interruption within an atomic segment.
+- Omitted queue/channel fields currently mean no local limit at this lowering
+  site. Only total/execution task deadlines are propagated by the current
+  scheduler snapshot. Do not claim general annotation-policy inheritance.
+- Structured task cancellation, child retirement barriers, select-arm budgets,
+  actor supervision/restart generation fences, and backend conformance remain
+  required before readiness. Unsupported combinations must fail closed.
+- Inline admission means no additional admission-only scheduler handoff.
+  It does not promise execution on the caller's carrier: source invocation
+  creation may already have scheduled a separate task.

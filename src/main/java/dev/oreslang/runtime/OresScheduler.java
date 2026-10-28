@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.LongSupplier;
 
 /**
  * Scheduler affinity for ordinary Oreslang tasks.
@@ -79,17 +80,22 @@ public final class OresScheduler implements AutoCloseable {
 
         /** Propagate the earlier deadline to child tasks created by this task. */
         void publishChildDeadline(long budgetNanos, ScheduledExecutorService timer);
+
+        /** Check the effective elapsed deadline at a safe guest-entry boundary. */
+        void checkDeadline() throws TimeoutException;
     }
 
     private record InheritedDeadline(
-            long startedNanos, long budgetNanos, ScheduledExecutorService timer) {
+            long startedNanos, long budgetNanos, ScheduledExecutorService timer,
+            LongSupplier clock) {
         private InheritedDeadline {
             Objects.requireNonNull(timer, "timer");
+            Objects.requireNonNull(clock, "clock");
             if (budgetNanos < 0) throw new IllegalArgumentException("negative deadline budget");
         }
 
         long remainingNanos() {
-            long elapsed = Math.max(0L, System.nanoTime() - startedNanos);
+            long elapsed = Math.max(0L, clock.getAsLong() - startedNanos);
             return Math.max(0L, budgetNanos - elapsed);
         }
     }
@@ -143,6 +149,7 @@ public final class OresScheduler implements AutoCloseable {
     private final Executor executor;
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
+    private final LongSupplier nanoTime;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -172,6 +179,7 @@ public final class OresScheduler implements AutoCloseable {
         this.name = "ores-user-scheduler-" + NEXT_ID.incrementAndGet();
         this.parallelism = parallelism;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.nanoTime = System::nanoTime;
 
         AtomicInteger carrierId = new AtomicInteger();
         ThreadFactory factory = task -> Thread.ofPlatform()
@@ -203,7 +211,8 @@ public final class OresScheduler implements AutoCloseable {
             int parallelism,
             Executor executor,
             ExecutorService ownedExecutor,
-            TurnExecutor turnExecutor) {
+            TurnExecutor turnExecutor,
+            LongSupplier nanoTime) {
         this.name = Objects.requireNonNull(name, "name");
         if (parallelism <= 0) {
             throw new IllegalArgumentException("scheduler parallelism must be positive");
@@ -212,6 +221,7 @@ public final class OresScheduler implements AutoCloseable {
         this.executor = Objects.requireNonNull(executor, "executor");
         this.ownedExecutor = ownedExecutor;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime");
     }
 
     /**
@@ -240,12 +250,20 @@ public final class OresScheduler implements AutoCloseable {
             int parallelism,
             Executor executor,
             TurnExecutor turnExecutor) {
+        return runtimeOwned(name, parallelism, executor, turnExecutor, System::nanoTime);
+    }
+
+    /** Package-private clock seam for deterministic deadline boundary tests. */
+    static OresScheduler runtimeOwned(
+            String name, int parallelism, Executor executor,
+            TurnExecutor turnExecutor, LongSupplier nanoTime) {
         return new OresScheduler(
                 name,
                 parallelism,
                 executor,
                 null,
-                turnExecutor);
+                turnExecutor,
+                nanoTime);
     }
 
     /**
@@ -469,7 +487,10 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        // Serializes carrier claim with retirement eligibility, never guest code.
+        private final Object retirementLock = new Object();
         private final AtomicBoolean physicalRetirementNotified = new AtomicBoolean();
+        private final AtomicBoolean physicalRetirementComplete = new AtomicBoolean();
         private final AtomicReference<InheritedDeadline> propagatedDeadline =
                 new AtomicReference<>();
         private volatile ScheduledFuture<?> inheritedTimer;
@@ -497,12 +518,20 @@ public final class OresScheduler implements AutoCloseable {
                 long budgetNanos, ScheduledExecutorService timer) {
             Objects.requireNonNull(timer, "timer");
             InheritedDeadline next =
-                    new InheritedDeadline(System.nanoTime(), budgetNanos, timer);
+                    new InheritedDeadline(nanoTime.getAsLong(), budgetNanos, timer, nanoTime);
             for (;;) {
                 InheritedDeadline previous = propagatedDeadline.get();
                 if (previous != null
                         && previous.remainingNanos() <= next.remainingNanos()) return;
                 if (propagatedDeadline.compareAndSet(previous, next)) return;
+            }
+        }
+
+        @Override
+        public void checkDeadline() throws TimeoutException {
+            InheritedDeadline effective = propagatedDeadline.get();
+            if (effective != null && effective.remainingNanos() == 0L) {
+                throw new TimeoutException("critical deadline exceeded before guest entry");
             }
         }
 
@@ -551,11 +580,13 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void runTurn() {
-            if (!phase.compareAndSet(QUEUED, RUNNING)) return;
-            if (!executing.compareAndSet(false, true)) {
-                failTerminal(new IllegalStateException(
-                        "OresScheduler task execution lease violation"));
-                return;
+            synchronized (retirementLock) {
+                if (!phase.compareAndSet(QUEUED, RUNNING)) return;
+                if (!executing.compareAndSet(false, true)) {
+                    failTerminal(new IllegalStateException(
+                            "OresScheduler task execution lease violation"));
+                    return;
+                }
             }
 
             Object priorTaskDomain = CURRENT_TASK_DOMAIN.get();
@@ -571,6 +602,8 @@ public final class OresScheduler implements AutoCloseable {
 
                 final Step<T> step;
                 try {
+                    if (phase.get() == TERMINAL) return;
+                    checkDeadline();
                     step = Objects.requireNonNull(
                             task.resume(resume),
                             "OresScheduler task returned null Step");
@@ -617,20 +650,41 @@ public final class OresScheduler implements AutoCloseable {
          * this carrier is still executing guest continuation code.
          */
         private void afterCarrierTurn() {
-            executing.set(false);
+            synchronized (retirementLock) {
+                executing.set(false);
+            }
             notifyPhysicalRetirementIfSafe();
             publishTerminalIfReady();
             scheduleReadyResume();
         }
 
         private void notifyPhysicalRetirementIfSafe() {
-            if (phase.get() != TERMINAL || executing.get()) return;
-            if (!physicalRetirementNotified.compareAndSet(false, true)) return;
-            ScheduledFuture<?> timer = inheritedTimer;
-            inheritedTimer = null;
-            if (timer != null) timer.cancel(false);
-            if (task instanceof PhysicalRetirementListener listener) {
-                listener.onPhysicallyRetired();
+            synchronized (retirementLock) {
+                if (phase.get() != TERMINAL || executing.get()) return;
+                if (!physicalRetirementNotified.compareAndSet(false, true)) return;
+            }
+            try {
+                ScheduledFuture<?> timer = inheritedTimer;
+                inheritedTimer = null;
+                if (timer != null) timer.cancel(false);
+                if (task instanceof PhysicalRetirementListener listener) {
+                    listener.onPhysicallyRetired();
+                }
+            } catch (Throwable cleanupFailure) {
+                // A throwing listener must not strand the runtime result. It is
+                // the listener's responsibility to retain any unsafe permit.
+                TerminalOutcome<T> prior = terminalOutcome.get();
+                if (prior instanceof TerminalFailure<?> failure
+                        && failure.failure() != cleanupFailure) {
+                    cleanupFailure.addSuppressed(failure.failure());
+                }
+                terminalOutcome.set(new TerminalFailure<>(cleanupFailure));
+                if (cleanupFailure instanceof VirtualMachineError fatal) throw fatal;
+                if (cleanupFailure instanceof ThreadDeath fatal) throw fatal;
+                if (cleanupFailure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                physicalRetirementComplete.set(true);
+                publishTerminalIfReady();
             }
         }
 
@@ -773,7 +827,8 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            if (phase.get() != TERMINAL || !physicalRetirementComplete.get()
+                    || completion.isDone()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")

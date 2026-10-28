@@ -1067,6 +1067,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private void startInitialBody() {
+                    // Admission may have consumed the total/inherited budget
+                    // while its timer was delayed. Ownership alone is not
+                    // permission to enter an expired guest segment.
+                    try {
+                        OresScheduler.currentDeadlineController().checkDeadline();
+                    } catch (java.util.concurrent.TimeoutException expired) {
+                        throw sourceFailure(expired);
+                    }
                     if (criticalPolicy != null && criticalPolicy.executionTimeout() != null) {
                         executionDeadlineTimer =
                                 armCriticalDeadline(criticalPolicy.executionTimeout(), false);

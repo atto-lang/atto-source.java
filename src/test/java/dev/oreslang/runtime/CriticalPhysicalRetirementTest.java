@@ -96,4 +96,80 @@ final class CriticalPhysicalRetirementTest {
             assertFalse(gate.held());
         }
     }
+    @Test void retirementRetractsOwnedPendingWriteBeforeHandoff() throws Exception {
+        var gate = new CriticalGate();
+        var channel = new ChannelRuntime.Channel<String>(1);
+        assertTrue(channel.tryWrite("buffered"));
+        var registered = new CountDownLatch(1);
+        var owner = gate.newTicket();
+        class Sender implements OresScheduler.Task<Void>,
+                OresScheduler.PhysicalRetirementListener {
+            private OresFuture<Void> send;
+            @Override public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                if (!resume.initial()) throw new AssertionError("cancelled sender resumed");
+                owner.enterAsync();
+                send = channel.writeAsync("withdrawn");
+                registered.countDown();
+                return OresScheduler.await(send);
+            }
+            @Override public void onPhysicallyRetired() {
+                if (send != null) send.cancel(false);
+                owner.close();
+            }
+        }
+        try (var scheduler = new OresScheduler(1)) {
+            var result = scheduler.start(new Sender());
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            var next = gate.newTicket();
+            var admission = next.enterAsync();
+            assertFalse(admission.isDone());
+            assertTrue(result.cancel(false));
+            admission.get(5, TimeUnit.SECONDS);
+            try {
+                assertTrue(next.isHeld());
+                assertEquals("buffered", channel.tryRead().orElseThrow());
+                assertTrue(channel.tryRead().isEmpty(), "retired write delivered late");
+            } finally {
+                next.close();
+            }
+            assertFalse(gate.held());
+        }
+    }
+
+    @Test void retiringObserverDoesNotCancelSharedChannelProducer() throws Exception {
+        var gate = new CriticalGate();
+        var channel = new ChannelRuntime.Channel<String>(0);
+        var sharedRead = channel.readAsync();
+        var entered = new CountDownLatch(1);
+        var owner = gate.newTicket();
+        class Observer implements OresScheduler.Task<String>,
+                OresScheduler.PhysicalRetirementListener {
+            @Override public OresScheduler.Step<String> resume(OresScheduler.Resume resume) {
+                if (!resume.initial()) throw new AssertionError("cancelled observer resumed");
+                owner.enterAsync();
+                entered.countDown();
+                return OresScheduler.await(sharedRead);
+            }
+            @Override public void onPhysicallyRetired() { owner.close(); }
+        }
+        try (var scheduler = new OresScheduler(1)) {
+            var result = scheduler.start(new Observer());
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var next = gate.newTicket();
+            var admission = next.enterAsync();
+            assertFalse(admission.isDone());
+            assertTrue(result.cancel(false));
+            admission.get(5, TimeUnit.SECONDS);
+            try {
+                assertFalse(sharedRead.isDone(), "observation must not cancel producer");
+                assertTrue(channel.tryWrite("shared"));
+                assertEquals("shared", sharedRead.get(5, TimeUnit.SECONDS));
+            } finally {
+                next.close();
+                sharedRead.cancel(false);
+            }
+            assertFalse(gate.held());
+        }
+    }
+
 }

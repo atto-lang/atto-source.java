@@ -7,8 +7,10 @@ import java.util.Set;
 
 /**
  * Compiler-checked critical policy metadata. Budgets are elapsed monotonic
- * durations, not wall-clock instants. An absent field inherits the enclosing
- * runtime policy; it does NOT silently disable tenant/supervisor quotas.
+ * durations, not wall-clock instants. Absent queue/channel fields impose no
+ * local limit. The scheduler separately propagates the earliest active
+ * total/execution task deadline; this record does not implement general
+ * policy inheritance or replace tenant/supervisor quotas.
  *
  * <p>Queue and channel admission can be revoked atomically before commit.
  * Execution and total timeouts on suspended callables require scheduler-owned
