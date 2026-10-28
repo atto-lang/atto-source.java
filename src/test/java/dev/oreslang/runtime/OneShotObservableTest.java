@@ -234,4 +234,39 @@ final class OneShotObservableTest {
             producing.getDone().get(3, TimeUnit.SECONDS);
         }
     }
+
+    @Test
+    void alreadyCancelledUpstreamCannotCompleteReductionBeforeRevocation()
+            throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        OresFuture<Integer> producer = new OresFuture<>(() -> {
+            entered.countDown();
+            try {
+                if (!release.await(3, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("observable revocation test timeout");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+        try (var pool = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var cancellation = pool.submit(() -> producer.cancel(false));
+            OresFuture<Optional<Integer>> reduced;
+            try {
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                reduced = OneShotObservable.fromFuture(producer).first();
+                assertFalse(reduced.isDone(),
+                        "first() must wait for producer's physical cancel revoker");
+                assertEquals(1, producer.pendingRuntimeWaiterCount());
+            } finally {
+                release.countDown();
+            }
+            assertTrue(cancellation.get(3, TimeUnit.SECONDS));
+            assertTrue(reduced.isCancelled());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
 }
