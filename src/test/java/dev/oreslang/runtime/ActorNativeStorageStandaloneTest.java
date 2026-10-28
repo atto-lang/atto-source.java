@@ -170,6 +170,25 @@ final class ActorNativeStorageStandaloneTest {
             assertSame(uninitialized, rightFields.get("foreign"));
             leftRegion.writeLong(0, 314L);
             assertEquals(314L, leftRegion.readLong(0));
+
+            // Both actors have guest-linear offset zero, but their physical pages,
+            // field authority, and read-only leases must remain actor-private.
+            ActorLinearMemory leftMemory = left.linearMemory(1, 1);
+            ActorLinearMemory rightMemory = right.linearMemory(1, 1);
+            leftMemory.writeLong(0, 111L);
+            rightMemory.writeLong(0, 222L);
+            assertEquals(111L, leftMemory.readLong(0));
+            assertEquals(222L, rightMemory.readLong(0));
+            try (var leftLoan = leftMemory.leaseReadOnlyPage(0, 0, Long.BYTES)) {
+                assertThrows(IllegalStateException.class,
+                        () -> leftMemory.writeLong(0, 333L));
+                rightMemory.writeLong(0, 223L);
+                assertEquals(111L, leftMemory.readLong(0));
+                assertEquals(223L, rightMemory.readLong(0));
+            }
+            leftMemory.writeLong(0, 112L);
+            assertEquals(112L, leftMemory.readLong(0));
+            assertEquals(223L, rightMemory.readLong(0));
         }
         assertEquals(0, leftCharge.get());
         assertEquals(0, rightCharge.get());
