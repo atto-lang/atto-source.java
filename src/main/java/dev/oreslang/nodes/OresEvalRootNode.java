@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.CriticalAnnotationPolicy;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -925,15 +926,21 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (resume.initial()) {
                     if (criticalTicket != null) {
-                        OresFuture<Void> ready = criticalTicket.enterAsync();
-                        // Declaring suspend critical is a guaranteed logical
-                        // suspension boundary even when entry is uncontended.
-                        // Awaiting an already-completed Future still gives the
-                        // carrier back: OresScheduler.armAwait() requeues only
-                        // after the current guest turn has fully unwound.
-                        boolean alwaysYield = function != null && function.suspends()
-                                || method != null && method.suspends();
-                        if (ready.isDone() && !alwaysYield) {
+                        // The source annotation is statically validated by
+                        // AnnotationExpander before execution. The admission
+                        // timer is owned by this VM context and never runs
+                        // guest code, even if an admission times out.
+                        CriticalAnnotationPolicy policy = function != null
+                                ? CriticalAnnotationPolicy.from(function.annotations(), true, function.name())
+                                : CriticalAnnotationPolicy.from(method.annotations(), true, method.name());
+                        OresFuture<Void> ready = policy == null
+                                ? criticalTicket.enterAsync()
+                                : criticalTicket.enterAsyncWithin(
+                                        policy.queueTimeout(), context.criticalAdmissionTimer());
+                        // Fast-path admission is synchronous even for a
+                        // suspends callable: only actual contention or a
+                        // suspending body operation unwinds this task turn.
+                        if (ready.isDone() && criticalTicket.isHeld()) {
                             if (!criticalTicket.isHeld()) {
                                 throw new IllegalStateException(
                                         "critical admission settled without a live ownership ticket");
