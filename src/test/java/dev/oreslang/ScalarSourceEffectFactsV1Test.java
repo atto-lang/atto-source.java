@@ -13,46 +13,54 @@ final class ScalarSourceEffectFactsV1Test {
 
     @Test
     void actualCheckedSourceDirectCallChainHasClosedEffectSummary() {
-        var report = analyze("""
+        String source = """
                 fnc leaf(): int { return 42; }
                 fnc helper(): int { return leaf(); }
                 fnc main(): int { return helper(); }
-                """);
+                """;
+        var report = analyze(source);
         assertEquals(java.util.Set.of(), report.effectsOf("main"));
-        assertDoesNotThrow(() -> report.requireNoEffects("main"));
+        assertDoesNotThrow(() -> report.requireNoEffects("main", source));
+        assertThrows(IllegalArgumentException.class, () -> report.requireNoEffects("main", source + " "));
+        assertEquals(0, ScalarSourceEffectFactsV1.Report.class.getConstructors().length,
+                "untrusted code must not mint a source-authorized Report");
+        assertThrows(UnsupportedOperationException.class, () -> report.closure().clear());
         assertThrows(IllegalArgumentException.class, () -> report.effectsOf("not_declared"));
     }
 
     @Test
     void observedAllocationFromRealSourcePropagatesThroughCallers() {
-        var report = analyze("""
+        String source = """
                 fnc leaf(): string { return "allocated"; }
                 fnc entry(): string { return leaf(); }
-                """);
+                """;
+        var report = analyze(source);
         assertTrue(report.effectsOf("entry").contains(Effect.ALLOC));
-        assertThrows(IllegalArgumentException.class, () -> report.requireNoEffects("entry"));
+        assertThrows(IllegalArgumentException.class, () -> report.requireNoEffects("entry", source));
     }
 
     @Test
     void actualAsyncAndAwaitAreSuspendingThroughTypedSourceCalls() {
-        var report = analyze("""
+        String source = """
                 async fnc leaf(): int { return 42; }
                 async fnc outer(): int { return await leaf(); }
-                """);
+                """;
+        var report = analyze(source);
         assertTrue(report.effectsOf("leaf").contains(Effect.SUSPEND));
         assertTrue(report.effectsOf("outer").contains(Effect.SUSPEND));
-        assertThrows(IllegalArgumentException.class, () -> report.requireNoEffects("outer"));
+        assertThrows(IllegalArgumentException.class, () -> report.requireNoEffects("outer", source));
     }
 
     @Test
     void expressionFormsWithoutVerifiedTypedLoweringFailClosed() {
-        var report = analyze("""
+        String source = """
                 fnc scalar_arithmetic(): int { return 1 + 2; }
                 fnc wrapper(): int { return scalar_arithmetic(); }
-                """);
+                """;
+        var report = analyze(source);
         assertTrue(report.effectsOf("wrapper").contains(Effect.UNKNOWN_CALL),
                 "Unproven operator overload/typed dispatch cannot silently be pure");
-        assertThrows(IllegalArgumentException.class, () -> report.requireNoEffects("wrapper"));
+        assertThrows(IllegalArgumentException.class, () -> report.requireNoEffects("wrapper", source));
     }
 
     @Test
