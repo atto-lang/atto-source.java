@@ -13,7 +13,8 @@ function verify(w, c) {
     return w.slice(a, b).trim();
   };
   assert.equal(section('\non:\n', '\npermissions:'), 'on:\n  workflow_dispatch:');
-  assert.equal(section('\npermissions:\n', '\nconcurrency:'), 'permissions:\n  contents: read');
+  assert.equal(w.split('\npermissions:\n').length - 1, 1, 'exactly one global permissions block');
+  assert.match(w, /^permissions:\n  contents: read$/m, 'workflow token must be read-only');
   assert.doesNotMatch(w, /^[ \t]+(?:permissions|pull_request|pull_request_target|push):/m);
   assert.match(w, /\nconcurrency:\n  group: private-oreslang-isolated-validation\n  cancel-in-progress: false\n/);
   const jobs = w.split('\njobs:\n')[1];
