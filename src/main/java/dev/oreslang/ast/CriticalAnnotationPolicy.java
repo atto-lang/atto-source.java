@@ -4,16 +4,24 @@ import java.time.Duration;
 import java.util.List;
 
 /**
- * Fail-closed compiler metadata for critical callable admission.
+ * Compiler-checked critical policy metadata with no runtime reflection.
  *
- * <p>Only queue_timeout_ms has executable lowering in this increment.
- * Total, execution and channel-wait deadlines must be rejected until the
- * owning Task/VM and channel scheduler can enforce them safely. Silently
- * ignoring a timeout annotation is a correctness and tenant-safety bug.</p>
+ * <p>Queue and per-channel wait timeouts have executable Java/Graal lowering
+ * on this draft branch. Execution and overall deadlines remain fail-closed
+ * until physical task retirement/cancellation can be proven. A policy must
+ * never silently degrade to unbounded waiting.</p>
  */
-public record CriticalAnnotationPolicy(Duration queueTimeout) {
+public record CriticalAnnotationPolicy(Duration queueTimeout, Duration channelWaitTimeout) {
     public static CriticalAnnotationPolicy from(
             List<Ast.Annotation> annotations, boolean isCritical, String name) {
+        return from(annotations, isCritical, true, name);
+    }
+
+    public static CriticalAnnotationPolicy from(
+            List<Ast.Annotation> annotations,
+            boolean isCritical,
+            boolean suspensionAllowed,
+            String name) {
         Ast.Annotation found = null;
         for (Ast.Annotation annotation : annotations) {
             if (!annotation.name().equals("Critical")) continue;
@@ -29,6 +37,7 @@ public record CriticalAnnotationPolicy(Duration queueTimeout) {
                     "@Critical requires the critical callable modifier on '" + name + "'");
         }
         Long queueMillis = null;
+        Long channelMillis = null;
         for (Ast.TypeRef arg : found.arguments()) {
             if (!arg.isNamedParameter()) {
                 throw new IllegalArgumentException(
@@ -36,29 +45,41 @@ public record CriticalAnnotationPolicy(Duration queueTimeout) {
             }
             String key = arg.namedParameterName();
             Ast.TypeRef value = arg.namedParameterValue();
-            if (!key.equals("queue_timeout_ms")) {
+            if (!key.equals("queue_timeout_ms") && !key.equals("channel_wait_timeout_ms")) {
                 throw new IllegalArgumentException(
                         "unsupported @Critical policy '" + key
-                                + "': execution/total/channel deadlines require runtime enforcement");
+                                + "': execution and total deadlines require task retirement support");
             }
-            if (queueMillis != null || !value.isIntLiteral()) {
+            if (!value.isIntLiteral()
+                    || key.equals("queue_timeout_ms") && queueMillis != null
+                    || key.equals("channel_wait_timeout_ms") && channelMillis != null) {
                 throw new IllegalArgumentException(
-                        "@Critical queue_timeout_ms must be one integer literal");
+                        "@Critical " + key + " must be one integer literal");
             }
+            long millis;
             try {
-                queueMillis = value.intLiteralValue();
+                millis = value.intLiteralValue();
             } catch (NumberFormatException tooLarge) {
                 throw new IllegalArgumentException(
-                        "@Critical queue_timeout_ms is outside signed 64-bit range", tooLarge);
+                        "@Critical " + key + " is outside signed 64-bit range", tooLarge);
             }
-            if (queueMillis < 0) {
-                throw new IllegalArgumentException("@Critical queue_timeout_ms must be >= 0");
+            if (millis < 0) {
+                throw new IllegalArgumentException(
+                        "@Critical " + key + " must be >= 0");
             }
+            if (key.equals("queue_timeout_ms")) queueMillis = millis;
+            else channelMillis = millis;
         }
-        if (queueMillis == null) {
+        if (queueMillis == null && channelMillis == null) {
             throw new IllegalArgumentException(
-                    "@Critical currently requires queue_timeout_ms=...");
+                    "@Critical requires queue_timeout_ms or channel_wait_timeout_ms");
         }
-        return new CriticalAnnotationPolicy(Duration.ofMillis(queueMillis));
+        if (channelMillis != null && !suspensionAllowed) {
+            throw new IllegalArgumentException(
+                    "@Critical channel_wait_timeout_ms requires a suspends/async critical callable");
+        }
+        return new CriticalAnnotationPolicy(
+                queueMillis == null ? null : Duration.ofMillis(queueMillis),
+                channelMillis == null ? null : Duration.ofMillis(channelMillis));
     }
 }
