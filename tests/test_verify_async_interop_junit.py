@@ -18,8 +18,8 @@ class JUnitProofTest(unittest.TestCase):
         for suite, count in verify.EXPECTED.items():
             node = ET.Element("testsuite", dict(name=suite, tests=str(count),
                               errors="0", failures="0", skipped="0"))
-            for i in range(count):
-                ET.SubElement(node, "testcase", dict(classname=suite, name=f"method_{i}"))
+            for method in verify.EXPECTED_CASES[suite]:
+                ET.SubElement(node, "testcase", dict(classname=suite, name=method))
             ET.ElementTree(node).write(self.root / f"TEST-{suite}.xml")
 
     def report(self, name):
@@ -53,8 +53,33 @@ class JUnitProofTest(unittest.TestCase):
 
     def test_duplicate_case_denied(self):
         p = self.report("TaskFutureAdaptersTest")
-        tree = ET.parse(p); tree.getroot().findall("testcase")[1].set("name", "method_0"); tree.write(p)
+        tree = ET.parse(p); tree.getroot().findall("testcase")[1].set("name", verify.EXPECTED_CASES["dev.oreslang.runtime.TaskFutureAdaptersTest"][0]); tree.write(p)
         with self.assertRaisesRegex(ValueError, "duplicate"):
+            verify.verify(self.root)
+
+    def test_forged_method_identity_denied(self):
+        p = self.report("TaskFutureAdaptersTest")
+        tree = ET.parse(p)
+        tree.getroot().find("testcase").set("name", "notARealRegressionTest")
+        tree.write(p)
+        with self.assertRaisesRegex(ValueError, "wrong executed JUnit testcase identities"):
+            verify.verify(self.root)
+
+    def test_repeated_other_real_method_denied(self):
+        p = self.report("OneShotObservableTest")
+        tree = ET.parse(p)
+        nodes = tree.getroot().findall("testcase")
+        nodes[1].set("name", nodes[0].attrib["name"])
+        tree.write(p)
+        with self.assertRaisesRegex(ValueError, "duplicate JUnit"):
+            verify.verify(self.root)
+
+    def test_unknown_case_cannot_replace_expected_one(self):
+        p = self.root / "TEST-dev.oreslang.FutureFromInlineTaskLanguageTest.xml"
+        tree = ET.parse(p)
+        tree.getroot().findall("testcase")[-1].set("name", "successRegardlessOfActualExecution")
+        tree.write(p)
+        with self.assertRaisesRegex(ValueError, "wrong executed JUnit testcase identities"):
             verify.verify(self.root)
 
     def test_wrong_suite_denied(self):
