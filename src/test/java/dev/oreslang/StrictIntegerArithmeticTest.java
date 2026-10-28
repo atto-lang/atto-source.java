@@ -87,4 +87,61 @@ final class StrictIntegerArithmeticTest {
                 new ByteArrayOutputStream());
         assertEquals("-1\n3\n3\n6\n-1\n", out.toString(StandardCharsets.UTF_8));
     }
+
+    @Test
+    void guestIntegerNamedOperationsExecuteWithExactIntTypes() throws Exception {
+        Path entry = temp.resolve("integer-named.ores");
+        Files.writeString(entry, """
+                pub routine main(): void {
+                  stdio.println(Integer.rem(-9, 4));
+                  stdio.println(Integer.mod(-9, 4));
+                  stdio.println(Integer.mod(-9, -4));
+                  stdio.println(Integer.pow(-2, 3));
+                  stdio.println(Integer.pow(0, 0));
+                  stdio.println(Integer.bitXor(5, 3));
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals("-1\n3\n3\n-8\n1\n6\n", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void guestIntegerNamedOperationsRejectBadStaticCallShapes() throws Exception {
+        for (String invalidCall : java.util.List.of(
+                "Integer.mod(2)",
+                "Integer.pow(2.5, 2)",
+                "Integer.bitXor(true, 1)",
+                "Integer.rem(2, 1, 4)")) {
+            Path entry = temp.resolve("reject-" + invalidCall.length() + "-"
+                    + Math.abs(invalidCall.hashCode()) + ".ores");
+            Files.writeString(entry,
+                    "pub routine main(): void { stdio.println("
+                            + invalidCall + "); return; }");
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(entry), invalidCall);
+        }
+    }
+
+    @Test
+    void guestIntegerNamedOperationsTrapOnInvalidArithmetic() throws Exception {
+        for (String invalidCall : java.util.List.of(
+                "Integer.mod(2, 0)",
+                "Integer.pow(2, 63)",
+                "Integer.pow(2, -1)")) {
+            Path entry = temp.resolve("trap-" + invalidCall.length() + "-"
+                    + Math.abs(invalidCall.hashCode()) + ".ores");
+            Files.writeString(entry,
+                    "pub routine main(): void { stdio.println("
+                            + invalidCall + "); return; }");
+            assertThrows(org.graalvm.polyglot.PolyglotException.class, () -> {
+                LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            }, invalidCall);
+        }
+    }
 }
