@@ -911,6 +911,24 @@ public final class OresEvalRootNode extends RootNode {
                 this.arguments = List.of();
             }
 
+            private OresFuture<Object> criticalChannelRead(
+                    ChannelRuntime.Channel<Object> channel) {
+                return criticalPolicy == null || criticalPolicy.channelWaitTimeout() == null
+                        ? channel.readAsync()
+                        : channel.readAsyncWithin(
+                                criticalPolicy.channelWaitTimeout(),
+                                context.criticalAdmissionTimer());
+            }
+
+            private OresFuture<Void> criticalChannelWrite(
+                    ChannelRuntime.Channel<Object> channel, Object value) {
+                return criticalPolicy == null || criticalPolicy.channelWaitTimeout() == null
+                        ? channel.writeAsync(value)
+                        : channel.writeAsyncWithin(
+                                value, criticalPolicy.channelWaitTimeout(),
+                                context.criticalAdmissionTimer());
+            }
+
             @Override
             public OresScheduler.Step<Object> resume(
                     OresScheduler.Resume resume)
@@ -3680,7 +3698,7 @@ public final class OresEvalRootNode extends RootNode {
                             }
 
                             OresFuture<Object> future =
-                                    channel.readAsync();
+                                    t.criticalChannelRead(channel);
                             if (operation.mode()
                                     == Ast.WaitMode.NONBLOCKING) {
                                 if (ActorRuntime.inActorExecution()) {
@@ -3735,7 +3753,7 @@ public final class OresEvalRootNode extends RootNode {
                                                         "nb cb writech requires actor execution");
                                             }
                                             OresFuture<Void> completion =
-                                                    channel.writeAsync(value);
+                                                    t2.criticalChannelWrite(channel, value);
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
@@ -3786,7 +3804,7 @@ public final class OresEvalRootNode extends RootNode {
                                     }
 
                                     OresFuture<Void> future =
-                                            channel.writeAsync(value);
+                                            t2.criticalChannelWrite(channel, value);
                                     if (operation.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
                                         if (ActorRuntime.inActorExecution()) {
