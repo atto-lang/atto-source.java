@@ -1838,11 +1838,13 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ContinuationTarget {
         private final ActorId actorId;
+        private final ActorRuntime originatingRuntime;
         // A Future callback must never keep a retired actor's heap alive.
         // Exact cell identity also fences a reused actor id after hot reload.
         private final java.lang.ref.WeakReference<ActorCell<?>> capturedCell;
 
         private ContinuationTarget(ActorCell<?> cell) {
+            this.originatingRuntime = ActorRuntime.this;
             this.actorId = cell.ref.id();
             this.capturedCell = new java.lang.ref.WeakReference<>(cell);
         }
@@ -2283,6 +2285,9 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(future, "future");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
+        if (target.originatingRuntime != this) {
+            throw new SecurityException("actor continuation target belongs to another runtime");
+        }
 
         ActorCell<?> cell = target.currentCell();
         if (cell == null || !ownFuture(cell, future, false)) return;
