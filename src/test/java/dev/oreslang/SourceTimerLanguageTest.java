@@ -161,6 +161,72 @@ final class SourceTimerLanguageTest {
     }
 
     @Test
+    void actorFncAwaitKeepsExistingMailboxContinuation() throws Exception {
+        // Unlike an ordinary synchronous helper, an actor fnc is already
+        // scheduler-owned and its Future await must not create a nested Task.
+        String program = """
+                actor fnc worker(): int {
+                    val Channel<int> channel = Channel.new<int>(1);
+                    val Future<void> sent = nb writech channel, 42;
+                    await sent;
+                    return readch channel;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(worker());
+                    return;
+                }
+                """;
+        assertTrue(run(program).contains("42"));
+    }
+
+    @Test
+    void synchronousActorReceiveMayAwaitWithoutAsyncModifier() {
+        // Actor receive runs on the owned mailbox turn; declaring it async
+        // would incorrectly create a separate task and weaken serialization.
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define actor Worker as
+                    receive(ActorMail<String> mail): void {
+                        val Channel<int> channel = Channel.new<int>(1);
+                        val Future<void> sent = nb writech channel, 7;
+                        await sent;
+                        self.end();
+                        return;
+                    }
+                end
+                """));
+    }
+
+    @Test
+    void actorStartupAndOrdinaryInstanceMethodCannotAwait() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    define actor Worker as
+                        on_start(): void {
+                            val Channel<int> channel = Channel.new<int>(1);
+                            val Future<void> sent = nb writech channel, 1;
+                            await sent;
+                            return;
+                        }
+                        receive(ActorMail<String> mail): void {
+                            self.end();
+                            return;
+                        }
+                    end
+                    """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    define class Helper as
+                        pub execute(): void {
+                            val Channel<int> channel = Channel.new<int>(1);
+                            val Future<void> sent = nb writech channel, 1;
+                            await sent;
+                            return;
+                        }
+                    end
+                    """));
+    }
+
+    @Test
     void builtinDurationAndTimeNamespaceCannotBeSpoofed() {
         for (String source : new String[]{
                 "define class Duration as end",
