@@ -173,6 +173,28 @@ public final class CriticalGate {
 
         /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
         public void enterSync() {
+            enterSyncWithTimeout(null);
+        }
+
+        /** Host/embedder-only bounded wait; a contended carrier still fails closed. */
+        public void enterSyncWithin(Duration timeout) {
+            Objects.requireNonNull(timeout, "timeout");
+            if (timeout.isNegative()) {
+                throw new IllegalArgumentException("critical admission timeout is negative");
+            }
+            long nanos;
+            try {
+                nanos = timeout.toNanos();
+            } catch (ArithmeticException overflow) {
+                nanos = Long.MAX_VALUE;
+            }
+            timedAdmission = true;
+            admissionStartNanos = System.nanoTime();
+            admissionBudgetNanos = nanos;
+            enterSyncWithTimeout(timeout);
+        }
+
+        private void enterSyncWithTimeout(Duration timeout) {
             OresFuture<Void> ready = request(true);
             if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
                 // Never park a scheduler/actor worker. Release and fail outside
@@ -198,7 +220,16 @@ public final class CriticalGate {
             }
             if (signal != null) {
                 try {
-                    signal.await();
+                    if (timeout == null) {
+                        signal.await();
+                    } else {
+                        long elapsed = System.nanoTime() - admissionStartNanos;
+                        long remaining = Math.max(0L,
+                                admissionBudgetNanos - Math.max(0L, elapsed));
+                        if (!signal.await(remaining, TimeUnit.NANOSECONDS)) {
+                            expireQueued();
+                        }
+                    }
                 } catch (InterruptedException interrupted) {
                     close();
                     Thread.currentThread().interrupt();
@@ -208,6 +239,12 @@ public final class CriticalGate {
             }
             synchronized (COORDINATOR) {
                 if (closed || !granted) {
+                    if (timedAdmission
+                            && System.nanoTime() - admissionStartNanos >= admissionBudgetNanos) {
+                        throw new IllegalStateException(
+                                "critical admission queue timeout",
+                                new TimeoutException("critical admission queue timeout"));
+                    }
                     throw new CancellationException("critical ticket was cancelled");
                 }
                 synchronousOwner = Thread.currentThread();
