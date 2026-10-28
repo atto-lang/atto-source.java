@@ -56,7 +56,7 @@ jobs:
           # Only exit status 1 (no matches) is permitted; unreadable or
           # malformed config fails closed instead of masquerading as clean.
           git_config_status=0
-          git config --global --get-regexp '^(credential\\.|http\\..*\\.extraheader)' >/dev/null 2>&1 || git_config_status=$?
+          git config --global --get-regexp '^(credential\.|http\..*\.extraheader)' >/dev/null 2>&1 || git_config_status=$?
           if test "$git_config_status" -ne 1; then
             echo "::error::unexpected or unreadable global Git credential config"
             exit 1
