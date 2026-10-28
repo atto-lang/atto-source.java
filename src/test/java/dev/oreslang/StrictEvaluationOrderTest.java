@@ -33,4 +33,32 @@ final class StrictEvaluationOrderTest {
         }
         assertEquals("123", output.toString(StandardCharsets.UTF_8));
     }
+
+    @Test void controlFlowExclusionsAreSelective() throws Exception {
+        String program = """
+                fnc mark(): bool {
+                  stdio.stdout.write("BAD");
+                  return true;
+                }
+                fnc observe(int x): int {
+                  stdio.stdout.write(x);
+                  return x;
+                }
+                pub fnc main(): void {
+                  val bool a = false && mark();
+                  val bool b = true || mark();
+                  val int selected = true ? observe(4) : observe(5);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "selective.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("4", output.toString(StandardCharsets.UTF_8));
+    }
 }
