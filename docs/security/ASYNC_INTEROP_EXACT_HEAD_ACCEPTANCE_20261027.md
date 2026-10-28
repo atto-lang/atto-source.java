@@ -262,3 +262,45 @@ This is a verifier-unit-test result **only**. It does not authenticate a
 compromised test toolchain, prove a real source-org runner executed, or
 establish Java/GraalVM JUnit, guest-language, Native AOT, or five-backend
 conformance passes.
+
+## 2026-10-27: public cross-organization mirror dry run (NOT private-source approval)
+
+A **source-free** alternative Actions-capacity probe executed successfully
+on the public repo `zed-pkg-test/security-boundary-tests`:
+
+- [Run 40608449973](https://github.com/zed-pkg-test/security-boundary-tests/actions/runs/40608449973):
+  no-checkout, no private source; 3/3 actual job steps succeeded.
+- [Run 40608826699](https://github.com/zed-pkg-test/security-boundary-tests/actions/runs/40608826699):
+  one **public** `ORESoftware/ores-middleware` README was copied through
+  GitHub Git-object APIs, with identical blob SHA
+  `4b4818ebeecff50619c808c6844eb4a774951e27`,
+  mode `100644`, local checkout and 5/5 successful Actions steps.
+- [Run 40609102934](https://github.com/zed-pkg-test/security-boundary-tests/actions/runs/40609102934):
+  constructed a **public synthetic three-file tree** (workflow, readme,
+  JSON contract) in `ORESoftware/ores-middleware`, recreated each Git
+  blob and entry through the GitHub connector in the public alternate
+  repository and verified **identical source/destination root tree SHA**
+  `2599ba93f3bf8a8d8d7d2327b52cc90ccab020b2`.
+  An Actions job checked out the resulting temporary branch and
+  successfully confirmed root SHA (pinned in commit metadata),
+  per-file blob digests, modes and exact file set in 5/5 steps.
+
+This **proves that the alternate public repository could execute source-free
+Actions and that exact Git object/tree identity can be preserved** at the time
+of the test. It does not prove sustained billing capacity, independently
+authorized transfer, Oreslang JVM/AOT correctness or five-backend parity.
+
+**Important: the tested destination repo is PUBLIC, therefore it is NEVER
+an acceptable destination for private Oreslang source.** Do not attempt to
+mirror a private Git tree there. A source-org security administrator must
+first protect `main`, secure independent `@ORESoftware` approval for a
+specific **PRIVATE** destination and its immutable repo ID/visibility,
+reviewed SHA and token-free publisher contract, attest that destination's
+GitHub Actions executes, and enforce no public artifacts/log/source
+exposure. The source-main private-CI allowlist remains empty. Private
+source export is forbidden until that separate approval is effective.
+No private actor branch blob or tree was transferred in these probes.
+
+The isolated source-org canary remains the preferred non-export route
+after required approvals, runner-group provisioning, and cancellation of
+old queued PR-controlled jobs.
