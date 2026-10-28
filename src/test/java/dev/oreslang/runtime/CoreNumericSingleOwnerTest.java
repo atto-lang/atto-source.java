@@ -8,6 +8,8 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -28,6 +30,12 @@ final class CoreNumericSingleOwnerTest {
         assertTrue(legacy.contains("return numeric.clamp_int(value, lower, upper);"));
         assertFalse(legacy.contains("if "), "legacy core must not reimplement numeric decisions");
         assertTrue(canonical.contains("define module numeric"));
+        // Pinned against oreslang-common-source/contracts/library/v1/canonical-numeric-source.json.
+        // Every compiler must consume these exact native Oreslang source bytes.
+        String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        assertEquals("3d1d7b77068dd02b3d60b30b72f29a4537a933134ca79e1e81df096dc56f5f33",
+                digest, "canonical core source drifted; update shared manifest and consumers");
         assertFalse(canonical.contains("java:"));
     }
 
