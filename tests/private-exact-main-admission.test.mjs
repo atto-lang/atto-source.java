@@ -72,7 +72,7 @@ function verify(w, c) {
   assert.equal(precheckout.trimStart().split('\n')[0].trim(),
     '- name: Verify exact-main admission before source checkout',
     'first executable step must be the trusted admission guard');
-  assert.equal([...precheckout.matchAll(/^      - (?:name|uses):/gm)].length, 1,
+  assert.equal([...precheckout.matchAll(/^      - /gm)].length, 1,
     'no executable command or action may precede admitted checkout');
   const requiredPreflight = [
     'set -euo pipefail',
@@ -143,6 +143,8 @@ test('unsafe admission mutations rejected', () => {
      '    steps:\n      - name: Unreviewed preflight\n        run: echo preflight-bypassed\n      - name: Verify exact-main admission before source checkout'],
     ['          test "$GITHUB_SHA" = "$APPROVED_SHA"',
      '          # test "$GITHUB_SHA" = "$APPROVED_SHA"'],
+    ['      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683',
+     '      - run: echo unreviewed-before-checkout\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'],
     ["test \"$(node -p 'process.versions.node.split(\".\")[0]')\" = '22'", 'echo no-node-version-gate'],
     ['node --test tests/private-exact-main-admission.test.mjs', 'echo bypassed-node-test'],
     ["vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}",
