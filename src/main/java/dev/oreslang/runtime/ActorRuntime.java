@@ -5666,7 +5666,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private boolean forceCancelInternal(ActorRef<?> ref) {
-        ActorCell<?> cell = actors.get(ref.id());
+        // Every entry point, including a leaked/forged host control handle,
+        // must validate the exact issued reference before fencing any cell.
+        ActorCell<?> cell = liveCellForExactRef(ref);
         if (cell == null || cell.finalized()) return false;
 
         ForceCancellationAttempt attempt =
