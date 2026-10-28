@@ -236,6 +236,38 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void guardedReceiverMethodRejectsBeforeEvaluatingEffectfulArguments()
+            throws Exception {
+        // The receiver is a MutexGuard, not a direct OresObject. Resolving
+        // its underlying checked source method after evaluating arguments
+        // would commit a guest side effect before failing admission.
+        assertGuardedCallRejectedWithoutOutput("""
+                define class Calculator as
+                  pub let int value = 0;
+                  pub count_in_helper(n: int): int {
+                    let total = 0;
+                    for (let i = 0; i < n; i = i + 1) do
+                      total = total + 1;
+                    done
+                    return total;
+                  }
+                end
+                fnc effectful_argument(): int {
+                  stdio.stdout.write("ILLEGAL_GUARD_RECEIVER_ARGUMENT");
+                  return 4096;
+                }
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Calculator());
+                  val guard = mutex.lock();
+                  val int result = guard.count_in_helper(effectful_argument());
+                  guard.release();
+                  stdio.stdout.write(result);
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void dynamicCallbackInNestedExpressionCannotRunUnderLiveMutexGuard()
             throws Exception {
         // This must be caught by the synchronous eval(CallExpr) path too:
