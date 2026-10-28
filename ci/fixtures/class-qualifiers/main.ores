@@ -4,7 +4,7 @@ fnc roodles(): int { return 99; }
 
 define class Foo as
   pub roodles(): int { return 7; }
-  pub run(): void {
+  pub park_it(): void {
     stdio.stdout.write(roodles());
     stdio.stdout.write("|");
     stdio.stdout.write(self.roodles());
@@ -17,5 +17,5 @@ end
 
 pub routine main(): void {
   val foo = new Foo();
-  foo.run();
+  foo.park_it();
 }
