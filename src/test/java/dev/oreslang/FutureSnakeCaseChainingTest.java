@@ -87,6 +87,49 @@ final class FutureSnakeCaseChainingTest {
                 () -> OresCompiler.parseAndTypeCheck(program));
     }
 
+
+    @Test
+    void flatMapDoesNotRecursivelyUnwrapNestedCallbackFutures() throws Exception {
+        String program = """
+                pub async fnc seed(): int { return 21; }
+                pub async fnc double_it(int number): int { return number * 2; }
+
+                pub suspends fnc main(): void {
+                    val Future<Future<int>> nested = seed().flat_map(|int number| -> {
+                        return double_it(number).map(|int doubled| -> {
+                            return double_it(doubled);
+                        });
+                    });
+                    val Future<int> inner = await nested;
+                    stdio.stdout.write(await inner);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("84", run(program),
+                "flat_map must remove only the Future layer returned by its callback");
+    }
+
+    @Test
+    void flatMapCannotAssignAnUnflattenedNestedResultToScalarFuture() {
+        String program = """
+                pub async fnc seed(): int { return 21; }
+                pub async fnc double_it(int number): int { return number * 2; }
+
+                pub fnc main(): void {
+                    val Future<int> invalid = seed().flat_map(|int number| -> {
+                        return double_it(number).map(|int doubled| -> {
+                            return double_it(doubled);
+                        });
+                    });
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program),
+                "flat_map must not implicitly flatten Future<Future<int>> to Future<int>");
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
