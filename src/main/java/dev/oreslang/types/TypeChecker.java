@@ -869,7 +869,14 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
-        currentMaySuspend = fn.async() || fn.suspends();
+        // The public main entrypoint is already run by a scheduler-owned
+        // root Task, so legacy non-async main() may await without spawning
+        // a second source Task. Ordinary synchronous helpers may NOT await.
+        // A nested synchronous lambda still clears this effect capability.
+        currentMaySuspend = fn.async() || fn.suspends()
+                || (fn.name().equals("main")
+                    && fn.visibility() == Ast.Visibility.PUBLIC
+                    && fn.actorKind() == Ast.ActorKind.NONE);
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
@@ -4372,6 +4379,10 @@ public final class TypeChecker {
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (!currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "await requires an async/suspends callable or the scheduler-owned public main entrypoint");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
