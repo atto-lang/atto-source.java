@@ -1471,6 +1471,8 @@ public final class ActorRuntime implements AutoCloseable {
     public final class SyncCell<T> implements AutoCloseable {
         private final ReentrantLock lock = new ReentrantLock(true);
         private final AtomicBoolean cellClosed = new AtomicBoolean();
+        /** Protected by lock. Logical STOP is not a physical reclamation receipt. */
+        private boolean cellReclaimed;
         private T value;
         private long reservedBytes;
 
@@ -1492,6 +1494,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         public T snapshot() {
             rejectPrivateActorSharedMemoryAccess("SyncCell.snapshot");
+            // Do not wait behind a hung user updater after logical runtime STOP.
+            requireOpen();
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -1506,6 +1510,7 @@ public final class ActorRuntime implements AutoCloseable {
         public <R> R read(Function<? super T, ? extends R> reader) {
             Objects.requireNonNull(reader);
             requireSharedActorTurn();
+            requireOpen();
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -1525,6 +1530,7 @@ public final class ActorRuntime implements AutoCloseable {
         public T update(UnaryOperator<T> updater) {
             Objects.requireNonNull(updater);
             requireSharedActorTurn();
+            requireOpen();
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -1561,13 +1567,24 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void markClosedFromRuntime() {
+            // Revocation is purely logical: an active updater may still be
+            // inside its physical actor turn and retain the backing value.
+            // Do not block on its user-held lock or refund the memory budget.
+            cellClosed.set(true);
+        }
+
         private void closeFromRuntime() {
             lock.lock();
             try {
-                if (!cellClosed.compareAndSet(false, true)) return;
+                if (cellReclaimed) return;
+                cellClosed.set(true);
+                // Only this lock holder can detach the backing payload. The
+                // runtime does not invoke this method until actor quiescence.
                 long bytes = reservedBytes;
                 reservedBytes = 0L;
                 value = null;
+                cellReclaimed = true;
                 releaseSharedRuntimeBytes(bytes);
                 syncCells.remove(this);
             } finally {
@@ -1575,9 +1592,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void invalidateFromRuntime() {
-            cellClosed.set(true);
-            syncCells.remove(this);
+        private void reclaimAfterRuntimeQuiescence() {
+            closeFromRuntime();
         }
     }
 
@@ -7318,6 +7334,10 @@ public final class ActorRuntime implements AutoCloseable {
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
         sealShutdownAdmission();
+        // Seal SyncCell handles immediately, even if physical actor execution
+        // cannot retire within CLOSE_WAIT_NANOS. This is an atomic flag only:
+        // resource deallocation remains behind the actor/carrier exit gate.
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.markClosedFromRuntime();
 
         final List<ActorCell<?>> snapshot = List.copyOf(actors.values());
         for (ActorCell<?> cell : snapshot) cell.stop();
@@ -7412,7 +7432,7 @@ public final class ActorRuntime implements AutoCloseable {
             stream.closeAndDrainFromRuntime();
         }
         actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.reclaimAfterRuntimeQuiescence();
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
