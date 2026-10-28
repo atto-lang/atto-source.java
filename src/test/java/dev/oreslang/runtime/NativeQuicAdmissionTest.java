@@ -74,16 +74,26 @@ class NativeQuicAdmissionTest {
     }
 
     @Test
-    void forgedCanonicalHostnamesFailClosed() throws Exception {
-        for (String invalid : List.of("ORIGIN.EXAMPLE", "bad..example",
-                "origin.example.", "-bad.example", "bad_.example")) {
-            var base = target("https://origin.example/");
-            var altered = new OutboundEgressPolicy.ResolvedTarget(
-                    base.uri(), base.scheme(), invalid, base.port(),
-                    base.authority(), base.addresses(),
-                    base.purpose(), base.resolutionGeneration());
-            assertThrows(SecurityException.class,
-                    () -> NativeQuicAdmission.http3Peer(altered, 0), invalid);
-        }
+    void dnsAuthorizationCannotBeConstructedByUntrustedRuntimeCallers() {
+        var constructors =
+                OutboundEgressPolicy.ResolvedTarget.class.getDeclaredConstructors();
+        assertEquals(1, constructors.length);
+        assertTrue(Modifier.isPrivate(constructors[0].getModifiers()),
+                "package-level code must not mint DNS-set egress authorization");
+        assertFalse(OutboundEgressPolicy.ResolvedTarget.class.isRecord(),
+                "records have package-visible canonical constructors");
     }
+
+    @Test
+    void issuedDnsAuthorizationIsImmutableAndFreshPerConnection() throws Exception {
+        var first = target("https://origin.example/");
+        var second = target("https://origin.example/");
+        assertNotSame(first, second);
+        assertNotEquals(first.resolutionGeneration(), second.resolutionGeneration());
+        assertThrows(UnsupportedOperationException.class,
+                () -> first.addresses().add(loopback()));
+        assertEquals(first.addresses(), second.addresses());
+        assertEquals(first.host(), NativeQuicAdmission.http3Peer(first, 0).canonicalSni());
+    }
+
 }

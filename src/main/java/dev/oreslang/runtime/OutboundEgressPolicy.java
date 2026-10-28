@@ -199,24 +199,44 @@ final class OutboundEgressPolicy {
         }
     }
 
-    record ResolvedTarget(
-            URI uri,
-            String scheme,
-            String host,
-            int port,
-            String authority,
-            List<InetAddress> addresses,
-            Purpose purpose,
-            long resolutionGeneration) {
-        ResolvedTarget {
-            uri = Objects.requireNonNull(uri, "uri");
-            scheme = Objects.requireNonNull(scheme, "scheme");
-            host = Objects.requireNonNull(host, "host");
-            authority = Objects.requireNonNull(authority, "authority");
-            addresses = List.copyOf(
+    /**
+     * Trusted runtime-issued authorization for a single physical connection.
+     *
+     * This MUST remain a class with a private constructor: a package-local
+     * record constructor would let unrelated runtime code forge an accepted
+     * DNS-set authorization by supplying a made-up generation and IP address.
+     * This immutable value is not a guest-visible capability. Consumers must
+     * still authorize each newly opened connection and check actor ownership.
+     */
+    static final class ResolvedTarget {
+        private final URI uri;
+        private final String scheme;
+        private final String host;
+        private final int port;
+        private final String authority;
+        private final List<InetAddress> addresses;
+        private final Purpose purpose;
+        private final long resolutionGeneration;
+
+        private ResolvedTarget(
+                URI uri,
+                String scheme,
+                String host,
+                int port,
+                String authority,
+                List<InetAddress> addresses,
+                Purpose purpose,
+                long resolutionGeneration) {
+            this.uri = Objects.requireNonNull(uri, "uri");
+            this.scheme = Objects.requireNonNull(scheme, "scheme");
+            this.host = Objects.requireNonNull(host, "host");
+            this.authority = Objects.requireNonNull(authority, "authority");
+            this.addresses = List.copyOf(
                     Objects.requireNonNull(addresses, "addresses"));
-            purpose = Objects.requireNonNull(purpose, "purpose");
-            if (addresses.isEmpty()) {
+            this.purpose = Objects.requireNonNull(purpose, "purpose");
+            this.port = port;
+            this.resolutionGeneration = resolutionGeneration;
+            if (this.addresses.isEmpty()) {
                 throw new IllegalArgumentException(
                         "resolved target requires at least one pinned address");
             }
@@ -229,6 +249,15 @@ final class OutboundEgressPolicy {
                         "resolution generation must be positive");
             }
         }
+
+        URI uri() { return uri; }
+        String scheme() { return scheme; }
+        String host() { return host; }
+        int port() { return port; }
+        String authority() { return authority; }
+        List<InetAddress> addresses() { return addresses; }
+        Purpose purpose() { return purpose; }
+        long resolutionGeneration() { return resolutionGeneration; }
 
         InetSocketAddress connectAddress(int attempt) {
             InetAddress address =
