@@ -9,11 +9,11 @@ define module tensor as
     pub val int col_stride;
     pub val int element_bytes;
     pub val int capacity_bytes;
-    pub val bool mutable;
+    pub val bool writable;
   end
 
   // This is a rank-2 non-negative-stride view, not a general tensor allocator.
-  // Mutable views use a conservative row-major no-overlap sufficient proof.
+  // Writable views use a conservative row-major no-overlap sufficient proof.
   // Read-only views may broadcast with zero strides.
   pub fnc valid_tensor_view_2d(&TensorView2D view): bool {
     if view.rows < 0 || view.cols < 0; do
@@ -29,10 +29,10 @@ define module tensor as
       return true;
     fi
 
-    if view.mutable && view.rows > 1 && view.row_stride == 0; do
+    if view.writable && view.rows > 1 && view.row_stride == 0; do
       return false;
     fi
-    if view.mutable && view.cols > 1 && view.col_stride == 0; do
+    if view.writable && view.cols > 1 && view.col_stride == 0; do
       return false;
     fi
 
@@ -48,9 +48,9 @@ define module tensor as
       fi
     fi
 
-    // Reject possibly overlapping mutable non-contiguous views rather than
+    // Reject possibly overlapping writable non-contiguous views rather than
     // accepting based solely on the last indexed byte.
-    if view.mutable && view.rows > 1 && view.cols > 1; do
+    if view.writable && view.rows > 1 && view.cols > 1; do
       if view.col_stride > 9223372036854775807 / view.cols; do
         return false;
       fi
