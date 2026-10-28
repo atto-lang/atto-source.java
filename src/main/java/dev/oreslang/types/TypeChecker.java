@@ -3882,7 +3882,15 @@ public final class TypeChecker {
                             "imports::" + member.member()
                                     + " must name an explicitly imported fnc in this source unit");
                 }
-                return Unknown.INSTANCE;
+                // Imported Fnc signatures are opaque to this per-unit pass.
+                // Reifying imports::fn as an Unknown callable permits a later
+                // call through a local Fnc alias to bypass the direct-call
+                // borrow/lifetime gate. Until linked callable types carry the
+                // full ABI and effects, explicit imports are direct-call-only.
+                throw new IllegalArgumentException(
+                        "imports::" + member.member()
+                                + " cannot be a fnc value without a linked "
+                                + "parameter, return and lifetime signature; call it directly");
             }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
