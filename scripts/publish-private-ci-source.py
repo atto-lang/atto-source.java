@@ -37,8 +37,10 @@ BLOCKING_INCIDENT_IDS = {
     127: 5935338521,
     171: 6042555082,  # recovery/runtime source-bearing private carrier; pending classification
     172: 6042602777,  # LLVM exact-tree carrier; independent placement review outstanding
+    198: 6070465058,  # ClaimGraph exact Java CI-script placement; independent classification required
+    200: 6071264936,  # ClaimGraph private Java governance-blob retention; disposition required
 }
-BLOCKING_INCIDENTS = (22, 77, 127, 171, 172)
+BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
     "scintilla-run-test/gleam-runner-conformance",
