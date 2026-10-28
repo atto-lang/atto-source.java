@@ -875,6 +875,7 @@ public final class ChannelRuntime {
                 registration.channel().registrations) {
             if (candidate.selection == registration.selection
                     || candidate.selection.decided
+                    || candidate.selection.deadlineExpiredLocked()
                     || candidate.operation() != opposite) {
                 continue;
             }
