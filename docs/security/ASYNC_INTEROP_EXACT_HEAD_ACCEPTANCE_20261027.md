@@ -194,3 +194,37 @@ These source-free tests are **not** the Java JUnit suites, executable guest
 conformance, full Maven validation, GraalVM Native Image, or physical Task
 retirement proof. Keep all those release gates pending until an approved
 source-org runner actually executes them and records nonzero job steps.
+
+## 2026-10-27: inherited runner credential and unreadable-state hardening
+
+The source-free canary in independently reviewable draft PR #2172
+(head `839febb602bffaba2ede9ad4aed439321d4f3bb1`) now checks the
+**actual inherited** environment instead of setting `GITHUB_TOKEN` and
+`GH_TOKEN` to empty strings first. It rejects nonempty known credential
+environment variables, including GitHub/SSH/AWS/Azure credentials and the
+Oreslang private-source read-token variables. Only approved disposable
+runner-specific tooling should be present.
+
+The workspace admission probe fails if `GITHUB_WORKSPACE` does not
+exist, is unreadable, is not a directory, contains any entries, or
+`find` errors. Global Git configuration inspection also fails closed:
+only exit status 1 (no matching `credential.*` or HTTP `extraheader`
+keys) is accepted; a match or config/read error is a failure. A separately
+checked `javac 25` version is required in addition to Java 25.
+
+Locally, a **source-free standalone Bash harness** verified the revised
+admission behavior with **9/9 passing scenarios**: empty trusted workspace,
+inherited token, inherited Git askpass, populated workspace, persistent
+credential file, global Git credential helper, global HTTP extraheader,
+nonexistent workspace, and forbidden pull-request event. The corrected
+credential-regex also returned expected distinct Git exit statuses for
+clean vs credential-bearing configuration. This is **not execution of
+the GitHub workflow**, nor an independently attested OS sandbox, and
+does not show JDK25/Maven/GraalVM were available on a real runner.
+
+Runner group restrictions, source-main protection, old-run cancellation,
+independent code-owner review, no production secrets, and no outbound
+network access still require external administrative verification.
+Only the v2-label manual source-free canary may be considered once
+those gates are met. Its exact bytes have been synchronized to the
+Java draft PR; keep both PRs draft until authorized independent review.
