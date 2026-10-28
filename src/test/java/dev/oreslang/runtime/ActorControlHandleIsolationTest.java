@@ -175,6 +175,22 @@ final class ActorControlHandleIsolationTest {
                     () -> runtime.drain(forgery));
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> runtime.controlHandle(forgery));
+
+            // A host-side control-handle constructor must not bypass the
+            // force-kill identity check when presented with a forged ref.
+            var controlConstructor = ActorRuntime.ActorControlHandle.class
+                    .getDeclaredConstructor(ActorRuntime.class, ActorRuntime.ActorRef.class);
+            controlConstructor.setAccessible(true);
+            ActorRuntime.ActorControlHandle forgedControl =
+                    controlConstructor.newInstance(runtime, forgery);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::isAlive);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::parentId);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::childIds);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::kill);
             assertTrue(victim.isAlive(), "forged reference must not change target lifecycle");
 
             // Exact runtime-minted reference retains its legitimate authority.
