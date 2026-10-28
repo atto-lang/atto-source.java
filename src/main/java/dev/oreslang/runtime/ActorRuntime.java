@@ -532,6 +532,38 @@ public final class ActorRuntime implements AutoCloseable {
             new ArrayBlockingQueue<>(1024);
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
+    private volatile boolean nativeActorStorageEnabled;
+    /** Immutable after the first actor admission attempt. */
+    private boolean nativeStorageProfileSealed;
+    private final AtomicLong nativeActorArenasCreated = new AtomicLong();
+
+    /**
+     * Trusted-host opt-in for native source actor fields supported by the
+     * storage codec. This is not zero-GC or protected-isolate admission.
+     */
+    public void enableNativeActorStorage() {
+        requireSupervisorContext("configure native actor storage");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get() || nativeStorageProfileSealed)
+                throw new IllegalStateException("native storage profile is already sealed");
+            nativeActorStorageEnabled = true;
+        }
+    }
+
+    public long nativeActorArenasCreated() {
+        requireSupervisorContext("inspect native actor storage");
+        return nativeActorArenasCreated.get();
+    }
+
+    public long nativeActorMemoryBytes() {
+        requireSupervisorContext("inspect native actor storage");
+        long bytes = 0;
+        for (ActorCell<?> cell : actors.values()) {
+            ActorNativeArena arena = cell.nativeArena;
+            if (arena != null) bytes = Math.addExact(bytes, arena.committedBytes());
+        }
+        return bytes;
+    }
 
     public ActorRuntime() {
         this(IsolatePolicy.developer(), DispatcherConfig.defaults(), TurnExecutor.direct());
@@ -937,13 +969,15 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorMemorySlice implements AutoCloseable {
         private final ActorId owner;
         private final long limitBytes;
+        private final java.util.function.LongSupplier extraCharges;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
 
-        private ActorMemorySlice(ActorId owner, long limitBytes) {
+        private ActorMemorySlice(ActorId owner, long limitBytes, java.util.function.LongSupplier extraCharges) {
             this.owner = Objects.requireNonNull(owner);
             this.limitBytes = limitBytes;
+            this.extraCharges = extraCharges;
         }
 
         public ActorId owner() { return owner; }
@@ -991,6 +1025,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
             if (bytes == 0) return new MemoryReservation(this, 0);
 
+            synchronized (memoryBudgetLock) {
             long current = usedBytes.get();
             long next;
             try {
@@ -998,14 +1033,16 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException(purpose + " accounting overflow");
             }
-            if (next > limitBytes) {
+            if (next > limitBytes - extraCharges.getAsLong()) {
                 throw new IllegalStateException(purpose + " limit exceeded for " + owner
                         + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
             }
 
+            MemoryReservation receipt = new MemoryReservation(this, bytes);
             reservePrivateRuntimeBytes(bytes, owner, purpose);
             usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
+            return receipt;
+            }
         }
 
         private void requireCurrentOwner() {
@@ -1286,7 +1323,8 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException("actor shard reservation overflow", overflow);
             }
-            if (total > cell.policy.maxHeapBytes()) {
+                if (total > cell.policy.maxHeapBytes() - (cell.kind == ActorKind.SHARED
+                    ? cell.nativeReservedBytes + cell.sharedMailboxBytes.get() + cell.outputBytes.get() : 0)) {
                 throw new IllegalStateException("per-actor shard heap limit exceeded");
             }
             PrivateMemoryBlock block = null;
@@ -1384,6 +1422,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException("snapshot accounting underflow");
                 }
                 cell.shardReservedBytes -= bytes;
+                cell.snapshotReservedBytes.addAndGet(-bytes);
                 releaseSharedRuntimeBytes(bytes);
             }
         }
@@ -1406,10 +1445,15 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() || cell.finalized || closed.get()) {
                 throw terminated(cell.ref);
             }
+            synchronized (memoryBudgetLock) {
             final long total = Math.addExact(cell.shardReservedBytes, bytes);
-            if (total > cell.policy.maxHeapBytes()) {
+            if (total > cell.policy.maxHeapBytes() - (cell.kind == ActorKind.SHARED
+                    ? cell.nativeReservedBytes + cell.sharedMailboxBytes.get() + cell.outputBytes.get() : 0)) {
                 throw new IllegalStateException("actor snapshot quota exceeded");
             }
+            if (cell.memorySlice != null && bytes > cell.memorySlice.remainingBytes()
+                    - cell.outputBytes.get() - cell.snapshotReservedBytes.get())
+                throw new IllegalStateException("private actor snapshot quota exceeded");
             reserveSharedRuntimeBytes(bytes, "actor column snapshot");
             final double[] contents;
             try {
@@ -1419,9 +1463,11 @@ public final class ActorRuntime implements AutoCloseable {
                 throw failure;
             }
             ActorShardSnapshotLease lease = new ActorShardSnapshotLease(cell, contents, bytes);
+            cell.snapshotReservedBytes.addAndGet(bytes);
             cell.shardReservedBytes = total;
             cell.shardSnapshotLeases.add(lease);
             return lease;
+            }
         }
     }
 
@@ -1793,6 +1839,8 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+        /** Host/compiler storage bridge; never exposed as a guest raw pointer. */
+        default Optional<ActorNativeArena> nativeStorage() { return Optional.empty(); }
 
         /**
          * Current admitted mailbox envelope, present only while onMessage is
@@ -4966,6 +5014,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            nativeStorageProfileSealed = true;
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -7550,6 +7599,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
+        private volatile ActorNativeArena nativeArena;
+        /** Shared-kind native charge; protected by memoryBudgetLock. */
+        private long nativeReservedBytes;
+        private final AtomicLong snapshotReservedBytes = new AtomicLong();
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
         /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
@@ -7679,8 +7732,85 @@ public final class ActorRuntime implements AutoCloseable {
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
             this.memorySlice = isPrivateKind(kind)
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
+                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes(),
+                            () -> Math.addExact(outputBytes.get(), snapshotReservedBytes.get()))
                     : null;
+        }
+
+        private void requireNativeStorageOwner() {
+            // Deliberately lock-free: native accesses hold the arena monitor.
+            // Taking lifecycleLock here would invert finalization's lock order.
+            if (currentActor.get() != this || carrierOwnerThread != Thread.currentThread()
+                    || activeTurns != 1 || forceKillFenced || finalized)
+                throw new SecurityException("native memory requires its exact physical actor turn");
+        }
+
+        private Optional<ActorNativeArena> nativeStorage() {
+            if (!nativeActorStorageEnabled) return Optional.empty();
+            requireNativeStorageOwner();
+            if (kind == ActorKind.UNTRUSTED)
+                throw new SecurityException("native actor storage is not an untrusted isolate adapter");
+            synchronized (lifecycleLock) {
+                if (nativeArena == null) {
+                    if (stopped.get() || closed.get()) throw terminated(ref);
+                    nativeArena = new ActorNativeArena(policy.maxHeapBytes(),
+                            this::requireNativeStorageOwner, this::reserveNativeStorage,
+                            this::nativeStorageQuiesced,
+                            () -> !stopped.get() && !closed.get() && !forceKillFenced);
+                    nativeActorArenasCreated.incrementAndGet();
+                }
+                return Optional.of(nativeArena);
+            }
+        }
+
+        private Runnable reserveNativeStorage(int bytes) {
+            requireNativeStorageOwner();
+            // Allocate the refund receipt before publishing any quota charge.
+            NativeRefund refund = new NativeRefund(bytes);
+            if (memorySlice != null) {
+                refund.reservation = memorySlice.reserveHeap(bytes);
+            } else {
+                synchronized (memoryBudgetLock) {
+                    long occupied = Math.addExact(nativeReservedBytes,
+                            Math.addExact(sharedMailboxBytes.get(),
+                                    Math.addExact(outputBytes.get(), shardReservedBytes)));
+                    if (bytes > policy.maxHeapBytes() - occupied)
+                        throw new IllegalStateException("per-actor native storage quota exhausted");
+                    reserveSharedRuntimeBytes(bytes, "shared actor private native storage");
+                    nativeReservedBytes += bytes;
+                }
+            }
+            return refund;
+        }
+
+        private final class NativeRefund implements Runnable {
+            private final int bytes;
+            private MemoryReservation reservation;
+            private boolean refunded;
+            private NativeRefund(int bytes) { this.bytes = bytes; }
+            @Override public void run() {
+                if (refunded) return;
+                if (reservation != null) {
+                    reservation.close();
+                } else {
+                    synchronized (memoryBudgetLock) {
+                        if (bytes > nativeReservedBytes)
+                            throw new IllegalStateException("native actor quota refund underflow");
+                        nativeReservedBytes -= bytes;
+                        releaseSharedRuntimeBytes(bytes);
+                    }
+                }
+                refunded = true;
+            }
+        }
+
+        private void nativeStorageQuiesced() {
+            // Called only after releasing the arena monitor. This can run on
+            // an external completion carrier and never invokes guest code.
+            synchronized (lifecycleLock) {
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -8042,6 +8172,21 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
+            ActorNativeArena arena = nativeArena;
+            if (arena != null) {
+                arena.retire();
+                if (arena.hasOutstandingLoans()) return;
+                try {
+                    arena.close();
+                    if (!arena.cleanupComplete()) return;
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                    lifecycleLock.notifyAll();
+                    return; // Keep the cell, quota and retirement gate retryable.
+                }
+            }
             finalized = true;
             sourceScheduler = null;
             sourceTaskMailbox.close();
@@ -8154,6 +8299,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor output reservation cannot be negative");
             }
             synchronized (lifecycleLock) {
+                synchronized (memoryBudgetLock) {
                 if (closed.get()) {
                     throw new IllegalStateException("actor runtime is closed");
                 }
@@ -8175,11 +8321,13 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 long actorAvailable = isPrivateKind(kind)
-                        ? Math.max(0L, memorySlice.remainingBytes() - current)
+                        ? Math.max(0L, memorySlice.remainingBytes() - snapshotReservedBytes.get() - current)
                         : Math.max(
                                 0L,
                                 policy.maxHeapBytes()
                                         - sharedMailboxBytes.get()
+                                        - nativeReservedBytes
+                                        - shardReservedBytes
                                         - current);
                 if (bytes > actorAvailable) {
                     throw new IllegalStateException(
@@ -8194,6 +8342,7 @@ public final class ActorRuntime implements AutoCloseable {
                         bytes,
                         "actor output stream");
                 outputBytes.set(next);
+                }
             }
         }
 
@@ -8214,6 +8363,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void reserveSharedMailbox(long bytes) {
             if (bytes < 0) throw new IllegalArgumentException("shared mailbox reservation cannot be negative");
             synchronized (lifecycleLock) {
+                synchronized (memoryBudgetLock) {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
                 if (stopped.get()) throw terminated(ref);
                 long current = sharedMailboxBytes.get();
@@ -8223,12 +8373,13 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (ArithmeticException overflow) {
                     throw new IllegalStateException("shared actor mailbox memory accounting overflow");
                 }
-                if (next > policy.maxHeapBytes()) {
+                if (next > policy.maxHeapBytes() - nativeReservedBytes - outputBytes.get() - shardReservedBytes) {
                     throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
                             + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
                 }
                 reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
                 sharedMailboxBytes.set(next);
+                }
             }
         }
 
@@ -8451,6 +8602,9 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public ActorKind kind() { return kind; }
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
+                    }
+                    @Override public Optional<ActorNativeArena> nativeStorage() {
+                        return ActorCell.this.nativeStorage();
                     }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
@@ -9064,3 +9218,4 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 }
+

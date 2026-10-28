@@ -572,7 +572,12 @@ public final class OresEvalRootNode extends RootNode {
 
             List<Ast.FieldDecl> classFields =
                     effectiveFields(klass, new LinkedHashSet<>());
-            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            var nativeStorage = actorContext.nativeStorage();
+            Map<String, Object> fields = nativeStorage.isPresent()
+                    ? nativeStorage.get().fields(
+                            classFields.stream().map(Ast.FieldDecl::name).toList(),
+                            UNINITIALIZED_FIELD)
+                    : new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
@@ -11464,3 +11469,4 @@ public final class OresEvalRootNode extends RootNode {
         return message;
     }
 }
+
