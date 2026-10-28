@@ -75,7 +75,7 @@ final class NestedWrapperSemanticsContractTest {
         String valid = """
                 pub async fnc base(): int { return 20; }
                 pub async fnc twice(int value): int { return value * 2; }
-                pub fnc main(): void {
+                pub suspends fnc main(): void {
                     val Future<Future<int>> nested = base().map(|int n| -> {
                         return twice(n);
                     });
@@ -86,7 +86,8 @@ final class NestedWrapperSemanticsContractTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(valid));
 
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc base(): int { return 20; }
                 pub async fnc twice(int value): int { return value * 2; }
                 pub fnc main(): void {
@@ -94,8 +95,10 @@ final class NestedWrapperSemanticsContractTest {
                         return twice(n);
                     });
                     return;
-                }
                 """));
+        assertTrue(mismatch.getMessage().contains("initializer for implicitlyFlattened has type"), mismatch.getMessage());
+        assertTrue(mismatch.getMessage().contains("Future"), mismatch.getMessage());
+        assertTrue(mismatch.getMessage().contains("but expected"), mismatch.getMessage());
     }
 
     @Test
@@ -103,7 +106,7 @@ final class NestedWrapperSemanticsContractTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc base(): int { return 20; }
                 pub async fnc twice(int value): int { return value * 2; }
-                pub fnc main(): void {
+                pub suspends fnc main(): void {
                     val Future<int> explicitlyFlattened = base().flatMap(|int n| -> {
                         return twice(n);
                     });
@@ -111,15 +114,17 @@ final class NestedWrapperSemanticsContractTest {
                     return;
                 }
                 """));
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+        IllegalArgumentException badCallback = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc base(): int { return 20; }
                 pub fnc main(): void {
                     val Future<int> invalid = base().flatMap(|int n| -> {
                         return n + 2;
                     });
                     return;
-                }
                 """));
+        assertTrue(badCallback.getMessage().contains("Future.flatMap callback must return Future<T>"),
+                badCallback.getMessage());
     }
 
     @Test
