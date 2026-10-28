@@ -29,6 +29,23 @@ final class NativeQuicLoopbackUdpSmoke {
             }
             check(got != null && got.available() && got.size() == 4 && got.sourcePort() == a.port());
             check(scratch.position() == 0);
+            // Boundary: exactly 1350 bytes are accepted without truncation;
+            // 1351 bytes are rejected before any UDP send occurs.
+            var full = ByteBuffer.wrap(new byte[NativeQuicLoopbackUdp.MAX_DATAGRAM]);
+            check(a.sendToLoopback(b.port(), full) == NativeQuicLoopbackUdp.MAX_DATAGRAM);
+            check(full.position() == 0);
+            NativeQuicLoopbackUdp.Received boundary = null;
+            for (int i = 0; i < 1000; i++) {
+                boundary = b.receive(scratch);
+                if (boundary.available()) break;
+                Thread.sleep(1);
+            }
+            check(boundary != null && boundary.available() &&
+                  boundary.size() == NativeQuicLoopbackUdp.MAX_DATAGRAM);
+            mustReject(() -> {
+                try { a.sendToLoopback(b.port(), ByteBuffer.wrap(new byte[1351])); }
+                catch (java.io.IOException ex) { throw new AssertionError(ex); }
+            });
             try (var raw = DatagramChannel.open(StandardProtocolFamily.INET)) {
                 raw.bind(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}), 0));
                 raw.send(ByteBuffer.wrap(new byte[1351]), new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}), b.port()));
