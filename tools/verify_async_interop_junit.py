@@ -8,12 +8,60 @@ from pathlib import Path
 
 MAX_REPORT_BYTES = 4 * 1024 * 1024
 
-EXPECTED = {
-    "dev.oreslang.runtime.OresFutureObserverTest": 10,
-    "dev.oreslang.runtime.TaskFutureAdaptersTest": 11,
-    "dev.oreslang.runtime.OneShotObservableTest": 14,
-    "dev.oreslang.FutureFromInlineTaskLanguageTest": 7,
+EXPECTED_CASES = {
+  "dev.oreslang.runtime.OresFutureObserverTest": [
+    "observationIsDifferentObjectAndCancellingItCannotCancelTheProducer",
+    "pendingAndAlreadyTerminalSuccessUseExactlyOneResult",
+    "genuineCancellationAndUserThrownCancellationAreNotConflated",
+    "nullValueAndFailurePreserveObservationSemantics",
+    "producerCancelledBeforeObserveDoesNotRetainLateWaiter",
+    "cancellationNamedFailureBeforeObserveStaysFailure",
+    "independentCancellationAndProducerSettlementRaceCannotRetainWaiter",
+    "cancellingOneObserverDoesNotAffectAnIndependentObserver",
+    "observerCancellationVersusAuthenticProducerCancellationIsIdempotent",
+    "longLivedSourceDoesNotRetainCancelledObservationWaiters"
+  ],
+  "dev.oreslang.runtime.TaskFutureAdaptersTest": [
+    "successUsesOneTrackedAdapterAndNeverReplaysProducer",
+    "alreadyCompletedSourceDoesNotNeedAnotherProducer",
+    "adapterRetiresWhileIndependentProducerStillPhysicallyRunning",
+    "terminalBeforeAdapterRegistrationPreservesOriginalFailure",
+    "alreadyCancelledSourceHasAuthenticatedDependentCancellation",
+    "adapterCancellationDetachesOnlyItsWaiter",
+    "authenticatedSourceCancellationCancelsDependentNotProducerTwice",
+    "userThrownCancellationNamedErrorRemainsFailure",
+    "sourceFailurePreservesIdentityAndReleasesRegistration",
+    "waitingAdapterDoesNotParkOnlySchedulerCarrier",
+    "cancellationAndProducerSettlementDoNotLeakWaiters"
+  ],
+  "dev.oreslang.runtime.OneShotObservableTest": [
+    "futureSingleSeesOneValueAndDoesNotRerunSource",
+    "firstIsTypedOptionAndEmptyVoidIsNotInventedPayload",
+    "producerCancelledBeforeSubscriptionRemainsAuthenticatedCancellation",
+    "producerFailedBeforeSubscriptionDoesNotFabricateOptionalEmpty",
+    "rejectsNullFromNonVoidProducerRatherThanInventingEmptyStream",
+    "rejectsValueProducedByVoidFuture",
+    "waitsForEntireSourceNotificationDrainBeforePublishingValue",
+    "cancellationDetachesOneShotObserverWithoutCancellingProducer",
+    "terminalAndConsumerCancellationRacesDetachWithoutCancellingSource",
+    "moveOnlyUnprovenSecondSubscriberIsDeniedEvenIfFirstSettled",
+    "cancellationIdentityAndOrdinaryThrownCancellationStayDifferent",
+    "firstAndSingleTaskConversionsOwnAdapterNotTheProducer",
+    "rejectedSchedulerAdmissionDoesNotLeakObservableSubscription",
+    "taskOriginCannotBeCancelledBySubscriber"
+  ],
+  "dev.oreslang.FutureFromInlineTaskLanguageTest": [
+    "inlineTaskRunsOnceAndCanBeAwaitedThroughAnObservation",
+    "canonicalConstFutureStringInlineTaskSurfaceIsAccepted",
+    "compilerKeepsExactTaskPayloadAndVoidResultType",
+    "absentContextNeverGuessesValueProducingTaskType",
+    "plainFutureMustNotBeMistakenForAnAuthorizedTaskHandle",
+    "wrongArityAndCompetingNewConstructorRemainRejected",
+    "staticResultTypeMustMatchTheTaskValue"
+  ]
 }
+
+EXPECTED = {suite: len(names) for suite, names in EXPECTED_CASES.items()}
 
 def verify(report_dir: Path) -> dict:
     if report_dir.is_symlink() or not report_dir.is_dir():
@@ -58,6 +106,11 @@ def verify(report_dir: Path) -> dict:
         names = [c.attrib["name"] for c in cases]
         if len(names) != len(set(names)):
             raise ValueError(f"duplicate JUnit testcase names: {suite}")
+        if set(names) != set(EXPECTED_CASES[suite]):
+            raise ValueError(
+                f"wrong executed JUnit testcase identities: {suite}; "
+                f"missing={sorted(set(EXPECTED_CASES[suite]) - set(names))}, "
+                f"unexpected={sorted(set(names) - set(EXPECTED_CASES[suite]))}")
         summary[suite] = expected
     if sum(summary.values()) != 42:
         raise ValueError("focused test total does not equal 42")
