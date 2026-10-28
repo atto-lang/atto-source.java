@@ -115,15 +115,19 @@ import aliases still conflict as before.
 `imports::` uses a separate unforgeable AST namespace marker, not a runtime
 value, object property, or reflection lookup. `imports.roodles` retains
 normal member semantics even if a local binding called `imports` exists.
-`imports::name` is valid as a value only when the named `import fnc`
-is reifiable under the existing import/export contract. Source imports
+`imports::name` is **direct-call-only** in this version:
+`imports::name(...)` is supported, but `val f = imports::name` is
+rejected until an explicit linked parameter/return/lifetime/effect
+signature is available. Otherwise a later indirect `f(...)` call could
+bypass the borrow checking performed on `imports::name(...)`. Source imports
 still use their linker's exact source path and public export checks, and
 Java host `fnc` imports still require their original host capability
 and allowlist. No private export or implicit actor same-file dependency
 is authorized. Imported function signatures remain opaque to the
 per-code-unit typechecker unless independently linked; this is **not**
 proof of end-to-end type or effect safety. Opaque `imports::` calls reject
-borrowed argument values, borrow-backed projections, and live MutexGuard values
+borrowed argument values, borrow-backed projections, live lexical borrows
+and live MutexGuard values
 rather than silently exporting unknown lifetimes. The linker and runtime
 reject `import fnc` of a suspending declaration: the current first-class
 function type cannot safely represent its suspension effect. Ordinary
