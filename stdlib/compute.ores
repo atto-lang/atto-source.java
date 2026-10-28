@@ -157,39 +157,4 @@ define module compute as
     return true;
   }
 
-
-  // Metadata-only description of a 1D strided tensor view. This is NOT an
-  // OwnedBuffer, loan, or authority to access an allocation. The owner/runtime
-  // must separately validate its generation, heap/actor identity and loans.
-  pub define class TensorSpan as
-    pub val int backing_elements;
-    pub val int start_element;
-    pub val int element_count;
-    pub val int element_stride;
-  end
-
-  // All four fields are signed i64. Check bounds *before* arithmetic, then
-  // compare using division so even i64::MAX dimensions never overflow.
-  // Empty views may start at the end of backing storage, but stride must
-  // always be positive. No wraparound, negative indices, or zero stride.
-  pub fnc valid_tensor_span(&TensorSpan span): bool {
-    if span.backing_elements < 0 || span.start_element < 0; do
-      return false;
-    fi
-    if span.element_count < 0 || span.element_stride <= 0; do
-      return false;
-    fi
-    if span.start_element > span.backing_elements; do
-      return false;
-    fi
-    if span.element_count == 0; do
-      return true;
-    fi
-    if span.start_element == span.backing_elements; do
-      return false;
-    fi
-    return span.element_count - 1 <=
-      (span.backing_elements - 1 - span.start_element) / span.element_stride;
-  }
-
 end
