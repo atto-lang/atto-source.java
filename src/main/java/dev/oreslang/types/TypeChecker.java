@@ -880,8 +880,9 @@ public final class TypeChecker {
         currentMaySuspend = fn.async() || fn.suspends()
                 || fn.actorKind() != Ast.ActorKind.NONE
                 || (fn.name().equals("main")
-                    && fn.visibility() == Ast.Visibility.PUBLIC
-                    && fn.actorKind() == Ast.ActorKind.NONE);
+                    && fn.actorKind() == Ast.ActorKind.NONE
+                    && (fn.visibility() == Ast.Visibility.PUBLIC
+                        || module.equals(Parser.ROOT_MODULE)));
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
