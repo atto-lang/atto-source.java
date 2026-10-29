@@ -11,6 +11,7 @@ on:
       - 'scripts/test-publish-private-ci-source*.py'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
       - '.github/private-ci-approved-repositories.txt'
+      - '.github/private-ci-carrier-contracts.json'
       - '.github/workflows/source-free-private-ci-gates.yml'
   workflow_dispatch:
 permissions:
