@@ -43,9 +43,11 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p test_cgl_preflight.py -v
           python3 scripts/cgl-preflight.py
-      - name: Build GraalVM launcher and execute actual source
+      - name: Run Maven tests, build launcher, and execute actual guest source
         run: |
-          mvn -B -ntp -DskipTests package
+          set -euo pipefail
+          # A successful -DskipTests package is not a JVM regression pass.
+          mvn -B -ntp verify
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
   graal-cgl-native-launcher:
     runs-on: ubuntu-24.04
