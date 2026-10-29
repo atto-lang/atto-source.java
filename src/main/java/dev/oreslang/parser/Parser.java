@@ -3979,6 +3979,9 @@ public final class Parser {
             }
             consume(LPAREN, "rt workflow_request requires one parenthesized payload");
             Ast.Expr payload = parseExpression();
+            if (payload instanceof Ast.ListExpr literal && literal.elements().size() != 15) {
+                throw error(operation, "rt workflow_request list literal must contain exactly 15 fields");
+            }
             consume(RPAREN, "expected ')' after rt workflow_request payload");
             // The runtime validates a fixed 15-element scalar list, never an
             // arbitrary Java object, JNI pointer or host policy callback.
