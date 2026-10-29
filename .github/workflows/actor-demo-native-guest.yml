@@ -1,0 +1,52 @@
+name: Actor step demo native Graal guest
+on:
+  push:
+    branches:
+      - feat/actor-step-source-guest-baseline-20261028
+  pull_request:
+    paths:
+      - '.github/workflows/actor-demo-native-guest.yml'
+      - 'src/test/java/dev/oreslang/SourceActorDemoWorkflowExecutionTest.java'
+      - 'src/test/java/dev/oreslang/SourceActorStepWorkflowExecutionTest.java'
+      - 'src/test/resources/parity/step-demo-v1/**'
+      - 'src/test/resources/parity/actor-step-*.ores'
+      - 'src/main/**'
+      - 'pom.xml'
+permissions:
+  contents: read
+jobs:
+  real-guest-execution:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Prove exact committed source checkout
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test "$(git ls-files 'src/test/resources/parity/step-demo-v1/*.ores' | wc -l)" -eq 9
+          echo "NATIVE_GUEST_SOURCE_HEAD=$EXPECTED_SHA"
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Compile and execute twelve real Oreslang guest cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test
+          test -s target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
+          test -s target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
+          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER'
