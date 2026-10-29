@@ -90,8 +90,28 @@ public final class ActorStateLoans implements AutoCloseable {
             }
             ExclusiveLoan loan = createLocked(waiter.owner);
             completions.addLast(() -> {
-                // The Future may have been cancelled after its queue removal.
-                // A losing grant must release its loan and promote the next.
+                // A queued completion can outlive actor retirement: the
+                // previous loan callback may close its loan and queue this
+                // grant, then the arbiter closes before publication runs.
+                // Do not publish a *known retired* loan as a success.
+                // Recheck outside the monitor before settling the Future;
+                // heldBy() also fences races with close after this check.
+                boolean retired;
+                synchronized (monitor) {
+                    retired = closed;
+                }
+                if (retired) {
+                    try {
+                        waiter.future.failFromRuntime(new IllegalStateException(
+                                "actor state loans closed before queued grant publication"));
+                    } finally {
+                        // The queued grant was already marked active. Release
+                        // it even if a runtime notification callback throws.
+                        loan.close();
+                    }
+                    return;
+                }
+                // A cancellation after dequeue also loses the grant.
                 if (!waiter.future.completeFromRuntime(loan)) loan.close();
             });
             return;
