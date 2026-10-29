@@ -78,6 +78,28 @@ function verify(w, c, incidentControlled = incidentGovernance) {
   assert.doesNotMatch(deny, /actions\/checkout@/);
   assert.match(deny, /^\s+exit 1$/m);
   assert.equal(jobRunner(allow), '[self-hosted, linux, x64, oreslang-private-ephemeral]');
+  // Require every executable step in reviewed order, including pinned actions.
+  // The old contract only rejected unreviewed steps before checkout.
+  const trustedStepHeaders = [
+    'name: Verify exact-main admission before source checkout',
+    'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4',
+    'name: Verify source identity and immutable Git tree before tool setup',
+    'name: Verify Node.js 22 for private CI admission regression',
+    'name: Execute exact-main source-free admission and mutation regression',
+    'uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1',
+    'name: Verify toolchain',
+    'name: Focused Future/select and exception-isolation regression suites',
+    'name: Complete GraalVM JDK 25 Maven verification',
+    'name: Prove fresh exact-main full JUnit suite execution',
+    'name: Ten deterministic Future/channel stress replays',
+    'name: Native AOT image and compiled guest smoke',
+    'name: Native hybrid image and compiled guest smoke',
+    'name: Strict polyglot isolate and compiled guest smoke',
+  ];
+  assert.deepEqual([...allow.matchAll(/^      - ([^\n]+)$/gm)].map(m => m[1]),
+    trustedStepHeaders, 'unreviewed executable step or changed step order');
+  assert.doesNotMatch(allow, /^        (?:uses|name):/m,
+    'nested step action/name cannot shadow an approved step');
   const stepMarker = '\n    steps:\n';
   const stepStart = allow.indexOf(stepMarker);
   const checkoutStep = allow.indexOf('      - uses: actions/checkout@');
@@ -170,6 +192,14 @@ test('unsafe admission mutations rejected', () => {
      '    steps:\n      - name: Unreviewed preflight\n        run: echo preflight-bypassed\n      - name: Verify exact-main admission before source checkout'],
     ['          test "$GITHUB_SHA" = "$APPROVED_SHA"',
      '          # test "$GITHUB_SHA" = "$APPROVED_SHA"'],
+    ['      - name: Verify toolchain',
+     '      - name: Unreviewed post-checkout step\n        run: echo unexpected\n      - name: Verify toolchain'],
+    ['      - name: Complete GraalVM JDK 25 Maven verification',
+     '      - run: echo unexpected\n      - name: Complete GraalVM JDK 25 Maven verification'],
+    ['      - name: Native hybrid image and compiled guest smoke',
+     '      - name: Native hybrid image and compiled guest smoke\n      - name: Unreviewed trailing step\n        run: echo unexpected'],
+    ['      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1',
+     '      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1\n        uses: actions/checkout@main'],
     ['      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683',
      '      - run: echo unreviewed-before-checkout\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'],
     ["test \"$(node -p 'process.versions.node.split(\".\")[0]')\" = '22'", 'echo no-node-version-gate'],
