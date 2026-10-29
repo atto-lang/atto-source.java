@@ -116,9 +116,13 @@ No guest callback is executed while holding the ledger monitor.
   normal callback release, close/discard, STOP fencing, replay rejection,
   SOURCE_TASK cleanup after STOP, failed callbacks, and concurrent STOP
   while a callback is physically RUNNING.
-- Two added JUnit methods deterministically check terminal callback
-  retention and the RUNNING/retirement distinction. They are committed
-  but **not yet executed with JUnit** on this changed PR head.
+- Three added JUnit methods check terminal callback retention, the
+  RUNNING/retirement distinction, and 128 run/close/STOP interleavings.
+  The complete ledger class now has **9 JUnit methods**, committed but
+  **not yet executed with JUnit** on this changed PR head.
+- An additional local Java 21 stress harness compiled the same exact ledger
+  blob and completed **512/512** concurrent run/close/STOP race iterations
+  with no duplicate callback, leaked receipt or terminal callback closure.
 
 This local smoke execution proves only the isolated actor continuation ledger.
 It does **not** prove `ActorRuntime` integration, full Maven/JDK 25, JVM
