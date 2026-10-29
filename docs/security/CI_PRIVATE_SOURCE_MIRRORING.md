@@ -20,7 +20,7 @@ fails closed until the source policy is reviewed again.
 
 Blocking private-source incidents have a separate protected authority file:
 `.github/private-ci-incident-dispositions.json`. The blocking set is closed and
-explicit: #22, #77, #127, #171, #172, #198, and #200. Newly discovered
+explicit: #22, #77, #127, #171, #172, #198, #200, #212, and #222. Newly discovered
 cross-organization source/governance placement incidents must be added to both
 the publisher's immutable incident-ID registry and this protected disposition
 file before any export can resume; an older resolved subset never authorizes
@@ -39,7 +39,8 @@ changing the protected registry therefore revokes further writes.
 V3 requires **protected source `main` for every private-source export**.
 If GitHub reports source `main protected: true`, V3 delegates to the legacy
 protected-origin verifier. It requires CODEOWNER review, stale-review dismissal,
-at least one approval, strict non-empty required status checks, administrator
+last-push approval, conversation resolution, at least one approval, strict
+required status checks bound to explicit positive GitHub App IDs, administrator
 enforcement, no review bypasses, no force pushes, and no branch deletion.
 
 There is deliberately no review-attested fallback for the source repository.
@@ -110,7 +111,10 @@ scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
 
 The caller does not choose the executable carrier branch. After proving the
 complete source Git tree, the dispatcher derives exactly
-`ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
+`ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The reviewed carrier test plan must pin both the exact source head SHA and exact
+source root-tree SHA as a pair. V3 checks the head pin before reading private
+source bytes and rechecks the computed root tree before the first source-bearing
+write. The exact source commit must also be
 the current head of the named open PR against source `main`, with the latest
 immutable security-owner review approving that exact head. Before reading
 private source bytes, V3 additionally requires the live protected-`main`
@@ -274,7 +278,7 @@ exact-tree attestation never substitutes for live branch protection.
 
 ## Active disclosure incidents
 
-Platform-conformance incidents #22, #77, #127, #171, #172, #198 and #200 remain
+Platform-conformance incidents #22, #77, #127, #171, #172, #198, #200, #212 and #222 remain
 the canonical private-source exposure and retention gates. The ClaimGraph
 carrier implicated by #198/#200 is quarantined by both exact slug and immutable
 repository ID; resolving those incidents does not silently make that destination
