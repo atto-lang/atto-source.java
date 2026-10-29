@@ -3,8 +3,11 @@
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -49,41 +52,64 @@ public final class DurableLocalDispatchClaim {
             s.actorId() + "\n" + s.dispatchId() + "\n";
         return sha256(key) + ".claim";
     }
+    // SecureDirectoryStream performs openat-style, directory-descriptor-anchored
+    // traversal, claim creation, and directory sync. Reject filesystem providers
+    // that cannot supply this capability. No fallback to pathname FileChannel.
+    private boolean claimAt(SecureDirectoryStream<Path> current, int index,
+                            String name, AgentHostDispatchGate.Scope scope)
+                            throws IOException {
+        if (index < directory.getNameCount()) {
+            Path component = directory.getName(index);
+            String segment = component.toString();
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..") ||
+                segment.indexOf('\0') >= 0) return false;
+            try (SecureDirectoryStream<Path> next = current.newDirectoryStream(
+                    component, LinkOption.NOFOLLOW_LINKS)) {
+                return claimAt(next, index + 1, name, scope);
+            }
+        }
+        PosixFileAttributeView view = current.getFileAttributeView(
+            PosixFileAttributeView.class);
+        if (view == null) return false;
+        PosixFileAttributes attrs = view.readAttributes();
+        if (!attrs.isDirectory() || !attrs.permissions().equals(PRIVATE_DIR) ||
+            !attrs.owner().equals(Files.getOwner(
+                Path.of(System.getProperty("user.home")), LinkOption.NOFOLLOW_LINKS)))
+            return false;
+        byte[] data = ("ORES_AGENT_CLAIM_V1\n" + scope.contextSha256() + "\n")
+            .getBytes(StandardCharsets.US_ASCII);
+        // The claim's O_EXCL is relative to the validated pinned directory FD.
+        // Once claimed, even an IO error leaves the name reserved indefinitely.
+        try (SeekableByteChannel channel = current.newByteChannel(Path.of(name),
+                Set.of(CREATE_NEW, WRITE),
+                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(PRIVATE_FILE))) {
+            if (!(channel instanceof FileChannel file)) return false;
+            ByteBuffer buffer = ByteBuffer.wrap(data);
+            while (buffer.hasRemaining()) file.write(buffer);
+            file.force(true);
+        }
+        // Crucial: fsync the *same pinned directory*, not a newly opened
+        // pathname which could have been swapped since the claim was created.
+        try (SeekableByteChannel channel = current.newByteChannel(
+                Path.of("."), Set.of(READ))) {
+            if (!(channel instanceof FileChannel dir)) return false;
+            dir.force(true);
+        }
+        return true;
+    }
     public boolean claimOnce(AgentHostDispatchGate.Scope scope) {
         try {
             String name = claimFilename(scope);
-            // Reject symlink components anywhere in the host-provisioned path.
-            // A check of only the leaf directory can be bypassed by a linked
-            // ancestor. The parent chain must also be protected against mutation
-            // by the host's filesystem permissions; this is not a dirfd API.
             if (directory == null || !directory.isAbsolute() ||
+                directory.getNameCount() == 0 ||
                 !directory.normalize().equals(directory)) return false;
-            for (Path current = directory; current != null; current = current.getParent()) {
-                if (Files.isSymbolicLink(current)) return false;
+            // Even a symlink in /tmp/parent, not just the leaf, must fail.
+            // Secure stream traversals protect against concurrent substitution.
+            try (DirectoryStream<Path> root = Files.newDirectoryStream(Path.of("/"))) {
+                if (!(root instanceof SecureDirectoryStream<Path> secure))
+                    return false;
+                return claimAt(secure, 0, name, scope);
             }
-            if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS) ||
-                !Files.getPosixFilePermissions(directory, LinkOption.NOFOLLOW_LINKS)
-                    .equals(PRIVATE_DIR) ||
-                !Files.getOwner(directory, LinkOption.NOFOLLOW_LINKS).equals(
-                    Files.getOwner(Path.of(System.getProperty("user.home")), LinkOption.NOFOLLOW_LINKS)))
-                return false;
-            Path claim = directory.resolve(name);
-            byte[] data = ("ORES_AGENT_CLAIM_V1\n" + scope.contextSha256() + "\n")
-                .getBytes(StandardCharsets.US_ASCII);
-            // CREATE_NEW is an atomic cross-process reservation on a local FS.
-            // A partially written claim remains consumed, never replayed.
-            try (FileChannel file = FileChannel.open(claim,
-                Set.of(CREATE_NEW, WRITE),
-                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(PRIVATE_FILE))) {
-                ByteBuffer buffer = ByteBuffer.wrap(data);
-                while (buffer.hasRemaining()) file.write(buffer);
-                file.force(true);
-            }
-            // Flush the directory entry before approving the external dispatch.
-            try (FileChannel dir = FileChannel.open(directory, READ)) {
-                dir.force(true);
-            }
-            return true;
         } catch (IOException | IllegalArgumentException | UnsupportedOperationException |
                  SecurityException exception) {
             return false;
