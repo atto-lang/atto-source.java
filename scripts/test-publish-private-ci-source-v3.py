@@ -16,6 +16,7 @@ v3 = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(v3)
 
 SOURCE_TREE = "a" * 40
+SOURCE_HEAD = "4" * 40
 ROOT_TREE = "b" * 40
 COMMIT = "c" * 40
 BASE = "d" * 40
@@ -29,6 +30,8 @@ PLAN = (
             "schema": "ores-private-ci-test-plan-v1",
             "source_repo": v3.legacy.SOURCE_REPO,
             "allowed_prs": [1482],
+            "required_source_head_sha": SOURCE_HEAD,
+            "required_source_root_tree_sha": SOURCE_TREE,
             "commands": [
                 {
                     "argv": ["python3", "-c", "print('ok')"],
@@ -238,6 +241,8 @@ class PrivateCiV3Test(unittest.TestCase):
             "schema": "ores-private-ci-test-plan-v1",
             "source_repo": v3.legacy.SOURCE_REPO,
             "allowed_prs": [1482],
+            "required_source_head_sha": SOURCE_HEAD,
+            "required_source_root_tree_sha": SOURCE_TREE,
             "commands": [{
                 "argv": ["mvn", "-B", "test"],
                 "cwd": ".",
@@ -296,6 +301,8 @@ class PrivateCiV3Test(unittest.TestCase):
             "schema": "ores-private-ci-test-plan-v1",
             "source_repo": v3.legacy.SOURCE_REPO,
             "allowed_prs": [1482],
+            "required_source_head_sha": SOURCE_HEAD,
+            "required_source_root_tree_sha": SOURCE_TREE,
             "maven_pom_blob_sha": pom,
             "commands": [{
                 "argv": ["mvn", "-o", "-C", "-B", "test"],
@@ -333,6 +340,8 @@ class PrivateCiV3Test(unittest.TestCase):
             "schema": "ores-private-ci-test-plan-v1",
             "source_repo": v3.legacy.SOURCE_REPO,
             "allowed_prs": [1482],
+            "required_source_head_sha": SOURCE_HEAD,
+            "required_source_root_tree_sha": SOURCE_TREE,
             "maven_pom_blob_sha": pom,
             "commands": [{
                 "argv": ["mvn", "-o", "-C", "test"],
@@ -368,6 +377,127 @@ class PrivateCiV3Test(unittest.TestCase):
             v3.validate_test_plan(
                 (json.dumps(non_maven) + "\n").encode(), 1482
             )
+
+    def test_reviewed_plan_requires_exact_source_snapshot_pins(self):
+        meta = v3.validate_test_plan(PLAN, 1482)
+        self.assertEqual(meta["required_source_head_sha"], SOURCE_HEAD)
+        self.assertEqual(meta["required_source_root_tree_sha"], SOURCE_TREE)
+        v3.verify_required_source_snapshot(meta, SOURCE_HEAD, SOURCE_TREE)
+
+        no_pins = json.loads(PLAN)
+        del no_pins["required_source_head_sha"]
+        del no_pins["required_source_root_tree_sha"]
+        with self.assertRaisesRegex(v3.Denied, "snapshot pins required"):
+            v3.validate_test_plan(
+                (json.dumps(no_pins) + "\n").encode(), 1482
+            )
+
+        for missing in ("required_source_head_sha", "required_source_root_tree_sha"):
+            doc = json.loads(PLAN)
+            del doc[missing]
+            with self.subTest(missing=missing), self.assertRaisesRegex(
+                    v3.Denied, "snapshot pins must be paired"):
+                v3.validate_test_plan(
+                    (json.dumps(doc) + "\n").encode(), 1482
+                )
+
+        for field in ("required_source_head_sha", "required_source_root_tree_sha"):
+            doc = json.loads(PLAN)
+            doc[field] = "not-a-git-sha"
+            with self.subTest(field=field), self.assertRaises(v3.Denied):
+                v3.validate_test_plan(
+                    (json.dumps(doc) + "\n").encode(), 1482
+                )
+
+        with self.assertRaisesRegex(v3.Denied, "source head differs"):
+            v3.verify_required_source_snapshot(meta, "5" * 40)
+        with self.assertRaisesRegex(v3.Denied, "source root tree differs"):
+            v3.verify_required_source_snapshot(
+                meta, SOURCE_HEAD, "6" * 40
+            )
+
+    def test_publish_rejects_reviewed_head_drift_before_source_read(self):
+        carrier = contract()
+        drifted = json.loads(PLAN)
+        drifted["required_source_head_sha"] = "5" * 40
+        raw = (json.dumps(drifted) + "\n").encode()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3, "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {"id": carrier["repository_id"]},
+                        "3" * 40,
+                        raw,
+                    ),
+                ),
+                patch.object(v3.legacy, "collect_source") as collect_source,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "source head differs"):
+                    v3.publish(
+                        "trusted/ci", source, SOURCE_HEAD, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                    )
+                collect_source.assert_not_called()
+
+    def test_publish_rejects_reviewed_root_tree_drift_before_upload(self):
+        carrier = contract()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3, "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {"id": carrier["repository_id"]},
+                        "3" * 40,
+                        PLAN,
+                    ),
+                ),
+                patch.object(
+                    v3.legacy, "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")],
+                ),
+                patch.object(
+                    v3.legacy, "verified_exact_source_tree",
+                    return_value="6" * 40,
+                ),
+                patch.object(v3.legacy, "gh_api") as api,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "source root tree differs"):
+                    v3.publish(
+                        "trusted/ci", source, SOURCE_HEAD, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                    )
+                api.assert_not_called()
 
     def test_required_source_blob_mismatch_fails_before_upload(self):
         expected = v3.git_blob_sha(b"reviewed pom\n")
