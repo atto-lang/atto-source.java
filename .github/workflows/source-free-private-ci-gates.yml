@@ -4,6 +4,8 @@ on:
     paths:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
+      - 'scripts/test-private-ci-codeowners-contract.sh'
+      - '.github/CODEOWNERS'
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source*.py'
       - 'scripts/test-publish-private-ci-source*.py'
@@ -35,6 +37,8 @@ jobs:
           PY
       - name: Reject unauthorized destinations without publishing
         run: bash scripts/test-private-ci-destination.sh
+      - name: Verify CODEOWNERS security contract and adversarial cases
+        run: bash scripts/test-private-ci-codeowners-contract.sh
       - name: Verify source-free publisher regression fixtures
         run: |
           python3 scripts/test-publish-private-ci-source.py
