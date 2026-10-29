@@ -9,6 +9,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.charset.StandardCharsets;
+import com.sun.security.auth.module.UnixSystem;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.EnumSet;
@@ -72,9 +73,9 @@ public final class DurableLocalDispatchClaim {
             PosixFileAttributeView.class);
         if (view == null) return false;
         PosixFileAttributes attrs = view.readAttributes();
+        // OS-authenticated owner, never mutable user.home / user.name props.
         if (!attrs.isDirectory() || !attrs.permissions().equals(PRIVATE_DIR) ||
-            !attrs.owner().equals(Files.getOwner(
-                Path.of(System.getProperty("user.home")), LinkOption.NOFOLLOW_LINKS)))
+            !attrs.owner().getName().equals(new UnixSystem().getUsername()))
             return false;
         byte[] data = ("ORES_AGENT_CLAIM_V1\n" + scope.contextSha256() + "\n")
             .getBytes(StandardCharsets.US_ASCII);
