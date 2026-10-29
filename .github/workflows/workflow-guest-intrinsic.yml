@@ -39,4 +39,4 @@ jobs:
           mvn -B -ntp -DskipTests dependency:build-classpath -Dmdep.outputFile=target/runtime-classpath.txt
           java -cp "target/classes:$(cat target/runtime-classpath.txt)" \
             dev.oreslang.launcher.OresMain --check examples/workflow-host-request.ores \
-            --allow-workflow-storage
+            --allow=WORKFLOW_STORAGE
