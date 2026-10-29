@@ -68,6 +68,23 @@ final class RuntimePermissionsIdentityHardeningTest {
     }
 
     @Test
+    void hexIpv4AliasesCannotEvadeLocalhostDenials() {
+        var policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1");
+        for (String alias : new String[] {
+                "0x7f.0.0.1:443", "0x7f000001:443",
+                "127.0x0.0.1:443", "0x7f.0x0.0x0.0x1:443"
+        }) {
+            assertFalse(policy.allows(RuntimePermissions.Permission.NET, alias),
+                    "hexadecimal IPv4 alias matched wildcard network scope: " + alias);
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withAllowed(RuntimePermissions.Permission.NET, alias));
+        }
+    }
+
+    @Test
     void serializedLiteralEnvironmentNamesRemainExact() {
         var original = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.ENV, "API_KEY ")
