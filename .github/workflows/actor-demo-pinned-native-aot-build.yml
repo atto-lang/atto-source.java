@@ -87,9 +87,20 @@ jobs:
           test -x target/ores-aot
           timeout --kill-after=5s 15s target/ores-aot --build-info > target/ores-aot.build-info.json
           test "$(wc -c < target/ores-aot.build-info.json)" -le 2048
+          # Native AOT must identify its concrete execution mode; reject
+          # JSON strings, JVM/hybrid impersonation, or multiple documents.
           jq -e -s 'length == 1 and (.[0] | type == "object"
-            and (.build_mode | type == "string" and length > 0)
-            and .guest_execution == true)' target/ores-aot.build-info.json >/dev/null
+            and .build_mode == "aot"
+            and .guest_execution == true
+            and .guest_execution_mode == "interpreter-no-jit")' \
+            target/ores-aot.build-info.json >/dev/null
+          # jq's ordinary parser retains only the last duplicate JSON key.
+          # Stream the original key/value tokens so an escaped Unicode alias
+          # or a repeated protected key cannot override compiler admission.
+          jq --stream -s -e '
+            [.[] | select(length == 2 and (.[0] | length) == 1) | .[0][0]] as $keys
+            | ($keys | length) == ($keys | unique | length)
+          ' target/ores-aot.build-info.json >/dev/null
           invalid="$(mktemp --suffix=.ores)"
           trap 'rm -f "$invalid"' EXIT
           printf 'define actor BadSyntax as\n  this-is-not-valid-oreslang-@@@\nend\n' > "$invalid"
@@ -106,6 +117,10 @@ jobs:
               exit 1
             fi
           fi
+          test -s target/ores-aot.invalid.err || {
+            echo 'BAD_COMPILER: syntax challenge returned no compiler diagnostic' >&2
+            exit 1
+          }
           fixture=src/test/resources/parity/actor-step-sequential.ores
           test -f "$fixture"
           timeout --kill-after=5s 30s target/ores-aot --check "$fixture"
