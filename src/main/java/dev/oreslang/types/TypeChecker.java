@@ -1266,6 +1266,16 @@ public final class TypeChecker {
 
     private void checkConstructorNoEscape(
             String owner, Object expression, Set<String> initialized, Set<String> required) {
+        // The flow oracle only counts standalone self.field = value statements.
+        // Expression-position assignments (nested values, conditional tests,
+        // callbacks, deferred expressions) must never borrow constructor
+        // privileges or perform an uncounted second write, even after every
+        // required field has been initialized.
+        if (constructorContainsFixedWrite(expression, required)) {
+            throw new IllegalArgumentException("constructor for " + owner
+                    + " must initialize fixed fields through direct statements,"
+                    + " not nested expression assignments");
+        }
         // An unqualified call can resolve to an instance method and publish
         // the receiver indirectly. Until transitive constructor-safe effect
         // summaries exist, disallow every call on a partial object path.
