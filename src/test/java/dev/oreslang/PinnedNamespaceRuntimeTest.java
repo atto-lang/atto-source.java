@@ -128,6 +128,18 @@ final class PinnedNamespaceRuntimeTest {
     }
 
     @Test
+    void verifiedEmptyNamespaceStillAdmitsExplicitBindingWithoutMembers() {
+        Map<String, String> units = Map.of(
+                "foo/private.ores",
+                "namespace a; fnc private_helper(): int { return 7; }",
+                ENTRY,
+                "import ns a from 'pkg:foo'; pub fnc main(): int { return 0; }");
+        Map<String, String> owners = Map.of(
+                "foo/private.ores", FOO, ENTRY, APP);
+        assertEquals(0, run(units, owners, PINS));
+    }
+
+    @Test
     void standaloneTruffleEvaluationCannotLinkUnverifiedNamespace() {
         assertThrows(RuntimeException.class, () -> {
             try (org.graalvm.polyglot.Context context = IsolatePolicy.developer()
