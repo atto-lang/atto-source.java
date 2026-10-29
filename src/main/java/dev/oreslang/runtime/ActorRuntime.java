@@ -1836,15 +1836,18 @@ public final class ActorRuntime implements AutoCloseable {
      * threads may only enqueue a runtime continuation; they never execute guest
      * code directly.</p>
      */
-    public final class ContinuationTarget {
+    public static final class ContinuationTarget {
         private final ActorId actorId;
-        private final ActorRuntime originatingRuntime;
-        // A Future callback must never keep a retired actor's heap alive.
-        // Exact cell identity also fences a reused actor id after hot reload.
+        // A non-static inner target implicitly retains its ActorRuntime even
+        // if the actor cell is weakly captured. A foreign pending Future must
+        // not pin an entire closed runtime through this completion capability.
+        private final java.lang.ref.WeakReference<ActorRuntime> originatingRuntime;
+        // Identity, not merely ActorId, fences a reused hot-reload incarnation.
         private final java.lang.ref.WeakReference<ActorCell<?>> capturedCell;
 
-        private ContinuationTarget(ActorCell<?> cell) {
-            this.originatingRuntime = ActorRuntime.this;
+        private ContinuationTarget(ActorRuntime runtime, ActorCell<?> cell) {
+            this.originatingRuntime = new java.lang.ref.WeakReference<>(
+                    Objects.requireNonNull(runtime, "runtime"));
             this.actorId = cell.ref.id();
             this.capturedCell = new java.lang.ref.WeakReference<>(cell);
         }
@@ -1853,14 +1856,20 @@ public final class ActorRuntime implements AutoCloseable {
             return actorId;
         }
 
-        private ActorCell<?> currentCell() {
+        private ActorCell<?> currentCell(ActorRuntime runtime) {
             ActorCell<?> cell = capturedCell.get();
-            return cell != null && actors.get(actorId) == cell ? cell : null;
+            return cell != null && runtime.actors.get(actorId) == cell ? cell : null;
+        }
+
+        private ActorCell<?> currentCell() {
+            ActorRuntime runtime = originatingRuntime.get();
+            return runtime == null ? null : currentCell(runtime);
         }
 
         private boolean enqueue(Runnable continuation) {
-            ActorCell<?> cell = currentCell();
-            return cell != null && enqueueContinuation(cell, continuation);
+            ActorRuntime runtime = originatingRuntime.get();
+            ActorCell<?> cell = runtime == null ? null : currentCell(runtime);
+            return cell != null && runtime.enqueueContinuation(cell, continuation);
         }
     }
 
@@ -1885,7 +1894,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "deferred actor continuation requires an executing actor turn");
         }
-        return new ContinuationTarget(cell);
+        return new ContinuationTarget(this, cell);
     }
 
     /**
@@ -2285,7 +2294,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(future, "future");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
-        if (target.originatingRuntime != this) {
+        if (target.originatingRuntime.get() != this) {
             throw new SecurityException("actor continuation target belongs to another runtime");
         }
 
