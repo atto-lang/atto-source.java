@@ -4,7 +4,11 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 ## Files, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A source file may begin with one optional flat `namespace name;` declaration. This namespace is a compile-time label for source organization and ABI tracking, **not package ownership identity** and not a runtime value. Multiple files are not automatically federated because they spell the same namespace: verified package-manifest membership and an explicit namespace linker are required for that future feature. A source file may contain multiple `define module` declarations. A module is an explicit runtime-qualified value scope: exported members can be accessed through a module name, such as `math.add(1, 2)`. Modules are flat and cannot be nested.
+
+The compiler reserves `__root__` for its synthetic file-root module. User code cannot define `namespace __root__`, `define module __root__`, import `module __root__`, or use `__root__` as an import alias. A synthetic root module is **not** a public namespace export. The compiler keeps `CompiledUnit.namespace` separate from `CompiledUnit.packageId`; absent verified manifest grouping, each normalized source file receives a singleton package identity.
+
+Cross-file `import namespace ... from ...` is not implemented in this compiler revision. This hardening does not claim native LLVM, .NET or Wasm parity.
 
 ```ores
 define module math

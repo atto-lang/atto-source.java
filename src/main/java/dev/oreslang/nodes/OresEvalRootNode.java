@@ -9024,7 +9024,9 @@ public final class OresEvalRootNode extends RootNode {
                                         + " is a type-only selector and cannot be evaluated as a runtime value");
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
-                    if (module == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    if (module == null || Parser.ROOT_MODULE.equals(module.name())) {
+                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    }
                     yield new ModuleFacade(this, module);
                 }
                 case ALL -> exportAny(name);
