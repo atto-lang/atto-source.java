@@ -102,6 +102,18 @@ final class CpuScalarSyncV3Test {
                 () -> new Ast.CpuScalarRegionExpr(balancedScalarTree(257)));
     }
 
+    @Test void lexerPreflightRejectsOversizedCpuRegionsBeforeRecursiveParsing() {
+        String leading = "pub fnc main(): int { return cpu { ";
+        String trailing = "1 }; }";
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(leading + "-".repeat(2000) + trailing));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(leading + "(".repeat(65) + "1"
+                        + ")".repeat(65) + " }; }"));
+        assertDoesNotThrow(() -> Parser.parse(leading + "(".repeat(64)
+                + "1" + ")".repeat(64) + " }; }"));
+    }
+
     @Test void directAstConstructionCannotSmuggleEffectsOrCaptures() {
         for (Ast.Expr invalid : new Ast.Expr[]{
                 new Ast.NameExpr("secret"),
