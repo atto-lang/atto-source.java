@@ -163,7 +163,7 @@ final class ColonClassFieldInitializerTest {
                 define class Foo as
                   final Array<int> readOnly: [1, 2]
                   final mut Array<int> writable: [3, 4]
-                  mut Array<int> mutableAndReassignable: [5]
+                  let mut Array<int> mutableAndReassignable: [5]
                 end
                 """);
         Ast.ClassDecl foo = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
@@ -182,7 +182,7 @@ final class ColonClassFieldInitializerTest {
                 define class Foo as
                   string label = "100"
                   final mut Array<int> items: [1, 2]
-                  mut int count: 3
+                  let mut int count: 3
                 end
                 """).modules().getFirst().declarations().getFirst();
         assertEquals(3, foo.fields().size());
