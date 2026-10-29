@@ -24,7 +24,8 @@ final class UnsafeLinkedImportAdmissionTest {
                 "@ores.std/unsafe/memory.ores", "@std\\unsafe\\native.ores",
                 "@std.unsafe.ffi", "@std:unsafe.ffi", "@ores.std:unsafe",
                 "@std/./unsafe/ffi", "@std/other/../unsafe/native",
-                "@ores.std//unsafe/memory"}) {
+                "@ores.std//unsafe/memory", "@./std/unsafe/ffi",
+                "@pkg/../std/unsafe/memory"}) {
             assertTrue(CoreLibrarySources.isUnsafeStdUnitId(target), target);
             SecurityException denied = assertThrows(SecurityException.class, () ->
                     ImportGraph.resolveImportUnitId(
@@ -51,7 +52,8 @@ final class UnsafeLinkedImportAdmissionTest {
                 "@std/unsafe_utils.ores", "@std/safe.ores",
                 "src/unsafe.ores", "@ores.core/numeric.ores",
                 "@std/unsafe-math.ores",
-                "@std/./unsafe_tools.ores", "@std/other/../safe.ores"}) {
+                "@std/./unsafe_tools.ores", "@std/other/../safe.ores",
+                "@pkg/std/unsafe/memory.ores"}) {
             assertFalse(CoreLibrarySources.isUnsafeStdUnitId(unit), unit);
         }
     }
