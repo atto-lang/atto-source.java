@@ -83,6 +83,27 @@ final class ActorContinuationLedgerIntegrationTest {
     }
 
     @Test
+    void retainedContinuationTargetCannotImplicitlyPinTheEntireActorRuntime()
+            throws Exception {
+        // Do not assert GC timing. Reflect on the actual handle layout:
+        // non-static inner classes would synthesize a strong this$0 runtime
+        // reference even when the visible actor-cell field is weak.
+        Class<?> targetType = ActorRuntime.ContinuationTarget.class;
+        assertTrue(java.lang.reflect.Modifier.isStatic(targetType.getModifiers()),
+                "continuation target must not have a synthetic outer runtime owner");
+        var runtimeField = targetType.getDeclaredField("originatingRuntime");
+        var cellField = targetType.getDeclaredField("capturedCell");
+        assertEquals(java.lang.ref.WeakReference.class, runtimeField.getType());
+        assertEquals(java.lang.ref.WeakReference.class, cellField.getType());
+        for (var field : targetType.getDeclaredFields()) {
+            assertNotEquals(ActorRuntime.class, field.getType(),
+                    "foreign Future must not hold a strong runtime field");
+            assertFalse(field.getName().startsWith("this$"),
+                    "non-static inner target would implicitly retain ActorRuntime");
+        }
+    }
+
+    @Test
     void aTargetCannotBeUsedThroughAnotherRuntime() throws Exception {
         CountDownLatch captured = new CountDownLatch(1);
         AtomicReference<ActorRuntime.ContinuationTarget> target = new AtomicReference<>();
