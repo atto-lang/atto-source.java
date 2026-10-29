@@ -699,6 +699,36 @@ class PrivateCiV3Test(unittest.TestCase):
         with self.assertRaisesRegex(v3.Denied, "publisher App"):
             invoke(rulesets, carrier=bad)
 
+    def test_carrier_ref_ruleset_api_denial_and_paging_fail_closed(self):
+        carrier = contract()
+        with patch.object(
+            v3, "gh_api_list",
+            side_effect=v3.Denied("authenticated GitHub rulesets unavailable"),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "rulesets unavailable"):
+                v3.require_immutable_carrier_refs("trusted/ci", carrier)
+
+        # 100 entries can indicate another page; do not infer completeness.
+        with (
+            patch.object(v3, "gh_api_list", return_value=[
+                {"id": i} for i in range(1, 101)
+            ]),
+            patch.object(v3.legacy, "gh_api") as detail_api,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "not exhaustive"):
+                v3.require_immutable_carrier_refs("trusted/ci", carrier)
+            detail_api.assert_not_called()
+
+        with (
+            patch.object(v3, "gh_api_list", return_value=[{"id": 21}]),
+            patch.object(
+                v3.legacy, "gh_api",
+                side_effect=v3.Denied("ruleset detail request failed"),
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "detail request failed"):
+                v3.require_immutable_carrier_refs("trusted/ci", carrier)
+
     def test_carrier_ref_ruleset_revocation_blocks_before_source_read_and_write(self):
         carrier = contract()
         with (
