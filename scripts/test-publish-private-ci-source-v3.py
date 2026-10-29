@@ -910,6 +910,72 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
                 v3.verify_source_pr(1482, "8" * 40)
 
+    def test_source_pr_binds_head_and_base_to_immutable_repository_id(self):
+        source_repo = {
+            "id": v3.SOURCE_REPOSITORY_ID,
+            "full_name": v3.legacy.SOURCE_REPO,
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+        }
+        pr = {
+            "number": 1482,
+            "state": "open",
+            "draft": False,
+            "user": {"id": 424242, "login": "source-author"},
+            "head": {
+                "sha": "8" * 40,
+                "repo": {"id": v3.SOURCE_REPOSITORY_ID,
+                         "full_name": v3.legacy.SOURCE_REPO},
+            },
+            "base": {
+                "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                "repo": {"id": v3.SOURCE_REPOSITORY_ID,
+                         "full_name": v3.legacy.SOURCE_REPO},
+            },
+        }
+
+        def verify_with(modified):
+            def api(route, method="GET", payload=None):
+                if route == "repos/" + v3.legacy.SOURCE_REPO:
+                    return source_repo
+                if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482":
+                    return modified
+                raise AssertionError("unexpected API " + route)
+            return api
+
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=verify_with(pr)),
+            patch.object(v3, "require_source_pr_independent_review") as review,
+        ):
+            self.assertEqual(
+                v3.verify_source_pr(1482, "8" * 40),
+                v3.SOURCE_REPOSITORY_ID,
+            )
+            review.assert_called_once_with(
+                1482, "8" * 40, pr["user"]
+            )
+
+        for kind in ("head", "base"):
+            for replacement in (None, v3.SOURCE_REPOSITORY_ID + 1, True):
+                changed = json.loads(json.dumps(pr))
+                if replacement is None:
+                    del changed[kind]["repo"]["id"]
+                else:
+                    changed[kind]["repo"]["id"] = replacement
+                with (
+                    self.subTest(kind=kind, replacement=replacement),
+                    patch.object(v3.legacy, "gh_api",
+                                 side_effect=verify_with(changed)),
+                    patch.object(v3, "require_source_pr_independent_review")
+                    as review,
+                ):
+                    with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
+                        v3.verify_source_pr(1482, "8" * 40)
+                    review.assert_not_called()
+
     def test_verify_source_pr_rejects_source_repository_id_replacement(self):
         def api(route, method="GET", payload=None):
             if route == "repos/" + v3.legacy.SOURCE_REPO:
