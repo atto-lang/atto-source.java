@@ -1,0 +1,33 @@
+name: Java 2222 carrier candidate hold
+on:
+  pull_request:
+    paths:
+      - 'docs/security/private-ci-java2222-honeypot-candidate-20261029.json'
+      - 'scripts/test-java2222-carrier-candidate-hold.py'
+      - '.github/private-ci-approved-repositories.txt'
+      - '.github/private-ci-carrier-contracts.json'
+      - '.github/workflows/java2222-carrier-candidate-hold.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/security/private-ci-java2222-honeypot-candidate-20261029.json'
+      - 'scripts/test-java2222-carrier-candidate-hold.py'
+      - '.github/private-ci-approved-repositories.txt'
+      - '.github/private-ci-carrier-contracts.json'
+      - '.github/workflows/java2222-carrier-candidate-hold.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  hold:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Python compile
+        run: python3 -m py_compile scripts/test-java2222-carrier-candidate-hold.py
+      - name: Prove candidate remains non-authorizing
+        run: python3 scripts/test-java2222-carrier-candidate-hold.py
