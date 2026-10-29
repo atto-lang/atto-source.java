@@ -125,6 +125,62 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void tenFileThreeNamespacePackageExportsBillingViaOneCrossPackageImport() throws Exception {
+        Path project = temp.resolve("checkout");
+        StringBuilder manifest = new StringBuilder("""
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.checkout]
+                files = [
+                """);
+        java.util.ArrayList<Path> allMembers = new java.util.ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            String namespace = i < 4 ? "billing" : i < 7 ? "identity" : "telemetry";
+            String relative = "src/unit" + i + ".ores";
+            allMembers.add(source(project, relative, namespace,
+                    "pub fnc function" + i + "(): int { return " + i + "; }"));
+            manifest.append("  \"").append(relative).append("\",\n");
+        }
+        manifest.append("]\n");
+        Path providerManifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(providerManifest, manifest.toString());
+
+        Path client = temp.resolve("client");
+        Path main = source(client, "src/main.ores", "app", """
+                import namespace billing as payments from "checkout";
+                pub fnc main(): void {
+                  stdio.println(payments.function0());
+                  stdio.println(payments.function1());
+                  stdio.println(payments.function2());
+                  stdio.println(payments.function3());
+                  return;
+                }
+                """);
+        Files.writeString(client.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                [namespace_dependencies.checkout]
+                manifest = "../checkout/.ores.pkg.toml"
+                package = "checkout"
+                manifest_sha256 = "%s"
+                sources_sha256 = "%s"
+                """.formatted(
+                PackageNamespaceWorkspace.sha256(Files.readAllBytes(providerManifest)),
+                PackageNamespaceWorkspace.sourceDigest(providerManifest, allMembers)));
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var build = run(main, out);
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("0\n1\n2\n3"));
+        assertEquals(11, build.units().size());
+        assertEquals(4, build.units().get(main.toAbsolutePath().toString().replace('\\', '/'))
+                .dependencies().size());
+    }
+
+    @Test
     void wrongArgumentTypeAndUnknownCallAreRejectedByStaticLinker() throws Exception {
         Path project = temp.resolve("checkout");
         billing(project);

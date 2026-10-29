@@ -103,7 +103,7 @@ public final class PackageNamespaceIndex {
                 throw new IllegalArgumentException("package project root is not a directory: " + root);
             }
             Object packageObject = toml.get("packages");
-            if (!(packageObject instanceof TomlTable packageTable) || packageTable.isEmpty()) {
+            if (!(packageObject instanceof TomlTable packageTable) || packageTable.size() == 0) {
                 throw new IllegalArgumentException("manifest must declare [packages.<key>].files");
             }
 
@@ -116,7 +116,7 @@ public final class PackageNamespaceIndex {
                     throw new IllegalArgumentException("invalid package key: " + packageKey);
                 }
                 if (definition.size() != 1 || !(definition.get("files") instanceof TomlArray files)
-                        || files.isEmpty() || files.size() > 4096) {
+                        || files.size() == 0 || files.size() > 4096) {
                     throw new IllegalArgumentException("package must declare bounded explicit files: " + packageKey);
                 }
                 String packageId = packageId(manifestReal, packageKey);

@@ -177,7 +177,7 @@ final class PackageNamespaceWorkspace {
             Object value = packages.get(key);
             if (!(value instanceof TomlTable table)
                     || !(table.get("files") instanceof TomlArray listed)
-                    || listed.size() > 4096 || listed.isEmpty()) {
+                    || listed.size() > 4096 || listed.size() == 0) {
                 throw new IllegalArgumentException("invalid package file list: " + key);
             }
             for (int i = 0; i < listed.size(); i++) {
