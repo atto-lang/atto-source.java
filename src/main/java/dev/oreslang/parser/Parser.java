@@ -306,7 +306,30 @@ public final class Parser {
         return consume(IDENT, "expected imported name").lexeme();
     }
 
+    /**
+     * Opaque module metadata is retained for source tooling, but compiler
+     * directives bound to other targets cannot silently become no-ops.
+     * This is deliberately placement-specific: callable and field annotations
+     * are checked by their owning semantic passes.
+     */
+    private void rejectModuleCompilerAnnotations(List<Ast.Annotation> annotations) {
+        java.util.Set<String> invalid = java.util.Set.of(
+                "Ret", "FromJson", "AllowStructural", "structural",
+                "ActorMaxThreads", "Critical", "CallerRole", "CallableBy",
+                "ActorMiddleware", "NamedParams", "GrowthPolicy",
+                "Allocator", "Align", "InlineCapacity", "MaxCapacity",
+                "Storage", "Rank", "RequiresPermission", "Permission",
+                "GrantPermission", "Unsafe", "Trusted", "Untrusted", "AllowAll");
+        for (Ast.Annotation annotation : annotations) {
+            if (invalid.contains(annotation.name())) {
+                throw error(previous(), "@" + annotation.name()
+                        + " is not a supported module annotation; compiler annotations cannot be inert metadata");
+            }
+        }
+    }
+
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+        rejectModuleCompilerAnnotations(annotations);
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
@@ -1707,6 +1730,7 @@ public final class Parser {
         Ast.TypeRef annotated = null;
         for (Ast.Annotation annotation : annotations) {
             if (annotation.name().equals("Ret")) {
+                if (annotated != null) throw error(previous(), "duplicate @Ret return annotation");
                 if (annotation.arguments().size() != 1) throw error(previous(), "@Ret requires exactly one type");
                 annotated = annotation.arguments().getFirst();
             }
