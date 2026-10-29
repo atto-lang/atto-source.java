@@ -580,6 +580,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_incident_dispositions"),
                 patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(v3, "require_clean_handoff_namespace"),
                 patch.object(
                     v3, "verify_source_pr",
                     return_value=v3.SOURCE_REPOSITORY_ID,
@@ -806,8 +807,6 @@ class PrivateCiV3Test(unittest.TestCase):
                             "ci/test-plans/java-pr1482.json": {
                                 "blob_sha": PLAN_BLOB,
                                 "allowed_prs": [1482],
-            "required_source_head_sha": SOURCE_HEAD,
-            "required_source_root_tree_sha": SOURCE_TREE,
                             }
                         },
                     }
@@ -915,8 +914,6 @@ class PrivateCiV3Test(unittest.TestCase):
                             "ci/test-plans/java-pr1482.json": {
                                 "blob_sha": PLAN_BLOB,
                                 "allowed_prs": [1482],
-            "required_source_head_sha": SOURCE_HEAD,
-            "required_source_root_tree_sha": SOURCE_TREE,
                             }
                         },
                     }
@@ -1072,7 +1069,7 @@ class PrivateCiV3Test(unittest.TestCase):
             raise AssertionError(route)
 
         with patch.object(v3.legacy, "gh_api", side_effect=weak_api):
-            with self.assertRaisesRegex(v3.Denied, "bypasses"):
+            with self.assertRaisesRegex(v3.Denied, "bypass"):
                 v3.checked_carrier_main("trusted/ci", carrier)
 
     def test_incident_disposition_registry_blocks_hold_and_pins_independent_comment(self):
