@@ -235,6 +235,9 @@ public final class RuntimePermissions {
         if (permission == Permission.NET) {
             NetworkScope endpoint = parseNetworkScope(resource, false);
             if (endpoint == null) return false;
+            // An actual listening socket always requests an explicit port
+            // (including 0 for an OS-assigned ephemeral bind).
+            if (listener && endpoint.port() == null) return false;
             // The stable v1 contract treats port 0 as an invalid outbound
             // service. It is only meaningful at the dedicated listen boundary.
             if (Integer.valueOf(0).equals(endpoint.port()) && !listener) return false;
