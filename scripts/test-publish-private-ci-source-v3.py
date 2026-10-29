@@ -659,11 +659,17 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(accepted["required_source_blobs"], {})
         self.assertTrue(accepted["uses_maven"])
 
+        # A different *well-formed* reviewed SHA is a valid contract shape.
+        # Source equality is checked later, in publish(), before any Git write.
+        alternate = json.loads(json.dumps(plan))
+        alternate["allowed_sources_by_pr"]["2012"]["head_sha"] = "3" * 40
+        self.assertEqual(verify(alternate)["source_head_pin"], "3" * 40)
+
         for name, mutate in (
             ("source_id", lambda d: d.update(source_repo_id=999)),
             ("invalid_pr_type", lambda d: d.update(allowed_prs=[2012, []])),
-            ("wrong_head", lambda d: d["allowed_sources_by_pr"]["2012"].update(
-                head_sha="3" * 40)),
+            ("malformed_head", lambda d: d["allowed_sources_by_pr"]["2012"].update(
+                head_sha="not-a-git-sha")),
             ("wrong_tree", lambda d: d["allowed_sources_by_pr"]["2012"].update(
                 root_tree_sha="invalid")),
             ("broad_command", lambda d: d["commands"][0].update(
