@@ -1039,7 +1039,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, CpuScalarRegionExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -1437,6 +1437,41 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+
+    /**
+     * Stage-v3 scalar-only synchronous CPU execution region.
+     *
+     * A separate typed node is essential: this is not an async Task and must
+     * never inherit task-capture submission, actor detachment or Future<T>.
+     * For now admit only closed signed-int scalar arithmetic. Captures, calls,
+     * actor state, suspension, dynamic dispatch and buffers require a later
+     * audited region/effect/loan lowering and must fail closed.
+     */
+    public record CpuScalarRegionExpr(Expr value) implements Expr {
+        public CpuScalarRegionExpr {
+            if (!closedScalar(value)) {
+                throw new IllegalArgumentException(
+                        "cpu scalar execution region requires a closed int literal or checked +, -, * arithmetic; "
+                                + "captures, calls, suspension and effects are not enabled");
+            }
+        }
+
+        private static boolean closedScalar(Expr expr) {
+            if (expr instanceof LiteralExpr literal) {
+                return literal.value() instanceof Long || literal.value() instanceof Integer;
+            }
+            if (expr instanceof UnaryExpr unary) {
+                return (unary.operator().equals("-") || unary.operator().equals("+"))
+                        && closedScalar(unary.operand());
+            }
+            if (expr instanceof BinaryExpr binary) {
+                return (binary.operator().equals("+") || binary.operator().equals("-")
+                        || binary.operator().equals("*"))
+                        && closedScalar(binary.left()) && closedScalar(binary.right());
+            }
+            return false;
+        }
+    }
 
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
