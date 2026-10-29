@@ -40,8 +40,8 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
     /** Must enqueue a continuation under the existing actor-wide execution lease. */
     public interface ActorMailbox { void post(Runnable continuation); }
     public static final class AdmissionException extends RuntimeException {
-        private static final long serialVersionUID = 1L;
         public final String code;
+        private static final long serialVersionUID = 1L;
         AdmissionException(String code) { super(code); this.code = code; }
     }
     private record Pending(Write write, CompletableFuture<Result> answer, long charge) {}
