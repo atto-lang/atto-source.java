@@ -58,7 +58,7 @@ case "$mode" in
         if bash "$0" --check "$work/false-green.yml" >/dev/null 2>&1; then
             fail 'negative fixture disabling failIfNoTests was accepted'
         fi
-        sed "s/^  actor-runtime-exclusivity:/  renamed-away-acceptance-job:/' "$workflow" > "$work/removed-job.yml"
+        sed 's/^  actor-runtime-exclusivity:/  renamed-away-acceptance-job:/' "$workflow" > "$work/removed-job.yml"
         if bash "$0" --check "$work/removed-job.yml" >/dev/null 2>&1; then
             fail 'negative fixture dropping acceptance job was accepted'
         fi
