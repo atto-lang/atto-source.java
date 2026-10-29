@@ -1,6 +1,8 @@
 # CPU and GPU execution-domain contract (proposal, v0 safety gate)
 
-Status (2026-10-29): **synchronous source blocks remain fail-closed on Java/Graal `main`**. This document began as the v0 reservation contract; the canonical spelling/result policy is now [CPU/GPU Task v2](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/blob/main/docs/CPU_GPU_TASK_V2.md). The v1 and v2 pinned fixture corpora remain distinct.
+Status (2026-10-29): **synchronous source blocks remain fail-closed on Java/Graal `main`**.
+
+**Draft branch-only stage v3 exception:** [`CPU_SCALAR_REGION_V3_PREVIEW.md`](CPU_SCALAR_REGION_V3_PREVIEW.md) proposes a separately versioned, *closed integer scalar* `cpu { 40 + 2 }` source path, with its own AST and checked evaluator. It is **not merged into `main`**, has **not run actual compiler/JUnit CI**, and is not a general CPU region, buffer ownership proof, or GPU device integration. The table below continues to describe the production `main` baseline rather than the unverified preview. This document began as the v0 reservation contract; the canonical spelling/result policy is now [CPU/GPU Task v2](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/blob/main/docs/CPU_GPU_TASK_V2.md). The v1 and v2 pinned fixture corpora remain distinct.
 
 | Source spelling | Java/Graal `main` admission | Meaning / release gate |
 | --- | --- | --- |
