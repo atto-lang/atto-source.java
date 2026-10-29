@@ -165,6 +165,31 @@ public final class LinkedProgramRunner {
                 PermissionCheckMode.COMPILE, profile, Set.of(), System.getenv(), out, err);
     }
 
+    /**
+     * Explicit trusted-embedding entrypoint. The service is consumed by the
+     * first OresContext initialized on the calling thread, exactly once.
+     * No class lookup, polyglot bindings or JNI pointers are exposed to guests.
+     * Guest execution still needs a typed compiler/evaluator intrinsic.
+     */
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err,
+            WorkflowHostServiceRegistry.Service trustedWorkflowService) throws IOException {
+        try (WorkflowHostServiceRegistry.ProvisioningScope ignored =
+                     WorkflowHostServiceRegistry.provisionForHost(trustedWorkflowService)) {
+            return runWithExitStatus(entryFile, policy, permissions,
+                    permissionCheckMode, executionProfile, allowedHostClasses,
+                    environment, out, err);
+        }
+    }
+
     public static RunResult runWithExitStatus(
             Path entryFile,
             IsolatePolicy policy,
