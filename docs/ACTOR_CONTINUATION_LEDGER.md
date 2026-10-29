@@ -94,6 +94,36 @@ NOT ActorRuntime integration, Graal Native Image, actual guest .ores
 execution, or exact JDK25 runtime behavior. Source-org test jobs on the
 current branch have failed before executing steps and are not passing tests.
 
+## Local exact-blob callback-retention hardening (2026-10-29)
+
+A continuation admission may remain reachable through an envelope or
+diagnostic handle after it completes or is dropped. Its receipt no longer
+retains the captured guest callback once the callback is claimed for
+execution, discarded by STOP, or explicitly closed before execution.
+The executing Java stack temporarily owns the callback; the receipt
+remains RUNNING until its physical `run()` finally returns.
+No guest callback is executed while holding the ledger monitor.
+
+- New source blob: `97f86086dc9c89a4255dd540388144cd691c5d0b`
+- New standalone JUnit test blob: `901d8bb67a00c81ef5b32d5ecc823c5008a3b558`
+- Compiled **the exact 5,822-byte source blob** with local OpenJDK 21
+  `javac`; its local `git hash-object` matched the connected GitHub blob.
+- Ran a standalone Java 21 smoke harness: **17/17 passed**, including
+  normal callback release, close/discard, STOP fencing, replay rejection,
+  SOURCE_TASK cleanup after STOP, failed callbacks, and concurrent STOP
+  while a callback is physically RUNNING.
+- Two added JUnit methods deterministically check terminal callback
+  retention and the RUNNING/retirement distinction. They are committed
+  but **not yet executed with JUnit** on this changed PR head.
+
+This local smoke execution proves only the isolated actor continuation ledger.
+It does **not** prove `ActorRuntime` integration, full Maven/JDK 25, JVM
+Native Image, task arena reclamation, or guest code behavior. Source `main`
+must satisfy live branch protection and approved carrier governance before
+any private Oreslang source is exported into a different GitHub organization.
+Existing private mirror receipts above cover the **previous** ledger blob,
+not this modified code.
+
 ## What phase 1 does not claim
 
 This is **Java host/runtime execution accounting**, not a compiler feature
