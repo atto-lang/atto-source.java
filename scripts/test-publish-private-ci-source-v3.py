@@ -54,6 +54,7 @@ CARRIER_CODEOWNERS_BLOB = v3.git_blob_sha(CARRIER_CODEOWNERS)
 def contract():
     return {
         "repository_id": 1323598177,
+        "publisher_app_id": 424242,  # synthetic reviewed integration ID, not live
         "base_sha": BASE,
         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
         "workflow_blob_sha": WORKFLOW,
@@ -548,6 +549,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 "carriers": {
                     "trusted/ci": {
                         "repository_id": 42,
+                        "publisher_app_id": 424242,
                         "base_sha": BASE,
                         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
                         "workflow_blob_sha": WORKFLOW,
@@ -565,6 +567,7 @@ class PrivateCiV3Test(unittest.TestCase):
             raw, "trusted/ci", 1482, "ci/test-plans/java-pr1482.json"
         )
         self.assertEqual(got["repository_id"], 42)
+        self.assertEqual(got["publisher_app_id"], 424242)
         self.assertEqual(got["base_sha"], BASE)
         self.assertEqual(got["workflow_blob_sha"], WORKFLOW)
         self.assertEqual(got["test_plan_blob_sha"], PLAN_BLOB)
@@ -598,6 +601,140 @@ class PrivateCiV3Test(unittest.TestCase):
                 json.dumps(raw).encode(),
                 "trusted/ci", 1482, "ci/test-plans/java-pr1482.json",
             )
+
+    def test_publisher_identity_is_required_in_reviewed_contract(self):
+        raw = {
+            "schema": 1,
+            "carriers": {
+                "trusted/ci": {
+                    "repository_id": 42,
+                    "base_sha": BASE,
+                    "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+                    "workflow_blob_sha": WORKFLOW,
+                    "test_plans": {
+                        "ci/test-plans/java-pr1482.json": {
+                            "blob_sha": PLAN_BLOB, "allowed_prs": [1482],
+                        }
+                    },
+                }
+            },
+        }
+        carrier = raw["carriers"]["trusted/ci"]
+        with self.assertRaisesRegex(v3.Denied, "fields are not exact"):
+            v3.parse_contract(json.dumps(raw).encode(), "trusted/ci", 1482,
+                              "ci/test-plans/java-pr1482.json")
+        for identity in (True, 0, -1, "424242", v3.legacy.GITHUB_ACTIONS_APP_ID):
+            with self.subTest(identity=identity):
+                carrier["publisher_app_id"] = identity
+                with self.assertRaisesRegex(v3.Denied, "publisher App ID"):
+                    v3.parse_contract(json.dumps(raw).encode(), "trusted/ci", 1482,
+                                      "ci/test-plans/java-pr1482.json")
+
+    def test_live_carrier_ref_rulesets_require_dedicated_enforced_identity(self):
+        publisher = contract()["publisher_app_id"]
+        def rule(identifier, pattern):
+            return {
+                "id": identifier, "target": "branch", "source": "trusted/ci",
+                "source_type": "Repository", "enforcement": "active",
+                "conditions": {"ref_name": {"include": [pattern], "exclude": []}},
+                "bypass_actors": [{
+                    "actor_id": publisher, "actor_type": "Integration",
+                    "bypass_mode": "always",
+                }],
+                "rules": [
+                    {"type": "creation"},
+                    {"type": "update", "parameters": {
+                        "update_allows_fetch_and_merge": False,
+                    }},
+                    {"type": "deletion"},
+                ],
+            }
+        rulesets = [rule(21, v3.CARRIER_REF_PATTERNS[0]),
+                    rule(22, v3.CARRIER_REF_PATTERNS[1])]
+        summaries = [{"id": x["id"]} for x in rulesets]
+        def invoke(available, summaries_override=None, carrier=None):
+            by_id = {x["id"]: x for x in available}
+            def api(route, method="GET", payload=None):
+                prefix = "repos/trusted/ci/rulesets/"
+                self.assertTrue(route.startswith(prefix))
+                return by_id[int(route[len(prefix):])]
+            with (
+                patch.object(v3, "gh_api_list",
+                             return_value=summaries if summaries_override is None
+                             else summaries_override) as list_api,
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+            ):
+                result = v3.require_immutable_carrier_refs(
+                    "trusted/ci", contract() if carrier is None else carrier
+                )
+            list_api.assert_called_once_with(
+                "repos/trusted/ci/rulesets?includes_parents=true&per_page=100"
+            )
+            return result
+        self.assertEqual(invoke(rulesets), (21, 22))
+        for name, mutate in (
+            ("inactive", lambda a: a[0].update(enforcement="evaluate")),
+            ("untrusted_app", lambda a: a[0]["bypass_actors"][0].update(actor_id=99)),
+            ("broad_team", lambda a: a[0]["bypass_actors"].append({
+                "actor_id": 7, "actor_type": "Team", "bypass_mode": "always",
+            })),
+            ("wrong_pattern", lambda a: a[0]["conditions"]["ref_name"].update(
+                include=["refs/heads/ci/*"])),
+            ("exclusion", lambda a: a[0]["conditions"]["ref_name"].update(
+                exclude=["refs/heads/ci/oreslang-exception"])),
+            ("deletion_missing", lambda a: a[0]["rules"].pop()),
+            ("update_exception", lambda a: a[0]["rules"][1]["parameters"].update(
+                update_allows_fetch_and_merge=True)),
+            ("wrong_scope", lambda a: a[0].update(source_type="Organization")),
+        ):
+            altered = json.loads(json.dumps(rulesets))
+            mutate(altered)
+            with self.subTest(name=name), self.assertRaises(v3.Denied):
+                invoke(altered)
+        with self.assertRaisesRegex(v3.Denied, "inventory"):
+            invoke([], summaries_override=[])
+        with self.assertRaisesRegex(v3.Denied, "ambiguous"):
+            invoke(rulesets, summaries_override=[{"id": 21}, {"id": 21}])
+        bad = dict(contract(), publisher_app_id=v3.legacy.GITHUB_ACTIONS_APP_ID)
+        with self.assertRaisesRegex(v3.Denied, "publisher App"):
+            invoke(rulesets, carrier=bad)
+
+    def test_carrier_ref_ruleset_revocation_blocks_before_source_read_and_write(self):
+        carrier = contract()
+        with (
+            patch.object(v3.legacy, "checked_repo", return_value={
+                "id": carrier["repository_id"], "archived": False,
+                "disabled": False, "fork": False, "default_branch": "main",
+            }),
+            patch.object(v3, "checked_carrier_main", return_value=BASE),
+            patch.object(v3, "require_immutable_carrier_refs",
+                         side_effect=v3.Denied("carrier ref policy revoked")) as rules,
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "policy revoked"):
+                v3.checked_destination("trusted/ci", carrier)
+            api.assert_not_called()
+            rules.assert_called_once_with("trusted/ci", carrier)
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(v3.legacy, "checked_policy_approval",
+                         return_value=(POLICY, carrier["repository_id"])),
+            patch.object(v3.legacy, "checked_repo", return_value={
+                "id": carrier["repository_id"], "archived": False,
+                "disabled": False, "fork": False, "default_branch": "main",
+            }),
+            patch.object(v3, "checked_carrier_main", return_value=BASE),
+            patch.object(v3, "require_immutable_carrier_refs",
+                         side_effect=v3.Denied("carrier ref policy revoked")),
+            patch.object(v3, "verify_source_pr") as source_pr,
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "policy revoked"):
+                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier,
+                                   1482, "8" * 40, v3.SOURCE_REPOSITORY_ID,
+                                   PROTECTED)
+            source_pr.assert_not_called()
+            api.assert_not_called()
 
     def test_unprotected_carrier_is_always_denied(self):
         carrier = contract()
@@ -1078,6 +1215,7 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(
                 v3, "checked_carrier_main", return_value=carrier["base_sha"]
             ) as carrier_governance,
+            patch.object(v3, "require_immutable_carrier_refs") as ref_rules,
             patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
@@ -1089,6 +1227,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
             )
         carrier_governance.assert_called_once_with("trusted/ci", carrier)
+        ref_rules.assert_called_once_with("trusted/ci", carrier)
         governance.assert_called_once_with(
             Path("."), "trusted/ci", POLICY, carrier, 1482, PROTECTED
         )
@@ -1141,6 +1280,7 @@ class PrivateCiV3Test(unittest.TestCase):
             ),
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3, "checked_carrier_main", return_value=carrier["base_sha"]),
+            patch.object(v3, "require_immutable_carrier_refs"),
             patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
@@ -1164,6 +1304,7 @@ class PrivateCiV3Test(unittest.TestCase):
             ),
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3, "checked_carrier_main", return_value=carrier["base_sha"]),
+            patch.object(v3, "require_immutable_carrier_refs"),
             patch.object(
                 v3, "verify_source_pr",
                 side_effect=v3.Denied("source PR security owner approval is stale or revoked"),
