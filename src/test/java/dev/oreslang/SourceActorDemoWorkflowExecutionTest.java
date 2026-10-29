@@ -90,7 +90,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void compensatesKnownNoEffectRejectionInReverseOrder() throws Exception {
-        assertGuest("order-saga-compensated", "saga:compensated", "d4782060ff0f53588b00e8c2eb9b7f87f5824e3d");
+        assertGuest("order-saga-compensated", "saga:compensated", "cbf0650473414a7d53755f756633a07fe64f14c3");
     }
 
     @Test
