@@ -29,18 +29,18 @@ final class StrictImplicitConversionTest {
 
     @Test
     void staticSourceRejectsImplicitNumericAssignment() {
-        reject("val float value = 3;");
-        reject("val decimal value = 3;");
-        reject("val complex value = 3.0;");
-        reject("val int value = 3.5;");
+        reject("val float value = 3;", "initializer for value has type");
+        reject("val decimal value = 3;", "initializer for value has type");
+        reject("val complex value = 3.0;", "initializer for value has type");
+        reject("val int value = 3.5;", "initializer for value has type");
     }
 
     @Test
     void staticSourceRejectsMixedArithmeticComparisonAndEquality() {
-        reject("val float value = 3 + 1.5;");
-        reject("val float value = 3.0 * 2;");
-        reject("val bool value = 3.0 < 4;");
-        reject("val bool value = 3 == 3.0;");
+        reject("val float value = 3 + 1.5;", "identical numeric operand types");
+        reject("val float value = 3.0 * 2;", "identical numeric operand types");
+        reject("val bool value = 3.0 < 4;", "comparison requires the same numeric type");
+        reject("val bool value = 3 == 3.0;", "numeric equality requires identical operand types");
     }
 
     @Test
@@ -51,9 +51,18 @@ final class StrictImplicitConversionTest {
         accept("val bool value = 3.0 == 4.0;");
     }
 
-    private static void reject(String statement) {
-        assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse(source(statement))), statement);
+    private static void reject(String statement, String expectedDiagnostic) {
+        // Parsing is a prerequisite, not proof that the numeric type checker rejected
+        // the program. A malformed fixture must never count as a successful negative.
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source(statement)),
+                "negative fixture must parse: " + statement);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed),
+                "numeric checker must reject: " + statement);
+        assertNotNull(failure.getMessage(), "rejection must carry a diagnostic");
+        assertTrue(failure.getMessage().contains(expectedDiagnostic),
+                () -> "rejected for the wrong reason: " + failure.getMessage()
+                        + " (expected: " + expectedDiagnostic + ")");
     }
 
     private static void accept(String statement) {
