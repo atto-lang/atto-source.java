@@ -148,4 +148,101 @@ final class SourceActorCodeExecutorTest {
             assertTrue(ref.failure().isPresent());
         }
     }
+
+    @Test
+    void typedRuntimeStartupBridgeCopiesBoundedScalarArgumentsBeforeActorAdmission()
+            throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            SharedCodeImageStore.CodeImage image = store.publish("app/init.ores", program);
+            java.util.concurrent.atomic.AtomicReference<java.util.List<Object>> received =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context) {
+                    fail("legacy zero-argument initializer cannot discard startup inputs");
+                    return null;
+                }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context,
+                        java.util.List<Object> inputs) {
+                    assertEquals("Worker", type);
+                    assertTrue(context.currentMail().isEmpty());
+                    assertSame(image, context.codeImage().orElseThrow());
+                    received.set(inputs);
+                    return new State(context.self().id());
+                }
+                @Override public void receiveActor(
+                        String type, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    context.self().stop();
+                }
+            };
+            java.util.ArrayList<Object> original = new java.util.ArrayList<>(
+                    java.util.List.of(12L, true, "tenant-a"));
+            ActorRuntime.ActorRef<Object> ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, executor, "Worker", original);
+            original.set(0, 99L);
+            original.set(2, "tenant-b");
+            assertNull(ref.ready().join());
+            assertEquals(java.util.List.of(12L, true, "tenant-a"), received.get());
+            assertThrows(UnsupportedOperationException.class,
+                    () -> received.get().set(0, 99L));
+            ref.send("stop");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void startupBridgeRejectsMutableOrOversizedArgumentsBeforeCreatingActor()
+            throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(store.publish("app/init-denial.ores", program));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker", java.util.List.of(new Object())));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker", java.util.Arrays.asList((Object) null)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker", java.util.Collections.nCopies(33, 1L)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker", java.util.List.of("x".repeat(4097))));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker", java.util.List.of(Double.NaN)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker", java.util.List.of(Double.POSITIVE_INFINITY)));
+        }
+    }
+
+    @Test
+    void oldSourceExecutorFailsReadyForUnexpectedNonemptyStartupInputs()
+            throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor oldExecutor = new Executor(store.publish("app/old.ores", program));
+            ActorRuntime.ActorRef<Object> ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, oldExecutor, "Worker",
+                    java.util.List.of(99L));
+            Throwable failure = assertThrows(RuntimeException.class,
+                    () -> ref.ready().join());
+            assertTrue(failure.toString().contains("initialized argument ABI")
+                    || (failure.getCause() != null
+                       && failure.getCause().toString().contains("initialized argument ABI")),
+                    failure.toString());
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isPresent());
+        }
+    }
 }
