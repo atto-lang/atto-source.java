@@ -93,6 +93,20 @@ public final class CoreLibrarySources {
                 }
             }
             path = String.join("/", segments);
+        } else if (path.indexOf('/') >= 0) {
+            // A relative import can normalize into a compiler-owned stdlib
+            // identity (./std/unsafe or pkg/../std/unsafe). Reject its final
+            // identity, never let the filesystem linker decide after admission.
+            java.util.ArrayDeque<String> segments = new java.util.ArrayDeque<>();
+            for (String component : path.split("/", -1)) {
+                if (component.isEmpty() || component.equals(".")) continue;
+                if (component.equals("..")) {
+                    if (!segments.isEmpty()) segments.removeLast();
+                } else {
+                    segments.addLast(component);
+                }
+            }
+            path = String.join("/", segments);
         }
         for (String root : new String[] {
                 "ores.std/unsafe", "std/unsafe", "ores.std.unsafe",
