@@ -187,6 +187,30 @@ No source guest code executes inline on a foreign producer thread.
   may still hold independent external objects, and strong actor
   ownership in the actor table remains authoritative until retirement.
 
+## Executed source-free CI selection regression (2026-10-29)
+
+The GraalVM 25 `actor-runtime-exclusivity` workflow explicitly includes
+both `ActorContinuationLedgerTest` and
+`ActorContinuationLedgerIntegrationTest`, plus the original actor carrier
+checks, with `-DfailIfNoTests=true`. A dedicated source-free verification
+script runs as the first post-checkout job step, **before GraalVM setup**.
+
+- Exact committed workflow blob: `3af46666ff47050acfef53e4a66195e002ec730c`
+- Exact committed offline guard blob: `c5e7357d21b7c863577259f82583ef7d1a4c208a`
+- The local reconstruction of **both** files matched the GitHub blob hashes.
+  `bash -n` succeeded, and running
+  `bash tools/test-actor-continuation-workflow-selection.sh --self-test`
+  against the exact committed workflow passed **1 positive + 5 negative** cases.
+  The negative mutations removed each ledger selector, downgraded JDK 25,
+  disabled `failIfNoTests`, or removed the actor acceptance job.
+- Current exact-head source-org [actor workflow run 40930186407](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40930186407),
+  `actor-runtime-exclusivity` job `123646235177`, failed before executing
+  any steps. Source-free local shell checks **are not JUnit, Maven, GraalVM
+  Native Image, full actor runtime or guest-language execution**.
+- Do not promote this PR from draft without independent review, source-org
+  runner admission, a real JDK 25/JUnit execution receipt, and physical
+  actor/task retirement acceptance on the reviewed integrated tree.
+
 ## What phase 1 does not claim
 
 This is **Java host/runtime execution accounting**, not a compiler feature
