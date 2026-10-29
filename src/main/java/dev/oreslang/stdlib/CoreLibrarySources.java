@@ -97,13 +97,11 @@ public final class CoreLibrarySources {
     public static boolean isUnsafeStdUnitId(String unitId) {
         if (unitId == null) return false;
         String normalized = unitId.replace('\\', '/');
-        if (normalized.startsWith("@std/")) {
-            return isUnsafeStdImport("std/" + normalized.substring("@std/".length()));
-        }
-        if (normalized.startsWith("@ores.std/")) {
-            return isUnsafeStdImport("ores.std/" + normalized.substring("@ores.std/".length()));
-        }
-        return false;
+        // Linked source identity adds only the compiler-owned '@' marker.
+        // Reuse the import-path classifier so dotted and colon aliases cannot
+        // bypass the link gate when a package resolver supplies a unit ID.
+        return normalized.startsWith("@")
+                && isUnsafeStdImport(normalized.substring(1));
     }
 
     /** Reserve canonical library roots before filesystem/ORESLANG_PATH fallback. */
