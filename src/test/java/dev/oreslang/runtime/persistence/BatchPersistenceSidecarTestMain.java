@@ -27,7 +27,7 @@ public final class BatchPersistenceSidecarTestMain {
                     futures.add(sidecar.submit(write("a"+i,"op"+i,1,0)));
                 }
                 sidecar.drain().toCompletableFuture().join();
-                for (CompletionStage<Result> f : futures) check(get(f).durable(), "not committed");
+                for (CompletionStage<Result> f : futures) check(get(f).status()==Status.COMMITTED && !get(f).durable(), "not committed or memory reported durable");
                 check(store.version(new Identity("tenant-1","a999","main"))==1,"missing actor");
                 check(store.commitCalls()<=8,"too many batches: "+store.commitCalls());
             }
@@ -74,7 +74,7 @@ public final class BatchPersistenceSidecarTestMain {
                 source[0]=9;w.payload()[0]=8;
                 var result=sidecar.submit(w);
                 sidecar.drain().toCompletableFuture().join();
-                check(get(result).durable(),"not durable");
+                check(get(result).status()==Status.COMMITTED && !get(result).durable(),"memory provider claimed durability");
                 check(store.snapshot(w.id())[0]==42,"pointer/alias escape");
                 boolean rejected=false;
                 try { sidecar.submit(new Write(new Identity("other","a","main"),"x",1,0,1,Kind.EVENT,new byte[0])); }
@@ -88,7 +88,7 @@ public final class BatchPersistenceSidecarTestMain {
                 ArrayBlockingQueue<Runnable> mailbox=new ArrayBlockingQueue<>(2);
                 AtomicBoolean ran=new AtomicBoolean();
                 sidecar.submitToActor(write("a","op",1,0),mailbox::add,(value,error)->{
-                    check(value!=null && value.durable() && error==null,"bad outcome"); ran.set(true);
+                    check(value!=null && value.status()==Status.COMMITTED && !value.durable() && error==null,"bad outcome"); ran.set(true);
                 });
                 Runnable resume;
                 try { resume=mailbox.poll(5,TimeUnit.SECONDS); }
