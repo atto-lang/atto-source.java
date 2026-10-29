@@ -1144,6 +1144,54 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
+    /**
+     * The existing single-write ledger guards against duplicate assignments
+     * but cannot prove that writes in branches or loops happen on every path.
+     * Admit constructor filling of fixed slots only through unconditional
+     * top-level self.field assignments until a proper must-initialize CFG
+     * lattice is available. This is conservative, not a complete object
+     * publication/escape proof.
+     */
+    private void checkConstructorFixedFieldDefiniteInitialization(
+            Ast.ClassDecl klass, Ast.ConstructorDecl constructor) {
+        Set<String> required = new LinkedHashSet<>();
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.initializer() == null
+                    && field.bindingKind() != Ast.BindingKind.LET) {
+                required.add(field.name());
+            }
+        }
+        if (required.isEmpty()) return;
+
+        Set<String> unconditional = new HashSet<>();
+        boolean exited = false;
+        for (Ast.Stmt stmt : constructor.body()) {
+            if (stmt instanceof Ast.ReturnStmt) exited = true;
+            if (!(stmt instanceof Ast.ExprStmt expression)
+                    || !(expression.expression() instanceof Ast.AssignExpr assignment)
+                    || !(assignment.target() instanceof Ast.MemberExpr member)
+                    || !(member.receiver() instanceof Ast.NameExpr root)
+                    || !root.name().equals("self")
+                    || !required.contains(member.member())) {
+                continue;
+            }
+            if (exited) {
+                throw new IllegalArgumentException("constructor for " + klass.name()
+                        + " cannot initialize fixed field '" + member.member()
+                        + "' after a return");
+            }
+            unconditional.add(member.member());
+        }
+        for (String field : required) {
+            if (!unconditional.contains(field)) {
+                throw new IllegalArgumentException("constructor for " + klass.name()
+                        + " must initialize fixed field '" + field
+                        + "' exactly once on an unconditional top-level path "
+                        + "before object publication");
+            }
+        }
+    }
+
     private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr
                 || expr instanceof Ast.TaskExpr
@@ -1479,6 +1527,7 @@ public final class TypeChecker {
             lexicalClassOrigin = klass;
             try {
                 checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
+                checkConstructorFixedFieldDefiniteInitialization(klass, constructor);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
