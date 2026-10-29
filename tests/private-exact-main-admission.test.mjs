@@ -293,7 +293,7 @@ function verifyPreflight(p) {
   assert.match(p, /^permissions:\n  contents: read$/m);
   assert.match(p, /^          node --test tests\/private-exact-main-admission\.test\.mjs$/m);
   assert.match(p, /^      - uses: actions\/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09$/m);
-  assert.match(p, /^          python3 scripts\/test-publish-private-ci-source-v3\.py$/m);
+  assert.match(p, /^            python3 scripts\/test-publish-private-ci-source-v3\.py$/m);
   const eventBlock = p.slice(p.indexOf('\non:\n') + 1, p.indexOf('\npermissions:\n'));
   assert.ok(eventBlock.startsWith('on:\n  pull_request:\n'));
   assert.equal(eventBlock.split('  pull_request:\n').length - 1, 1);
