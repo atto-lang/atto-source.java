@@ -80,17 +80,19 @@ class NativeHttpTest {
               receive(ActorMail<String> mail): void {
                 val request = http.claim(mail.value);
                 if !request.dispatch_receipt_valid(
-                    "Worker", "proxy:greeting", "local-no-net"); then
+                    "Worker", "proxy:greeting", "local-no-net", 7); then
                   stdio.println("RECEIPT INVALID");
                   await request.respond(500, "text/plain", "invalid");
                   return;
                 fi
                 if request.dispatch_receipt_valid(
-                    "Worker", "proxy:other", "local-no-net") ||
+                    "Worker", "proxy:other", "local-no-net", 7) ||
                   request.dispatch_receipt_valid(
-                    "Other", "proxy:greeting", "local-no-net") ||
+                    "Other", "proxy:greeting", "local-no-net", 7) ||
                   request.dispatch_receipt_valid(
-                    "Worker", "proxy:greeting", "net"); then
+                    "Worker", "proxy:greeting", "net", 7) ||
+                  request.dispatch_receipt_valid(
+                    "Worker", "proxy:greeting", "local-no-net", 8); then
                   stdio.println("WRONG RECEIPT ACCEPTED");
                   await request.respond(500, "text/plain", "wrong");
                   return;
@@ -98,6 +100,7 @@ class NativeHttpTest {
                 stdio.println(request.dispatch_handler);
                 stdio.println(request.dispatch_binding);
                 stdio.println(request.dispatch_authority_class);
+                stdio.println(request.dispatch_scope_generation);
                 stdio.println(request.dispatch_actor_generation > 0);
                 stdio.println(request.dispatch_exchange_generation > 0);
                 stdio.println(request.dispatch_sequence);
@@ -108,7 +111,7 @@ class NativeHttpTest {
             pub async routine main(): void {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               val handler = http.handler("Worker")
-                .scoped("proxy:greeting", "local-no-net")
+                .scoped("proxy:greeting", "local-no-net", 7)
                 .pooled(1);
               stdio.println(server.port);
               for (let int i = 0; i < 2; i = i + 1) {
@@ -131,8 +134,9 @@ class NativeHttpTest {
         assertEquals(2, output.split("Worker", -1).length - 1, output);
         assertEquals(2, output.split("proxy:greeting", -1).length - 1, output);
         assertEquals(2, output.split("local-no-net", -1).length - 1, output);
-        assertTrue(output.contains("true\ntrue\n1"), output);
-        assertTrue(output.contains("true\ntrue\n2"), output);
+        assertEquals(2, output.split("\n7\n", -1).length - 1, output);
+        assertTrue(output.contains("7\ntrue\ntrue\n1"), output);
+        assertTrue(output.contains("7\ntrue\ntrue\n2"), output);
         assertTrue(output.endsWith("1\n1\n"), output);
     }
 
@@ -144,7 +148,7 @@ class NativeHttpTest {
                 val request = http.claim(mail.value);
                 try {
                   request.dispatch_receipt_valid(
-                    "manual", "manual", "unscoped");
+                    "manual", "manual", "unscoped", 0);
                   stdio.println("MANUAL RECEIPT ACCEPTED");
                 } catch (err) {
                   stdio.println("manual-unattested");
