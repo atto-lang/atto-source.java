@@ -515,8 +515,16 @@ public final class OresContext implements AutoCloseable {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
-        // Revoke workflow mailbox admission before any actor or JNI teardown.
-        workflowHostServices.close();
+        // Revoke workflow admission and drain callbacks before JNI teardown.
+        // On timeout, retain the context rather than freeing live host state.
+        try {
+            workflowHostServices.close();
+        } catch (RuntimeException incomplete) {
+            output.flush();
+            throw new IllegalStateException(
+                    "workflow host service retirement incomplete; context quarantined",
+                    incomplete);
+        }
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
