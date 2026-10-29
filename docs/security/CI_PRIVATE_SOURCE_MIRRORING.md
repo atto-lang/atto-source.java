@@ -237,6 +237,17 @@ real allowlist remains empty and **no destination is authorized** unless
 separately reviewed and enforceable protection is independently verified on
 both the source and carrier `main` branches.
 
+## Independent P0 containment gate
+
+The private-source publisher pins the immutable platform-conformance
+incident identities for **#22, #77, #127, #171, #172, #198, #200, #212,
+and #222**. Every issue must report `closed` with
+`state_reason=completed`; a missing, substituted, still-open, or
+not-planned closure denies private-source transfer. The predicate is
+re-attested as part of the source authority checks, including before
+source-bearing uploads. The destination allowlist remains empty until
+both independent containment and protected-main governance are complete.
+
 ## Active disclosure incident
 
 Private issue #832 tracks source-bearing commits in a public CI repository.
