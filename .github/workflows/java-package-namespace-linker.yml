@@ -30,4 +30,4 @@ jobs:
           java-version: '25'
           cache: maven
       - name: Compile parser/linker and execute exact-head regression suite
-        run: ./mvnw -B -Dtest=PackageNamespaceLinkerTest,ImportSelectorSyntaxTest test
+        run: mvn -B -Dtest=PackageNamespaceLinkerTest,ImportSelectorSyntaxTest test
