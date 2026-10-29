@@ -29,8 +29,11 @@ class PublisherAuthorityAlignmentTest(unittest.TestCase):
     def test_real_publisher_keeps_required_runtime_gates(self):
         self.assertEqual(v3.INCIDENT_DISPOSITION_PATH,".github/private-ci-incident-dispositions.json")
         auth=inspect.getsource(v3.authorize_write)
-        for needle in ("authorized_main_sha","checked_incident_dispositions","checked_carrier_main"):
+        for needle in ("legacy.require_resolved_blocking_incidents","legacy.checked_policy_approval","checked_carrier_main","verify_source_pr","revalidate_source_governance"):
             self.assertIn(needle,auth)
+        governance=inspect.getsource(v3.revalidate_source_governance)
+        for needle in ("authorized_main_sha","checked_control_plane","checked_incident_dispositions","checked_contract"):
+            self.assertIn(needle,governance)
         publish=inspect.getsource(v3.publish)
         self.assertGreaterEqual(publish.count("verify_required_source_snapshot"),2)
         self.assertIn("authorize_write",publish)
