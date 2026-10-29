@@ -26,9 +26,13 @@ actor-local accounting authority:
   under the existing STOP cleanup authority. Finalization seals *both* lanes.
 - Closing a drained envelope releases its ledger receipt. A foreign close
   cannot falsely retire an in-flight callback.
-- Future continuation handles retain a **weak** reference to the exact
-  owning ActorCell. An id reused after actor hot reload cannot redirect a
-  stale callback into a new actor's heap.
+- Future continuation handles are **static nested** runtime handles with
+  separate **weak** references to the exact originating ActorRuntime and
+  ActorCell. An implicit non-static outer-class pointer or an explicit strong
+  runtime field must not pin a closed runtime through a foreign pending Future.
+  An id reused after actor hot reload cannot redirect a stale callback into
+  a new actor's heap. Caller-supplied callback closures may independently
+  retain data: weak handle storage does not sanitize arbitrary capture graphs.
 
 The ledger is bounded by INTERNAL_CONTINUATION_SLOTS + 1: the one
 physically executing callback may coexist with a completely full bounded
@@ -123,6 +127,31 @@ must satisfy live branch protection and approved carrier governance before
 any private Oreslang source is exported into a different GitHub organization.
 Existing private mirror receipts above cover the **previous** ledger blob,
 not this modified code.
+
+## Continuation target retention boundary (2026-10-29)
+
+An opaque `ContinuationTarget` was previously a **non-static** inner class,
+which carries a synthetic strong `ActorRuntime.this` reference. The explicit
+`originatingRuntime` field also held the runtime strongly. Weak capture of the
+`ActorCell` alone did not prevent a long-lived foreign Future from retaining
+the entire runtime object graph. The target is now a static nested class
+holding weak references to both runtime and cell; it resolves both live owner
+and exact ActorCell identity before every continuation enqueue.
+
+- ActorRuntime integration blob: `2750b589e3d4fafa9a5f5cb98302c2552e2fc2eb`
+- Integration JUnit test blob: `bfac3fd3200dcbaeeeebdcf88a63f3be1a630ae9`
+- A local Java 21 isolated compilation of the new target shape passed 11
+  smoke assertions for owner identity, ordinary enqueue, foreign owner
+  distinction, stale actor-generation rejection, static nested layout, and
+  absence of strong runtime fields. **This is a standalone type/semantics
+  characterization, not an executed ActorRuntime integration test.**
+- The committed JUnit layout test is pending execution with real ActorRuntime.
+  Existing runtime-affinity and stale-actor integration tests also remain
+  unexecuted on the current head due to zero-step source Actions.
+
+No private source was sent to a different GitHub organization for this change.
+Both source-main protection and approved destination policy remain mandatory
+for any later private cross-org source export.
 
 ## What phase 1 does not claim
 
