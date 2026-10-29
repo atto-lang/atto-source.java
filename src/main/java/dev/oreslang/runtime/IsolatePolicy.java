@@ -49,6 +49,8 @@ public record IsolatePolicy(
         JAVA_SOURCE_INTEROP,
         FFI,
         NATIVE,
+        // Explicit guest-to-host workflow service grant; never implied by FFI.
+        WORKFLOW_STORAGE,
         REFLECTION,
         CHILD_PROCESS,
         THREAD_CREATE,
