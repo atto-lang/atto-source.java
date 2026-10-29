@@ -13,6 +13,7 @@ public final class AgentHostDispatchGate {
         boolean authorize(Scope scope);
         boolean claimOnce(Scope scope);
         boolean submitDataOnly(Scope scope);
+        long nowMs(); // mandatory trusted host clock
     }
     private final String tenantId, actorId, revision;
     private final long generation, epoch, tokenCap;
@@ -59,8 +60,13 @@ public final class AgentHostDispatchGate {
             s.measuredTokens() <= 0 || s.measuredTokens() > 16384 ||
             tokenCap <= 0 || s.measuredTokens() > tokenCap) return false;
         try {
-            return host.isCurrent(s) && host.authorize(s) && host.claimOnce(s) &&
-                   host.isCurrent(s) && host.authorize(s) && host.submitDataOnly(s);
+            final long admittedAt = host.nowMs();
+            if (admittedAt < 0 || s.expiresAtMs() <= admittedAt) return false;
+            if (!host.isCurrent(s) || !host.authorize(s) || !host.claimOnce(s) ||
+                !host.isCurrent(s) || !host.authorize(s)) return false;
+            final long beforeSubmit = host.nowMs();
+            return beforeSubmit >= admittedAt && s.expiresAtMs() > beforeSubmit &&
+                   host.submitDataOnly(s);
         } catch (RuntimeException ex) {
             return false;
         }
