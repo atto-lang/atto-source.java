@@ -178,6 +178,49 @@ final class OresFutureHostAdapterIsolationTest {
     }
 
     @Test
+    void foreignStageRetainingACompletionCallbackCannotReviveACancelledObserver() {
+        // A generic CompletionStage has no mandatory unregister API. This
+        // deliberately adversarial stage keeps its callback even after the
+        // Oreslang observer is cancelled, then invokes that callback late.
+        final class RetainingStage extends CompletableFuture<Integer> {
+            private java.util.function.BiConsumer<? super Integer, ? super Throwable>
+                    retainedCompletion;
+
+            @Override
+            public CompletableFuture<Integer> whenComplete(
+                    java.util.function.BiConsumer<? super Integer, ? super Throwable>
+                            completion) {
+                retainedCompletion = completion;
+                return this;
+            }
+
+            void signalLateCompletion(int value) {
+                assertNotNull(retainedCompletion);
+                retainedCompletion.accept(value, null);
+            }
+        }
+
+        RetainingStage stage = new RetainingStage();
+        OresFuture<Integer> observer = OresFuture.from(stage);
+        assertTrue(observer.cancel(false));
+        assertFalse(stage.isCancelled());
+        stage.signalLateCompletion(42);
+
+        assertTrue(observer.isCancelled());
+        assertThrows(CancellationException.class, observer::join);
+        assertTrue(stage.complete(42), "retained host stage is independently live");
+        assertEquals(42, stage.join());
+    }
+
+    @Test
+    void completedHostStageCanBeAdaptedSustainablyWithoutCallerScheduler() {
+        OresFuture<Integer> adapted =
+                OresFuture.from(CompletableFuture.completedFuture(42));
+        assertEquals(42, adapted.join());
+        assertFalse(adapted.isCancelled());
+    }
+
+    @Test
     void notificationDrainReceiptWaitsForBlockedHostRuntimeWaiter() throws Exception {
         OresFuture<Integer> future = new OresFuture<>();
         CountDownLatch waiterEntered = new CountDownLatch(1);
