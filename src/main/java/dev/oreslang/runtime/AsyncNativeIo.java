@@ -370,19 +370,28 @@ public final class AsyncNativeIo implements AutoCloseable {
             // capacity + CONTROL_CAPACITY such notifications can be admitted.
             try {
                 Thread.ofVirtual().name("ores-native-io-discard-").start(() -> {
+                    boolean entered = false;
                     try {
+                        // Cancellation callbacks are still part of the admitted
+                        // operation: never let them execute with root authority.
+                        ActorRuntime.enterNativeIoAuthority(ioAuthority);
+                        entered = ioAuthority != null;
                         completion.failFromRuntime(failure);
                     } catch (RuntimeException | Error notificationFailure) {
                         recordIncomplete(notificationFailure);
                     } finally {
-                        ActorRuntime.ActorId retireActor;
-                        synchronized (AsyncNativeIo.this) {
-                            owner.remove(this);
-                            retireActor = decrementActorOperationLocked(admittedActor);
-                            retireDeferredUnregisterLocked();
-                            AsyncNativeIo.this.notifyAll();
+                        try {
+                            ActorRuntime.ActorId retireActor;
+                            synchronized (AsyncNativeIo.this) {
+                                owner.remove(this);
+                                retireActor = decrementActorOperationLocked(admittedActor);
+                                retireDeferredUnregisterLocked();
+                                AsyncNativeIo.this.notifyAll();
+                            }
+                            notifyActorRetirement(retireActor);
+                        } finally {
+                            if (entered) ActorRuntime.exitNativeIoAuthority(ioAuthority);
                         }
-                        notifyActorRetirement(retireActor);
                     }
                 });
             } catch (RuntimeException | Error startFailure) {
