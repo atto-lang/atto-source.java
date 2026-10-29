@@ -96,12 +96,6 @@ public final class TypeChecker {
     // Only an actual constructor may initialize an otherwise fixed, initially
     // absent class field. Class methods never inherit constructor privileges.
     private Ast.ClassDecl currentConstructorOwner;
-    // Conservative constructor-initialization ledger. A fixed field without
-    // a declaration initializer may be assigned syntactically at most once
-    // in a constructor, even across alternative CFG arms. Until this ledger
-    // is promoted to a path-sensitive may-initialize lattice, reject
-    // ambiguous multi-write constructors rather than permit double writes.
-    private Set<String> constructorFixedFieldWrites;
     // Unlike private-member access, declaration origin must survive nlex.
     private Ast.ClassDecl lexicalClassOrigin;
     // Source modules have their own lexical value namespace. File-level
@@ -1669,11 +1663,9 @@ public final class TypeChecker {
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
-            Set<String> previousFixedWrites = constructorFixedFieldWrites;
             currentActorKind = Ast.ActorKind.NONE;
             currentClassOwner = klass;
             currentConstructorOwner = klass;
-            constructorFixedFieldWrites = new HashSet<>();
             lexicalClassOrigin = klass;
             try {
                 checkConstructorFixedFieldDefiniteInitialization(klass, constructor);
@@ -1682,7 +1674,6 @@ public final class TypeChecker {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
-                constructorFixedFieldWrites = previousFixedWrites;
                 lexicalClassOrigin = previousLexicalClass;
             }
         }
