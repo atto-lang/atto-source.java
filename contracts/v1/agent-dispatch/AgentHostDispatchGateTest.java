@@ -10,7 +10,8 @@ public final class AgentHostDispatchGateTest {
     private static void check(boolean ok) { if (!ok) throw new AssertionError(); }
     public static void main(String[] unused) {
         class Host implements AgentHostDispatchGate.TrustedHost {
-            int current, auth, claims, sends; boolean deny, revokeAfterClaim, throwClaim;
+            int current, auth, claims, sends; long clock = 9000;
+            boolean deny, revokeAfterClaim, throwClaim, advanceClockOnClaim;
             @Override public boolean isCurrent(AgentHostDispatchGate.Scope s) {
                 current++; return !revokeAfterClaim || current == 1;
             }
@@ -19,8 +20,10 @@ public final class AgentHostDispatchGateTest {
             }
             @Override public boolean claimOnce(AgentHostDispatchGate.Scope s) {
                 claims++; if (throwClaim) throw new IllegalStateException("IO");
+                if (advanceClockOnClaim) clock = 10000;
                 return claims == 1;
             }
+            @Override public long nowMs() { return clock; }
             @Override public boolean submitDataOnly(AgentHostDispatchGate.Scope s) {
                 sends++; return true;
             }
@@ -56,6 +59,11 @@ public final class AgentHostDispatchGateTest {
         h=new Host(); h.throwClaim=true; check(!gate().dispatch(scope(),h,9000));
         check(h.sends==0);
         check(!gate().dispatch(scope(),null,9000));
+        h = new Host(); h.advanceClockOnClaim = true;
+        check(!gate().dispatch(scope(),h,9000));
+        check(h.claims == 1 && h.sends == 0);
+        h = new Host(); h.clock = 10000;
+        check(!gate().dispatch(scope(),h,9000)); check(h.sends == 0);
         System.out.println("AGENT_HOST_DISPATCH_CONTRACT PASS (host only, no native guest)");
     }
 }
