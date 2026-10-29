@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
+import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -52,6 +53,25 @@ final class ExecutionDomainAdmissionTest {
         );
         for (String source : sources) {
             assertDoesNotThrow(() -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
+    void gpuTasksNeverReachHostTypeChecking() {
+        // A parser-visible Task is not permission to dispatch a GPU kernel.
+        // Both source spellings must be rejected *before* host execution.
+        for (String spelling : List.of(
+                "gpu task { return 42; }", "nb gpu { return 42; }")) {
+            String source = "pub fnc main(): int { let Future<int> pending = "
+                    + spelling + "; return 0; }";
+            var program = assertDoesNotThrow(() -> Parser.parse(source));
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(program), source);
+            assertTrue(error.getMessage().contains("physical GPU dispatch"),
+                    error::getMessage);
+            assertTrue(error.getMessage().contains("no implicit CPU fallback"),
+                    error::getMessage);
         }
     }
 
