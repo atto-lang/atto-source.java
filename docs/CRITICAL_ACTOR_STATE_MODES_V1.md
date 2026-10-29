@@ -60,7 +60,7 @@ checker and evaluator validate the mode independently. This is a
 
 ## Acceptance
 
-`ActorCriticalStateModeTest` registers eight positive/negative Java/Graal
+`ActorCriticalStateModeTest` registers ten positive/negative Java/Graal
 tests: real guest write/read, rejected read mutation, rejected mutable
 reborrow, unknown mode, callback suspension, nonvoid callback, direct
 state access and nested closure escape.
@@ -70,7 +70,7 @@ run on GraalVM 25/JDK25, explicit runner job steps and positive/negative
 output evidence are required before compiler readiness. Static source
 checks and an older compiler branch's test results cannot establish
 correctness of this forward-port. Java runtime on the current workspace
-is JDK21 with no Maven; no local full compiler execution is available.
+is JDK21 with no Maven; no local full compiler execution is available. The ten tests are registered, not executed.
 
 The corrected step-function demo PR #10 must be updated to use
 `critical[write]` as a **statement** and capture only a detached response
