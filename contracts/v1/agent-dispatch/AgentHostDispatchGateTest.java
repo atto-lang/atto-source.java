@@ -64,6 +64,20 @@ public final class AgentHostDispatchGateTest {
         check(h.claims == 1 && h.sends == 0);
         h = new Host(); h.clock = 10000;
         check(!gate().dispatch(scope(),h,9000)); check(h.sends == 0);
+        h = new Host(); h.clock = 0;
+        check(!gate().dispatch(scope(),h,9000)); check(h.claims == 0);
+        h = new Host(); final Host rollback = h;
+        final long[] ticks = {9000, 8999};
+        // The trusted clock can be controlled independently of other callbacks.
+        AgentHostDispatchGate.TrustedHost backing = new AgentHostDispatchGate.TrustedHost() {
+            int reads;
+            @Override public long nowMs() {return ticks[Math.min(reads++, 1)];}
+            @Override public boolean isCurrent(AgentHostDispatchGate.Scope x) {return true;}
+            @Override public boolean authorize(AgentHostDispatchGate.Scope x) {return true;}
+            @Override public boolean claimOnce(AgentHostDispatchGate.Scope x) {return true;}
+            @Override public boolean submitDataOnly(AgentHostDispatchGate.Scope x) {throw new AssertionError("clock rollback submitted");}
+        };
+        check(!gate().dispatch(scope(),backing,9000));
         System.out.println("AGENT_HOST_DISPATCH_CONTRACT PASS (host only, no native guest)");
     }
 }
