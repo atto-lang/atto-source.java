@@ -77,7 +77,17 @@ class NativeHttpTest {
     void scopedDispatchReceiptBindsHandlerPurposeAndActorIncarnationAcrossPoolReuse() throws Exception {
         String output = run("""
             define isoactor Worker as
+              let String previous = "";
               receive(ActorMail<String> mail): void {
+                if self.previous != ""; then
+                  try {
+                    http.claim(self.previous);
+                    stdio.println("RECEIPT REPLAY ACCEPTED");
+                  } catch (err) {
+                    stdio.println("receipt-replay-rejected");
+                  }
+                fi
+                self.previous = mail.value;
                 val request = http.claim(mail.value);
                 if !request.dispatch_receipt_valid(
                     "Worker", "proxy:greeting", "local-no-net", 7); then
@@ -132,6 +142,7 @@ class NativeHttpTest {
             });
         assertFalse(output.contains("INVALID"), output);
         assertFalse(output.contains("ACCEPTED"), output);
+        assertEquals(1, output.split("receipt-replay-rejected", -1).length - 1, output);
         assertEquals(2, output.split("Worker", -1).length - 1, output);
         assertEquals(2, output.split("proxy:greeting", -1).length - 1, output);
         assertEquals(2, output.split("local-no-net", -1).length - 1, output);
