@@ -1272,9 +1272,15 @@ public final class TypeChecker {
 
     private void checkConstructorNoEscape(
             String owner, Object expression, Set<String> initialized, Set<String> required) {
-        if (!initialized.containsAll(required) && constructorContainsSelf(expression)) {
+        // An unqualified call can resolve to an instance method and publish
+        // the receiver indirectly. Until transitive constructor-safe effect
+        // summaries exist, disallow every call on a partial object path.
+        if (!initialized.containsAll(required)
+                && (constructorContainsSelf(expression)
+                        || constructorContainsCall(expression))) {
             throw new IllegalArgumentException("constructor for " + owner
-                    + " uses or escapes self before all fixed fields are initialized");
+                    + " uses or escapes self before all fixed fields are initialized"
+                    + " (including potential indirect callback calls)");
         }
     }
 
@@ -1287,6 +1293,11 @@ public final class TypeChecker {
         }
         return constructorAnyChild(node, child ->
                 constructorContainsFixedWrite(child, required));
+    }
+
+    private boolean constructorContainsCall(Object node) {
+        if (node instanceof Ast.CallExpr) return true;
+        return constructorAnyChild(node, this::constructorContainsCall);
     }
 
     private boolean constructorContainsSelf(Object node) {
