@@ -41,8 +41,13 @@ public final class Ast {
             List<String> names,
             boolean wildcard,
             String namespace,
-            String path) {
+            String path,
+            String sourceNamespace) {
         public ImportDecl { names = List.copyOf(names); }
+        public ImportDecl(ImportKind kind, List<String> names, boolean wildcard,
+                          String namespace, String path) {
+            this(kind, names, wildcard, namespace, path, null);
+        }
     }
 
     public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {

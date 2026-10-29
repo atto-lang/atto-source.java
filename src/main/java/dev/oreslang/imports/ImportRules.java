@@ -70,6 +70,16 @@ public final class ImportRules {
 
     public static void validate(Ast.ImportDecl imported) {
         if (imported == null) throw new IllegalArgumentException("import declaration cannot be null");
+        if (imported.sourceNamespace() != null) {
+            if (imported.kind() != Ast.ImportKind.ALL || !imported.wildcard()
+                    || !imported.names().isEmpty() || imported.namespace() == null
+                    || imported.namespace().isBlank()
+                    || "__root__".equals(imported.sourceNamespace())
+                    || "__root__".equals(imported.namespace())
+                    || isJavaPath(imported.path())) {
+                throw new IllegalArgumentException("invalid manifest namespace import");
+            }
+        }
         if (imported.path() == null || imported.path().isBlank()) {
             throw new IllegalArgumentException("import path cannot be empty");
         }

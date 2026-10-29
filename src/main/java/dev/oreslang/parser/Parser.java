@@ -235,6 +235,23 @@ public final class Parser {
     }
 
     private Ast.ImportDecl parseImport() {
+        // Namespace imports name the provider namespace and a pinned package
+        // locator, never a single physical source file. Linkers without a
+        // verified package index must reject these imports.
+        if (match(NAMESPACE)) {
+            String sourceNamespace = consume(IDENT, "expected imported namespace name").lexeme();
+            if (ROOT_MODULE.equals(sourceNamespace)) {
+                throw error(previous(), "namespace name '" + ROOT_MODULE
+                        + "' is reserved for file-root declarations");
+            }
+            String alias = match(AS) ? consumeImportAlias("expected namespace import alias")
+                    : sourceNamespace;
+            consume(FROM, "expected 'from' in namespace import");
+            String path = consume(STRING, "expected package locator").lexeme();
+            consume(SEMICOLON, "expected ';' after namespace import");
+            return new Ast.ImportDecl(Ast.ImportKind.ALL, List.of(), true,
+                    alias, path, sourceNamespace);
+        }
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
         boolean wildcard = false;

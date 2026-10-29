@@ -36,6 +36,11 @@ final class ImportGraph {
             Set<String> available,
             Map<String, Map<String, String>> importResolutions) {
         ImportRules.validate(imported);
+        if (imported.sourceNamespace() != null) {
+            throw new IllegalArgumentException(
+                    "import namespace requires verified multi-file package index; "
+                            + "single-file resolution is forbidden");
+        }
         if (ImportRules.isJavaPath(imported.path())) return null;
 
         String normalizedUnitId = normalizeUnitId(unitId);
@@ -82,10 +87,34 @@ final class ImportGraph {
             Map<String, Ast.Program> programs,
             Set<String> available,
             Map<String, Map<String, String>> importResolutions) {
+        return resolveDependencies(programs, available, importResolutions, null);
+    }
+
+    static Map<String, Set<String>> resolveDependencies(
+            Map<String, Ast.Program> programs,
+            Set<String> available,
+            Map<String, Map<String, String>> importResolutions,
+            PackageNamespaceIndex namespaceIndex) {
         LinkedHashMap<String, Set<String>> dependencies = new LinkedHashMap<>();
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             LinkedHashSet<String> resolved = new LinkedHashSet<>();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                ImportRules.validate(imported);
+                if (imported.sourceNamespace() != null) {
+                    if (namespaceIndex == null) {
+                        throw new IllegalArgumentException(
+                                "import namespace requires verified multi-file package index");
+                    }
+                    PackageNamespaceIndex.Binding binding = namespaceIndex.resolve(
+                            entry.getKey(), imported.path(), imported.sourceNamespace());
+                    for (String provider : binding.providerUnitIds()) {
+                        if (!available.contains(provider)) {
+                            throw new IllegalArgumentException("namespace provider is not an admitted unit: " + provider);
+                        }
+                        if (!provider.equals(entry.getKey())) resolved.add(provider);
+                    }
+                    continue;
+                }
                 String target = resolveImportUnitId(entry.getKey(), imported, available, importResolutions);
                 if (target != null) resolved.add(target);
             }
@@ -101,10 +130,33 @@ final class ImportGraph {
     static void validateLinkedImports(
             Map<String, Ast.Program> programs,
             Map<String, Map<String, String>> importResolutions) {
+        validateLinkedImports(programs, importResolutions, null);
+    }
+
+    static void validateLinkedImports(
+            Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions,
+            PackageNamespaceIndex namespaceIndex) {
         Set<String> available = programs.keySet();
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             String importer = entry.getKey();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                if (imported.sourceNamespace() != null) {
+                    ImportRules.validate(imported);
+                    if (namespaceIndex == null) {
+                        throw new IllegalArgumentException(
+                                "import namespace requires verified multi-file package index");
+                    }
+                    PackageNamespaceIndex.Binding binding = namespaceIndex.resolve(
+                            importer, imported.path(), imported.sourceNamespace());
+                    if (binding.exports().isEmpty()) {
+                        throw new IllegalArgumentException("imported namespace has no public exports");
+                    }
+                    if (!available.containsAll(binding.providerUnitIds())) {
+                        throw new IllegalArgumentException("namespace provider snapshot is incomplete");
+                    }
+                    continue;
+                }
                 String targetId = resolveImportUnitId(importer, imported, available, importResolutions);
                 if (targetId == null) continue; // package resolver owns unresolved non-relative imports.
                 Ast.Program target = programs.get(targetId);

@@ -394,6 +394,11 @@ public final class LinkedProgramRunner {
         Ast.Program program = Parser.parse(mixed.oresSource());
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (imported.sourceNamespace() != null) {
+                throw new IllegalArgumentException(
+                        "import namespace needs manifest-verified multi-file runtime linking; "
+                                + "source-file wildcard resolution cannot substitute for it");
+            }
             if (ImportRules.isJavaPath(imported.path())) continue;
 
             if (CoreLibrarySources.isStdImport(imported.path())) {

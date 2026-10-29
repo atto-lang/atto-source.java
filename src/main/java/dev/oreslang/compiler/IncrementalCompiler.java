@@ -37,6 +37,18 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
+        return compile(sources, importResolutions, null);
+    }
+
+    /**
+     * Compile with an externally verified manifest package index.
+     * This enables admission and static dependency tracking of namespace
+     * imports, not yet runtime execution or first-class qualified type lowering.
+     */
+    public synchronized BuildResult compile(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            PackageNamespaceIndex namespaceIndex) {
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
         if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
 
@@ -64,16 +76,20 @@ public final class IncrementalCompiler {
 
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
-        ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
+        ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions, namespaceIndex);
         Map<String, Set<String>> dependencies =
-                ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
+                ImportGraph.resolveDependencies(parsed, normalized.keySet(),
+                        normalizedImportResolutions, namespaceIndex);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
             CompiledUnit previous = cache.get(id);
-            boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
+            String currentPackageId = namespaceIndex == null || namespaceIndex.ownerOf(id) == null
+                    ? packageId(id) : namespaceIndex.ownerOf(id);
+            boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id))
+                    || !previous.packageId().equals(currentPackageId);
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
             if (sourceChanged || depsChanged) dirty.add(id);
             if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
@@ -126,7 +142,8 @@ public final class IncrementalCompiler {
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
-                    packageId(id),
+                    namespaceIndex == null || namespaceIndex.ownerOf(id) == null
+                            ? packageId(id) : namespaceIndex.ownerOf(id),
                     checked.namespace(),
                     hashes.get(id),
                     abiHashes.get(id),
