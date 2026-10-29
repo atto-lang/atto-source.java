@@ -6,6 +6,19 @@ const yaml = readFileSync(new URL('../.github/workflows/private-exact-main-valid
 const owners = readFileSync(new URL('../.github/CODEOWNERS', import.meta.url), 'utf8');
 
 function verify(w, c) {
+  // A duplicate YAML root key (especially on/jobs/permissions) can shadow
+  // the reviewed block. Fail closed before checking individual sections.
+  // This workflow intentionally has one fixed, minimal root shape.
+  const rootLines = w.split('\n').filter(line =>
+    line.length > 0 && !/^[ \t]/.test(line) && !line.startsWith('#'));
+  assert.deepEqual(rootLines, [
+    'name: Private exact-main Java/Native validation',
+    'on:',
+    'permissions:',
+    'concurrency:',
+    'jobs:',
+  ], 'unexpected, duplicate, or replaced root-level YAML field');
+  assert.doesNotMatch(w, /^\t/m, 'YAML indentation must not contain tabs');
   const section = (start, end) => {
     const a = w.indexOf(start);
     const b = w.indexOf(end, a + start.length);
@@ -156,6 +169,24 @@ test('unsafe admission mutations rejected', () => {
     assert.throws(() => verify(yaml.replace(from, to), owners), undefined, 'unsafe mutation accepted');
   }
 });
+test('duplicate and unreviewed root-level YAML fields rejected', () => {
+  for (const extra of [
+    '\non: [push]\n',
+    '\npermissions: {contents: write}\n',
+    '\njobs: {rogue: {runs-on: ubuntu-24.04, steps: [{run: echo bypass}]}}\n',
+    '\nconcurrency: {group: outsider, cancel-in-progress: true}\n',
+    '\ndefaults: {run: {shell: bash}}\n',
+    '\n---\n',
+  ]) assert.throws(() => verify(yaml + extra, owners), undefined,
+    'unreviewed YAML root extension accepted: ' + extra.trim());
+  assert.throws(() => verify(yaml.replace('\non:\n  workflow_dispatch:',
+    '\non: [push]'), owners));
+  assert.throws(() => verify(yaml.replace('\npermissions:\n  contents: read',
+    '\npermissions: {contents: write}'), owners));
+  assert.throws(() => verify(yaml.replace('\nconcurrency:',
+    '\n\tconcurrency:'), owners));
+});
+
 test('CODEOWNERS tampering rejected', () => {
   assert.throws(() => verify(yaml, owners.replace(
     '/tests/private-exact-main-admission.test.mjs @ORESoftware', '')));
