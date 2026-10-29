@@ -915,11 +915,26 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation actorHandleStateInvocation(
                 OresObject actorObject,
                 List<Object> args) {
-            if (args.size() != 1 || !(args.getFirst() instanceof Invokable callback)) {
+            boolean writable = true; // legacy one-argument exclusive loan
+            Object handler;
+            if (args.size() == 2 && args.getFirst() instanceof String mode) {
+                if (!mode.equals("critical:read") && !mode.equals("critical:write")) {
+                    throw new IllegalArgumentException(
+                            "self.handle_state requires critical[read] or critical[write]");
+                }
+                writable = mode.equals("critical:write");
+                handler = args.get(1);
+            } else if (args.size() == 1) {
+                handler = args.getFirst();
+            } else {
+                throw new IllegalArgumentException(
+                        "self.handle_state requires one lexical callback");
+            }
+            if (!(handler instanceof Invokable callback)) {
                 throw new IllegalArgumentException(
                         "self.handle_state expects exactly one inline state callback");
             }
-            ActorStateLoanView view = ActorStateLoanView.open(actorObject);
+            ActorStateLoanView view = ActorStateLoanView.open(actorObject, writable);
             return invokableInvocation(
                     ignored -> {
                         try {
@@ -11002,21 +11017,24 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> fields;
         private boolean active = true;
 
-        private ActorStateLoanView(OresObject object, Set<String> fields) {
+        private final boolean writable;
+
+        private ActorStateLoanView(OresObject object, Set<String> fields, boolean writable) {
             this.object = Objects.requireNonNull(object, "actor state object");
             this.fields = Set.copyOf(fields);
+            this.writable = writable;
             if (this.fields.isEmpty()) {
                 throw new IllegalArgumentException(
                         "self.handle_state requires an actor with a state { ... } schema");
             }
         }
 
-        private static ActorStateLoanView open(OresObject object) {
+        private static ActorStateLoanView open(OresObject object, boolean writable) {
             LinkedHashSet<String> fields = new LinkedHashSet<>();
             for (Ast.FieldDecl field : object.klass.fields()) {
                 if (isActorStateSchemaField(field)) fields.add(field.name());
             }
-            return new ActorStateLoanView(object, fields);
+            return new ActorStateLoanView(object, fields, writable);
         }
 
         private void requireActive() {
@@ -11049,11 +11067,23 @@ public final class OresEvalRootNode extends RootNode {
                         "actor state field '" + object.klass.name() + "." + name
                                 + "' is read before initialization");
             }
+            if (!writable && value != null
+                    && !(value instanceof String || value instanceof Number
+                        || value instanceof Boolean || value instanceof Character)) {
+                // Composite values may contain mutable aliases. Fail closed
+                // until a provably immutable/snapshot view is implemented.
+                throw new IllegalArgumentException(
+                        "critical[read] state loan only supports scalar state values");
+            }
             return value;
         }
 
         private void set(String name, Object value) {
             Ast.FieldDecl field = requireField(name);
+            if (!writable) {
+                throw new IllegalArgumentException(
+                        "critical[read] state loan cannot mutate actor state");
+            }
             if (field.bindingKind() != Ast.BindingKind.LET) {
                 throw new IllegalArgumentException(
                         "actor state field '" + object.klass.name() + "." + name

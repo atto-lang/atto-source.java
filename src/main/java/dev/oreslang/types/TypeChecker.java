@@ -3246,17 +3246,30 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "self.handle_state does not accept call-site type arguments");
                     }
-                    if (call.arguments().size() != 1
-                            || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                    boolean mutableStateLoan = true; // legacy one-argument write form
+                    Ast.LambdaExpr lambda;
+                    if (call.arguments().size() == 2
+                            && call.arguments().getFirst() instanceof Ast.LiteralExpr mode
+                            && mode.value() instanceof String selected
+                            && (selected.equals("critical:read")
+                                    || selected.equals("critical:write"))
+                            && call.arguments().get(1) instanceof Ast.LambdaExpr scoped) {
+                        mutableStateLoan = selected.equals("critical:write");
+                        lambda = scoped;
+                    } else if (call.arguments().size() == 1
+                            && call.arguments().getFirst() instanceof Ast.LambdaExpr legacy) {
+                        lambda = legacy;
+                    } else {
                         throw new IllegalArgumentException(
-                                "self.handle_state expects exactly one inline lexical lambda");
+                                "self.handle_state requires critical[read] or critical[write] "
+                                        + "and exactly one inline lexical lambda");
                     }
                     if (currentClassOwner == null
                             || currentClassOwner.actorKind() == Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
                                 "self.handle_state is only available inside actor instance code");
                     }
-                    Type stateLoan = actorStateLoanType(currentClassOwner);
+                    Type stateLoan = actorStateLoanType(currentClassOwner, mutableStateLoan);
                     if (stateLoanLambdaHasForbiddenSuspensionOrEscape(lambda)) {
                         throw new IllegalArgumentException(
                                 "self.handle_state callback cannot suspend, defer, select, use rt intrinsics, yield, or create a nested closure until suspension-safe state loans are implemented");
@@ -5810,7 +5823,7 @@ public final class TypeChecker {
         }
     }
 
-    private Type actorStateLoanType(Ast.ClassDecl actor) {
+    private Type actorStateLoanType(Ast.ClassDecl actor, boolean mutable) {
         LinkedHashMap<String, Type> members = new LinkedHashMap<>();
         for (Ast.FieldDecl field : actor.fields()) {
             if (!isActorStateSchemaField(field)) continue;
@@ -5820,9 +5833,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "self.handle_state requires an actor with a state { ... } schema");
         }
+        // The structural type and borrow BOTH carry read-only provenance.
+        // A shared read loan cannot be escalated into a mutable write loan.
         return new Borrow(
-                new Record(members, false, AggregateKind.RECORD),
-                true);
+                new Record(members, !mutable, AggregateKind.RECORD),
+                mutable);
     }
 
     private boolean stateLoanLambdaHasForbiddenSuspensionOrEscape(Ast.LambdaExpr lambda) {

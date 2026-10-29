@@ -4119,7 +4119,33 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.Expr> args;
+                if (expr instanceof Ast.MemberExpr member
+                        && member.member().equals("handle_state")
+                        && check(IDENT) && peek().lexeme().equals("critical")) {
+                    // Canonical explicit state access mode:
+                    // self.handle_state(critical[read|write] |state| -> {...}).
+                    // Keep the selector AST-internal as a literal capability
+                    // marker; the type checker and evaluator must enforce the
+                    // selected mode, never merely parse the spelling.
+                    advance();
+                    consume(LBRACKET, "expected '[' after critical");
+                    Token mode = consume(IDENT, "critical expects read or write");
+                    if (!mode.lexeme().equals("read") && !mode.lexeme().equals("write")) {
+                        throw error(mode, "critical state access mode must be read or write");
+                    }
+                    consume(RBRACKET, "expected ']' after critical state access mode");
+                    Ast.Expr callback = parseExpression();
+                    if (!(callback instanceof Ast.LambdaExpr)) {
+                        throw error(previous(), "critical state access requires an inline lexical lambda");
+                    }
+                    if (!check(RPAREN)) {
+                        throw error(peek(), "critical state access accepts exactly one callback");
+                    }
+                    args = List.of(new Ast.LiteralExpr("critical:" + mode.lexeme()), callback);
+                } else {
+                    args = parseCallArgumentsUntil(RPAREN);
+                }
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT, DOUBLE_COLON)) {
