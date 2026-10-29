@@ -54,6 +54,7 @@ grep -q -- 'NestedOptionResultBoundaryRegressionTest' "$MOCK_MAVEN_LOG"
 # Every required Future regression must reach the exact-head targeted Maven
 # command. Mocking Maven here proves test selection, NOT JUnit execution.
 for future_test in \
+    FutureChainingV2PinnedGuestTest \
     FutureSnakeCaseChainingTest \
     OresFutureHostAdapterIsolationTest \
     OresFutureCallbackRetentionTest \
