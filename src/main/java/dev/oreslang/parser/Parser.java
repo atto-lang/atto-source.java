@@ -3892,6 +3892,10 @@ public final class Parser {
                     // Deliberately not parseBlock(): a scalar CPU region is
                     // one expression, optionally prefixed by return, rather
                     // than an arbitrary host block or a detached Task.
+                    // Reject excessively large/nested token windows before
+                    // recursive expression parsing; the AST enforces a
+                    // separate 512-node / 64-depth bound after construction.
+                    preflightScalarCpuTokens();
                     match(RETURN);
                     Ast.Expr scalar = parseExpression();
                     match(SEMICOLON);
@@ -3963,6 +3967,28 @@ public final class Parser {
         if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.BLOCKING);
 
         return parsePostfix();
+    }
+
+    /** Lexer-level work bound before parsing scalar-only cpu { ... }. */
+    private void preflightScalarCpuTokens() {
+        int parens = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token token = tokens.get(i);
+            if (i - current > 1024) {
+                throw error(token, "scalar cpu region exceeds token budget");
+            }
+            if (token.type() == LBRACE) {
+                throw error(token,
+                        "nested blocks are not admitted inside scalar cpu region");
+            }
+            if (token.type() == LPAREN && ++parens > 64) {
+                throw error(token, "scalar cpu region exceeds parenthesis depth budget");
+            }
+            if (token.type() == RPAREN) parens--;
+            if (token.type() == RBRACE && parens == 0) return;
+            if (token.type() == EOF) break;
+        }
+        throw error(peek(), "unterminated scalar cpu region");
     }
 
     private Ast.Expr parseRuntimeExpression() {
