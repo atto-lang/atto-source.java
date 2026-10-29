@@ -65,6 +65,11 @@ CONTROL_PLANE_PATHS = (
 MAX_CONTROL_PLANE_FILE = 512 * 1024
 MAX_GH_API_RESPONSE_BYTES = 24 * 1024 * 1024
 CARRIER_POLICY_CHECK = "verifier-tests"
+CARRIER_REF_PATTERNS = (
+    "refs/heads/ci/oreslang-*",
+    "refs/heads/ci/authorized-*",
+)
+MAX_CARRIER_RULESETS = 99
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -272,7 +277,7 @@ def parse_contract(raw, repository, source_pr, test_plan):
         raise Denied("destination absent from protected carrier contract")
     required_carrier_fields = {
         "repository_id", "base_sha", "workflow_path",
-        "workflow_blob_sha", "test_plans"
+        "workflow_blob_sha", "test_plans", "publisher_app_id"
     }
     allowed_carrier_fields = required_carrier_fields
     if (not required_carrier_fields.issubset(carrier)
@@ -281,6 +286,10 @@ def parse_contract(raw, repository, source_pr, test_plan):
     repo_id = carrier.get("repository_id")
     if (not isinstance(repo_id, int) or isinstance(repo_id, bool) or repo_id <= 0):
         raise Denied("carrier repository id invalid")
+    publisher_app_id = carrier.get("publisher_app_id")
+    if (type(publisher_app_id) is not int or publisher_app_id <= 0
+            or publisher_app_id == legacy.GITHUB_ACTIONS_APP_ID):
+        raise Denied("dedicated reviewed carrier publisher App ID required")
     base_sha = valid_sha(carrier.get("base_sha"), "carrier base SHA invalid")
     workflow_path = safe_policy_path(
         carrier.get("workflow_path"), ".github/workflows/", ".yml"
@@ -305,6 +314,7 @@ def parse_contract(raw, repository, source_pr, test_plan):
         raise Denied("source PR is not authorized by protected test plan")
     return {
         "repository_id": repo_id,
+        "publisher_app_id": publisher_app_id,
         "base_sha": base_sha,
         "workflow_path": workflow_path,
         "workflow_blob_sha": workflow_blob,
@@ -450,6 +460,85 @@ def checked_carrier_main(repository, contract):
     return base_sha
 
 
+def require_immutable_carrier_refs(repository, contract):
+    """Fail closed unless the reviewed publisher exclusively bypasses both ref locks.
+
+    List ALL effective ruleset summaries including inherited rules; then fetch
+    full individual detail for exact bypass actors. A list response alone does
+    not prove the restriction. This control is independently rechecked before
+    every source-bearing Git object write.
+    """
+    publisher_app_id = contract.get("publisher_app_id")
+    if (type(publisher_app_id) is not int or publisher_app_id <= 0
+            or publisher_app_id == legacy.GITHUB_ACTIONS_APP_ID):
+        raise Denied("dedicated carrier publisher App ID missing or unreviewed")
+    summaries = gh_api_list(
+        f"repos/{repository}/rulesets?includes_parents=true&per_page=100"
+    )
+    if not summaries or len(summaries) > MAX_CARRIER_RULESETS:
+        raise Denied("carrier ruleset inventory missing or not exhaustive")
+    details = []
+    seen_ids = set()
+    for summary in summaries:
+        if type(summary) is not dict or type(summary.get("id")) is not int:
+            raise Denied("carrier ruleset summary is malformed")
+        rule_id = summary["id"]
+        if rule_id <= 0 or rule_id in seen_ids:
+            raise Denied("carrier ruleset identity is ambiguous")
+        seen_ids.add(rule_id)
+        detail = legacy.gh_api(f"repos/{repository}/rulesets/{rule_id}")
+        if type(detail) is not dict or detail.get("id") != rule_id:
+            raise Denied("carrier ruleset detail differs from summary identity")
+        details.append(detail)
+
+    verified = []
+    for pattern in CARRIER_REF_PATTERNS:
+        matching = []
+        for detail in details:
+            conditions = detail.get("conditions")
+            ref = conditions.get("ref_name") if type(conditions) is dict else None
+            if (detail.get("source") == repository
+                    and detail.get("source_type") == "Repository"
+                    and detail.get("target") == "branch"
+                    and type(ref) is dict
+                    and pattern in (ref.get("include") if type(ref.get("include")) is list else [])):
+                matching.append(detail)
+        if len(matching) != 1:
+            raise Denied("missing or ambiguous carrier ref protection: " + pattern)
+        detail = matching[0]
+        ref = detail["conditions"]["ref_name"]
+        if (detail.get("enforcement") != "active"
+                or ref.get("include") != [pattern]
+                or ref.get("exclude") != []
+                or detail.get("bypass_actors") != [{
+                    "actor_id": publisher_app_id,
+                    "actor_type": "Integration",
+                    "bypass_mode": "always",
+                }]):
+            raise Denied("carrier ref ruleset not strictly enforced: " + pattern)
+        rules = detail.get("rules")
+        if type(rules) is not list or not 3 <= len(rules) <= 30:
+            raise Denied("carrier ref rules incomplete: " + pattern)
+        kinds = {}
+        for rule in rules:
+            if type(rule) is not dict or type(rule.get("type")) is not str:
+                raise Denied("carrier ref rule malformed")
+            if rule["type"] in kinds:
+                raise Denied("duplicate carrier ref rule type")
+            kinds[rule["type"]] = rule
+        if not {"creation", "update", "deletion"}.issubset(kinds):
+            raise Denied("carrier refs allow uncontrolled creation, update or deletion")
+        update = kinds["update"]
+        parameters = update.get("parameters")
+        if (type(parameters) is not dict
+                or parameters.get("update_allows_fetch_and_merge") is not False):
+            raise Denied("carrier ref update exception is not permitted")
+        verified.append(detail["id"])
+    if len(set(verified)) != len(CARRIER_REF_PATTERNS):
+        raise Denied("carrier ref ruleset identity reused")
+    return tuple(verified)
+
+
 def checked_destination(repository, contract):
     repo = legacy.checked_repo(repository, contract["repository_id"])
     if (repo.get("id") != contract["repository_id"]
@@ -459,6 +548,7 @@ def checked_destination(repository, contract):
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state differs from protected contract")
     base_sha = checked_carrier_main(repository, contract)
+    require_immutable_carrier_refs(repository, contract)
     commit = legacy.gh_api(f"repos/{repository}/git/commits/{base_sha}")
     if commit.get("sha") != base_sha:
         raise Denied("carrier base commit mismatch")
@@ -796,6 +886,7 @@ def authorize_write(
         raise Denied("carrier identity/state changed during transfer")
     if checked_carrier_main(repository, contract) != contract["base_sha"]:
         raise Denied("carrier governance changed during source-bearing write")
+    require_immutable_carrier_refs(repository, contract)
     if verify_source_pr(source_pr, source_commit) != source_repo_id:
         raise Denied("source PR authorization changed during transfer")
     revalidate_source_governance(
