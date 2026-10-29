@@ -57,6 +57,27 @@ final class OresFutureHostAdapterIsolationTest {
     }
 
     @Test
+    void misleadingForeignCancellationStateCannotEraseOrdinaryHostFailure() {
+        // An arbitrary foreign Future may have an inconsistent or buggy
+        // cancellation probe. A true flag plus a non-cancellation exception
+        // must NOT convert an actual failure into a cancellation result.
+        CompletableFuture<Integer> misleading = new CompletableFuture<>() {
+            @Override
+            public boolean isCancelled() {
+                return true;
+            }
+        };
+        OresFuture<Integer> observer = OresFuture.from(misleading);
+        IllegalStateException expected = new IllegalStateException("host failure");
+        assertTrue(misleading.completeExceptionally(expected));
+        assertTrue(observer.isDone());
+        assertFalse(observer.isCancelled());
+        CompletionException observed =
+                assertThrows(CompletionException.class, observer::join);
+        assertSame(expected, observed.getCause());
+    }
+
+    @Test
     void genuinelyCancelledHostFutureStillAuthenticatesCancellation() {
         CompletableFuture<Integer> ownedHostStage = new CompletableFuture<>();
         OresFuture<Integer> observer = OresFuture.from(ownedHostStage);
