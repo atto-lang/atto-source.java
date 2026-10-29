@@ -4446,6 +4446,13 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void requireCallerRuntimeAffinity(String operation) {
         requireNoForceCancellationHookReentry(operation);
+        // A physical I/O worker carries only permission to finish its admitted
+        // host operation. It is never the parent actor or a root supervisor.
+        if (CURRENT_NATIVE_IO_AUTHORITY.get() != null) {
+            throw new SecurityException(
+                    "native I/O worker cannot " + operation
+                            + " through ambient actor or supervisor authority");
+        }
         ActorRuntime caller = currentActorRuntime();
         if (caller != null && caller != this) {
             throw new SecurityException(
@@ -4477,14 +4484,16 @@ public final class ActorRuntime implements AutoCloseable {
     private void requireSupervisorContext(String operation) {
         requireNoForceCancellationHookReentry(operation);
         requireNotActorGroupMailman(operation);
-        if (inActorExecution()) {
+        if (inActorExecution() || CURRENT_NATIVE_IO_AUTHORITY.get() != null) {
             throw new SecurityException(
-                    "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
+                    "actor/native-I/O code cannot " + operation
+                            + "; this operation belongs to the host/supervisor");
         }
     }
 
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
+                || CURRENT_NATIVE_IO_AUTHORITY.get() != null
                 || inActorGroupMailmanExecution()
                 || OresScheduler.current() != null) {
             throw new SecurityException(
