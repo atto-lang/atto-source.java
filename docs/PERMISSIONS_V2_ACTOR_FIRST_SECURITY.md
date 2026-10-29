@@ -50,11 +50,34 @@ An actor may only receive **attenuated** capabilities from its parent, including
 
 ## Implementation / review ledger
 
-- **Java/GraalVM:** existing `RuntimePermissions`, `CapabilityChecker`, `IsolatePolicy`, and `OutboundEgressPolicy`; this branch hardens the adversarial capability ceiling. Still required: remove `unsafe` module exports from all VM-isolate import surfaces, enforce per-actor scoped resource grants (not just coarse capability subsets), resolve network matcher/CLI drafts, run JDK 25/GraalVM Native Image end-to-end tests.
+- **Java/GraalVM:** existing `RuntimePermissions`, `CapabilityChecker`, `IsolatePolicy`, and `OutboundEgressPolicy`. The initial security PR hardens the adversarial capability ceiling. The follow-up stacked draft implements **immutable actor-local resource restriction chains**, scope inheritance for ordinary spawn paths, a same-runtime/same-parent one-shot delegation token for explicit child attenuation, `OresContext.requirePermission` intersection, and asynchronous native I/O authority capture for work and completion/cancellation callbacks. It also forbids native I/O workers from impersonating actor/supervisor contexts. No broadening of the parent scope is possible through wildcard child restrictions. Still required: remove `unsafe` exports from all VM-isolate import surfaces, persistent token revocation epochs, native I/O cancellation fencing, hardened actual file/connection handles, reconciliation of network matcher/CLI drafts, and executed JDK 25/GraalVM Native Image guest tests.
 - **LLVM:** reconcile current native scoped-policy/TCP drafts and instrument actual native host I/O operations; validate with Clang/GCC, ASan/UBSan and hard-real-time quotas.
 - **.NET NativeAOT:** avoid P/Invoke, `NativeLibrary`, reflection, subprocess and dynamic assembly bypasses; prove native AOT guest authorization.
 - **WASM:** deny imports by default; attach capability tokens to explicit WASI/JS host calls and worker messages, never trust a JS-only check.
 - **Forge:** carry the same policy enforcement into native/JIT/AOT calls and mailbox ingress; reject unmanaged escape routes.
 - **Conformance:** retain immutable v1 vector oracle, then introduce a distinct, independently reviewed v2 corpus for actor delegation, revocation, unsafe namespace absence, in-flight resource fencing and broker execution. Never silently rewrite v1 expected outputs.
+
+### Java v2 current implementation, stacked draft
+
+```java
+// Inside a parent actor turn; this permission cannot be minted by root code.
+var childToken = context.runtime().delegatePermissions(
+    RuntimePermissions.denyAll().withAllowed(
+        RuntimePermissions.Permission.ENV, "PUBLIC_KEY"));
+// Token binds to the issuing actor/runtime, is consumed once, and cannot widen
+// any ancestor or host ceiling (including wildcard grants).
+var child = context.runtime().spawnChild(
+    ActorRuntime.ActorKind.PRIVATE, context.policy(), childToken, childFactory);
+```
+
+The scope is evaluated at `OresContext.requirePermission` and on
+`AsyncNativeIo` workers that carry an actor-issued native-I/O authorization
+identity. Workers do **not** acquire actor-turn or root-supervisor authority.
+Delegation chains are bounded to 128 restriction layers.
+
+A source-only check of this Java patch is not equivalent to executing actor
+host-I/O denial tests. In particular, the current matcher/OS-boundary limitations
+from v1 remain, and revocation is **not implemented** in this initial Java slice.
+WASM/LLVM/.NET/Forge have **no v2 delegation implementation claimed** here.
 
 **Release status:** blocked until verified, runner-executed guest tests, independent security review, and per-backend signed-off exact-head evidence. Do not merge a contract-only or compile-only check as runtime security proof.
