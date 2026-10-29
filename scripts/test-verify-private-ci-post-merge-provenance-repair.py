@@ -156,6 +156,30 @@ class ProvenanceVerifierTest(unittest.TestCase):
                 with self.assertRaises(self.v.Rejected):
                     self.v.safe_relative_path(path)
 
+    def test_oversize_manifest_rejected_before_json_parsing(self):
+        # Valid JSON with >1 MiB of whitespace must fail even if it parses.
+        raw = (self.root / self.v.MANIFEST).read_bytes()
+        oversized = raw + b" " * (1024 * 1024 + 1)
+        (self.root / self.v.MANIFEST).write_bytes(oversized)
+        self.assert_rejected("invalid provenance snapshot JSON")
+
+    def test_nonfinite_json_constants_denied_at_parser_boundary(self):
+        raw = (self.root / self.v.MANIFEST).read_text(encoding="utf-8")
+        token = '"source_repository_id":424242'
+        self.assertIn(token, raw)
+        for value in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(value=value):
+                (self.root / self.v.MANIFEST).write_text(
+                    raw.replace(token, '"source_repository_id":' + value),
+                    encoding="utf-8",
+                )
+                self.assert_rejected("invalid provenance snapshot JSON")
+
+    def test_excessively_nested_json_rejected_cleanly(self):
+        raw = "[" * 2200 + "0" + "]" * 2200
+        (self.root / self.v.MANIFEST).write_text(raw, encoding="utf-8")
+        self.assert_rejected("invalid provenance snapshot JSON")
+
     def test_manifest_cannot_widen_authorization(self):
         doc = self._manifest()
         doc["authorizes_source_transfer"] = True
