@@ -203,7 +203,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Map<String, Map<String, String>> linkedNamespaceFunctions = new HashMap<>();
-        private final Set<String> verifiedNamespaceBindings = new HashSet<>();
+        private final Set<String> verifiedNamespaceBindings = new LinkedHashSet<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
         private final Map<String, HostClassFacade> hostSymbols = new HashMap<>();
