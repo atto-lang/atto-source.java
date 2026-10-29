@@ -83,6 +83,52 @@ final class OresFutureHostAdapterIsolationTest {
     }
 
     @Test
+    void observerCancellationRacingHostCompletionNeverCancelsBorrowedProducer()
+            throws Exception {
+        for (int iteration = 0; iteration < 128; iteration++) {
+            CompletableFuture<Integer> host = new CompletableFuture<>();
+            OresFuture<Integer> observer = OresFuture.from(host);
+            CountDownLatch start = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicBoolean cancelWon =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<Throwable> threadFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            Thread canceller = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    cancelWon.set(observer.cancel(false));
+                } catch (Throwable error) {
+                    threadFailure.compareAndSet(null, error);
+                }
+            });
+            Thread completer = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    host.complete(42);
+                } catch (Throwable error) {
+                    threadFailure.compareAndSet(null, error);
+                }
+            });
+            start.countDown();
+            canceller.join();
+            completer.join();
+
+            assertNull(threadFailure.get(), "both racing threads must finish cleanly");
+            assertEquals(42, host.join());
+            assertFalse(host.isCancelled(), "the host stage stays independently live");
+            assertTrue(observer.isDone());
+            if (cancelWon.get()) {
+                assertTrue(observer.isCancelled());
+                assertThrows(CancellationException.class, observer::join);
+            } else {
+                assertFalse(observer.isCancelled());
+                assertEquals(42, observer.join());
+            }
+        }
+    }
+
+    @Test
     void notificationDrainReceiptWaitsForBlockedHostRuntimeWaiter() throws Exception {
         OresFuture<Integer> future = new OresFuture<>();
         CountDownLatch waiterEntered = new CountDownLatch(1);
