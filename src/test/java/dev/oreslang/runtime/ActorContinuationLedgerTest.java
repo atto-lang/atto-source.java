@@ -207,4 +207,48 @@ final class ActorContinuationLedgerTest {
         assertNull(retainedCallback(receipt));
     }
 
+    @Test
+    void competingRunCloseAndStopNeverLeakOrReplayContinuation() throws Exception {
+        for (int round = 0; round < 128; round++) {
+            ActorContinuationLedger ledger = new ActorContinuationLedger(1);
+            AtomicInteger calls = new AtomicInteger();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+            var receipt = ledger.admit(ActorContinuationLedger.Lane.ORDINARY,
+                    calls::incrementAndGet);
+            CountDownLatch begin = new CountDownLatch(1);
+            final boolean stopBeforeClose = (round & 1) == 0;
+            Thread runner = Thread.ofPlatform().start(() -> {
+                try {
+                    begin.await();
+                    receipt.run();
+                } catch (IllegalStateException replay) {
+                    if (!replay.getMessage().contains("receipt replay")) {
+                        unexpected.compareAndSet(null, replay);
+                    }
+                } catch (Throwable error) {
+                    unexpected.compareAndSet(null, error);
+                }
+            });
+            Thread stopper = Thread.ofPlatform().start(() -> {
+                try {
+                    begin.await();
+                    if (stopBeforeClose) ledger.sealOrdinary();
+                    receipt.close();
+                } catch (Throwable error) {
+                    unexpected.compareAndSet(null, error);
+                }
+            });
+            begin.countDown();
+            runner.join(5_000);
+            stopper.join(5_000);
+            assertFalse(runner.isAlive(), "runner stranded at round " + round);
+            assertFalse(stopper.isAlive(), "STOP stranded at round " + round);
+            assertNull(unexpected.get(), "unexpected race outcome at round " + round);
+            assertTrue(calls.get() <= 1, "duplicate guest invocation at round " + round);
+            assertNull(retainedCallback(receipt), "retained callback at round " + round);
+            assertEquals(0, ledger.snapshot().queued());
+            assertEquals(0, ledger.snapshot().running());
+        }
+    }
+
 }
