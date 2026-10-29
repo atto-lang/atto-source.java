@@ -1705,6 +1705,17 @@ class PrivateCiV3Test(unittest.TestCase):
                         PLAN,
                     ),
                 ) as checked_destination,
+                # Positive control: matching reviewed source pins must allow
+                # the full synthetic publication path to complete.
+                patch.object(
+                    v3, "validate_test_plan",
+                    return_value={
+                        "sha256": hashlib.sha256(PLAN).hexdigest(),
+                        "required_source_blobs": {},
+                        "source_head_pin": "4" * 40,
+                        "source_tree_pin": SOURCE_TREE,
+                    },
+                ) as checked_plan,
                 patch.object(
                     v3.legacy,
                     "collect_source",
@@ -1735,6 +1746,7 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(checked_destination.call_count, 3)
         self.assertEqual(verify_source_pr.call_count, 3)
         self.assertEqual(authorize_write.call_count, 7)
+        checked_plan.assert_called_once_with(PLAN, 1482)
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
