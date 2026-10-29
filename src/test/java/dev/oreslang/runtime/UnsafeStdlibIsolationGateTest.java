@@ -59,12 +59,18 @@ final class UnsafeStdlibIsolationGateTest {
     @Test
     void vmContextCannotEnableNativeEvenIfMarkedTrusted() {
         for (IsolatePolicy.Capability forbidden : new IsolatePolicy.Capability[] {
-                IsolatePolicy.Capability.NATIVE, IsolatePolicy.Capability.FFI}) {
+                IsolatePolicy.Capability.NATIVE, IsolatePolicy.Capability.FFI,
+                IsolatePolicy.Capability.REFLECTION}) {
             IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(forbidden);
             SecurityException denied = assertThrows(SecurityException.class,
                     () -> policy.restrictedContextBuilder(
                             ExecutionProfile.serverJit(), Set.of()));
             assertTrue(denied.getMessage().contains("VM-isolate"));
         }
+        IsolatePolicy mixed = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
+        assertThrows(SecurityException.class, () -> mixed.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of()));
     }
 }
