@@ -21,6 +21,9 @@
 # Must remain the final CODEOWNERS rules: privileged private-source exporter
 # verifies this exact order and sole independent @ORESoftware ownership.
 # GitHub applies last matching CODEOWNERS rule, so keep these after broad rules.
+/contracts/private-ci-authority-v1.json @ORESoftware
+/scripts/private_ci_authorization_oracle.py @ORESoftware
+/scripts/test_private_ci_authorization_oracle.py @ORESoftware
 /.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
 /.github/private-ci-incident-dispositions.json @ORESoftware
