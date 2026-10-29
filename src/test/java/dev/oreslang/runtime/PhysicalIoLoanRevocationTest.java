@@ -65,8 +65,8 @@ final class PhysicalIoLoanRevocationTest {
                         probe.registerDenied = true;
                     } finally {
                         // Rejected publication leaves ownership with the caller.
-                        if (probe.registerDenied) fresh.close();
-                        else probe.io.unregister(fresh);
+                        if (!probe.registerDenied) probe.io.unregister(fresh);
+                        fresh.close();
                     }
                     return probe.borrowDenied && probe.registerDenied;
                 }));
