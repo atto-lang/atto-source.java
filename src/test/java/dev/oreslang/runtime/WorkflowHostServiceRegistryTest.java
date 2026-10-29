@@ -150,11 +150,24 @@ public final class WorkflowHostServiceRegistryTest {
         }
         count++;
     }
+    private static void adversarialContextConsumesButDeniesProvision() throws Exception {
+        Service permitted = request -> CompletableFuture.completedFuture(reply(request.requestId()));
+        try (ProvisioningScope scope = WorkflowHostServiceRegistry.provisionForHost(permitted);
+             WorkflowHostServiceRegistry untrusted = WorkflowHostServiceRegistry.forNewContext(false)) {
+            ok(!untrusted.isProvisioned(), "adversarial context cannot gain host service");
+            ok(await(untrusted, message("untrusted")).status() == Status.UNAVAILABLE,
+                    "untrusted storage fails closed");
+        }
+        try (WorkflowHostServiceRegistry later = WorkflowHostServiceRegistry.forNewContext(true)) {
+            ok(!later.isProvisioned(), "denied provision not inherited later");
+        }
+        count++;
+    }
     public static void main(String[] args) throws Exception {
         defaultDeny(); oneShotScope(); ownerWorkerAndBackpressure();
         denyForgedReplyAndFailedHost(); noNestedProvision();
         completionRegistrationThrowsAfterRegistration(); staleScopeCannotEraseNewProvision();
-        workerIdentityNotThreadName();
+        workerIdentityNotThreadName(); adversarialContextConsumesButDeniesProvision();
         System.out.println("WORKFLOW_HOST_REGISTRY_RESULT passed=" + count + " host_only=true");
     }
 }
