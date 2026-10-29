@@ -2829,6 +2829,24 @@ public final class TypeChecker {
                 Type actorType = resolve(created.type(), generics, self);
                 return new Named("ActorRef", List.of(actorType));
             }
+            if (runtime.operation().equals("workflow_request")) {
+                if (runtime.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "rt workflow_request requires one fixed-shape scalar list");
+                }
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException(
+                            "untrusted actors cannot invoke workflow host services");
+                }
+                Type input = typeOf(runtime.arguments().getFirst(), env, generics, self);
+                if (!(input instanceof ListType) && input != Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "rt workflow_request requires a List payload");
+                }
+                // Runtime validates all 15 scalar fields and sends the result
+                // through a VM-owned Future; exact nominal types follow later.
+                return new Named("Future", List.of(new ListType(Unknown.INSTANCE)));
+            }
             if (runtime.operation().equals("cooperate")) {
                 if (!runtime.arguments().isEmpty()) {
                     throw new IllegalArgumentException("rt cooperate takes no arguments");
