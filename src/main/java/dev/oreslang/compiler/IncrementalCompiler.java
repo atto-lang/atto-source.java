@@ -202,6 +202,12 @@ public final class IncrementalCompiler {
                 }
                 if (declaration == null) throw new IllegalArgumentException(
                         "namespace signature lacks matching public declaration: " + symbol.name());
+                // Namespace membership is wider than this runtime slice:
+                // unsupported async/actor/generic/nominal exports remain in
+                // the symbol index, but do not poison otherwise valid imports.
+                // A direct call to one of them is rejected by the checker
+                // because no verified callable signature is published.
+                if (!isPortableNamespaceCallable(declaration)) continue;
                 functions.computeIfAbsent(symbol.name(), ignored -> new LinkedHashMap<>())
                         .put(symbol.arity(), declaration);
             }
@@ -219,6 +225,30 @@ public final class IncrementalCompiler {
             frozen.put(alias.getKey(), Map.copyOf(family));
         }
         return Map.copyOf(frozen);
+    }
+
+    private static final Set<String> NAMESPACE_SCALAR_TYPES = Set.of(
+            "int", "uint", "float", "bool", "String", "string", "void");
+
+    private static boolean portableNamespaceType(Ast.TypeRef type) {
+        return type != null && type.arguments().isEmpty()
+                && !type.isBorrow() && NAMESPACE_SCALAR_TYPES.contains(type.name());
+    }
+
+    private static boolean isPortableNamespaceCallable(Ast.FunctionDecl fn) {
+        if (fn.visibility() != Ast.Visibility.PUBLIC
+                || fn.kind() != Ast.CallableKind.FNC
+                || fn.actorKind() != Ast.ActorKind.NONE
+                || fn.async() || fn.suspends() || fn.generator()
+                || !fn.genericParameters().isEmpty()
+                || !fn.effects().isEmpty()
+                || !portableNamespaceType(fn.returnType())) {
+            return false;
+        }
+        for (Ast.Param param : fn.parameters()) {
+            if (!portableNamespaceType(param.type()) || param.mutable()) return false;
+        }
+        return true;
     }
 
     private record LinkedClasses(

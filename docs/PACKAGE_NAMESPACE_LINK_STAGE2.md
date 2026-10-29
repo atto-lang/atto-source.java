@@ -54,7 +54,14 @@ performed.
 
 The first execution slice supports direct calls to **public, concrete,
 synchronous, non-actor, non-generic `fnc` declarations** with explicit
-return types. Classes, actors, type-only metadata, `pub[pkg]`, first-class
+scalar-only parameter and return types (`int`, `uint`, `float`, `bool`,
+`String`/`string`, or `void`). Calls must resolve to file-root exports;
+a matching declaration in a named module is not an alternative provider.
+Unsupported callable exports (e.g. routines, async functions, actors) do not
+invalidate otherwise valid namespace imports; their direct invocation from
+this namespace form is statically rejected. Runtime dispatch independently
+checks the restricted callable signature and forbids first-class member
+extraction. Classes, actors, type-only metadata, `pub[pkg]`, first-class
 member extraction, complex cross-file nominal provenance and arbitrary
 module/field access are **not yet qualified**. Do not misrepresent this
 subset as complete namespace support or LLVM/.NET/Wasm parity. The runtime

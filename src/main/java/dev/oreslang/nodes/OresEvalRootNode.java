@@ -8989,39 +8989,44 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareVerifiedNamespaceInvocation(
                 String alias, String member, List<Object> args) {
-            // Call dispatch uses a specific provider and exact value arity.
-            return verifiedProvider(alias, member, "function", args.size())
-                    .prepareImportedInvocation(Ast.ImportKind.ALL, member, args);
+            // The manifest export index only exposes top-level declarations.
+            // Never silently bind a matching function inside a named module.
+            Evaluator provider = verifiedProvider(alias, member, "function", args.size());
+            Ast.FunctionDecl fn = provider.findFunction(
+                    Parser.ROOT_MODULE + "." + member, args.size());
+            if (fn == null || !isSupportedNamespaceFnc(fn)) {
+                throw new SecurityException(
+                        "namespace callable lacks a verified public file-root synchronous fnc: "
+                                + alias + "." + member + "/" + args.size());
+            }
+            return provider.functionInvocation(fn, args);
+        }
+
+        private static boolean isSupportedNamespaceFnc(Ast.FunctionDecl fn) {
+            if (fn.visibility() != Ast.Visibility.PUBLIC
+                    || fn.kind() != Ast.CallableKind.FNC
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || fn.async() || fn.suspends() || fn.generator()
+                    || !fn.genericParameters().isEmpty() || !fn.effects().isEmpty()
+                    || !isPortableNamespaceType(fn.returnType())) {
+                return false;
+            }
+            for (Ast.Param param : fn.parameters()) {
+                if (param.mutable() || !isPortableNamespaceType(param.type())) return false;
+            }
+            return true;
+        }
+
+        private static boolean isPortableNamespaceType(Ast.TypeRef type) {
+            return type != null && type.arguments().isEmpty() && !type.isBorrow()
+                    && Set.of("int", "uint", "float", "bool", "String", "string", "void")
+                            .contains(type.name());
         }
 
         private Object verifiedNamespaceMember(String alias, String member) {
-            var routes = context.linkedNamespaceProviders(codeUnitId, alias);
-            String kind = null;
-            int arity = -1;
-            for (var entry : routes.entrySet()) {
-                var provider = entry.getValue();
-                if (!entry.getKey().equals(provider.kind() + ":" + member + ":"
-                        + provider.arity())) {
-                    continue;
-                }
-                if (kind != null) {
-                    throw new IllegalArgumentException(
-                            "overloaded namespace member must be invoked directly: "
-                                    + alias + "." + member);
-                }
-                kind = provider.kind();
-                arity = provider.arity();
-            }
-            if (kind == null) throw new IllegalArgumentException(
-                    "namespace '" + alias + "' does not export '" + member + "'");
-            Ast.ImportKind exportKind = switch (kind) {
-                case "function", "field" -> Ast.ImportKind.ALL;
-                case "module" -> Ast.ImportKind.MODULE;
-                case "class" -> Ast.ImportKind.CLASS;
-                default -> throw new IllegalArgumentException(
-                        "namespace member requires static type-only linking: " + kind);
-            };
-            return verifiedProvider(alias, member, kind, arity).exportValue(exportKind, member);
+            throw new IllegalArgumentException(
+                    "package namespace member extraction is not supported: "
+                            + alias + "." + member);
         }
 
         private Evaluator importedTarget(Ast.ImportDecl imported) {

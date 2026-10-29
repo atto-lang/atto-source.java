@@ -27,8 +27,10 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     private Path billing(Path project) throws Exception {
-        source(project, "src/billing/charge.ores", "billing",
-                "pub fnc charge(int value): int { return value; }");
+        source(project, "src/billing/charge.ores", "billing", """
+                pub fnc charge(int value): int { return value; }
+                pub routine notQualified(): int { return 77; }
+                """);
         source(project, "src/billing/refund.ores", "billing",
                 "pub fnc refund(): int { return 2; }");
         source(project, "src/billing/balance.ores", "billing",
@@ -178,6 +180,37 @@ final class NamespaceRuntimeIntegrationTest {
         assertEquals(11, build.units().size());
         assertEquals(4, build.units().get(main.toAbsolutePath().toString().replace('\\', '/'))
                 .dependencies().size());
+    }
+
+    @Test
+    void unsupportedRoutineCannotPoisonOtherNamespaceCallsOrBeCalled() throws Exception {
+        Path project = temp.resolve("checkout");
+        billing(project);
+        Path main = source(project, "src/main.ores", "client", """
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  stdio.println(payments.notQualified());
+                  return;
+                }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, Files.readString(manifest).replace(
+                "  \"src/billing/invoice.ores\",",
+                "  \"src/billing/invoice.ores\",\n  \"src/main.ores\","));
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(main));
+        assertTrue(rejected.getMessage().contains("namespace call does not resolve"));
+        Files.writeString(main, """
+                namespace client;
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  val callback = payments.charge;
+                  return;
+                }
+                """);
+        IllegalArgumentException extracted = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(main));
+        assertTrue(extracted.getMessage().contains("requires direct statically checked invocation"));
     }
 
     @Test
