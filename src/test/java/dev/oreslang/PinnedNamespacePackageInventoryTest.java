@@ -143,6 +143,35 @@ final class PinnedNamespacePackageInventoryTest {
     }
 
     @Test
+    void pinnedReaderForbidsFinalSymlinksButOrdinaryReaderRemainsCompatible() throws Exception {
+        Path source = temp.resolve("regular.ores");
+        Files.writeString(source, "namespace a; fnc local(): int { return 7; }");
+        Path alias = temp.resolve("linked.ores");
+        try {
+            Files.createSymbolicLink(alias, source.getFileName());
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException unavailable) {
+            return;
+        }
+        assertEquals(Files.readString(source),
+                dev.oreslang.runtime.BoundedSourceReader.readUtf8(alias));
+        assertThrows(java.io.IOException.class,
+                () -> dev.oreslang.runtime.BoundedSourceReader.readWithByteCountNoFollow(alias));
+        assertEquals(Files.readString(source),
+                dev.oreslang.runtime.BoundedSourceReader.readWithByteCountNoFollow(source).text());
+    }
+
+    @Test
+    void pinnedReaderRejectsNulAndMalformedUtf8Bytes() throws Exception {
+        Path file = temp.resolve("invalid.ores");
+        Files.write(file, new byte[]{(byte) 'a', 0, (byte) 'b'});
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.runtime.BoundedSourceReader.readWithByteCountNoFollow(file));
+        Files.write(file, new byte[]{(byte) 0xC3, (byte) 0x28});
+        assertThrows(java.nio.charset.CharacterCodingException.class,
+                () -> dev.oreslang.runtime.BoundedSourceReader.readWithByteCountNoFollow(file));
+    }
+
+    @Test
     void rejectsSecondPackageNamespaceWithoutPinnedSourceInventory() throws Exception {
         Pinned foo = foo(), app = app();
         assertThrows(IllegalArgumentException.class, () ->
