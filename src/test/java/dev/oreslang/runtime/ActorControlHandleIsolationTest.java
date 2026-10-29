@@ -146,23 +146,6 @@ final class ActorControlHandleIsolationTest {
             assertEquals(victim.id(), forgery.id());
             assertEquals(victim.generation(), forgery.generation());
 
-            // Read/observer operations must not use a forged UUID as authority.
-            // In particular, ready() must not schedule the victim's live cell.
-            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
-                    forgery::isAlive);
-            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
-                    () -> runtime.isAlive(forgery));
-            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
-                    forgery::ready);
-            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
-                    forgery::readyRef);
-            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
-                    forgery::parentId);
-            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
-                    forgery::childIds);
-            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
-                    () -> forgery.awaitTermination(0, TimeUnit.NANOSECONDS));
-
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> runtime.stop(forgery));
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
@@ -175,9 +158,35 @@ final class ActorControlHandleIsolationTest {
                     () -> runtime.drain(forgery));
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> runtime.controlHandle(forgery));
-
-            // A host-side control-handle constructor must not bypass the
-            // force-kill identity check when presented with a forged ref.
+            // Observer APIs must not bypass exact-ref authorization, especially
+            // ready(), which otherwise schedules the victim by its forged ID.
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::ready);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::getReady);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::readyRef);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> forgery.awaitTermination(0, TimeUnit.NANOSECONDS));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::parentId);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::childIds);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::isAlive);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.isAlive(forgery));
+            // Host/supervisor inspection is not authorized by UUID alone.
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.heapStatusFor(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.placementFor(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.codeImageFor(forgery));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.mailboxUsesChannelTransport(forgery));
+            // A forged private host control handle must not reach the
+            // force-cancel revoker or inspect the genuine actor's metadata.
             var controlConstructor = ActorRuntime.ActorControlHandle.class
                     .getDeclaredConstructor(ActorRuntime.class, ActorRuntime.ActorRef.class);
             controlConstructor.setAccessible(true);
