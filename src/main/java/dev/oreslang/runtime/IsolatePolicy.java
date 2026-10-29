@@ -177,9 +177,12 @@ public record IsolatePolicy(
         // This builder creates a VM guest context, never a privileged native
         // extension host. Native/FFI flags cannot grant execution here even
         // for non-adversarial contexts.
-        if (allows(Capability.NATIVE) || allows(Capability.FFI)) {
+        if (allows(Capability.NATIVE) || allows(Capability.FFI)
+                || allows(Capability.REFLECTION)
+                || allows(Capability.JAVA_SOURCE_INTEROP)) {
             throw new SecurityException(
-                    "VM-isolate contexts cannot receive NATIVE or FFI capabilities");
+                    "VM-isolate contexts cannot receive native, FFI, reflection "
+                            + "or mixed-source host authority");
         }
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
         if (!hostClasses.isEmpty()) {
