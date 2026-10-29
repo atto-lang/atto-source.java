@@ -290,10 +290,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> from(CompletionStage<? extends T> stage) {
         Objects.requireNonNull(stage, "stage");
-        Runnable cancelHook = stage instanceof Future<?> cancellable
-                ? () -> cancellable.cancel(true)
-                : () -> { };
-        OresFuture<T> result = new OresFuture<>(cancelHook);
+        // CompletionStage is a borrowed producer. Cancelling this adapter
+        // revokes only the observer, never the host stage or its own consumers.
+        // An explicitly owned Task/operation must cancel through its separate
+        // owner capability; observing a CompletionStage grants no authority.
+        OresFuture<T> result = new OresFuture<>();
         try {
             stage.whenComplete((value, failure) -> {
                 if (failure == null) {
@@ -304,13 +305,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 Throwable terminalFailure = unwrap(failure);
                 final boolean cancelled;
                 try {
-                    // A host may convey cancellation through the terminal
-                    // error even when its Future.isCancelled() flag is false.
-                    // Conversely, an inconsistent host may throw from its
-                    // cancellation probe. Neither may strand this adapter.
-                    cancelled = terminalFailure instanceof CancellationException
-                            || (stage instanceof Future<?> hostFuture
-                                    && hostFuture.isCancelled());
+                    // A CancellationException in the failure chain is not
+                    // proof that this particular stage was cancelled: an
+                    // ordinary failed CompletionStage may propagate such a
+                    // user exception through CompletionException. Only a
+                    // host Future that authenticates cancellation via its
+                    // own state may be mapped to CANCELLED. Other stages
+                    // remain FAILED, preserving the original exception.
+                    cancelled = stage instanceof Future<?> hostFuture
+                            && hostFuture.isCancelled();
                 } catch (Throwable observationFailure) {
                     if (observationFailure instanceof VirtualMachineError fatal) throw fatal;
                     if (observationFailure instanceof ThreadDeath fatal) throw fatal;
