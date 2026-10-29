@@ -53,14 +53,16 @@ modes. It avoids the ambiguity of three competing spellings:
 It also permits future explicitly specified modes without silently
 granting write access to an unknown mode.
 
-The parser lowers the selector to an internal literal mode marker
-(`critical:read` or `critical:write`) with the callback. Both type
-checker and evaluator validate the mode independently. This is a
-**typing/capability rule**, not a cryptographic token.
+The parser lowers the selector to a dedicated internal
+`Ast.CriticalStateModeExpr` carrying an enum `READ` or `WRITE`.
+Type checking accepts this AST node, not a user-authored string.
+The evaluator passes the private internal enum to the runtime loan
+handler; forged strings such as `"critical:write"` are rejected.
+This is a **typing/capability rule**, not a cryptographic token.
 
 ## Acceptance
 
-`ActorCriticalStateModeTest` registers ten positive/negative Java/Graal
+`ActorCriticalStateModeTest` registers twelve positive/negative Java/Graal
 tests: real guest write/read, rejected read mutation, rejected mutable
 reborrow, unknown mode, callback suspension, nonvoid callback, direct
 state access and nested closure escape.
@@ -70,7 +72,7 @@ run on GraalVM 25/JDK25, explicit runner job steps and positive/negative
 output evidence are required before compiler readiness. Static source
 checks and an older compiler branch's test results cannot establish
 correctness of this forward-port. Java runtime on the current workspace
-is JDK21 with no Maven; no local full compiler execution is available. The ten tests are registered, not executed.
+is JDK21 with no Maven; no local full compiler execution is available. The twelve critical-mode tests and eight exact-blob shared conformance fixtures are registered, not executed. Combined with nine existing state-loan and seven sealed-schema tests, the dedicated workflow requires 36 native Graal test cases.
 
 The corrected step-function demo PR #10 must be updated to use
 `critical[write]` as a **statement** and capture only a detached response
