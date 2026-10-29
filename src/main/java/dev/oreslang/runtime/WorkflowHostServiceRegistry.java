@@ -45,6 +45,7 @@ public final class WorkflowHostServiceRegistry implements AutoCloseable {
     private static final ThreadLocal<Service> PENDING_HOST_SERVICE = new ThreadLocal<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicInteger inFlight = new AtomicInteger();
+    private final Object completionMonitor = new Object();
     private final ExecutorService worker = new ThreadPoolExecutor(1, 1, 0,
             TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64), task -> {
                 Thread thread = new Thread(task, "ores-workflow-host");
@@ -112,6 +113,11 @@ public final class WorkflowHostServiceRegistry implements AutoCloseable {
                 status, -1, -1, -1, -1, -1);
     }
 
+    private void releaseSlot() {
+        inFlight.decrementAndGet();
+        synchronized (completionMonitor) { completionMonitor.notifyAll(); }
+    }
+
     /** Does not execute a host callback on the caller's thread. */
     public CompletionStage<Reply> submit(Request request) {
         if (closed.get()) return CompletableFuture.completedFuture(rejected(request, Status.CLOSED));
@@ -126,7 +132,7 @@ public final class WorkflowHostServiceRegistry implements AutoCloseable {
         try {
             worker.execute(() -> {
                 try {
-                    if (closed.get()) { answer.complete(rejected(request, Status.CLOSED)); return; }
+                    if (closed.get()) { answer.complete(rejected(request, Status.CLOSED)); releaseSlot(); return; }
                     CompletionStage<Reply> result = Objects.requireNonNull(authorized.dispatch(request));
                     result.whenComplete((reply, error) -> {
                         try {
@@ -134,11 +140,11 @@ public final class WorkflowHostServiceRegistry implements AutoCloseable {
                                     !request.requestId().equals(reply.requestId())) {
                                 answer.complete(rejected(request, closed.get() ? Status.CLOSED : Status.FAILED));
                             } else answer.complete(reply);
-                        } finally { inFlight.decrementAndGet(); }
+                        } finally { releaseSlot(); }
                     });
                 } catch (Throwable error) {
                     answer.complete(rejected(request, Status.FAILED));
-                    inFlight.decrementAndGet();
+                    releaseSlot();
                 }
             });
         } catch (RejectedExecutionException rejected) {
@@ -152,6 +158,34 @@ public final class WorkflowHostServiceRegistry implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         service = null;
         worker.shutdown();
+        // A host must NOT destroy JNI storage while an asynchronous callback
+        // might still be using it. Fail closed if draining is not possible.
+        if (Thread.currentThread().getName().equals("ores-workflow-host")) {
+            throw new IllegalStateException("cannot close registry from its storage worker");
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0 || !worker.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                        throw new IllegalStateException("workflow worker not retired; retain host storage");
+                    }
+                    break;
+                } catch (InterruptedException ex) { interrupted = true; }
+            }
+            synchronized (completionMonitor) {
+                while (inFlight.get() > 0) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) {
+                        throw new IllegalStateException("workflow request unresolved; retain host storage");
+                    }
+                    try { TimeUnit.NANOSECONDS.timedWait(completionMonitor, remaining); }
+                    catch (InterruptedException ex) { interrupted = true; }
+                }
+            }
+        } finally { if (interrupted) Thread.currentThread().interrupt(); }
         // Do not close host-owned storage or revoke its external policy here;
         // the embedding host owns it and the native driver lifetime.
     }
