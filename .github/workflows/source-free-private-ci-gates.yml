@@ -6,6 +6,8 @@ on:
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source*.py'
+      - 'scripts/test-publish-private-ci-source*.py'
+      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/workflows/source-free-private-ci-gates.yml'
   workflow_dispatch:
