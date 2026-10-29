@@ -12,6 +12,7 @@ pub fnc main(): int {
 
 - `cpu { 42 }` and `cpu { return 42; }` return a plain **int**, never `Future<int>`.
 - Only closed signed-i64 integer literals, unary +/-, binary +, -, * are admitted.
+- Before expression parsing, the Java parser caps a scalar region at **1,024 tokens** and **64 parenthesis levels**, rejecting nested blocks. After parsing, the scalar AST constructor independently caps accepted expressions at **512 total nodes** and **64 levels** from the root. Both limits are rejection gates; they are not source-runtime performance certifications.
 - Arithmetic uses `Math.addExact`, `Math.subtractExact`, `Math.multiplyExact` and `Math.negateExact`: overflows throw, never wrap.
 - The type checker resolves the dedicated `Ast.CpuScalarRegionExpr` as `int`. The ownership checker visits it explicitly. A closed AST constructor denies name references, actor state, call/interop, `await`, `rt` effects, assignment, buffers, GPU nested execution, and arbitrary statements. Interpreter only executes the checked scalar subset and throws on unrecognized opcodes.
 - `cpu task { ... }` retains its existing asynchronous `Future<T>` submission / sealed capture handling; `gpu task { ... }` and bare `gpu {}` stay fail-closed (no physical GPU provider, no implicit CPU fallback).
@@ -30,5 +31,7 @@ This branch deliberately does not claim v2 five-backend parity or production `cp
 3. Add a versioned v3 normative corpus with parallel negative and positive compiler tests on **all five backends**. Preserve cross-backend no-GPU-fallback and no-artifact negative gates.
 4. Integrate typed buffer ownership and lexical borrowing, signed overflow parity, actor-safe nonparking continuations, sync `void`, nested host/device transfer fences, and physical device proof in later milestones.
 5. No merge before independent review. No private source export to an alternate runner without approved destination, retention, and tree/blob attestation.
+
+Latest draft verification (2026-10-29): AST/node/lexical limits, injected-AST rejection, optimizer-preservation and positive guest fixtures are committed but **not yet compiler-executed**. Exact-head source-org Actions still failed with no job steps (runner not assigned). The local environment has only OpenJDK 21 and no Maven; this does not qualify as the project's JDK 25/GraalVM build. The private cross-org mirror was previously blocked at commit creation, and no mirror-run success is claimed.
 
 The standalone CPU/GPU reference graph does not substitute for source compiler execution.
