@@ -35,7 +35,9 @@ jobs:
             contracts/v1/agent-dispatch/AgentHostDispatchGateTest.java \
             contracts/v1/agent-dispatch/DurableLocalDispatchClaim.java \
             contracts/v1/agent-dispatch/AgentClaimProbe.java \
-            contracts/v1/agent-dispatch/DurableLocalDispatchClaimTest.java
+            contracts/v1/agent-dispatch/DurableLocalDispatchClaimTest.java \
+            contracts/v1/agent-dispatch/DurableClaimPathSwapTest.java
           java -cp "$RUNNER_TEMP/ores-agent-contract" AgentHostDispatchGateTest
           java -cp "$RUNNER_TEMP/ores-agent-contract" DurableLocalDispatchClaimTest
+          java -cp "$RUNNER_TEMP/ores-agent-contract" DurableClaimPathSwapTest
           echo "AGENT_HOST_ONLY_PASS native_guest_executed=false"
