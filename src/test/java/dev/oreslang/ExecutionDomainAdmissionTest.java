@@ -41,6 +41,40 @@ final class ExecutionDomainAdmissionTest {
     }
 
     @Test
+    void canonicalAndLegacyTaskDomainBlocksRemainParserVisible() {
+        // Parse admission alone does not authorize a GPU device launch.
+        // The GPU task remains rejected by the type checker on this backend.
+        List<String> sources = List.of(
+                "pub fnc main(): int { let Future<int> f = cpu task { return 42; }; return 0; }",
+                "pub fnc main(): int { let Future<int> f = gpu task { return 42; }; return 0; }",
+                "pub fnc main(): int { let Future<int> f = nb cpu { return 42; }; return 0; }",
+                "pub fnc main(): int { let Future<int> f = nb gpu { return 42; }; return 0; }"
+        );
+        for (String source : sources) {
+            assertDoesNotThrow(() -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
+    void nestedSynchronousRegionsStillFailClosedInsideTaskBlocks() {
+        List<String> sources = List.of(
+                "pub fnc main(): int { cpu {} return 0; }",
+                "pub fnc main(): int { gpu {} return 0; }",
+                "pub fnc main(): int { let Future<int> f = cpu task { gpu { return 1; } }; return 0; }",
+                "pub fnc main(): int { let Future<int> f = gpu task { cpu { return 1; } }; return 0; }",
+                "pub fnc main(): int { let Future<int> f = nb gpu { cpu { return 1; } }; return 0; }"
+        );
+        for (String source : sources) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("synchronous execution domain"),
+                    error::getMessage);
+            assertTrue(error.getMessage().contains("no implicit CPU fallback"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
     void commentsStringsAndNonKeywordsStayOrdinarySource() {
         assertDoesNotThrow(() -> Parser.parse("""
                 // gpu { cpu { quantum } }
