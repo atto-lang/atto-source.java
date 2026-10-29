@@ -182,12 +182,9 @@ public final class LinkedProgramRunner {
             OutputStream out,
             OutputStream err,
             WorkflowHostServiceRegistry.Service trustedWorkflowService) throws IOException {
-        try (WorkflowHostServiceRegistry.ProvisioningScope ignored =
-                     WorkflowHostServiceRegistry.provisionForHost(trustedWorkflowService)) {
-            return runWithExitStatus(entryFile, policy, permissions,
-                    permissionCheckMode, executionProfile, allowedHostClasses,
-                    environment, out, err);
-        }
+        return runWithExitStatusInternal(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, out, err, trustedWorkflowService);
     }
 
     public static RunResult runWithExitStatus(
@@ -200,6 +197,22 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatusInternal(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, out, err, null);
+    }
+
+    private static RunResult runWithExitStatusInternal(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err,
+            WorkflowHostServiceRegistry.Service trustedWorkflowService) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -246,6 +259,15 @@ public final class LinkedProgramRunner {
                 if (err != null) builder.err(forwardingStream(err));
 
                 try (Context context = builder.build()) {
+                    // Provision only the intended Oreslang context, before any
+                    // user source is parsed/initialized. A scoped one-shot
+                    // ThreadLocal must never surround mixed-source compilation.
+                    if (trustedWorkflowService != null) {
+                        try (WorkflowHostServiceRegistry.ProvisioningScope ignored =
+                                     WorkflowHostServiceRegistry.provisionForHost(trustedWorkflowService)) {
+                            context.initialize(OresLanguage.ID);
+                        }
+                    }
                     LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
                     List<String> ids = new ArrayList<>(build.units().keySet());
                     ids.sort(String::compareTo);
