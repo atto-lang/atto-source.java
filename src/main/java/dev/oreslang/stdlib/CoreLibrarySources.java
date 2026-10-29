@@ -69,11 +69,32 @@ public final class CoreLibrarySources {
         return isStdImport(importPath);
     }
 
+    /**
+     * Reserved unsafe standard-library namespace. A path boundary is mandatory:
+     * std/unsafe_math is not std/unsafe. Accept historical spelling variants
+     * solely so none can escape into the generic package/filesystem resolver.
+     * No native FFI package is shipped by this registry yet.
+     */
+    public static boolean isUnsafeStdImport(String importPath) {
+        if (importPath == null) return false;
+        String path = importPath.replace('\\', '/');
+        for (String root : new String[] {
+                "ores.std/unsafe", "std/unsafe", "ores.std.unsafe",
+                "std.unsafe", "ores.std:unsafe", "std:unsafe"}) {
+            if (path.equals(root) || path.equals(root + ".ores")
+                    || path.startsWith(root + "/") || path.startsWith(root + ".")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Reserve canonical library roots before filesystem/ORESLANG_PATH fallback. */
     public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        return normalized.equals("ores.core")
+        return isUnsafeStdImport(importPath)
+                || normalized.equals("ores.core")
                 || normalized.equals("ores.std")
                 || normalized.startsWith(CORE_IMPORT_PREFIX)
                 || normalized.startsWith(STD_IMPORT_PREFIX);
