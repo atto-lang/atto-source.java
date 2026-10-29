@@ -81,6 +81,14 @@ public final class OresContext implements AutoCloseable {
     // Per-actor mutable heaps/closures are never published into this store.
     private final SharedCodeImageStore sharedCodeImages = new SharedCodeImageStore();
     private final Map<String, Map<String, String>> linkedImportResolutions = new HashMap<>();
+    /**
+     * Host-admitted provider routes. Keys include the importer so tenants
+     * cannot reuse aliases from another linked source unit; only the loader's
+     * control channel can populate these mappings.
+     */
+    public record NamespaceProvider(String providerId, String kind, int arity) { }
+    private final Map<String, Map<String, Map<String, NamespaceProvider>>> linkedNamespaces =
+            new HashMap<>();
 
     public Object asGuestHostValue(Object value) {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host argument conversion");
@@ -318,6 +326,39 @@ public final class OresContext implements AutoCloseable {
             throw new IllegalStateException(
                     "conflicting import resolution for '" + importPath + "' in '" + importerCodeUnitId + "'");
         }
+    }
+
+    public synchronized void registerLinkedNamespaceProvider(
+            String importerCodeUnitId, String localAlias, String member,
+            int arity, String kind, String providerId) {
+        if (importerCodeUnitId == null || importerCodeUnitId.isBlank()
+                || providerId == null || providerId.isBlank()
+                || localAlias == null || !localAlias.matches("[A-Za-z_][A-Za-z0-9_]*")
+                || member == null || !member.matches("[A-Za-z_][A-Za-z0-9_]*")
+                || "__root__".equals(localAlias) || "__root__".equals(member)
+                || arity < -1 || !java.util.Set.of("function", "module", "class", "actor",
+                    "interface", "contract", "type", "field").contains(kind)) {
+            throw new IllegalArgumentException("invalid linked namespace provider admission");
+        }
+        String importer = normalizeCodeUnitId(importerCodeUnitId);
+        String key = kind + ":" + member + ":" + arity;
+        Map<String, NamespaceProvider> namespace = linkedNamespaces
+                .computeIfAbsent(importer, ignored -> new HashMap<>())
+                .computeIfAbsent(localAlias, ignored -> new HashMap<>());
+        NamespaceProvider provider = new NamespaceProvider(normalizeCodeUnitId(providerId), kind, arity);
+        NamespaceProvider old = namespace.putIfAbsent(key, provider);
+        if (old != null && !old.equals(provider)) {
+            throw new IllegalStateException("conflicting immutable namespace provider route: "
+                    + importer + ":" + localAlias + "." + member);
+        }
+    }
+
+    public synchronized Map<String, NamespaceProvider> linkedNamespaceProviders(
+            String importerCodeUnitId, String localAlias) {
+        Map<String, Map<String, NamespaceProvider>> aliases =
+                linkedNamespaces.get(normalizeCodeUnitId(importerCodeUnitId));
+        if (aliases == null) return Map.of();
+        return Map.copyOf(aliases.getOrDefault(localAlias, Map.of()));
     }
 
     public synchronized String resolvedLinkedImport(String importerCodeUnitId, String importPath) {
