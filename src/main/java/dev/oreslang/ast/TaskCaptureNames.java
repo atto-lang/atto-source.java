@@ -227,6 +227,8 @@ public final class TaskCaptureNames {
             for (Ast.Expr arg : s.arguments()) visitExpr(arg, locals, names);
         } else if (expr instanceof Ast.AwaitExpr s) {
             visitExpr(s.expression(), locals, names);
+        } else if (expr instanceof Ast.CpuScalarRegionExpr s) {
+            visitExpr(s.value(), locals, names);
         } else if (expr instanceof Ast.TaskExpr s) {
             visitBody(s.body(), locals, names);
         } else if (expr instanceof Ast.TrapExpr s) {
