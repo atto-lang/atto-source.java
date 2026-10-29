@@ -81,7 +81,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void rejectsForeignDuplicateAndOutOfOrderMessages() throws Exception {
-        assertGuest("coordinator-state", "workflow:state-guarded", "baef061676411aa00ee1a0596a1a9a9b19b09f12");
+        assertGuest("coordinator-state", "workflow:state-guarded", "3e22866b88f6319b919849b4427dbb7df38c0adb");
     }
 
     @Test

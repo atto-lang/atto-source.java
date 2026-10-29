@@ -83,10 +83,14 @@ coordinator source. The original 13 demo-case / 4 baseline-case candidate
 remains historical; the expanded suite requires **14 + 4 = 18** actual Java/Graal
 `Context.eval` JUnit executions and two source-matched Git blobs:
 `56535ad1df72c1eaf2493e3e97e9d562c611c666` for the effect ledger
-and `baef061676411aa00ee1a0596a1a9a9b19b09f12` for the coordinator.
+and `3e22866b88f6319b919849b4427dbb7df38c0adb` for the coordinator.
 
 Neither the proposed `define isolated actor` nor `critical-write` spelling is
 assumed to compile. A real compiler diagnostic is expected and must be
 remediated at the compiler/parser/type/effect layer; substituting compatibility
 fields would invalidate the contract. No native guest run, heap isolation,
 durability, authenticated receipt, or crash recovery is claimed here.
+
+### Native coordinator actor-kind consistency
+
+The source-pinned coordinator resource is now `define isolated actor WorkflowCoordinator as`. Its exact Git blob is `3e22866b88f6319b919849b4427dbb7df38c0adb`, corresponding to Step Functions PR #11 at `0f2e9cf276a8bbad9089b258e4d33df9e80e6365`. As before, this only makes Java/Graal admission require the requested isolated semantics: **no physical heap isolation or Oreslang guest execution has been verified**.
