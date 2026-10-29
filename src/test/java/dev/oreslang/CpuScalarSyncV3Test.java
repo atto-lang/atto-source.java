@@ -93,6 +93,32 @@ final class CpuScalarSyncV3Test {
                 """));
     }
 
+    @Test void checkedI64OverflowSurvivesBuildOptimization() {
+        String source = "pub fnc main(): int { return cpu { -(-9223372036854775808) }; }";
+        Ast.Program optimized = OresCompiler
+                .compileForBuild(source, BuildOptions.executable())
+                .program();
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                optimized.modules().getFirst().declarations().getFirst();
+        Ast.ReturnStmt returning = (Ast.ReturnStmt) fn.body().getFirst();
+        Ast.CpuScalarRegionExpr cpu = assertInstanceOf(
+                Ast.CpuScalarRegionExpr.class, returning.value());
+        assertInstanceOf(Ast.UnaryExpr.class, cpu.value(),
+                "constant folding must not replace overflowing negation with wrapped MIN_VALUE");
+
+        for (String expression : new String[]{
+                "9223372036854775807 + 1",
+                "-9223372036854775808 - 1",
+                "9223372036854775807 * 2",
+                "-(-9223372036854775808)"
+        }) {
+            String guest = "pub fnc main(): void { stdio.stdout.write(cpu { "
+                    + expression + " }); return; }";
+            assertThrows(RuntimeException.class, () -> run(guest),
+                    "checked signed-i64 overflow must not wrap: " + expression);
+        }
+    }
+
     @Test void buildOptimizerPreservesTheExplicitCpuScalarExecutionBoundary() {
         String source = "pub fnc main(): int { return cpu { 40 + 2 }; }";
         Ast.Program optimized = OresCompiler
