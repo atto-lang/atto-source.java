@@ -193,6 +193,144 @@ final class ActorGroupManagedWorkersReconciliationTest {
     }
 
     @Test
+    void closedEmptyGroupReturnsEmptyWorkerCompletionSnapshot() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            group.close();
+            assertEquals(java.util.List.of(),
+                    group.workersDone().get(5, TimeUnit.SECONDS),
+                    "a closed group with zero workers must not report one Void slot");
+            assertEquals(java.util.List.of(),
+                    group.workersDone().get(5, TimeUnit.SECONDS),
+                    "repeated post-close observations must preserve result cardinality");
+        }
+    }
+
+    @Test
+    void postCloseWorkerBarrierWaitsThroughCancellationAndObserverRevocation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch exit = new CountDownLatch(1);
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    ctx -> (value, turn) -> {
+                        entered.countDown();
+                        while (exit.getCount() != 0) {
+                            try {
+                                exit.await(50, TimeUnit.MILLISECONDS);
+                            } catch (InterruptedException ignored) {
+                                // Deliberately retain the in-flight turn while
+                                // the manager revokes new actor admissions.
+                            }
+                        }
+                    });
+            try {
+                worker.send(1);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                OresFuture<Void> closeFence = group.closeAsync();
+                assertTrue(group.closed());
+                assertTrue(group.workers().isEmpty());
+                assertEquals(0, group.workerCount());
+
+                OresFuture<java.util.List<Void>> afterClose = group.workersDone();
+                OresFuture<java.util.List<Void>> cancelledObserver = group.workersDone();
+                assertFalse(afterClose.isDone(),
+                        "worker retirement must remain pending after group-close admission");
+                assertTrue(cancelledObserver.cancel(false),
+                        "one borrowed observer may detach itself");
+                assertFalse(closeFence.isDone(),
+                        "cancelling an observer cannot cancel the owner close barrier");
+
+                exit.countDown();
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> closeFence.get(5, TimeUnit.SECONDS),
+                        "managed worker cancellation must remain visible");
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> afterClose.get(5, TimeUnit.SECONDS),
+                        "post-close workersDone must observe the settled close failure");
+                assertTrue(group.workersDone().isDone(),
+                        "subsequent observers must see the same terminal barrier");
+                assertFalse(worker.isAlive());
+            } finally {
+                exit.countDown();
+            }
+        }
+    }
+
+    @Test
+    void workersDoneAndGroupCloseRaceCannotProduceAnEarlyEmptyBarrier() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch exit = new CountDownLatch(1);
+            CountDownLatch start = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<OresFuture<java.util.List<Void>>>
+                    observed = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    ctx -> (value, turn) -> {
+                        entered.countDown();
+                        while (exit.getCount() != 0) {
+                            try {
+                                exit.await(50, TimeUnit.MILLISECONDS);
+                            } catch (InterruptedException ignored) {
+                                // Preserve the active turn across close admission.
+                            }
+                        }
+                    });
+            Thread observer = null;
+            Thread closer = null;
+            try {
+                worker.send(1);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                observer = Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        observed.set(group.workersDone());
+                    } catch (Throwable issue) {
+                        failure.compareAndSet(null, issue);
+                    }
+                });
+                closer = Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        group.close();
+                    } catch (Throwable issue) {
+                        failure.compareAndSet(null, issue);
+                    }
+                });
+                start.countDown();
+                observer.join(5_000);
+                closer.join(5_000);
+                assertFalse(observer.isAlive());
+                assertFalse(closer.isAlive());
+                assertNull(failure.get(), String.valueOf(failure.get()));
+                assertNotNull(observed.get());
+                assertTrue(group.closed());
+                assertFalse(observed.get().isDone(),
+                        "an observer racing close must retain the active worker barrier");
+                assertFalse(group.workersDone().isDone(),
+                        "post-close observation must not report early completion");
+
+                exit.countDown();
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> group.closedDone().get(5, TimeUnit.SECONDS));
+                assertTrue(observed.get().isDone());
+                assertTrue(group.workersDone().isDone());
+            } finally {
+                start.countDown();
+                exit.countDown();
+                if (observer != null) observer.join(5_000);
+                if (closer != null) closer.join(5_000);
+            }
+        }
+    }
+
+    @Test
     void rejectedInitializationReleasesWorkerAndCannotAdoptForeignRuntime() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime foreignRuntime = new ActorRuntime()) {
