@@ -222,6 +222,18 @@ final class SourceActorCodeExecutorTest {
             assertThrows(IllegalArgumentException.class,
                     () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
                             executor, "Worker", java.util.List.of(Double.POSITIVE_INFINITY)));
+
+            // A typed ActorRef is not yet a transferable capability for
+            // initialization. Deny it even when the reference belongs to
+            // the very same ActorRuntime and its owner is currently live.
+            ActorRuntime.ActorRef<Object> dependency = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, executor, "Worker");
+            assertNull(dependency.ready().join());
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker", java.util.List.of(dependency)));
+            dependency.send("stop");
+            assertTrue(dependency.awaitTermination(2, TimeUnit.SECONDS));
         }
     }
 
