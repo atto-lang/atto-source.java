@@ -64,4 +64,44 @@ final class HostCapabilityIoLifecycleV1Test {
         assertTrue(gate.retire(queued, 78, 1, true));
         assertEquals(0, gate.inFlight());
     }
+    @Test void invalidSignedIdentifiersNeverAdmitOrRevokeAuthority() {
+        var gate = new HostCapabilityIoLifecycleV1(1, 2);
+        assertNull(gate.reserve(true, true, true, -1, 1, 5));
+        assertNull(gate.reserve(true, true, true, 1, -1, 5));
+        assertNull(gate.reserve(true, true, true, 1, 1, -5));
+        assertFalse(gate.revokeActor(-1, 1));
+        assertFalse(gate.revokeActor(1, -1));
+        assertEquals(0, gate.inFlight());
+    }
+
+    @Test void concurrentStartsCannotReplayOneTicket() throws InterruptedException {
+        var gate = new HostCapabilityIoLifecycleV1(1, 1);
+        var ticket = gate.reserve(true, true, true, 99, 1, 100);
+        assertNotNull(ticket);
+        var started = new java.util.concurrent.CountDownLatch(12);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var successes = new java.util.concurrent.atomic.AtomicInteger();
+        var workers = new java.util.ArrayList<Thread>();
+        for (int i = 0; i < 12; i++) {
+            var worker = new Thread(() -> {
+                started.countDown();
+                try {
+                    release.await();
+                    if (gate.dispatch(ticket, 99, 1, 100)) successes.incrementAndGet();
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            workers.add(worker);
+            worker.start();
+        }
+        assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        release.countDown();
+        for (var worker : workers) worker.join(5000);
+        assertEquals(1, successes.get());
+        assertEquals(1, gate.inFlight());
+        assertTrue(gate.complete(ticket, 99, 1));
+        assertFalse(gate.retire(ticket, 99, 1, false));
+        assertTrue(gate.retire(ticket, 99, 1, true));
+    }
 }
