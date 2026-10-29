@@ -4621,6 +4621,25 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Monotonically revoke a delegation from its issuing actor turn only.
+     * Revoking an unused token blocks future consumption; revoking an issued
+     * child subtree blocks subsequent host-I/O authorization in its scope,
+     * including async native I/O workers. It cannot interrupt an OS operation
+     * which has already passed its final authorization check.
+     */
+    public boolean revokePermissions(PermissionDelegation delegation) {
+        requireCallerRuntimeAffinity("revoke actor permission delegation");
+        requireNotActorGroupMailman("revoke actor permission delegation");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null || delegation == null
+                || delegation.runtime != this
+                || !delegation.parentId.equals(parent.ref.id())) {
+            throw new SecurityException("actor permission revocation requires its issuing actor");
+        }
+        return delegation.scope.revoke();
+    }
+
+    /**
      * Child spawn with a same-parent, same-runtime, once-only attenuation token.
      * Ordinary spawnChild and spawn calls inherit the parent scope unchanged.
      */
@@ -4634,9 +4653,13 @@ public final class ActorRuntime implements AutoCloseable {
                 || delegation.runtime != this || !delegation.parentId.equals(parent.ref.id())) {
             throw new SecurityException("actor permission delegation has a foreign issuer");
         }
+        delegation.scope.requireActive("child permission delegation admission");
         if (!delegation.consumed.compareAndSet(false, true)) {
             throw new SecurityException("actor permission delegation has already been consumed");
         }
+        // A concurrent owner revocation must never let a now-revoked scope
+        // authorize a new child, even when token consumption won the race.
+        delegation.scope.requireActive("child permission delegation admission");
         ActorRef<M> ref = spawnInternal(
                 kind, policy, behaviorFactory, false, null, null, null, delegation.scope);
         return new ActorHandle<>(ref, parent.ref.id());
