@@ -134,11 +134,12 @@ public final class PackageNamespaceLinker {
                             || !fn.genericParameters().isEmpty()
                             || fn.async() || fn.suspends() || fn.generator()
                             || fn.trapped() || fn.structural()
+                            || !fn.effects().isEmpty()
                             || fn.returnType() == null
                             || !fn.returnType().name().equals("int")
                             || !fn.returnType().arguments().isEmpty()
                             || fn.parameters().stream().anyMatch(p ->
-                                    p.type() == null
+                                    p.mutable() || p.type() == null
                                             || !p.type().name().equals("int")
                                             || !p.type().arguments().isEmpty())) {
                         throw new IllegalArgumentException(

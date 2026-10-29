@@ -123,6 +123,21 @@ final class PackageNamespaceLinkerTest {
     }
 
     @Test
+    void pinnedScalarNamespaceRejectsCheckedEffectsAndMutableParameters() {
+        for (String declaration : List.of(
+                "pub fnc dangerous(int n): int throws Error { return n; }",
+                "pub fnc changes(int mut n): int { return n; }")) {
+            Ast.Program source = Parser.parse("namespace a;\n" + declaration);
+            IllegalArgumentException denial = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> link(Map.of("foo/src/a.ores", source),
+                            Map.of("foo/src/a.ores", "foo@1"), Map.of()));
+            assertTrue(denial.getMessage().contains("unsupported public namespace callable"),
+                    denial.getMessage());
+        }
+    }
+
+    @Test
     void publicExportCollisionAcrossFilesFailsWithinOnePackage() {
         Map<String, Ast.Program> units = Map.of(
                 "one.ores", member("a", "same"),

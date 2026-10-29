@@ -316,7 +316,9 @@ public final class OresEvalRootNode extends RootNode {
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
                     || fn.kind() != Ast.CallableKind.FNC
                     || fn.actorKind() != Ast.ActorKind.NONE
-                    || !fn.genericParameters().isEmpty()) {
+                    || !fn.genericParameters().isEmpty()
+                    || !fn.effects().isEmpty()
+                    || fn.parameters().stream().anyMatch(Ast.Param::mutable)) {
                 throw new IllegalArgumentException(
                         "linked namespace member is no longer an eligible public root fnc: "
                                 + binding + "." + member);
