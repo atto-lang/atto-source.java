@@ -52,6 +52,15 @@ public final class DurableLocalDispatchClaim {
     public boolean claimOnce(AgentHostDispatchGate.Scope scope) {
         try {
             String name = claimFilename(scope);
+            // Reject symlink components anywhere in the host-provisioned path.
+            // A check of only the leaf directory can be bypassed by a linked
+            // ancestor. The parent chain must also be protected against mutation
+            // by the host's filesystem permissions; this is not a dirfd API.
+            if (directory == null || !directory.isAbsolute() ||
+                !directory.normalize().equals(directory)) return false;
+            for (Path current = directory; current != null; current = current.getParent()) {
+                if (Files.isSymbolicLink(current)) return false;
+            }
             if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS) ||
                 !Files.getPosixFilePermissions(directory, LinkOption.NOFOLLOW_LINKS)
                     .equals(PRIVATE_DIR) ||
