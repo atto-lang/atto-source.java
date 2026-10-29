@@ -66,7 +66,14 @@ public final class PackageNamespaceIndex {
         }
 
         Map<String, String> admittedSources = new LinkedHashMap<>();
+        long sourceBytes = 0;
         for (Map.Entry<String, String> source : sources.entrySet()) {
+            if (source.getValue() == null) throw new IllegalArgumentException("null admitted source");
+            int unitBytes = source.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            sourceBytes += unitBytes;
+            if (unitBytes > 8 * 1024 * 1024 || sourceBytes > 64L * 1024 * 1024) {
+                throw new IllegalArgumentException("namespace source snapshot exceeds byte budget");
+            }
             String canonical = unitId(Path.of(source.getKey()).toRealPath());
             if (admittedSources.putIfAbsent(canonical, source.getValue()) != null) {
                 throw new IllegalArgumentException("source path alias/duplicate: " + canonical);
@@ -122,6 +129,15 @@ public final class PackageNamespaceIndex {
                         throw new IllegalArgumentException("package member must be an .ores file");
                     }
                     Path sourcePath = boundedRelative(root, filePath, root);
+                    // A nested manifest cannot silently transfer ownership
+                    // of a child source into an ancestor package's file list.
+                    for (Path cursor = sourcePath.getParent(); cursor != null && !cursor.equals(root);
+                         cursor = cursor.getParent()) {
+                        if (Files.isRegularFile(cursor.resolve(".ores.pkg.toml"))) {
+                            throw new IllegalArgumentException(
+                                    "package member crosses nested manifest boundary: " + sourcePath);
+                        }
+                    }
                     if (!Files.isRegularFile(sourcePath)) {
                         throw new IllegalArgumentException("missing package member: " + filePath);
                     }
@@ -144,7 +160,11 @@ public final class PackageNamespaceIndex {
                             exports.computeIfAbsent(ns, unused -> new LinkedHashMap<>());
                     for (Ast.ModuleDecl module : parsed.modules()) {
                         if (!Parser.ROOT_MODULE.equals(module.name())) {
+                            // Named modules have their own value scopes. Export
+                            // only the module itself; never flatten its public
+                            // members into the file-root namespace.
                             put(namespaceExports, new Symbol(module.name(), "module", -1, sourceId));
+                            continue;
                         }
                         for (Ast.Decl decl : module.declarations()) {
                             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
@@ -223,6 +243,17 @@ public final class PackageNamespaceIndex {
 
     private static void put(Map<String, Symbol> exports, Symbol symbol) {
         String key = symbol.kind() + ":" + symbol.name() + ":" + symbol.arity();
+        for (Symbol prior : exports.values()) {
+            if (!prior.name().equals(symbol.name())) continue;
+            boolean bothFunctions = "function".equals(prior.kind())
+                    && "function".equals(symbol.kind());
+            if (bothFunctions && prior.arity() != symbol.arity()) continue;
+            // A namespace qualifier cannot decide which physical provider to
+            // use for a field/module/class and a function with the same name.
+            throw new IllegalArgumentException("ambiguous exported namespace symbol "
+                    + symbol.name() + " from " + prior.sourceUnitId()
+                    + " and " + symbol.sourceUnitId());
+        }
         Symbol old = exports.putIfAbsent(key, symbol);
         if (old != null) {
             throw new IllegalArgumentException("ambiguous exported namespace symbol " + key

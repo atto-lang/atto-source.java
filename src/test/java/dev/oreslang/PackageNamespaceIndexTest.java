@@ -176,6 +176,35 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void namedModuleMembersAreNotFlattenedIntoPackageNamespace() throws IOException {
+        Map<String, String> sources = new LinkedHashMap<>();
+        Path root = temporary.resolve("checkout");
+        add(sources, root, "src/math.ores", "billing", """
+                define module math as
+                  pub fnc add(int value): int { return value + 1; }
+                end
+                """);
+        Path m = manifest(root, "checkout", List.of("src/math.ores"));
+        var index = PackageNamespaceIndex.load(List.of(m), sources, Map.of());
+        var binding = index.resolve(id(root.resolve("src/math.ores")), "+/", "billing");
+        assertTrue(binding.exports().containsKey("module:math:-1"));
+        assertTrue(!binding.exports().containsKey("function:add:1"));
+    }
+
+    @Test
+    void nestedPackageManifestBlocksAncestorMemberOwnership() throws IOException {
+        Map<String, String> sources = new LinkedHashMap<>();
+        Path root = temporary.resolve("checkout");
+        add(sources, root, "src/nested/file.ores", "billing",
+                "pub fnc charge(): int { return 1; }");
+        Path m = manifest(root, "checkout", List.of("src/nested/file.ores"));
+        manifest(root.resolve("src/nested"), "nested", List.of("file.ores"));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(m), sources, Map.of()));
+        assertTrue(rejected.getMessage().contains("nested manifest boundary"));
+    }
+
+    @Test
     void runtimeLoaderRejectsNamespaceImportsUntilProviderBindingIsImplemented() throws IOException {
         Path entry = temporary.resolve("entry.ores");
         Files.writeString(entry, """
