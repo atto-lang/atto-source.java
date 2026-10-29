@@ -309,6 +309,52 @@ final class ActorControlHandleIsolationTest {
     }
 
     @Test
+    void forgedActorRefCannotReleaseManagedWorkerOwnership() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup owner = runtime.createActorGroup();
+            ActorRuntime.ActorGroup successor = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> victim = runtime.spawnPrivateTrusted(
+                    factory -> (message, context) -> { });
+            victim.getReady().get(5, TimeUnit.SECONDS);
+            assertSame(victim, owner.manageWorker(victim));
+            assertEquals(1, owner.workerCount());
+
+            var constructor = ActorRuntime.ActorRef.class.getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<Integer> forgery =
+                    (ActorRuntime.ActorRef<Integer>) constructor.newInstance(
+                            runtime, victim.id(), victim.kind(), victim.generation());
+
+            // A same-ID lookalike must not clear the cell's lifecycle-owner
+            // token while leaving the old group's registry entry behind.
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> owner.releaseWorker(forgery));
+            assertEquals(1, owner.workerCount());
+            assertSame(victim, owner.workers().getFirst());
+            assertThrows(IllegalStateException.class,
+                    () -> successor.manageWorker(victim),
+                    "the first group must retain exclusive ownership");
+
+            // The real reference can still transfer ownership exactly once.
+            assertTrue(owner.releaseWorker(victim));
+            assertEquals(0, owner.workerCount());
+            assertSame(victim, successor.manageWorker(victim));
+            assertEquals(1, successor.workerCount());
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> successor.releaseWorker(forgery));
+            assertEquals(1, successor.workerCount());
+            assertTrue(successor.releaseWorker(victim));
+            victim.stop();
+            assertTrue(victim.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void forgedStructuredChildHandleCannotCancelItsLiveLookalike() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
