@@ -716,6 +716,7 @@ public final class Parser {
             String className,
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
+        rejectNonCallableReturnAnnotation(annotations, "constructors");
         Token keyword = advance(); // contextual 'constructor'
         if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.trapped
                 || mods.isStatic || mods.isAbstract || mods.shared || mods.untrusted) {
@@ -1180,6 +1181,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
@@ -1217,6 +1219,7 @@ public final class Parser {
 
     private Ast.FieldDecl parseTypeFirstClassField(
             List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         boolean isFinal = matchContextualIdentifier("final");
         boolean mutableReferent = match(MUT);
@@ -1235,6 +1238,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         String name = consume(IDENT, "expected field name").lexeme();
         consume(COLON, "expected ':' after field name");
@@ -1248,6 +1252,7 @@ public final class Parser {
 
     /** Actor-state 'final name: Type' is a const/immutable field spelling. */
     private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "actor fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         consumeContextualIdentifier("final", "expected 'final' actor field");
         String name = consume(IDENT, "expected field name after 'final'").lexeme();
@@ -1260,6 +1265,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "module bindings");
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
@@ -4568,6 +4574,15 @@ public final class Parser {
         if (!annotations.isEmpty()) {
             throw error(previous(), "@" + annotations.getFirst().name() + " on " + target
                     + " would be silently discarded; declaration annotation storage is not implemented");
+        }
+    }
+
+    /** A return-type annotation must never survive on non-callable AST slots. */
+    private void rejectNonCallableReturnAnnotation(List<Ast.Annotation> annotations, String target) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("Ret")) {
+                throw error(previous(), "@Ret is only valid on callable return signatures, not " + target);
+            }
         }
     }
 
