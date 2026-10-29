@@ -786,6 +786,14 @@ public final class Parser {
      * Recognizes both "define http actor" and "define serial http actor".
      */
     private ActorPrefix parseActorPrefix() {
+        // The demo spelling "define isolated actor" is NOT equivalent to
+        // checked, sealed native actor state. The currently lowered kind is
+        // "isoactor" and it does not include protected-state/RW permits.
+        if (isContextualIdentifier("isolated") && checkNext(ACTOR)) {
+            throw error(peek(), "isolated actor with sealed state requires "
+                    + "native protected-state lowering; currently use isoactor "
+                    + "for ordinary isolated actors, not a security substitute");
+        }
         boolean serial = false;
         Ast.ActorTransport transport = Ast.ActorTransport.GENERIC;
         boolean recognized = false;
@@ -909,6 +917,15 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            // Never silently treat the experimental sealed state schema as
+            // an ordinary field or userland method: until the AST, type
+            // checker, borrow checker, and scheduler protect it end-to-end,
+            // accepting it would make cross-tenant authority assertions false.
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                throw error(peek(), "actor sealed state { } requires compiler-enforced "
+                        + "critical-read/critical-write loans, protected-state effects "
+                        + "and runtime RW permits; source admission is not yet enabled");
+            }
             if (isContextualIdentifier("int") && current + 1 < tokens.size()
                     && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
                         || tokens.get(current + 1).lexeme().equals("messageConcurrency"))) {
@@ -1669,6 +1686,12 @@ public final class Parser {
      * misinterpreted as executable statements.
      */
     private Ast.EffectSpec parseCheckedEffects() {
+        // A user-supplied "with state.read/state.write" annotation must not
+        // be discarded and misrepresented as a checked state capability.
+        if (isContextualIdentifier("with") && checkNextLexeme("state")) {
+            throw error(peek(), "with state.read/state.write requires compiler-checked "
+                    + "actor protected-state effects; state access is not yet enabled");
+        }
         List<Ast.TypeRef> thrown = List.of();
         List<Ast.TypeRef> raised = List.of();
         List<Ast.TypeRef> panicked = List.of();
@@ -4051,6 +4074,17 @@ public final class Parser {
                 // Two explicit qualified-member spellings, one binding and
                 // evaluation path; no dynamic symbol lookup or macro rewrite.
                 String member = consumeMemberName();
+                // The receiver form names a privileged compiler primitive,
+                // not a normal call to a freely declared instance method.
+                // Reject it until sealed actor state access is type- and
+                // scheduler-checked, rather than parsing unsafe userland code.
+                if (member.equals("handle_state")
+                        && expr instanceof Ast.NameExpr name
+                        && name.name().equals("self")) {
+                    throw error(previous(), "self.handle_state requires sealed actor state "
+                            + "and compiler-checked critical-read/critical-write loans; "
+                            + "protected-state lowering is not yet enabled");
+                }
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
