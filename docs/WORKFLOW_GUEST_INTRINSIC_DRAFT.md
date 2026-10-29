@@ -28,8 +28,10 @@ escape. The request payload is a fixed **15-position list of scalars**:
 15. opaque capability: String
 
 The parser rejects a directly written list with a field-count other than
-15; `WorkflowGuestPort.decode` rejects wrong runtime arity, invalid
-operation or non-scalar values. The underlying host registry validates
+15; `TypeChecker` requires a list-like argument and returns
+`Future<List<unknown>>`; `OwnershipChecker` checks suspension borrows
+and rejects borrowed/guarded payloads. `WorkflowGuestPort.decode` rejects
+wrong runtime arity, invalid operation or non-scalar values. The underlying host registry validates
 identity and effect fields; a trusted external issuer must check capability
 signatures, generation, expiration, tenant and per-effect authorization.
 
@@ -74,7 +76,9 @@ Do not describe this draft as fully statically typed or zero-copy.
 - `examples/workflow-host-request.ores` is a source smoke fixture; it
   does NOT claim to have executed as an Oreslang guest.
 - `.github/workflows/workflow-guest-intrinsic.yml` is a
-  dedicated exact-head JDK25/Maven gate. Hosted jobs in this source
+  dedicated exact-head JDK25/Maven gate with targeted JUnit tests,
+  `OresMain --check`, and a guest execution smoke with no provisioned
+  service, using the supported `--allow=WORKFLOW_STORAGE` spelling. Hosted jobs in this source
   organization previously failed before worker admission, so an Actions
   run without nonzero executed steps cannot establish test passage.
 
