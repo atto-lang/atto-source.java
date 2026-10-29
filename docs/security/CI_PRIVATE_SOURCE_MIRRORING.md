@@ -109,6 +109,26 @@ dismissing/revoking the exact-head approval therefore stops the next persistent
 destination write. V3
 also rechecks once more immediately before executable carrier refs are created.
 
+An additional **required** protected carrier-contract field,
+`publisher_app_id`, identifies the separately reviewed GitHub App allowed to
+create and retire the exact source-bearing `ci/oreslang-*` and
+`ci/authorized-*` refs. The generic GitHub Actions App ID (15368) is
+ineligible. Before reading private source, and again before **every destination
+write**, V3 retrieves the carrier's effective ruleset inventory (including
+inherited rules), fetches full per-ruleset detail, and requires precisely one
+active repository-owned branch ruleset for each exact ref pattern. Each rule
+must restrict creation, update, and deletion; disallow fetch/merge update
+exceptions; and list exactly the reviewed publisher App as its sole bypass
+actor. Missing/ambiguous rulesets, paging uncertainty, inaccessible APIs,
+unexpected bypass actors, or policy changes **deny export**.
+
+This authorization is not complete until GitHub actually enforces private
+rulesets, an independent reviewer approves the publisher App identity and
+protected carrier contract, and unauthorized Git ref creation/update/deletion
+are tested against the live server using separate identities. A synthetic
+ruleset unit-test fixture never counts as evidence of live enforcement.
+No repository should be made public to obtain CI access.
+
 The checked-in policy file must explicitly list the destination. The
 publisher checks the live GitHub identity and `visibility=private` /
 `private=true` before sending any private bytes and rechecks visibility
