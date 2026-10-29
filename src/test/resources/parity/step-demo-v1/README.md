@@ -28,3 +28,11 @@ source transfer remains blocked by platform-conformance issue #22.
 | `bounded-retry.ores` | `retry:complete-after-two` | `606f40654c35da572f8ef35fd71f53ed8a9e2508` |
 | `cancel-before-work.ores` | `cancel:stopped-before-work` | `b774babccb52ce4d51eff2d8262f6a5e6eeab0de` |
 | `coordinator-state.ores` | `workflow:state-guarded` | `d91bfa28323d198c0001ece58747e68d9980597f` |
+
+## October 29: 13/13 exact source blob parity (NOT executable acceptance)
+
+The canonical demo saga draft source is `ores-truffle-oreslang/oreslang-step-function-demo` PR #6 at commit `c4c025af750e08abdb0197d84d660e277eddaea8`. All **13/13** tracked demo `workflows/*.ores` files were compared independently against the same-named private Java test-resource blobs in this PR, and **all 13 canonical Git blob SHA-1 values match** at compiler PR commit `a3ec8deedac45b02142bbf5639b378b88ba7b981`. Both repos are private and inside the same GitHub organization; there was **no cross-organization source mirror** in this recovery.
+
+Key repaired safety cases: `order-saga-compensated.ores` blob `cbf0650473414a7d53755f756633a07fe64f14c3` refuses to release inventory if payment void is unconfirmed; `order-saga-void-unknown.ores` blob `82c9e08e95ab443e9ae5949466d322478ddec20a` expects `saga:compensation-incomplete`. The coordinator compatibility sample now also matches at blob `d91bfa28323d198c0001ece58747e68d9980597f`; it is NOT compiler-sealed state.
+
+JUnit `SourceActorDemoWorkflowExecutionTest` now defines **13** guest tests, and the dedicated Graal Actions workflow requires exactly **13** demo + **3** actor baseline = **16** real executed tests, including no errors/failures/skips. These are source and workflow **configuration** facts, not test results. **No real JDK25/GraalVM source runner has executed these current heads**. Until a successful exact-head run records runner ID, nonzero steps, real `Context.eval`, output and Surefire receipts, the verdict is **NOT_EXECUTED**, not PASS. The compiled sealed-state loan and cross-backend parity remain separate requirements.
