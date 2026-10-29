@@ -10,6 +10,8 @@ on:
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceLinker.java'
       - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - 'src/main/java/dev/oreslang/runtime/PinnedNamespaceProgramRunner.java'
+      - 'src/main/java/dev/oreslang/runtime/PinnedNamespacePackageInventory.java'
+      - 'src/test/java/dev/oreslang/PinnedNamespacePackageInventoryTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/PinnedNamespaceRuntimeTest.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
@@ -33,4 +35,4 @@ jobs:
           java-version: '25'
           cache: maven
       - name: Compile parser/linker and execute exact-head regression suite
-        run: mvn -B -Dtest=PackageNamespaceLinkerTest,PinnedNamespaceRuntimeTest,ImportSelectorSyntaxTest test
+        run: mvn -B -Dtest=PackageNamespaceLinkerTest,PinnedNamespaceRuntimeTest,PinnedNamespacePackageInventoryTest,ImportSelectorSyntaxTest test

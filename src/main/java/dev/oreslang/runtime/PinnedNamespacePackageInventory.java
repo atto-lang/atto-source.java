@@ -118,7 +118,7 @@ public final class PinnedNamespacePackageInventory {
             if (declaredRoot != null && !declaredRoot.equals("."))
                 throw new IllegalArgumentException("pinned namespace source root must equal '.'");
             TomlArray declared = parsed.getArray("packages." + name + ".files");
-            if (declared == null || declared.isEmpty())
+            if (declared == null || declared.size() == 0)
                 throw new IllegalArgumentException("pinned package must enumerate its files explicitly");
             if (declared.size() > SourceAdmissionBudget.MAX_UNITS)
                 throw new IllegalArgumentException("pinned package file inventory exceeds unit budget");
