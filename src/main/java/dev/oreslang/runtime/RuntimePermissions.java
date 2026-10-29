@@ -364,13 +364,23 @@ public final class RuntimePermissions {
             // may resolve to a denied dotted-quad on some hosts. Reject them
             // before an unrestricted network grant can mask the denied IP.
             // The actual socket layer must still check the resolved address.
-            if (host.matches("[0-9.]+")) {
-                String[] octets = host.split("\\.", -1);
+            // IPv4 aliases accepted by some resolvers include hex octets,
+            // hex single-integer forms and shortened dotted numbers. A
+            // wildcard allow must not let 0x7f.0.0.1 bypass a 127.0.0.1 deny.
+            String[] octets = host.split("\\.", -1);
+            boolean numericAlias = true;
+            for (String octet : octets) {
+                if (!octet.matches("(?:0x[0-9a-f]+|[0-9]+)")) {
+                    numericAlias = false;
+                    break;
+                }
+            }
+            if (numericAlias) {
                 if (octets.length != 4) return null;
                 for (String octet : octets) {
-                    if (octet.isEmpty() || octet.length() > 3
+                    if (octet.startsWith("0x") || octet.isEmpty()
+                            || octet.length() > 3
                             || (octet.length() > 1 && octet.charAt(0) == '0')
-                            || !octet.matches("[0-9]+")
                             || Integer.parseInt(octet) > 255) return null;
                 }
             }
