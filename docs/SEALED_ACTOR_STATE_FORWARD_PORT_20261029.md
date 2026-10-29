@@ -76,3 +76,7 @@ The original #1806 checker recursively inspected call arguments but **admitted t
 The imported positive loan JUnit fixture moves stdout **after** closing its loans. Three new negative JUnit cases cover stdout, unverified helper calls, and unbounded loop. These tests have **not executed** on this exact head because GitHub Actions continues to fail before job admission; they are requirements, not passing evidence.
 
 All for-of, for, do/while and bare loop forms are also rejected inside a loan until a checkable finite bound is available. This intentionally blocks the graph actors' current unbounded traversal callbacks; the corrective design must separate an immutable snapshot/traversal phase from a brief critical commit and enforce bounded admission.
+
+## Internal marker integrity
+
+The parser now rejects source-supplied `@__actor_state_schema` in every annotation position, and user methods named `handle_state` in actor member positions. That annotation is exclusively compiler-minted by `parseActorStateSchema`; it is not a user capability. Four parser tests cover actor/class spoofing, intrinsic shadowing, and the genuine state schema. The AST itself remains a separate trust boundary: consumers of externally fabricated `Ast.ClassDecl` need provenance validation, not annotation-name trust alone.
