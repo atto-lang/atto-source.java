@@ -126,7 +126,7 @@ public final class IncrementalCompiler {
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
-                    packageId(id, checked),
+                    packageId(id),
                     checked.namespace(),
                     hashes.get(id),
                     abiHashes.get(id),
@@ -587,7 +587,7 @@ public final class IncrementalCompiler {
         return Map.copyOf(frozen);
     }
 
-    private static String packageId(String unitId, Ast.Program program) {
+    private static String packageId(String unitId) {
         // A source namespace is a compile-time name, not ownership authority.
         // Until a verified manifest-defined multi-file PackageInstanceId is
         // plumbed through this compiler, every code unit owns an independent
