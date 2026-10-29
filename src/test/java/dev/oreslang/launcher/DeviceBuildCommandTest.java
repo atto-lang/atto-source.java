@@ -5,6 +5,8 @@ import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -25,7 +27,8 @@ final class DeviceBuildCommandTest {
                 new String[] {"build", temp.resolve("missing.ores").toString(), temp.resolve("other").toString()}));
     }
 
-    @Test void localBuildWithMockDriverIsExplicitlyUntrustedAndScrubsTokenEnvironment() throws Exception {
+    @Test @EnabledOnOs({OS.LINUX, OS.MAC})
+    void localBuildWithMockDriverIsExplicitlyUntrustedAndScrubsTokenEnvironment() throws Exception {
         Path source = temp.resolve("main.ores");
         Files.writeString(source, "pub routine main(): int { return 42; }");
         Path driver = temp.resolve("fake-driver.sh");
@@ -39,7 +42,7 @@ final class DeviceBuildCommandTest {
         assertTrue(driver.toFile().setExecutable(true));
         Path output = temp.resolve("app");
         String javaExec = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        ProcessBuilder pb = new ProcessBuilder(javaExec, "-cp", System.getProperty("java.class.path"),
+        ProcessBuilder pb = new ProcessBuilder(javaExec, "-cp", System.getProperty("surefire.test.class.path", System.getProperty("java.class.path")),
                 "dev.oreslang.launcher.OresMain", "build", source.toString(), output.toString());
         pb.redirectErrorStream(true);
         pb.environment().put("ORESLANG_LLVM_AOT_DRIVER", driver.toAbsolutePath().toString());
