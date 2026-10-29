@@ -22,7 +22,9 @@ final class UnsafeStdlibIsolationGateTest {
                 "ores.std/unsafe.ores", "std/unsafe", "std/unsafe/memory",
                 "std\\unsafe\\ffi", "std.unsafe", "std.unsafe.ffi",
                 "std:unsafe", "std:unsafe.ffi",
-                "ores.std:unsafe", "ores.std.unsafe"}) {
+                "ores.std:unsafe", "ores.std.unsafe",
+                "std/./unsafe/ffi", "std/lib/../unsafe/native",
+                "ores.std//unsafe/memory"}) {
             assertTrue(CoreLibrarySources.isUnsafeStdImport(path), path);
             assertTrue(CoreLibrarySources.isReservedOresLibraryImport(path), path);
             assertThrows(SecurityException.class, () -> ImportRules.validate(
@@ -36,7 +38,8 @@ final class UnsafeStdlibIsolationGateTest {
         for (String path : new String[] {
                 "std/unsafe_tools", "std/unsafe-math",
                 "std/safe", "ores.std/unsafe_notes", "std:unsafe_tools",
-                "pkg:unsafe", "my/unsafe", "ores.core/numeric"}) {
+                "pkg:unsafe", "my/unsafe", "ores.core/numeric",
+                "std/lib/../safe", "std/./unsafe_tools"}) {
             assertFalse(CoreLibrarySources.isUnsafeStdImport(path), path);
         }
     }
