@@ -38,12 +38,14 @@ final class ImportGraph {
         ImportRules.validate(imported);
         if (ImportRules.isJavaPath(imported.path())) return null;
 
+        rejectUnsafeUnitId(unitId); // Check before path normalization can erase @std/unsafe.
         String normalizedUnitId = normalizeUnitId(unitId);
         rejectUnsafeUnitId(normalizedUnitId);
         String resolved = importResolutions
                 .getOrDefault(normalizedUnitId, Map.of())
                 .get(imported.path());
         if (resolved != null) {
+            rejectUnsafeUnitId(resolved); // Linked graph metadata is untrusted.
             String normalizedResolved = normalizeUnitId(resolved);
             rejectUnsafeUnitId(normalizedResolved);
             rejectSelfImport(normalizedUnitId, imported.path(), normalizedResolved);
@@ -86,7 +88,10 @@ final class ImportGraph {
             Set<String> available,
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Set<String>> dependencies = new LinkedHashMap<>();
-        for (String suppliedUnitId : programs.keySet()) rejectUnsafeUnitId(normalizeUnitId(suppliedUnitId));
+        for (String suppliedUnitId : programs.keySet()) {
+            rejectUnsafeUnitId(suppliedUnitId);
+            rejectUnsafeUnitId(normalizeUnitId(suppliedUnitId));
+        }
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             LinkedHashSet<String> resolved = new LinkedHashSet<>();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
@@ -106,7 +111,10 @@ final class ImportGraph {
             Map<String, Ast.Program> programs,
             Map<String, Map<String, String>> importResolutions) {
         Set<String> available = programs.keySet();
-        for (String suppliedUnitId : available) rejectUnsafeUnitId(normalizeUnitId(suppliedUnitId));
+        for (String suppliedUnitId : available) {
+            rejectUnsafeUnitId(suppliedUnitId);
+            rejectUnsafeUnitId(normalizeUnitId(suppliedUnitId));
+        }
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             String importer = entry.getKey();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
