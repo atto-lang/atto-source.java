@@ -30,3 +30,15 @@ For the native AI coordination demo `ContextAssemblyActor`, compilation/runtime 
 5. Once independently compiled runtime lowering exists, execute native Java/Graal guests, then LLVM, then .NET/WASM/Forge, including restart, cancellation, multi-tenant isolation, and real verified model-ingress data checks.
 
 Known source org CI has repeatedly reported failed jobs with **zero steps**, so runner admission must be verified independently. Do not export private sources to another org just to obtain runner minutes without separate authorization.
+
+## Exact-head source-local verification workflow and confidentiality gate
+
+This branch also adds `.github/workflows/actor-critical-loan-preflight-exact.yml`: a read-only source-local PR/dispatch job that checks out the **exact PR HEAD SHA**, confirms the checked-out tree is clean, captures `SOURCE_HEAD_SHA` and `SOURCE_TREE_SHA`, provisions GraalVM/JDK 25, runs `mvn -B -ntp -Dtest=ActorCriticalLoanPreflightTest -DfailIfNoTests=true test`, and fails if JUnit XML is absent, reports fewer than nine executed tests, or has any skipped/failed/error test. It reports `NATIVE_PREFLIGHT_JUNIT_RESULT` only after all checks pass. **It does not run a native protected-state guest.**
+
+Author-side exact committed blob structural review: **17/17 assertions passed**, including all four-argument recursive calls, fail-closed AST boundaries, test method presence, exact PR-head checkout and JUnit criteria. The same XML-counter predicate was exercised on **8/8 local Node 22 synthetic fixtures**, including missing counters, overflowed counters, failures, errors, skips and insufficient test count. Neither result proves Maven compilation. At the time of this note, the latest branch commit had **no registered exact-head Actions runs**.
+
+### Cross-org carrier restriction
+
+The repository is private. The outstanding [conformance security incident #22](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/22) explicitly prohibits private-source exports pending independent security review, containment and destination authorization. A temporary **private** branch in another GitHub organization is still an export of private source with durable Git history/artifact-retention implications. No cross-organization source mirror, CI carrier push, or privileged remote checkout was performed in this work. A permissioned source-local/owner-controlled runner is the preferred execution route.
+
+These gates remain **DRAFT / NOT EXECUTED** until source-local GitHub Actions admission is fixed and complete JUnit XML + compiler logs are available.
