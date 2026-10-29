@@ -4,6 +4,8 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/HostCapabilityIoLifecycleV1.java'
       - 'src/test/java/dev/oreslang/runtime/HostCapabilityIoLifecycleV1Test.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeIoPinnedTcpAuthorizationTest.java'
       - '.github/workflows/capability-io-lifecycle-v1.yml'
   workflow_dispatch:
 permissions:
@@ -35,6 +37,6 @@ jobs:
           distribution: 'graalvm'
           cache: maven
       - name: Run exact-head host lifecycle JUnit
-        run: mvn -B -ntp -Dtest=HostCapabilityIoLifecycleV1Test test
+        run: mvn -B -ntp -Dtest=HostCapabilityIoLifecycleV1Test,NativeIoPinnedTcpAuthorizationTest test
       - name: Classification
         run: echo 'HOST_REFERENCE_ONLY_NO_GUEST_OR_NETWORK_PARITY'
