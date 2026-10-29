@@ -718,6 +718,91 @@ def _validate_maven_argv(argv):
             raise Denied("Maven carrier command overrides trusted build controls")
 
 
+def validate_actor_storage_native_plan(plan, source_pr, plan_bytes):
+    """Accept only the exact reviewed actor-storage native/JNI + Maven plan.
+
+    This is a deliberately narrow v1 extension, not permission for arbitrary
+    native shell commands or unpinned runtime images.
+    """
+    fields = {
+        "schema", "source_repo", "source_repo_id", "allowed_prs",
+        "allowed_sources_by_pr", "commands", "sandbox_image",
+        "native_sandbox_image", "required_surefire_suites_by_pr",
+    }
+    if set(plan) != fields or plan.get("source_repo_id") != SOURCE_REPOSITORY_ID:
+        raise Denied("native actor storage plan schema or repository id invalid")
+    if (plan.get("sandbox_image") !=
+            "maven@sha256:407c4423cec0cf2981055bc2c6c0dc211d9605b6669279b95997f2d1c7e91e2c"
+            or plan.get("native_sandbox_image") !=
+            "ghcr.io/graalvm/native-image-community@sha256:0d936f32bb8acb5bc60c41b33e05f064d7a6aaf36b726538296c54949bd4a3c0"):
+        raise Denied("native actor storage plan uses unreviewed image digests")
+    allowed = plan.get("allowed_prs")
+    if (type(allowed) is not list or not allowed
+            or source_pr not in allowed or len(set(allowed)) != len(allowed)
+            or any(type(pr) is not int or pr <= 0 for pr in allowed)):
+        raise Denied("native actor storage plan PR allowlist invalid")
+    keys = {str(pr) for pr in allowed}
+    pins = plan.get("allowed_sources_by_pr")
+    suites = plan.get("required_surefire_suites_by_pr")
+    if (type(pins) is not dict or set(pins) != keys
+            or type(suites) is not dict or set(suites) != keys):
+        raise Denied("native actor storage plan source/Surefire pins incomplete")
+    for key in keys:
+        identity = pins[key]
+        if (type(identity) is not dict
+                or set(identity) != {"head_sha", "root_tree_sha"}):
+            raise Denied("native actor storage source pin shape invalid")
+        valid_sha(identity.get("head_sha"), "native actor storage source head invalid")
+        valid_sha(identity.get("root_tree_sha"), "native actor storage source tree invalid")
+        expected_suites = suites[key]
+        if (type(expected_suites) is not dict
+                or set(expected_suites) != {
+                    "ActorNativeStorageStandaloneTest",
+                    "ScopedTaskReadRuntimeTest",
+                }
+                or any(type(count) is not int or not 1 <= count <= 1000
+                       for count in expected_suites.values())):
+            raise Denied("native actor storage Surefire expectations invalid")
+    commands = plan.get("commands")
+    if type(commands) is not list or len(commands) != 5:
+        raise Denied("native actor storage command count invalid")
+    approved = (
+        ("native", ("bash", "scripts/check-native-arena-abi.sh"),
+         "PASS source-native-JNI ABI: 1000 allocations, zero-fill, isolation, word layout, release", 300),
+        ("native", ("sh", "scripts/build-native-thread.sh"),
+         "built target/native/liboresthread.so", 300),
+        ("native", ("nm", "-D", "target/native/liboresthread.so"),
+         "Java_dev_oreslang_runtime_ActorNativeArena_allocateNative", 60),
+        ("native", ("nm", "-D", "target/native/liboresthread.so"),
+         "Java_dev_oreslang_runtime_ActorNativeArena_releaseNative", 60),
+        ("maven", (
+            "mvn", "-B", "-ntp",
+            "-Dtest=ActorNativeStorageStandaloneTest,ScopedTaskReadRuntimeTest",
+            "test",
+        ), "BUILD SUCCESS", 1800),
+    )
+    for command, (sandbox, argv, evidence, timeout) in zip(commands, approved):
+        expected_keys = {"argv", "cwd", "timeout_seconds", "stdout_contains"}
+        if sandbox == "native":
+            expected_keys.add("sandbox")
+        if (type(command) is not dict or set(command) != expected_keys
+                or command.get("sandbox", "maven") != sandbox
+                or command.get("argv") != list(argv)
+                or command.get("cwd") != "."
+                or command.get("timeout_seconds") != timeout
+                or command.get("stdout_contains") != evidence):
+            raise Denied("native actor storage command differs from reviewed plan")
+    return {
+        "sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "required_source_blobs": {},
+        "uses_maven": True,
+        "maven_pom_blob_sha": None,
+        "maven_prefetch_artifacts": [],
+        "source_head_pin": pins[str(source_pr)]["head_sha"],
+        "source_tree_pin": pins[str(source_pr)]["root_tree_sha"],
+    }
+
+
 def validate_test_plan(plan_bytes, source_pr):
     try:
         plan = strict_json_loads(
@@ -729,6 +814,11 @@ def validate_test_plan(plan_bytes, source_pr):
             or plan.get("schema") != "ores-private-ci-test-plan-v1"
             or plan.get("source_repo") != legacy.SOURCE_REPO):
         raise Denied("reviewed test plan source/schema mismatch")
+    if any(field in plan for field in (
+        "sandbox_image", "native_sandbox_image", "source_repo_id",
+        "allowed_sources_by_pr", "required_surefire_suites_by_pr",
+    )):
+        return validate_actor_storage_native_plan(plan, source_pr, plan_bytes)
     allowed_fields = {
         "schema", "source_repo", "allowed_prs", "commands",
         "required_source_blobs", "maven_pom_blob_sha",
@@ -1076,6 +1166,10 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     files = legacy.collect_source(source, trusted_root)
     verify_required_source_blobs(files, plan_meta["required_source_blobs"])
     source_tree = legacy.verified_exact_source_tree(files, source_commit)
+    if (plan_meta.get("source_head_pin") is not None
+            and (source_commit != plan_meta["source_head_pin"]
+                 or source_tree != plan_meta["source_tree_pin"])):
+        raise Denied("source head/tree differs from reviewed carrier plan pins")
     rows, manifest_sha256 = manifest(files)
     branch = "ci/oreslang-" + source_tree
 
