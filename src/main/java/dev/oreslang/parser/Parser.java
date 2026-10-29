@@ -608,7 +608,8 @@ public final class Parser {
                         "declarations cannot be nested inside classes; declare nested types at file or module scope");
             }
 
-            if (isContextualIdentifier("constructor")) {
+            if ((isContextualIdentifier("constructor") || isContextualIdentifier("initialize"))
+                    && checkNext(LPAREN)) {
                 if (constructor != null) {
                     throw error(peek(), "class '" + name + "' may declare only one constructor");
                 }
@@ -693,7 +694,7 @@ public final class Parser {
             String className,
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
-        Token keyword = advance(); // contextual 'constructor'
+        Token keyword = advance(); // contextual 'constructor' or 'initialize'
         if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.trapped
                 || mods.isStatic || mods.isAbstract || mods.shared || mods.untrusted) {
             throw error(keyword,
@@ -705,13 +706,22 @@ public final class Parser {
                     "a public constructor requires a public class; private file-root or module classes cannot export constructors");
         }
 
-        consume(LPAREN, "expected '(' after constructor");
+        boolean initializeSpelling = keyword.lexeme().equals("initialize");
+        consume(LPAREN, "expected '(' after " + keyword.lexeme());
         List<Ast.Param> params = parseParametersUntil(RPAREN);
-        consume(RPAREN, "expected ')' after constructor parameters");
-        if (check(COLON) || check(ARROW) || check(FAT_ARROW)) {
-            throw error(peek(), "constructors do not declare a return type");
+        consume(RPAREN, "expected ')' after " + keyword.lexeme() + " parameters");
+        if (initializeSpelling) {
+            if (!match(COLON, ARROW)) {
+                throw error(peek(), "initialize(...) requires an explicit '-> void' or ': void' return type");
+            }
+            Ast.TypeRef result = parseTypeRef();
+            if (!result.equals(Ast.TypeRef.simple("void"))) {
+                throw error(previous(), "initialize(...) must return void");
+            }
+        } else if (check(COLON) || check(ARROW) || check(FAT_ARROW)) {
+            throw error(peek(), "legacy constructor(...) does not declare a return type; use initialize(...) -> void");
         }
-        List<Ast.Stmt> body = parseBlock();
+        List<Ast.Stmt> body = initializeSpelling ? parseNamedCallableBody(true) : parseBlock();
         return new Ast.ConstructorDecl(mods.visibility, params, annotations, body);
     }
 
@@ -1168,7 +1178,7 @@ public final class Parser {
             type = parseTypeRef();
             name = consume(IDENT, "expected field name").lexeme();
         }
-        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        Ast.Expr initializer = match(EQUAL, COLON) ? parseExpression() : null;
         if (type == null && initializer == null) {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
@@ -1184,7 +1194,7 @@ public final class Parser {
             parseTypeRef();
             if (!check(IDENT)) return false;
             advance();
-            return check(COLON) || check(EQUAL);
+            return check(COLON) || check(EQUAL) || check(SEMICOLON);
         } catch (IllegalArgumentException ex) {
             return false;
         } finally {
@@ -1196,19 +1206,22 @@ public final class Parser {
             List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         boolean isFinal = matchContextualIdentifier("final");
-        boolean mutableReferent = match(MUT);
+        boolean explicitMutableReferent = match(MUT);
         Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
         String name = consume(IDENT, "expected class field name after type").lexeme();
-        if (!match(COLON, EQUAL)) {
-            throw error(peek(), "class field initializer requires ':' or '='");
+        Ast.Expr initializer = null;
+        if (match(COLON, EQUAL)) {
+            initializer = parseExpression();
+            consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
+        } else {
+            consume(SEMICOLON, "uninitialized type-first class field requires ';'");
         }
-        Ast.Expr initializer = parseExpression();
-        consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
-        // Slot reassignment and mutation through its stored referent are
-        // separate capabilities. 'final' does NOT silently grant mutable
-        // referent access; only an explicit 'mut' modifier requests it.
-        Ast.BindingKind kind = isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
-        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
+        // Implicit class fields are exactly equivalent to explicit 'val':
+        // one fixed slot with a mutable referent. The 'final' spelling is a
+        // fixed slot with an immutable referent unless 'mut' is explicit.
+        boolean mutableReferent = isFinal ? explicitMutableReferent : true;
+        return new Ast.FieldDecl(name, visibility, Ast.BindingKind.VAL,
+                type, annotations, initializer, mutableReferent);
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
@@ -1345,6 +1358,7 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
+        boolean explicitReturnType = check(COLON) || check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
         // An abstract class may declare required slots as `name(args): Type;`.
@@ -1360,7 +1374,7 @@ public final class Parser {
         if (mods.isAbstract || implicitAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
-        } else body = parseBlock();
+        } else body = parseNamedCallableBody(explicitReturnType);
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
     }
@@ -2155,6 +2169,27 @@ public final class Parser {
         StringBuilder name = new StringBuilder(consume(IDENT, "expected name").lexeme());
         while (match(DOT)) name.append('.').append(consume(IDENT, "expected name after '.'").lexeme());
         return name.toString();
+    }
+
+    /**
+     * Named methods and initialize(...) support brace bodies and end-delimited
+     * bodies. A return type is required before an end-delimited body so the
+     * method/class 'end' boundaries cannot be mistaken for untyped signatures.
+     * The 'as' keyword remains exclusive to type/module declarations.
+     */
+    private List<Ast.Stmt> parseNamedCallableBody(boolean explicitReturnType) {
+        if (check(AS)) {
+            throw error(peek(), "callable bodies cannot use 'as'; use '::' or a typed end-delimited body");
+        }
+        if (check(LBRACE)) return parseBlock();
+        if (!explicitReturnType) {
+            throw error(peek(), "end-delimited callable bodies require an explicit return type");
+        }
+        match(DOUBLE_COLON);
+        List<Ast.Stmt> body = new ArrayList<>();
+        while (!check(END) && !check(EOF)) body.add(parseStatement());
+        consume(END, "expected 'end' to close callable body");
+        return body;
     }
 
     private List<Ast.Stmt> parseBlock() {
