@@ -3282,11 +3282,29 @@ public final class ActorRuntime implements AutoCloseable {
                     barrierWorkerSnapshot().stream().map(ActorRef::ready).toList());
         }
 
-        /** Completion snapshot; new worker admissions are not included. */
+        /**
+         * Completion snapshot; new worker admissions are not included.
+         *
+         * After group close, managedWorkers is intentionally cleared to revoke
+         * observation/cancellation authority. Its emptiness is not evidence
+         * that already-admitted workers have retired. Reuse the runtime-owned
+         * close barrier instead of completing an empty worker snapshot.
+         */
         public OresFuture<List<Void>> workersDone() {
             requireObserver("await ActorGroup workers completion");
+            final List<ActorRef<?>> snapshot;
+            final boolean groupWasClosed;
+            synchronized (authorityLock) {
+                groupWasClosed = groupClosed.get();
+                snapshot = groupWasClosed
+                        ? List.of()
+                        : List.copyOf(managedWorkers.values());
+            }
+            if (groupWasClosed) {
+                return OresFutures.all(List.of(closedWorkersDone));
+            }
             return OresFutures.all(
-                    barrierWorkerSnapshot().stream().map(ActorRef::done).toList());
+                    snapshot.stream().map(ActorRef::done).toList());
         }
 
         /**
