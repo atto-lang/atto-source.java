@@ -628,6 +628,35 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
         self.assertEqual(calls[0], 2)
 
+    def test_origin_rejects_last_push_or_conversation_revocation_during_attestation(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        for kind in ("last_push", "conversations"):
+            api, _ = self.verified_origin_api()
+            calls = [0]
+
+            def revoked(route, method="GET", payload=None):
+                result = api(route, method, payload)
+                if route.endswith("/branches/main/protection"):
+                    calls[0] += 1
+                    if calls[0] == 2:
+                        result = dict(result)
+                        if kind == "last_push":
+                            reviews = dict(result["required_pull_request_reviews"])
+                            reviews["require_last_push_approval"] = False
+                            result["required_pull_request_reviews"] = reviews
+                        else:
+                            result["required_conversation_resolution"] = {
+                                "enabled": False
+                            }
+                return result
+
+            with self.subTest(kind=kind), patch.object(
+                pub, "gh_api", side_effect=revoked
+            ):
+                with self.assertRaisesRegex(pub.Denied, "last-push approval"):
+                    ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+            self.assertEqual(calls[0], 2)
+
     def test_origin_rejects_source_repository_id_replacement(self):
         api, _ = self.verified_origin_api(
             source_id=pub.SOURCE_REPOSITORY_ID + 1
