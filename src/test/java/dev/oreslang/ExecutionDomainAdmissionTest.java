@@ -24,7 +24,6 @@ final class ExecutionDomainAdmissionTest {
         List<String> sources = List.of(
                 "pub gpu fnc kernel(): int { return 1; }",
                 "pub fnc main(): int { gpu { return 1; } return 0; }",
-                "pub fnc main(): int { cpu { return 1; } return 0; }",
                 "pub fnc main(): int { gpu { cpu { return 1; } } return 0; }",
                 "pub fnc main(): int { cpu { gpu { return 1; } } return 0; }",
                 "pub fnc main(): int { return gpu; }",
@@ -78,11 +77,8 @@ final class ExecutionDomainAdmissionTest {
     @Test
     void nestedSynchronousRegionsStillFailClosedInsideTaskBlocks() {
         List<String> sources = List.of(
-                "pub fnc main(): int { cpu {} return 0; }",
                 "pub fnc main(): int { gpu {} return 0; }",
-                "pub fnc main(): int { let Future<int> f = cpu task { gpu { return 1; } }; return 0; }",
-                "pub fnc main(): int { let Future<int> f = gpu task { cpu { return 1; } }; return 0; }",
-                "pub fnc main(): int { let Future<int> f = nb gpu { cpu { return 1; } }; return 0; }"
+                "pub fnc main(): int { let Future<int> f = cpu task { gpu { return 1; } }; return 0; }"
         );
         for (String source : sources) {
             IllegalArgumentException error = assertThrows(
@@ -91,6 +87,17 @@ final class ExecutionDomainAdmissionTest {
                     error::getMessage);
             assertTrue(error.getMessage().contains("no implicit CPU fallback"),
                     error::getMessage);
+        }
+    }
+
+    @Test
+    void scalarCpuAdmissionRejectsUnloweredStatementsAndSideEffects() {
+        for (String body : List.of(
+                "", "let int x = 1; return x;",
+                "some_function()", "await some_future", "rt take owner")) {
+            String source = "pub fnc main(): int { return cpu { " + body + " }; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
         }
     }
 
