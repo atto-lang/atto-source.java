@@ -500,7 +500,16 @@ public final class TreeShaker {
                 if (operand == UNKNOWN) return UNKNOWN;
                 if (unary.operator().equals("!") && operand instanceof Boolean value) return !value;
                 if (unary.operator().equals("+") && operand instanceof Number) return operand;
-                if (unary.operator().equals("-") && operand instanceof Long value) return -value;
+                if (unary.operator().equals("-") && operand instanceof Long value) {
+                    // Preserve checked signed-i64 semantics across build optimization:
+                    // plain Java unary negation wraps Long.MIN_VALUE silently.
+                    // Leave an overflowing expression intact for runtime checking.
+                    try {
+                        return Math.negateExact(value);
+                    } catch (ArithmeticException overflow) {
+                        return UNKNOWN;
+                    }
+                }
                 if (unary.operator().equals("-") && operand instanceof Double value) return -value;
                 return UNKNOWN;
             }
