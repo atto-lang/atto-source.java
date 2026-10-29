@@ -909,6 +909,16 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            // A sealed actor state schema is not equivalent to ordinary
+            // actor fields. Until state loans are represented in the AST,
+            // type/effect-checked, and lowered by every enabled backend,
+            // refuse it explicitly rather than mis-parsing it as a method
+            // or pretending an ordinary field has exclusive loan semantics.
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                throw error(peek(), "actor state { ... } requires sealed-state "
+                        + "schema, handle_state loan checking, and runtime lowering; "
+                        + "not yet supported by this compiler");
+            }
             if (isContextualIdentifier("int") && current + 1 < tokens.size()
                     && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
                         || tokens.get(current + 1).lexeme().equals("messageConcurrency"))) {
@@ -976,6 +986,11 @@ public final class Parser {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
+            // Sealed runtime entrypoint: user methods must never shadow
+            // the future intrinsic and obtain an unchecked state loan.
+            if (check(IDENT) && peek().lexeme().equals("handle_state")) {
+                throw error(peek(), "handle_state is a sealed runtime actor intrinsic");
+            }
             if (mods.isStatic && explicitMethod) {
                 throw error(previous(), "static actor functions use 'static fnc', not 'static method'");
             }
