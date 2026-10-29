@@ -4,6 +4,10 @@ on:
     paths:
       - 'scripts/cgl-*'
       - 'tests/test_cgl_preflight.py'
+      - 'pom.xml'
+      - 'src/main/java/**'
+      - 'stdlib/**'
+      - 'examples/together.ores'
       - 'docs/CGL_DEPLOYMENT.md'
       - '.github/workflows/cgl-compat.yml'
   workflow_dispatch:
