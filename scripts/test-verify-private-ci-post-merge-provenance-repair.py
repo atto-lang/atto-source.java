@@ -175,6 +175,16 @@ class ProvenanceVerifierTest(unittest.TestCase):
                 )
                 self.assert_rejected("invalid provenance snapshot JSON")
 
+    def test_json_depth_limit_has_exact_boundary(self):
+        self.v.require_json_depth(b"[" * self.v.MAX_JSON_DEPTH + b"0" + b"]" * self.v.MAX_JSON_DEPTH)
+        with self.assertRaisesRegex(self.v.Rejected, "invalid provenance snapshot JSON"):
+            self.v.require_json_depth(b"[" * (self.v.MAX_JSON_DEPTH + 1)
+                                      + b"0" + b"]" * (self.v.MAX_JSON_DEPTH + 1))
+
+    def test_json_depth_scan_ignores_brackets_in_quoted_values(self):
+        self.v.require_json_depth(b'{"value":"' + b"[" * 2000 + b'"}')
+        self.v.require_json_depth(b'{"value":"escaped\\\"' + b"{" * 2000 + b'"}')
+
     def test_excessively_nested_json_rejected_cleanly(self):
         raw = "[" * 2200 + "0" + "]" * 2200
         (self.root / self.v.MANIFEST).write_text(raw, encoding="utf-8")
