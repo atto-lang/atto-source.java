@@ -103,6 +103,33 @@ final class ImplicitValInitializeSyntaxTest {
     }
 
     @Test
+    void rejectsMissingFixedSlotInitializationEvenWithConstructorPresent() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {}
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("must initialize fixed field"), failure::toString);
+    }
+
+    @Test
+    void rejectsFixedSlotInitializationAfterEarlyReturn() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {
+                    return;
+                    self.connection_id = id;
+                  }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void implicitBodyRequiresPhysicalNewlineAndExplicitDelimiterAdmitsSameLine() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define class C as
