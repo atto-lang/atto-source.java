@@ -248,6 +248,19 @@ public final class ActorRuntime implements AutoCloseable {
         if (nativeIo != null) nativeIo.requireNetworkListen(resource, operation);
     }
 
+    /**
+     * Physical native-resource admission is separate from permission checks
+     * on a named resource. A revoked actor or native-I/O worker must not obtain
+     * a new loan or publish a new handle even if it holds a stale reference
+     * to this context-owned AsyncNativeIo.
+     */
+    static void requireCurrentActorAuthorityActive(String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) turn.permissionScope().requireActive(operation);
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.requireActive(operation);
+    }
+
     static void requireCurrentActorPermission(
             RuntimePermissions.Permission permission, String resource, String operation) {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
