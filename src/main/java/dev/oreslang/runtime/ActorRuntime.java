@@ -92,7 +92,8 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId,
             ActorKind kind,
             IsolatePolicy policy,
-            Object executionDomain) { }
+            Object executionDomain,
+            ActorPermissionScope permissionScope) { }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -164,6 +165,13 @@ public final class ActorRuntime implements AutoCloseable {
     public static IsolatePolicy currentActorPolicy() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.policy();
+    }
+
+    /** Enforce the immutable resource policy of the current actor turn. */
+    static void requireCurrentActorPermission(
+            RuntimePermissions.Permission permission, String resource, String operation) {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current != null) current.permissionScope().require(permission, resource, operation);
     }
 
     public static ActorRuntime currentActorRuntime() {
@@ -503,6 +511,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
+    /** Host root scope: never reconstructed from a guest-supplied actor policy. */
+    private final RuntimePermissions permissionCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
@@ -581,12 +591,30 @@ public final class ActorRuntime implements AutoCloseable {
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher,
             PhysicalStopDispatcher physicalStopDispatcher) {
+        // Legacy standalone embeddings pass coarse authority explicitly; OresContext
+        // instead supplies its actual serialized/CLI-scoped guest authority.
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                physicalStopDispatcher,
+                RuntimePermissions.fromCapabilities(
+                        Objects.requireNonNull(policyCeiling).capabilities()));
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            PhysicalStopDispatcher physicalStopDispatcher,
+            RuntimePermissions permissionCeiling) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
+        this.permissionCeiling = Objects.requireNonNull(permissionCeiling, "permissionCeiling");
+        // The root restriction may be narrower than the coarse isolate ceiling,
+        // but it cannot be replaced by a child actor's request or token.
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
@@ -4471,6 +4499,62 @@ public final class ActorRuntime implements AutoCloseable {
                 behaviorFactory);
     }
 
+    /**
+     * Opaque one-shot authority to spawn a child with a narrower resource scope.
+     * The issuer is the currently executing parent actor, never the host caller.
+     * Neither a token nor a RuntimePermissions instance can extend the parent
+     * scope: authorization requires every ancestor restriction to pass.
+     */
+    public static final class PermissionDelegation {
+        private final ActorRuntime runtime;
+        private final ActorId parentId;
+        private final ActorPermissionScope scope;
+        private final AtomicBoolean consumed = new AtomicBoolean();
+
+        private PermissionDelegation(
+                ActorRuntime runtime, ActorId parentId, ActorPermissionScope scope) {
+            this.runtime = runtime;
+            this.parentId = parentId;
+            this.scope = scope;
+        }
+    }
+
+    public PermissionDelegation delegatePermissions(RuntimePermissions restrictions) {
+        requireCallerRuntimeAffinity("mint actor permission delegation");
+        requireNotActorGroupMailman("mint actor permission delegation");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null) {
+            throw new SecurityException("only a currently executing actor may delegate its permissions");
+        }
+        if (parent.stopped.get() || parent.finalized || parent.forceKillFenced) {
+            throw new SecurityException("stopping actor cannot delegate permissions");
+        }
+        return new PermissionDelegation(this, parent.ref.id(),
+                parent.permissionScope.attenuate(Objects.requireNonNull(restrictions)));
+    }
+
+    /**
+     * Child spawn with a same-parent, same-runtime, once-only attenuation token.
+     * Ordinary spawnChild and spawn calls inherit the parent scope unchanged.
+     */
+    public <M> ActorHandle<M> spawnChild(
+            ActorKind kind, IsolatePolicy policy, PermissionDelegation delegation,
+            BehaviorFactory<M> behaviorFactory) {
+        requireCallerRuntimeAffinity("spawn delegated child actor");
+        requireNotActorGroupMailman("spawn delegated child actor");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null || delegation == null
+                || delegation.runtime != this || delegation.parentId != parent.ref.id()) {
+            throw new SecurityException("actor permission delegation has a foreign issuer");
+        }
+        if (!delegation.consumed.compareAndSet(false, true)) {
+            throw new SecurityException("actor permission delegation has already been consumed");
+        }
+        ActorRef<M> ref = spawnInternal(
+                kind, policy, behaviorFactory, false, null, null, null, delegation.scope);
+        return new ActorHandle<>(ref, parent.ref.id());
+    }
+
     private IsolatePolicy defaultSpawnPolicy() {
         IsolatePolicy caller = currentActorPolicy();
         return caller == null ? policyCeiling : caller;
@@ -4906,6 +4990,19 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory,
+                codeImage, codeExecutor, codeActorType, null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            ActorPermissionScope delegatedScope) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -4964,6 +5061,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<?> parent = currentActor.get();
+        if (delegatedScope != null && parent == null) {
+            throw new SecurityException("permission delegation requires a current parent actor");
+        }
+        ActorPermissionScope actorPermissionScope = delegatedScope != null
+                ? delegatedScope
+                : parent == null ? ActorPermissionScope.root(permissionCeiling)
+                        : parent.permissionScope;
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
@@ -4989,7 +5093,8 @@ public final class ActorRuntime implements AutoCloseable {
                         codeImage,
                         codeExecutor,
                         codeActorType,
-                        parent);
+                        parent,
+                        actorPermissionScope);
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
@@ -7522,6 +7627,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
+        private final ActorPermissionScope permissionScope;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
         /** Exact immutable source image whitelisted for this actor, if any. */
@@ -7655,8 +7761,10 @@ public final class ActorRuntime implements AutoCloseable {
                 SharedCodeImageStore.CodeImage codeImage,
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
-                ActorCell<?> parent) {
+                ActorCell<?> parent,
+                ActorPermissionScope permissionScope) {
             this.ref = ref;
+            this.permissionScope = Objects.requireNonNull(permissionScope);
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
@@ -8426,7 +8534,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+                    ActorRuntime.this, ref.id(), kind, policy, executionDomain,
+                    permissionScope));
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
