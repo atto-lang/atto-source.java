@@ -120,6 +120,12 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorId actorId() { return actorId; }
         ActorRuntime runtime() { return runtime; }
+        void requireActive(String operation) {
+            // Admission capture is not authority to start after delegation
+            // revocation. Require the still-live chain on the physical worker
+            // immediately before invoking any admitted native I/O callable.
+            scope.requireActive(operation);
+        }
         void requireCapability(IsolatePolicy.Capability capability, String operation) {
             coarsePolicy.require(capability, operation);
         }
