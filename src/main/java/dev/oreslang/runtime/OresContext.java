@@ -141,7 +141,8 @@ public final class OresContext implements AutoCloseable {
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
                     vm::executeControl,
-                    vm::executePhysicalStop);
+                    vm::executePhysicalStop,
+                    runtimePermissions);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             // Install BEFORE publishing this actor runtime to any guest.
@@ -215,6 +216,10 @@ public final class OresContext implements AutoCloseable {
             String api) {
         requireCapability(permission.capability(), api);
         runtimePermissions.require(permission, resource, api);
+        // Actor execution shares its parent's Truffle context, not its
+        // resource authority. Always intersect the host/CLI root scope with
+        // this actor's immutable delegation chain at the real I/O boundary.
+        ActorRuntime.requireCurrentActorPermission(permission, resource, api);
     }
 
     static void requireEffectiveCapability(
