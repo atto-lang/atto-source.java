@@ -73,10 +73,23 @@ final class ParserAnnotationRetentionGateTest {
         }) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse(directive + " define module demo as end"), directive);
-            assertTrue(error.getMessage().contains("not a supported module annotation"),
-                    error.getMessage());
+            assertTrue(error.getMessage().contains("not a supported module annotation")
+                    || error.getMessage().contains("guest-AOT lowering"), error.getMessage());
         }
         assertDoesNotThrow(() -> Parser.parse("@BuildMetadata define module demo as end"));
+    }
+
+    @Test
+    void privilegeAndEffectAnnotationsCannotBeInertOnCallables() {
+        for (String directive : new String[] {
+                "@Critical(1)", "@RequiresPermission(\"ffi\")",
+                "@CallerRole(Admin)", "@CallableBy(Admin)", "@ActorMaxThreads",
+                "@ActorMiddleware(Middleware)", "@Unsafe", "@AllowAll"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(directive + " fnc main(): int { return 1; }"), directive);
+            assertTrue(error.getMessage().contains("guest-AOT lowering"), error.getMessage());
+        }
     }
 
     @Test
