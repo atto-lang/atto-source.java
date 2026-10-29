@@ -45,13 +45,18 @@ final class CpuScalarSyncV3Test {
 
     @Test void dynamicReferencesAndHostEffectsCannotCrossTheScalarBoundary() {
         String prefix = "pub fnc main(): int { const int value = 42; return cpu { ";
+        String suffix = " }; }";
+        // Positive control: prove the surrounding function is valid, so the
+        // negative corpus cannot pass only because main() was unterminated.
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                prefix + "40 + 2" + suffix));
         for (String body : new String[]{
                 "value", "print(42)", "await value", "rt take value",
                 "gpu { 42 }", "cpu task { return 42; }",
                 "40 / 2", "\"host-effect\""
         }) {
             assertThrows(IllegalArgumentException.class,
-                    () -> OresCompiler.parseAndTypeCheck(prefix + body + " };"),
+                    () -> OresCompiler.parseAndTypeCheck(prefix + body + suffix),
                     "unadmitted scalar region: " + body);
         }
     }
