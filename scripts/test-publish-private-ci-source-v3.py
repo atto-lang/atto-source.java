@@ -661,6 +661,7 @@ class PrivateCiV3Test(unittest.TestCase):
 
         for name, mutate in (
             ("source_id", lambda d: d.update(source_repo_id=999)),
+            ("invalid_pr_type", lambda d: d.update(allowed_prs=[2012, []])),
             ("wrong_head", lambda d: d["allowed_sources_by_pr"]["2012"].update(
                 head_sha="3" * 40)),
             ("wrong_tree", lambda d: d["allowed_sources_by_pr"]["2012"].update(
