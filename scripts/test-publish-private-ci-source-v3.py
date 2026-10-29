@@ -1586,7 +1586,8 @@ class PrivateCiV3Test(unittest.TestCase):
                     "source_head_pin": head_pin,
                     "source_tree_pin": tree_pin,
                 }
-                with self.subTest(name=name), (
+                with (
+                    self.subTest(name=name),
                     patch.object(v3.legacy, "require_preflight"),
                     patch.object(v3.legacy, "checked_policy_approval",
                                  return_value=(POLICY, carrier["repository_id"])),
