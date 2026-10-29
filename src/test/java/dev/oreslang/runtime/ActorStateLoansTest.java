@@ -154,6 +154,35 @@ final class ActorStateLoansTest {
         }
     }
 
+    @Test void epochExhaustionFailsQueuedWaitersWithoutLeakingOwners() throws Exception {
+        try (var loans = new ActorStateLoans(3)) {
+            // Deterministic near-overflow fault injection. No loops over
+            // 2^63 grants, and no hidden production API for setting epochs.
+            var epoch = ActorStateLoans.class.getDeclaredField("nextEpoch");
+            epoch.setAccessible(true);
+            epoch.setLong(loans, Long.MAX_VALUE - 1);
+
+            Object firstOwner = new Object();
+            Object nextOwner = new Object();
+            Object lastOwner = new Object();
+            var first = loans.acquireAsync(firstOwner).join();
+            assertEquals(Long.MAX_VALUE, first.epoch());
+            var second = loans.acquireAsync(nextOwner);
+            var third = loans.acquireAsync(lastOwner);
+            assertEquals(2, loans.pendingCount());
+
+            assertDoesNotThrow(first::close, "epoch overflow cannot break close()");
+            assertTrue(second.isCompletedExceptionally());
+            assertTrue(third.isCompletedExceptionally());
+            assertEquals(0, loans.activeCount());
+            assertEquals(0, loans.pendingCount());
+
+            // Owners of failed waiters are released from the identity ledger.
+            assertTrue(loans.acquireAsync(nextOwner).isCompletedExceptionally());
+            assertTrue(loans.acquireAsync(lastOwner).isCompletedExceptionally());
+        }
+    }
+
     @Test void concurrentHostHandoffsNeverOverlapExclusiveState() throws Exception {
         try (var loans = new ActorStateLoans(128)) {
             AtomicInteger working = new AtomicInteger();
