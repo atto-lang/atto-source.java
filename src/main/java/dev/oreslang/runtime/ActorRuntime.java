@@ -2429,48 +2429,66 @@ public final class ActorRuntime implements AutoCloseable {
             cell.sourceReceiveSuspended = true;
         }
 
+        // This may observe a borrowed Future that never settles. Do not let
+        // its retained callback strongly pin the actor's heap or the runtime
+        // after STOP/hot reload. Live actors are rooted by the runtime's actor
+        // table until physical retirement; a producer only resolves weak
+        // identities and enqueues scheduler work, never guest code.
+        java.lang.ref.WeakReference<ActorRuntime> runtimeRef =
+                new java.lang.ref.WeakReference<>(this);
+        java.lang.ref.WeakReference<ActorCell<?>> cellRef =
+                new java.lang.ref.WeakReference<>(cell);
         future.whenCompleteRuntime((ignored, failure) -> {
-            if (!enqueueContinuation(cell, () -> {
-                long completedSequence;
-                synchronized (cell.lifecycleLock) {
-                    completedSequence = cell.activeMail == null
-                            ? -1L : cell.activeMail.sequence();
+            ActorRuntime runtime = runtimeRef.get();
+            ActorCell<?> admittedCell = cellRef.get();
+            if (runtime == null || admittedCell == null) return;
+            runtime.resumeSuspendedReceiveFromFuture(admittedCell, failure);
+        });
+    }
+
+    /** A borrowed producer completion never runs source receive code inline. */
+    private void resumeSuspendedReceiveFromFuture(
+            ActorCell<?> cell, Throwable failure) {
+        if (!enqueueContinuation(cell, () -> {
+            long completedSequence;
+            synchronized (cell.lifecycleLock) {
+                completedSequence = cell.activeMail == null
+                        ? -1L : cell.activeMail.sequence();
+                cell.sourceReceiveSuspended = false;
+                cell.activeMail = null;
+                cell.lifecycleLock.notifyAll();
+            }
+            if (failure != null) {
+                Throwable terminal = OresFuture.unwrap(failure);
+                if (terminal instanceof java.util.concurrent.CancellationException
+                        && cell.endRequested) {
+                    return;
+                }
+                if (terminal instanceof RuntimeException runtime) throw runtime;
+                if (terminal instanceof Error error) throw error;
+                throw new RuntimeException(terminal);
+            }
+            if (completedSequence < 0) {
+                throw new IllegalStateException("source receive lost pending mail sequence");
+            }
+            cell.markMessageProcessed(completedSequence);
+        })) {
+            boolean failActor = false;
+            synchronized (cell.lifecycleLock) {
+                if (!cell.stopped.get() && !cell.finalized) {
                     cell.sourceReceiveSuspended = false;
                     cell.activeMail = null;
-                    cell.lifecycleLock.notifyAll();
-                }
-                if (failure != null) {
-                    Throwable terminal = OresFuture.unwrap(failure);
-                    if (terminal instanceof java.util.concurrent.CancellationException
-                            && cell.endRequested) {
-                        return;
-                    }
-                    if (terminal instanceof RuntimeException runtime) throw runtime;
-                    if (terminal instanceof Error error) throw error;
-                    throw new RuntimeException(terminal);
-                }
-                if (completedSequence < 0) {
-                    throw new IllegalStateException("source receive lost pending mail sequence");
-                }
-                cell.markMessageProcessed(completedSequence);
-            })) {
-                boolean failActor = false;
-                synchronized (cell.lifecycleLock) {
-                    if (!cell.stopped.get() && !cell.finalized) {
-                        cell.sourceReceiveSuspended = false;
-                        cell.activeMail = null;
-                        failActor = true;
-                    }
-                }
-                // A failed Future invokes registered callbacks inline. Never
-                // initiate termination while an outer lifecycle monitor is
-                // still held: drain observers may re-enter the runtime.
-                if (failActor) {
-                    cell.fail(new IllegalStateException(
-                            "actor source receive completion could not re-enter its continuation lane"));
+                    failActor = true;
                 }
             }
-        });
+            // A failed Future invokes registered callbacks inline. Never
+            // initiate termination while an outer lifecycle monitor is
+            // still held: drain observers may re-enter the runtime.
+            if (failActor) {
+                cell.fail(new IllegalStateException(
+                        "actor source receive completion could not re-enter its continuation lane"));
+            }
+        }
     }
 
     /** An actor handle is an opaque typed local capability, never a direct actor-state pointer. */
