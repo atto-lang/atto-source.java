@@ -172,7 +172,8 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
         }
     }
     private static void validId(String value) {
-        if (value == null || value.isBlank() || value.getBytes(StandardCharsets.UTF_8).length > 128)
+        if (value == null || value.isBlank() || value.getBytes(StandardCharsets.UTF_8).length > 128
+                || value.chars().anyMatch(Character::isISOControl))
             throw new IllegalArgumentException("invalid identity");
     }
 
@@ -181,12 +182,13 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
         private record Slot(Identity id) {}
         private record Operation(Identity id, String op) {}
         private record Dedup(byte[] digest, Result result) {}
-        private final Map<String, Long> epochs = new HashMap<>();
+        private final Map<ActorKey, Long> epochs = new HashMap<>();
         private final Map<Slot, Long> versions = new HashMap<>();
         private final Map<Slot, byte[]> snapshots = new HashMap<>();
         private final Map<Operation, Dedup> operations = new HashMap<>();
         private int commitCalls;
-        private static String epochKey(String tenant, String actor) { return tenant + "\u0000" + actor; }
+        private record ActorKey(String tenant, String actor) {}
+        private static ActorKey epochKey(String tenant, String actor) { return new ActorKey(tenant, actor); }
         @Override public synchronized void grantEpoch(String tenant, String actor, long epoch) {
             validId(tenant); validId(actor);
             if (epoch <= 0 || epoch < epochs.getOrDefault(epochKey(tenant, actor), 0L))
@@ -199,15 +201,17 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
             for (Write w : batch) {
                 Operation op = new Operation(w.id(), w.operationId());
                 byte[] hash = digest(w);
+                // Authorization and activation fencing precede dedupe: a stale activation
+                // must not learn/replay previously committed operation receipts.
+                if (epochs.getOrDefault(epochKey(w.id().tenant(), w.id().actor()), 0L) != w.epoch()) {
+                    out.add(new Result(w.operationId(), Status.STALE_EPOCH, -1, false)); continue;
+                }
                 Dedup seen = operations.get(op);
                 if (seen != null) {
                     out.add(Arrays.equals(seen.digest(), hash)
                         ? new Result(w.operationId(), Status.DUPLICATE, seen.result().version(), false)
                         : new Result(w.operationId(), Status.OP_ID_CONFLICT, -1, false));
                     continue;
-                }
-                if (epochs.getOrDefault(epochKey(w.id().tenant(), w.id().actor()), 0L) != w.epoch()) {
-                    out.add(new Result(w.operationId(), Status.STALE_EPOCH, -1, false)); continue;
                 }
                 Slot slot = new Slot(w.id());
                 long version = versions.getOrDefault(slot, 0L);
