@@ -23,7 +23,7 @@ final class AnnotationAdmissionParityTest {
             if (line.isBlank() || line.startsWith("#")) continue;
             String[] fields = line.split("\\t", -1);
             assertEquals(3, fields.length, "malformed annotation admission TSV row");
-            String kind = fields[0], id = fields[1], source = fields[2].replace("\\\\n", "\\n");
+            String kind = fields[0], id = fields[1], source = fields[2].replace("\\n", "\n");
             assertFalse(id.isBlank());
             assertTrue(identifiers.add(id), "duplicate annotation case " + id);
             assertFalse(source.isBlank());
