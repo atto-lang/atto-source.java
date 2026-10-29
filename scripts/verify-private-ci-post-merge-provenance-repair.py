@@ -19,6 +19,7 @@ MANIFEST = "docs/security/private-ci-post-merge-provenance-repair-20261027.json"
 LEDGER = ".github/private-ci-approved-repositories.txt"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_JSON_DEPTH = 64
 EXPECTED = {
     ".github/CODEOWNERS": "078909add1bb1d37eefc22c11dfa8e7ceb76aace",
     ".github/workflows/private-ci-mirror-preflight.yml": "288da01fdc0414cf9fbd3f47be459e7569927771",
@@ -45,6 +46,31 @@ def unique_object(pairs):
 
 def reject_nonfinite_json(value: str):
     raise Rejected("invalid provenance snapshot JSON")
+
+
+def require_json_depth(raw: bytes) -> None:
+    """Reject overly deep JSON before the runtime parser allocates nested objects."""
+    depth = 0
+    quoted = False
+    escaped = False
+    for byte in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == 92:
+                escaped = True
+            elif byte == 34:
+                quoted = False
+        elif byte == 34:
+            quoted = True
+        elif byte in (91, 123):
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise Rejected("invalid provenance snapshot JSON")
+        elif byte in (93, 125):
+            depth -= 1
+            if depth < 0:
+                raise Rejected("invalid provenance snapshot JSON")
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -82,6 +108,7 @@ def load_manifest(root: Path):
     raw = read_regular(root, MANIFEST)
     if not raw or len(raw) > MAX_MANIFEST_BYTES or raw.startswith(bytes.fromhex("efbbbf")):
         raise Rejected("invalid provenance snapshot JSON")
+    require_json_depth(raw)
     try:
         doc = json.loads(
             raw.decode("utf-8"),
