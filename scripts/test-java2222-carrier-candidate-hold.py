@@ -43,7 +43,7 @@ def main():
         fail("source repo")
     if doc["source_pr"] != 2222:
         fail("source PR")
-    if doc["source_head_sha"] != "ce23fb32485cd59282eb09bf06b480177b90b277":
+    if doc["source_head_sha"] != "f41c6a109ee1899f1f6847e865428ac697da20e6":
         fail("source head")
     if doc["source_main_sha"] != "9f4f4a3b75dd4b124e8509b65a88a98213c11ab5":
         fail("source main")
