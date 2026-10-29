@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
@@ -295,10 +296,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // An explicitly owned Task/operation must cancel through its separate
         // owner capability; observing a CompletionStage grants no authority.
         OresFuture<T> result = new OresFuture<>();
+        // A foreign CompletionStage has no general unsubscribe API.
+        // Some host stages retain completion callbacks indefinitely while
+        // pending. Capture this observer weakly so cancelling/dropping the
+        // adapted Future cannot pin its actor/task state through the host.
+        WeakReference<OresFuture<T>> observerRef = new WeakReference<>(result);
         try {
             stage.whenComplete((value, failure) -> {
+                OresFuture<T> observer = observerRef.get();
+                if (observer == null || observer.isDone()) return;
                 if (failure == null) {
-                    result.completeFromRuntime(value);
+                    observer.completeFromRuntime(value);
                     return;
                 }
 
@@ -318,14 +326,14 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                     if (observationFailure instanceof VirtualMachineError fatal) throw fatal;
                     if (observationFailure instanceof ThreadDeath fatal) throw fatal;
                     if (observationFailure instanceof LinkageError fatal) throw fatal;
-                    result.failFromRuntime(unwrap(observationFailure));
+                    observer.failFromRuntime(unwrap(observationFailure));
                     return;
                 }
 
                 if (cancelled) {
-                    result.cancel(false);
+                    observer.cancel(false);
                 } else {
-                    result.failFromRuntime(terminalFailure);
+                    observer.failFromRuntime(terminalFailure);
                 }
             });
         } catch (Throwable failure) {
