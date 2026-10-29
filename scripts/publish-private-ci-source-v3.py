@@ -738,8 +738,9 @@ def validate_actor_storage_native_plan(plan, source_pr, plan_bytes):
         raise Denied("native actor storage plan uses unreviewed image digests")
     allowed = plan.get("allowed_prs")
     if (type(allowed) is not list or not allowed
-            or source_pr not in allowed or len(set(allowed)) != len(allowed)
-            or any(type(pr) is not int or pr <= 0 for pr in allowed)):
+            or any(type(pr) is not int or pr <= 0 for pr in allowed)
+            or len(set(allowed)) != len(allowed)
+            or source_pr not in allowed):
         raise Denied("native actor storage plan PR allowlist invalid")
     keys = {str(pr) for pr in allowed}
     pins = plan.get("allowed_sources_by_pr")
