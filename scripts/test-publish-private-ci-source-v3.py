@@ -635,7 +635,7 @@ class PrivateCiV3Test(unittest.TestCase):
             "required_status_checks": {
                 "strict": True,
                 "contexts": ["source-free-private-ci-gates"],
-                "checks": [],
+                "checks": [{"context": "source-free-private-ci-gates", "app_id": 15368}],
             },
             "enforce_admins": {"enabled": True},
             "required_conversation_resolution": {"enabled": True},
@@ -685,6 +685,53 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "bypass"):
                 v3.checked_carrier_main("trusted/ci", carrier)
 
+    def test_carrier_denies_unpinned_or_spoofable_ci_statuses(self):
+        carrier = contract()
+        strong = {
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
+                "required_approving_review_count": 1,
+            },
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["security-check"],
+                "checks": [{"context": "security-check", "app_id": 15368}],
+            },
+            "required_conversation_resolution": {"enabled": True},
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        for check_list in (
+            [],
+            [{"context": "security-check"}],
+            [{"context": "security-check", "app_id": -1}],
+            [{"context": "security-check", "app_id": None}],
+            [{"context": "security-check", "app_id": True}],
+            [{"context": "unrelated", "app_id": 15368}],
+        ):
+            protection = json.loads(json.dumps(strong))
+            protection["required_status_checks"]["checks"] = check_list
+
+            def api(route, method="GET", payload=None):
+                if route == "repos/trusted/ci/branches/main":
+                    return {"name": "main", "protected": True,
+                            "commit": {"sha": BASE}}
+                if route == "repos/trusted/ci/branches/main/protection":
+                    return protection
+                raise AssertionError("unexpected API request " + route)
+
+            with (
+                self.subTest(checks=check_list),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+                patch.object(v3, "remote_carrier_file") as files,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "strict required CI"):
+                    v3.checked_carrier_main("trusted/ci", carrier)
+                files.assert_not_called()
+
     def test_carrier_protection_rejects_missing_required_checks_and_drift(self):
         carrier = contract()
         strong = {
@@ -699,7 +746,7 @@ class PrivateCiV3Test(unittest.TestCase):
             },
             "required_status_checks": {
                 "strict": True, "contexts": ["source-free-private-ci-gates"],
-                "checks": [],
+                "checks": [{"context": "source-free-private-ci-gates", "app_id": 15368}],
             },
             "enforce_admins": {"enabled": True},
             "required_conversation_resolution": {"enabled": True},
@@ -747,7 +794,7 @@ class PrivateCiV3Test(unittest.TestCase):
             },
             "required_status_checks": {
                 "strict": True, "contexts": ["synthetic-required-check"],
-                "checks": [],
+                "checks": [{"context": "synthetic-required-check", "app_id": 15368}],
             },
             "required_conversation_resolution": {"enabled": True},
             "enforce_admins": {"enabled": True},
@@ -794,7 +841,7 @@ class PrivateCiV3Test(unittest.TestCase):
             },
             "required_status_checks": {
                 "strict": True, "contexts": ["synthetic-required-check"],
-                "checks": [],
+                "checks": [{"context": "synthetic-required-check", "app_id": 15368}],
             },
             "required_conversation_resolution": {"enabled": True},
             "enforce_admins": {"enabled": True},
