@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
@@ -137,6 +138,16 @@ final class ExecutionDomainAdmissionTest {
                 () -> Parser.parse(start + tooMany + end));
         assertTrue(tokenBudget.getMessage().contains("scalar cpu region exceeds token budget"),
                 tokenBudget::getMessage);
+    }
+
+    @Test
+    void scalarCpuRequiresTheCompilerCanonicalSignedI64LiteralRepresentation() {
+        // The parser and type checker use Long for Oreslang int.
+        assertDoesNotThrow(() -> new Ast.CpuScalarRegionExpr(new Ast.LiteralExpr(42L)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CpuScalarRegionExpr(new Ast.LiteralExpr(42)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CpuScalarRegionExpr(new Ast.LiteralExpr(42.0)));
     }
 
     @Test
