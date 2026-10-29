@@ -20,7 +20,8 @@ fails closed until the source policy is reviewed again.
 
 V3 requires **protected source `main` for every private-source export**.
 If GitHub reports source `main protected: true`, V3 delegates to the legacy
-protected-origin verifier. It requires CODEOWNER review, stale-review dismissal,
+protected-origin verifier. It requires CODEOWNER review, stale-review dismissal, **independent approval
+after the latest push**, resolution of **all pull request conversations**,
 at least one approval, strict non-empty required status checks, administrator
 enforcement, no review bypasses, no force pushes, and no branch deletion.
 
@@ -34,7 +35,8 @@ Carrier `main` is also required to have **live enforceable protected-main
 governance**. V3 rejects `protected: false` and rejects any inaccessible
 protection API; an independent reviewed PR is no longer an authorization
 fallback. Both source and destination must enforce CODEOWNER review,
-stale-review dismissal, strict non-empty required status checks,
+stale-review dismissal, latest-push approval by a separate reviewer,
+conversation resolution, strict non-empty required status checks,
 administrator enforcement, no bypass allowances, no force pushes, and
 no branch deletion. Carrier CODEOWNERS must match the security-owned
 contract exactly. Carrier protection is re-attested before each
