@@ -380,18 +380,20 @@ public final class AsyncNativeIo implements AutoCloseable {
                     } catch (RuntimeException | Error notificationFailure) {
                         recordIncomplete(notificationFailure);
                     } finally {
+                        ActorRuntime.ActorId retireActor;
                         try {
-                            ActorRuntime.ActorId retireActor;
                             synchronized (AsyncNativeIo.this) {
                                 owner.remove(this);
                                 retireActor = decrementActorOperationLocked(admittedActor);
                                 retireDeferredUnregisterLocked();
                                 AsyncNativeIo.this.notifyAll();
                             }
-                            notifyActorRetirement(retireActor);
                         } finally {
                             if (entered) ActorRuntime.exitNativeIoAuthority(ioAuthority);
                         }
+                        // Runtime lifecycle notifications are host control work,
+                        // never executed while carrying an actor's I/O-only scope.
+                        notifyActorRetirement(retireActor);
                     }
                 });
             } catch (RuntimeException | Error startFailure) {
