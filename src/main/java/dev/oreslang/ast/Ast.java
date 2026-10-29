@@ -1461,7 +1461,10 @@ public final class Ast {
         private static boolean closedScalar(Expr expr, int depth, int[] remaining) {
             if (depth > 64 || --remaining[0] < 0) return false;
             if (expr instanceof LiteralExpr literal) {
-                return literal.value() instanceof Long || literal.value() instanceof Integer;
+                // The front-end types only Long as Oreslang signed i64. Reject
+                // Java Integer AST payloads here rather than admitting a
+                // scalar region that fails the later type checker.
+                return literal.value() instanceof Long;
             }
             if (expr instanceof UnaryExpr unary) {
                 return ("-".equals(unary.operator()) || "+".equals(unary.operator()))
