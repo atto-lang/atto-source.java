@@ -8,7 +8,7 @@ provenance.
 ## Current protected-origin candidate
 
 Observed source `main` commit:
-`3210aeff07597035a4ed815ebbdf39720a3266c1`
+`9f4f4a3b75dd4b124e8509b65a88a98213c11ab5`
 
 Observed source `main` branch state at preparation time:
 - GitHub reports `protected=false`;
@@ -93,14 +93,18 @@ authorized by this document.
 
 The source `main` authority candidate advanced after this repair PR was opened.
 The snapshot was re-read and repinned to
-`3210aeff07597035a4ed815ebbdf39720a3266c1`. All seven governed control blobs are unchanged from the prior
+`9f4f4a3b75dd4b124e8509b65a88a98213c11ab5`. All seven governed control blobs are unchanged from the prior
 snapshot, and the approved-destination ledger still has zero active rows.
 This refresh does not change the non-authorizing status of this PR.
 
 
 ### 2026-10-28 refresh
 
-Source `main` advanced to `3210aeff07597035a4ed815ebbdf39720a3266c1`. All seven governed private-CI
+Source `main` advanced to `9f4f4a3b75dd4b124e8509b65a88a98213c11ab5`. All seven governed private-CI
 control blobs were re-read at that exact commit and remain byte-identical to
 the prior snapshot; the active destination ledger still has zero uncommented
 rows. This refresh remains review-only and non-authorizing.
+
+### Current-main review refresh (2026-10-29)
+
+Re-read the seven governed control blobs against Java `main` at `9f4f4a3b75dd4b124e8509b65a88a98213c11ab5` before this review-only refresh; all seven blob identities are unchanged, and `.github/private-ci-approved-repositories.txt` still has zero uncommented destination entries. This remains an observed, **unprotected** `main` snapshot, not protected-origin authority or a private-source transfer authorization. Prior Java/LLVM/security review incidents and protected-main checks remain open. A future main or control-blob change requires fresh readback and independent review.
