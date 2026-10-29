@@ -52,5 +52,5 @@ jobs:
             done
           done
           grep -Eq 'tests="3"' target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
-          grep -Eq 'tests="9"' target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
-          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER cases=12'
+          grep -Eq 'tests="12"' target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
+          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER cases=15'
