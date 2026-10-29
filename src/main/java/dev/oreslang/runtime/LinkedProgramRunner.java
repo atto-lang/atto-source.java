@@ -392,8 +392,34 @@ public final class LinkedProgramRunner {
         for (Path file : workspace.files()) {
             collectImportClosure(file, units, projectConfig, importResolutions, budget, 0);
         }
-        return PackageNamespaceIndex.load(
-                workspace.manifests(), oresSources(units), workspace.aliases());
+        // Only real, manifest-enumerated .ores files enter the package
+        // provider index. Compiler-supplied ores.std/ores.core units have
+        // synthetic IDs and must never be canonicalized as host file paths.
+        LinkedHashMap<String, String> admitted = new LinkedHashMap<>();
+        for (Path member : workspace.files()) {
+            MixedSourceUnit code = units.get(unitId(member));
+            if (code == null || !code.hasOresSource()) {
+                throw new IllegalStateException("namespace member missing from admitted source graph: " + member);
+            }
+            admitted.put(code.unitId(), code.oresSource());
+        }
+        PackageNamespaceIndex index = PackageNamespaceIndex.load(
+                workspace.manifests(), admitted, workspace.aliases());
+        // External alias authority belongs to the *root* manifest packages.
+        // A package pulled in transitively cannot reuse its consumer's alias
+        // table to import unrelated dependencies.
+        for (Map.Entry<String, MixedSourceUnit> entry : units.entrySet()) {
+            if (!entry.getValue().hasOresSource()) continue;
+            for (Ast.ImportDecl imported : Parser.parse(entry.getValue().oresSource()).imports()) {
+                if (imported.sourceNamespace() != null
+                        && !"+/".equals(imported.path())
+                        && !workspace.rootPackageIds().contains(index.ownerOf(entry.getKey()))) {
+                    throw new SecurityException(
+                            "namespace dependency alias is not authorized for source: " + entry.getKey());
+                }
+            }
+        }
+        return index;
     }
 
     private static void registerNamespaceProviders(

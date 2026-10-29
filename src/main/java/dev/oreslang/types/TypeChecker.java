@@ -88,6 +88,9 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** Host-indexed, exact-provider namespace callable signatures. */
+    private Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>> linkedNamespaceFunctions =
+            Map.of();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -232,6 +235,18 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(
+                program, linkedClasses, linkedAliases, linkedContracts, Map.of());
+    }
+
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>> namespaceFunctions) {
+        if (namespaceFunctions == null) {
+            throw new IllegalArgumentException("linked namespace signatures cannot be null");
+        }
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -253,6 +268,30 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        for (Map.Entry<String, Map<String, Map<Integer, Ast.FunctionDecl>>> namespace
+                : namespaceFunctions.entrySet()) {
+            String alias = namespace.getKey();
+            if (!checker.importedValues.contains(alias)
+                    || program.imports().stream().noneMatch(use ->
+                            use.sourceNamespace() != null && alias.equals(use.namespace()))) {
+                throw new IllegalArgumentException("unverified namespace signature alias: " + alias);
+            }
+            for (Map<Integer, Ast.FunctionDecl> family : namespace.getValue().values()) {
+                for (Map.Entry<Integer, Ast.FunctionDecl> signature : family.entrySet()) {
+                    Ast.FunctionDecl fn = signature.getValue();
+                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                            || fn.kind() != Ast.CallableKind.FNC
+                            || fn.actorKind() != Ast.ActorKind.NONE
+                            || fn.async() || fn.suspends() || fn.generator()
+                            || !fn.genericParameters().isEmpty() || fn.returnType() == null
+                            || signature.getKey() != fn.parameters().size()) {
+                        throw new IllegalArgumentException(
+                                "namespace callable needs a public, synchronous, concrete fnc signature");
+                    }
+                }
+            }
+        }
+        checker.linkedNamespaceFunctions = Map.copyOf(namespaceFunctions);
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
@@ -2859,6 +2898,41 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr qualified
+                    && qualified.receiver() instanceof Ast.NameExpr receiver
+                    && env.lookup(receiver.name()) == null
+                    && linkedNamespaceFunctions.containsKey(receiver.name())) {
+                Map<String, Map<Integer, Ast.FunctionDecl>> members =
+                        linkedNamespaceFunctions.get(receiver.name());
+                Map<Integer, Ast.FunctionDecl> overloads = members.get(qualified.member());
+                Ast.FunctionDecl resolved = overloads == null ? null
+                        : overloads.get(call.arguments().size());
+                if (resolved == null) {
+                    throw new IllegalArgumentException(
+                            "namespace call does not resolve to a public callable: "
+                                    + receiver.name() + "." + qualified.member()
+                                    + "/" + call.arguments().size());
+                }
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "linked namespace fnc does not admit unresolved generic arguments");
+                }
+                Function signature = functionType(resolved.parameters(),
+                        resolved.returnType(), false, false, Set.of(), null);
+                for (int i = 0; i < signature.parameters().size(); i++) {
+                    if (call.arguments().get(i) instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException(
+                                "linked namespace call spread requires static lowering");
+                    }
+                    Type actual = typeOf(call.arguments().get(i), env, generics, self);
+                    Type expected = signature.parameters().get(i);
+                    requireReadonlyCapabilityPreserved(actual, expected,
+                            "namespace callable argument " + (i + 1));
+                    requireAssignable(actual, expected,
+                            "namespace callable argument " + (i + 1));
+                }
+                return signature.result();
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {

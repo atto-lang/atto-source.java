@@ -26,11 +26,13 @@ import java.util.Set;
  * cannot discover packages by scanning directories or using ORESLANG_PATH.
  */
 final class PackageNamespaceWorkspace {
-    record Workspace(List<Path> manifests, List<Path> files, Map<String, String> aliases) {
+    record Workspace(List<Path> manifests, List<Path> files, Map<String, String> aliases,
+                     Set<String> rootPackageIds) {
         Workspace {
             manifests = List.copyOf(manifests);
             files = List.copyOf(files);
             aliases = Map.copyOf(aliases);
+            rootPackageIds = Set.copyOf(rootPackageIds);
         }
     }
 
@@ -54,6 +56,11 @@ final class PackageNamespaceWorkspace {
         manifests.add(manifest);
         TomlParseResult root = checkedManifest(manifest);
         files.addAll(members(manifest, root));
+        LinkedHashSet<String> rootPackageIds = new LinkedHashSet<>();
+        TomlTable rootPackages = (TomlTable) root.get("packages");
+        for (String packageKey : rootPackages.keySet()) {
+            rootPackageIds.add(PackageNamespaceIndex.packageId(manifest, packageKey));
+        }
 
         Object rawDeps = root.get("namespace_dependencies");
         if (rawDeps != null) {
@@ -108,7 +115,8 @@ final class PackageNamespaceWorkspace {
         if (manifests.size() > 33 || files.size() > 4096) {
             throw new IllegalArgumentException("namespace workspace exceeds manifest/source limits");
         }
-        return new Workspace(new ArrayList<>(manifests), new ArrayList<>(files), aliases);
+        return new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
+                aliases, rootPackageIds);
     }
 
     private static TomlParseResult checkedManifest(Path path) throws IOException {
