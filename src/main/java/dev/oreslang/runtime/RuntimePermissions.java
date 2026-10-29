@@ -305,7 +305,10 @@ public final class RuntimePermissions {
      */
     private static NetworkScope parseNetworkScope(String input, boolean allowWildcard) {
         if (input == null || input.isBlank()) return null;
-        String text = input.trim().toLowerCase(Locale.ROOT);
+        // Endpoint whitespace is not syntactic sugar: trim-based matching can
+        // accidentally turn a malformed deny/allow spelling into authority.
+        if (!input.equals(input.trim())) return null;
+        String text = input.toLowerCase(Locale.ROOT);
         String host;
         String portText = null;
         if (text.startsWith("[")) {
@@ -417,19 +420,21 @@ public final class RuntimePermissions {
 
     private static String normalize(Permission permission, String value) {
         if (value == null || value.isBlank()) return "";
-        String trimmed = value.trim();
-        if ("*".equals(trimmed)) return "*";
+        // Preserve real filesystem filename spaces and literal ENV/RUN/SYS
+        // token identity. Only an exact "*" is a wildcard. CLI list delimiters
+        // are handled by the dedicated CSV parser, never by this API.
+        if ("*".equals(value)) return "*";
 
         return switch (permission) {
-            case READ, WRITE, FFI, IMPORT -> normalizePath(trimmed);
+            case READ, WRITE, FFI, IMPORT -> normalizePath(value);
             case NET -> {
-                NetworkScope scope = parseNetworkScope(trimmed, true);
+                NetworkScope scope = parseNetworkScope(value, true);
                 if (scope == null) {
-                    throw new IllegalArgumentException("invalid network permission scope '" + trimmed + "'");
+                    throw new IllegalArgumentException("invalid network permission scope '" + value + "'");
                 }
                 yield scope.canonical();
             }
-            case ENV, RUN, SYS -> trimmed;
+            case ENV, RUN, SYS -> value;
         };
     }
 
@@ -498,7 +503,7 @@ public final class RuntimePermissions {
             if (!safeScope(scope))
                 throw new IllegalArgumentException("invalid allow scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
-            if ("*".equals(scope.trim())) rule.allowAll = true;
+            if ("*".equals(scope)) rule.allowAll = true;
             else rule.allowed.add(normalize(permission, scope));
             return this;
         }
@@ -522,7 +527,7 @@ public final class RuntimePermissions {
             if (!safeScope(scope))
                 throw new IllegalArgumentException("invalid deny scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
-            if ("*".equals(scope.trim())) rule.denyAll = true;
+            if ("*".equals(scope)) rule.denyAll = true;
             else rule.denied.add(normalize(permission, scope));
             return this;
         }
