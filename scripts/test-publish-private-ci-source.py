@@ -374,6 +374,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(pub.Denied, "identity/state"):
                     pub.checked_repo("trusted/ci", 246810)
 
+    def test_empty_reviewed_allowlist_denies_candidate_carriers(self):
+        policy = b"""# Private CI destinations explicitly approved for source transfers.
+# No repositories are approved by default.
+"""
+        for candidate in (
+            "opto-sync-test/go-java-validation",
+            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+        ):
+            with self.subTest(candidate=candidate):
+                with self.assertRaisesRegex(
+                    pub.Denied, "destination approval was revoked or absent"
+                ):
+                    pub._parse_policy_approval(
+                        policy, candidate, "private CI approval policy"
+                    )
+
     def test_preflight_treats_checkout_guard_as_data_only(self):
         digest = b"x" * 32
         with (
