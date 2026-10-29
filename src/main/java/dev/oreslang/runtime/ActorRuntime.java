@@ -585,6 +585,8 @@ public final class ActorRuntime implements AutoCloseable {
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
+        ActorHeapAdmission.requireSupportedTenantIsolationMode(
+                System.getProperty("ores.runtime.tenant.isolation", "trusted-inprocess"));
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
