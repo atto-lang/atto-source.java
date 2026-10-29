@@ -255,6 +255,30 @@ final class PackageNamespaceLinkerTest {
     }
 
     @Test
+    void pinnedAliasRetargetingMustNeverReuseCachedImporter() {
+        Map<String, String> sources = Map.of(
+                "foo/v1/a.ores", "namespace a; pub fnc add(int a, int b): int { return a + b; }",
+                "foo/v2/a.ores", "namespace a; pub fnc add(int a, int b): int { return a + b; }",
+                "app/main.ores", "import ns a from 'pkg:foo'; pub fnc main(): int { return 43; }");
+        Map<String, String> owners = Map.of(
+                "foo/v1/a.ores", "foo@v1",
+                "foo/v2/a.ores", "foo@v2",
+                "app/main.ores", "app@v1");
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        var first = compiler.compilePinned(sources, Map.of(), owners,
+                Map.of("app@v1", Map.of("foo", "foo@v1")));
+        assertEquals(3, first.build().rebuiltUnits().size());
+        var second = compiler.compilePinned(sources, Map.of(), owners,
+                Map.of("app@v1", Map.of("foo", "foo@v2")));
+        assertTrue(second.build().rebuilt("app/main.ores"),
+                "package alias retargeting must invalidate checked import bindings");
+        assertEquals(0, second.build().reusedUnits().size(),
+                "pinned namespace graphs must be rechecked pending a full ABI cache key");
+        assertEquals("foo@v2", second.namespaceGraph()
+                .resolved("app/main.ores", "a").target().id().packageInstanceId());
+    }
+
+    @Test
     void legacyIncrementalCompilerMustNeverFakeNamespaceExecution() {
         String code = "import ns a from 'pkg:foo';\n"
                 + "pub fnc main(): int { return a.foo(); }\n";
