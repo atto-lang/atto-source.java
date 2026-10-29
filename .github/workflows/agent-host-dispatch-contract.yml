@@ -30,6 +30,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/ores-agent-contract"
-          javac -d "$RUNNER_TEMP/ores-agent-contract" contracts/v1/agent-dispatch/AgentHostDispatchGate.java contracts/v1/agent-dispatch/AgentHostDispatchGateTest.java
+          javac -d "$RUNNER_TEMP/ores-agent-contract" \
+            contracts/v1/agent-dispatch/AgentHostDispatchGate.java \
+            contracts/v1/agent-dispatch/AgentHostDispatchGateTest.java \
+            contracts/v1/agent-dispatch/DurableLocalDispatchClaim.java \
+            contracts/v1/agent-dispatch/AgentClaimProbe.java \
+            contracts/v1/agent-dispatch/DurableLocalDispatchClaimTest.java
           java -cp "$RUNNER_TEMP/ores-agent-contract" AgentHostDispatchGateTest
+          java -cp "$RUNNER_TEMP/ores-agent-contract" DurableLocalDispatchClaimTest
           echo "AGENT_HOST_ONLY_PASS native_guest_executed=false"
