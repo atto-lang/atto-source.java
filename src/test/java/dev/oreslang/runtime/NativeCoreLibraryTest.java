@@ -238,4 +238,22 @@ final class NativeCoreLibraryTest {
         assertTrue(CoreLibrarySources.packagedSourcePaths().contains("compute.ores"));
         assertFalse(CoreLibrarySources.packagedSourcePaths().contains("phantom.ores"));
     }
+    @Test
+    void canonicalCoreImportPathsAndRegistryFailClosed() throws Exception {
+        for (String invalid : List.of(
+                "ores.core/../numeric", "ores.core/./numeric", "ores.core//numeric",
+                "ores.core/", "ores.core\\\\numeric", "ores.core/%2e%2e/numeric",
+                "ores.core/numeric" + (char) 0,
+                "ores.core/" + "nested/".repeat(33) + "numeric")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.oresCoreUnitId(invalid), invalid);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.oresCoreSource("ores.core/not-a-real-module"));
+        assertEquals("@ores.core/numeric.ores",
+                CoreLibrarySources.oresCoreUnitId("ores.core/numeric"));
+        assertEquals(CoreLibrarySources.oresCoreSource("ores.core/numeric"),
+                CoreLibrarySources.oresCoreSource("ores.core/numeric.ores"));
+    }
+
 }
