@@ -46,6 +46,22 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions,
             Map<String, String> sourceOwners,
             Map<String, Map<String, String>> pinnedAliases) {
+        // Host-pinned source graphs are subject to the same source-closure
+        // limits as ordinary filesystem imports, before parsing any unit.
+        if (sources.size() > 1024) {
+            throw new IllegalArgumentException("pinned source inventory exceeds 1024 units");
+        }
+        long admittedSourceBytes = 0L;
+        for (String text : sources.values()) {
+            if (text == null || text.length() > 16 * 1024 * 1024) {
+                throw new IllegalArgumentException("pinned source unit exceeds 16 MiB");
+            }
+            int bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            if (bytes > 16 * 1024 * 1024 || bytes > 64L * 1024 * 1024 - admittedSourceBytes) {
+                throw new IllegalArgumentException("pinned source graph exceeds 64 MiB");
+            }
+            admittedSourceBytes += bytes;
+        }
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
             String id = normalizeUnitId(entry.getKey());
