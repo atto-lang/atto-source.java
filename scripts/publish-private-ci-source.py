@@ -398,7 +398,7 @@ def _require_strict_source_protection(protection):
             or len({item["context"] for item in named_checks}) != len(named_checks)
             or not set(contexts).issubset(
                 {item["context"] for item in named_checks}
-            ))
+            )
             or not isinstance(administrators, dict)
             or administrators.get("enabled") is not True
             or not isinstance(force_pushes, dict)
