@@ -9,8 +9,6 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
-    // Internal AST marker; never a user-facing authorization capability.
-    public static final String SEALED_STATE_SCHEMA_MARKER = "__ores_sealed_state_schema_v0";
 
     public record SyntaxWarning(int line, int column, String message) { }
 
@@ -911,6 +909,7 @@ public final class Parser {
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
         boolean stateSchemaSeen = false;
+        Ast.ActorStateSchema stateSchema = null;
         boolean legacyActorFieldSeen = false;
         int requestConcurrency = 1;
         int messageConcurrency = 1;
@@ -931,7 +930,7 @@ public final class Parser {
                     throw error(peek(), "actor may declare only one state schema");
                 if (legacyActorFieldSeen)
                     throw error(peek(), "actor state cannot mix schema with ordinary fields");
-                parseActorStateSchema(fields);
+                stateSchema = parseActorStateSchema();
                 stateSchemaSeen = true;
                 continue;
             }
@@ -1083,7 +1082,8 @@ public final class Parser {
         }
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency),
+                stateSchema);
     }
 
     /**
@@ -1092,7 +1092,8 @@ public final class Parser {
      * rejects the marker until a physical actor arena and lexical loan
      * lowering can preserve exclusive access and non-escape semantics.
      */
-    private void parseActorStateSchema(List<Ast.FieldDecl> fields) {
+    private Ast.ActorStateSchema parseActorStateSchema() {
+        List<Ast.FieldDecl> fields = new ArrayList<>();
         consumeContextualIdentifier("state", "expected 'state'");
         consume(LBRACE, "actor state schema must use 'state { ... }'");
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
@@ -1115,11 +1116,12 @@ public final class Parser {
                     Ast.Visibility.PRIVATE,
                     Ast.BindingKind.LET,
                     fieldType,
-                    List.of(new Ast.Annotation(SEALED_STATE_SCHEMA_MARKER, List.of())),
+                    List.of(),
                     initializer,
                     false));
         }
         consume(RBRACE, "expected '}' to close actor state schema");
+        return new Ast.ActorStateSchema(fields);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {

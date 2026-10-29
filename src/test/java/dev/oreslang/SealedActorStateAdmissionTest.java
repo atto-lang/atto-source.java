@@ -35,14 +35,43 @@ final class SealedActorStateAdmissionTest {
                 .flatMap(module -> module.declarations().stream())
                 .filter(decl -> decl instanceof dev.oreslang.ast.Ast.ClassDecl)
                 .findFirst().orElseThrow();
-        assertEquals(1, klass.fields().size());
-        assertEquals("phase", klass.fields().getFirst().name());
-        assertTrue(klass.fields().getFirst().annotations().stream()
-                .anyMatch(a -> a.name().equals(Parser.SEALED_STATE_SCHEMA_MARKER)));
+        assertTrue(klass.fields().isEmpty(),
+                "sealed state must not appear in ordinary actor member lookup");
+        assertNotNull(klass.actorStateSchema());
+        assertEquals(1, klass.actorStateSchema().fields().size());
+        assertEquals("phase", klass.actorStateSchema().fields().getFirst().name());
+        assertTrue(klass.actorStateSchema().fields().getFirst().annotations().isEmpty(),
+                "state-schema provenance is a compiler AST node, not a forged annotation");
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.TypeChecker.check(program));
         assertTrue(rejected.getMessage().contains("compiler-enforced handle_state loans"),
                 rejected::getMessage);
+    }
+
+    @Test void stateSchemaSurvivesAnnotationExpansionWithoutOrdinaryFields() {
+        var program = Parser.parse("""
+                define actor Vault as
+                  state { counter: int = 0; }
+                  pub tick(): void with state.write {
+                    self.handle_state(critical[write] |s| -> {
+                      s.counter = s.counter + 1;
+                    });
+                    return;
+                  }
+                end
+                """);
+        var expanded = dev.oreslang.ast.AnnotationExpander.expand(program);
+        var klass = (dev.oreslang.ast.Ast.ClassDecl) expanded.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof dev.oreslang.ast.Ast.ClassDecl)
+                .findFirst().orElseThrow();
+        assertTrue(klass.fields().isEmpty());
+        assertNotNull(klass.actorStateSchema());
+        assertEquals("counter", klass.actorStateSchema().fields().getFirst().name());
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(expanded));
+        assertTrue(failure.getMessage().contains("compiler-enforced handle_state loans"),
+                failure::getMessage);
     }
 
     @Test void rejectsDuplicateOrMixedActorStateAndUninitializedFields() {

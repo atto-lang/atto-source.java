@@ -428,6 +428,27 @@ public final class Ast {
         }
     }
 
+    /**
+     * Dedicated compiler AST for the single actor-owned state schema.
+     * State members are not ClassDecl.fields and cannot be resolved as
+     * ordinary instance fields. This record carries no executable authority.
+     */
+    public record ActorStateSchema(List<FieldDecl> fields) {
+        public ActorStateSchema {
+            fields = List.copyOf(fields);
+            if (fields.isEmpty()) throw new IllegalArgumentException("actor state schema cannot be empty");
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (FieldDecl field : fields) {
+                if (field.visibility() != Visibility.PRIVATE
+                        || field.type() == null || field.initializer() == null
+                        || !field.annotations().isEmpty() || !names.add(field.name())) {
+                    throw new IllegalArgumentException(
+                            "actor state schema requires distinct private typed initialized fields");
+                }
+            }
+        }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -439,8 +460,15 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            ActorStateSchema actorStateSchema) implements Decl {
         public ClassDecl {
+            if (actorStateSchema != null) {
+                if (actorKind == ActorKind.NONE)
+                    throw new IllegalArgumentException("ordinary class cannot own actor state schema");
+                if (!fields.isEmpty())
+                    throw new IllegalArgumentException("sealed actor state cannot mix with instance fields");
+            }
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
@@ -449,6 +477,16 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Original canonical constructor retained for all existing compiler passes. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, actorConcurrency, null);
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */

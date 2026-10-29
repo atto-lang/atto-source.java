@@ -1140,10 +1140,7 @@ public final class TypeChecker {
             // callbacks and unknown effects with a deterministic compile
             // diagnostic; then retain the strict runtime-admission denial.
             ActorCriticalLoanPreflight.auditClass(klass);
-            boolean hasSchema = klass.fields().stream().anyMatch(field ->
-                    field.annotations().stream().anyMatch(annotation ->
-                            annotation.name().equals(
-                                    dev.oreslang.parser.Parser.SEALED_STATE_SCHEMA_MARKER)));
+            boolean hasSchema = klass.actorStateSchema() != null;
             for (Ast.MethodDecl method : klass.methods()) {
                 Ast.StateEffect effect = method.effects().stateEffect();
                 if ((effect.read() || effect.write()) && !hasSchema) {
@@ -1154,14 +1151,10 @@ public final class TypeChecker {
             // Parsing state members does not grant legacy field visibility or
             // make a borrowable state view. Until compiler-owned loan lowering
             // and physical arena fencing exist, reject the entire class.
-            for (Ast.FieldDecl field : klass.fields()) {
-                if (field.annotations().stream().anyMatch(annotation ->
-                        annotation.name().equals(
-                                dev.oreslang.parser.Parser.SEALED_STATE_SCHEMA_MARKER))) {
-                    throw new IllegalArgumentException(
-                            "actor state schema parsed but cannot execute before "
-                                    + "compiler-enforced handle_state loans and arena isolation");
-                }
+            if (hasSchema) {
+                throw new IllegalArgumentException(
+                        "actor state schema parsed but cannot execute before "
+                                + "compiler-enforced handle_state loans and arena isolation");
             }
             checkClassBody(module, klass);
         } finally {

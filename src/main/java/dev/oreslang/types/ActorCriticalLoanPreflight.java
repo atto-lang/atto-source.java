@@ -1,7 +1,6 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
-import dev.oreslang.parser.Parser;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,9 +20,8 @@ public final class ActorCriticalLoanPreflight {
 
     public static void auditClass(Ast.ClassDecl klass) {
         Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
-        for (Ast.FieldDecl field : klass.fields()) {
-            if (field.annotations().stream().anyMatch(annotation ->
-                    annotation.name().equals(Parser.SEALED_STATE_SCHEMA_MARKER))) {
+        if (klass.actorStateSchema() != null) {
+            for (Ast.FieldDecl field : klass.actorStateSchema().fields()) {
                 if (fields.putIfAbsent(field.name(), field.type()) != null) {
                     throw error("duplicate sealed actor state field");
                 }
