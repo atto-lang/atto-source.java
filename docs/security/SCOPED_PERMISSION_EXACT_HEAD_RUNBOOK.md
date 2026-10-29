@@ -10,6 +10,9 @@ Stacked draft PRs:
 - #2286: wildcard/IPv4/IPv6 network validation and exact resource identity
 - #2287 listener-port-zero PR: outbound network authorization denies port 0; explicit HTTP listener authorization can request OS-assigned port 0
 - revocable-delegation follow-on draft: issuer-only, monotonic child-scope revocation; all subsequent actor/native-I/O resource authorization must deny after revocation (not preemptive syscall cancellation)
+- queued I/O/listener-hardening follow-on draft: a native worker rechecks the captured delegation before running queued work; HTTP listener startup rejects both actor turns and actor-owned I/O workers (not a linearizable OS-operation cutoff)
+
+**Queued worker hardening:** `AsyncNativeIo.Operation.run` rejects a revoked actor-scoped authorization *before* entering `work.call()`. Test with one blocked physical worker, one queued work item, parent revocation before releasing the blocker, and proof that the queued callable was not invoked. Separately test that an authorized queued callable executes exactly once. The `NativeHttp` listener supervisor admission test must reject both direct actor turns and workers carrying `NativeIoAuthority`, while host-only admission remains possible. These are integration tests until actually executed at the pinned head.
 
 **Revocation semantics:** revoking a token means no *subsequent* source actor or native-worker permission check may authorize the affected subtree. It does NOT synchronously kill the actor, stop an already-entered native OS syscall, undo prior file writes, or guarantee that an authorization/check-to-use race is closed. Full physical I/O retirement and OS-boundary fencing require separate design and runtime tests; do not count this as complete revocation or arbitrary host capability quarantine.
 
@@ -44,7 +47,7 @@ git rev-parse HEAD^{tree}
 java -version        # must report GraalVM JDK 25
 mvn -version
 mvn -B -ntp -Dores.runtime.carriers=native \
-  -Dtest=AdversarialPermissionCeilingTest,ActorScopedPermissionDelegationTest,ActorPermissionRevocationTest,RuntimePermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsIdentityHardeningTest,RuntimePermissionsPortZeroContractTest,ScopedPermissionInteropTest \
+  -Dtest=AdversarialPermissionCeilingTest,ActorScopedPermissionDelegationTest,ActorPermissionRevocationTest,QueuedNativeIoRevocationTest,HttpListenerAdmissionAuthorityTest,RuntimePermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsIdentityHardeningTest,RuntimePermissionsPortZeroContractTest,ScopedPermissionInteropTest \
   test
 mvn -B -ntp -Dores.runtime.carriers=native verify
 mvn -B -ntp -Pnative-aot -DskipTests package
