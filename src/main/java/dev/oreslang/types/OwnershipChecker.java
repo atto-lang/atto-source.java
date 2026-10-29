@@ -1325,6 +1325,13 @@ public final class OwnershipChecker {
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.CpuScalarRegionExpr region) {
+            // A scalar sync CPU region cannot capture, move or suspend; the
+            // AST constructor restricts it to immutable numeric primitives.
+            // Still recursively inspect arithmetic to preserve ownership
+            // pass completeness and avoid an unchecked new Expr variant.
+            return checkExpr(region.value(), scope, false);
+        }
         if (expr instanceof Ast.TaskExpr task) {
             if (task.domain() == Ast.ExecutionDomain.GPU) {
                 throw error("gpu task cannot pass ownership lowering without a physical GPU provider");
@@ -3184,6 +3191,9 @@ public final class OwnershipChecker {
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.CpuScalarRegionExpr e) {
+            scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
+        }
         else if (expr instanceof Ast.TaskExpr e) {
             scanStatements(e.body(), locals, outer, recursiveBinding, captures);
         }
