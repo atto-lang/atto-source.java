@@ -78,6 +78,22 @@ public final class CoreLibrarySources {
     public static boolean isUnsafeStdImport(String importPath) {
         if (importPath == null) return false;
         String path = importPath.replace('\\', '/');
+        // Package aliases must be interpreted after lexical dot-segment
+        // normalization. Otherwise std/./unsafe can escape an exact-root
+        // check and reach a resolver that canonicalizes the path later.
+        if (path.startsWith("std/") || path.startsWith("ores.std/")) {
+            java.util.ArrayDeque<String> segments = new java.util.ArrayDeque<>();
+            for (String component : path.split("/", -1)) {
+                if (component.isEmpty() || component.equals(".")) continue;
+                if (component.equals("..")) {
+                    if (segments.size() > 1) segments.removeLast();
+                    else return true; // Noncanonical escape from std root: fail closed.
+                } else {
+                    segments.addLast(component);
+                }
+            }
+            path = String.join("/", segments);
+        }
         for (String root : new String[] {
                 "ores.std/unsafe", "std/unsafe", "ores.std.unsafe",
                 "std.unsafe", "ores.std:unsafe", "std:unsafe"}) {
