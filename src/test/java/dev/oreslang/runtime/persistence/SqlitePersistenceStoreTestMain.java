@@ -45,6 +45,13 @@ public final class SqlitePersistenceStoreTestMain {
                 check(store.commit(List.of(write("a999","event",2,1,Kind.EVENT,65))).get(0).durable(),"journal commit not durable");
                 var replay=store.load(new Identity("tenant-a","a999","main"));
                 check(replay.version()==2 && replay.snapshotVersion()==1 && replay.events().size()==1 && replay.events().get(0).payload()[0]==65,"journal replay mismatch");
+                store.grantEpoch("tenant-a","event-only",1);
+                check(store.commit(List.of(write("event-only","first-event",1,0,Kind.EVENT,99))).get(0).durable(),
+                    "event-first write failed");
+                var eventOnly=store.load(new Identity("tenant-a","event-only","main"));
+                check(eventOnly.version()==1 && eventOnly.snapshotVersion()==0 &&
+                    eventOnly.snapshot().length==0 && eventOnly.events().size()==1 &&
+                    eventOnly.events().get(0).payload()[0]==99,"event-first replay invented snapshot");
                 store.grantEpoch("tenant-a","a",1);store.grantEpoch("tenant-a","b",1);
                 var mixed=store.commit(List.of(write("a","conflict",1,0,Kind.SNAPSHOT,1),write("b","first",1,0,Kind.SNAPSHOT,9)));
                 check(mixed.get(0).status()==Status.VERSION_CONFLICT && mixed.get(1).durable(),"cross-actor isolation failure");
