@@ -38,10 +38,12 @@ BLOCKING_INCIDENT_IDS = {
     127: 5935338521,
     171: 6042555082,  # recovery/runtime source-bearing private carrier; pending classification
     172: 6042602777,  # LLVM exact-tree carrier; independent placement review outstanding
-    198: 6070465058,  # ClaimGraph exact Java CI-script placement; independent classification required
-    200: 6071264936,  # ClaimGraph private Java governance-blob retention; disposition required
+    198: 6070465058,  # Java CI-script source blobs in ClaimGraph
+    200: 6071264936,  # Java governance blobs retained in ClaimGraph
+    212: 6087989978,  # unapproved LLVM source execution in honeypot carrier
+    222: 6092501448,  # retained Oreslang source refs in Daedalus carrier
 }
-BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200)
+BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200, 212, 222)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
     "scintilla-run-test/gleam-runner-conformance",
@@ -449,19 +451,23 @@ def checked_policy_fingerprint(root, repository):
     return checked_policy_approval(root, repository)[0]
 
 def _require_strict_source_protection(protection):
-    """Validate the security-relevant classic branch-protection contract."""
+    """Validate enforceable source/carrier classic branch-protection rules."""
+    if not isinstance(protection, dict):
+        raise Denied("origin main branch protection metadata invalid")
     reviews = protection.get("required_pull_request_reviews")
     checks = protection.get("required_status_checks")
     administrators = protection.get("enforce_admins")
     force_pushes = protection.get("allow_force_pushes")
     deletions = protection.get("allow_deletions")
-    conversation = protection.get("required_conversation_resolution")
+    conversations = protection.get("required_conversation_resolution")
     contexts = checks.get("contexts") if isinstance(checks, dict) else None
     named_checks = checks.get("checks") if isinstance(checks, dict) else None
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
             or reviews.get("require_last_push_approval") is not True
+            or not isinstance(conversations, dict)
+            or conversations.get("enabled") is not True
             or not isinstance(reviews.get("required_approving_review_count"), int)
             or isinstance(reviews["required_approving_review_count"], bool)
             or reviews["required_approving_review_count"] < 1
@@ -469,23 +475,30 @@ def _require_strict_source_protection(protection):
             or checks.get("strict") is not True
             or not isinstance(contexts, list)
             or not isinstance(named_checks, list)
-            or not (contexts or named_checks)
+            or not named_checks
             or any(not isinstance(name, str) or not name.strip() for name in contexts)
             or any(not isinstance(item, dict)
                    or not isinstance(item.get("context"), str)
-                   or not item["context"].strip() for item in named_checks)
+                   or not item["context"].strip()
+                   or type(item.get("app_id")) is not int
+                   or item["app_id"] <= 0
+                   for item in named_checks)
+            or len(set(contexts)) != len(contexts)
+            or len({item["context"] for item in named_checks}) != len(named_checks)
+            or not set(contexts).issubset(
+                {item["context"] for item in named_checks}
+            )
             or not isinstance(administrators, dict)
             or administrators.get("enabled") is not True
             or not isinstance(force_pushes, dict)
             or force_pushes.get("enabled") is not False
             or not isinstance(deletions, dict)
-            or deletions.get("enabled") is not False
-            or not isinstance(conversation, dict)
-            or conversation.get("enabled") is not True):
+            or deletions.get("enabled") is not False):
         raise Denied(
-            "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
-            "last-push approval, strict required CI, conversation resolution, "
-            "administrator protection and deny forced pushes/deletions")
+            "origin main must enforce CODEOWNER approvals, last-push approval, "
+            "conversation resolution, stale-review dismissal, strict required CI "
+            "pinned to GitHub App IDs, administrator protection and deny "
+            "forced pushes/deletions")
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
         if (not isinstance(bypasses, dict)
@@ -494,14 +507,14 @@ def _require_strict_source_protection(protection):
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
     named_contract = tuple(sorted(
-        (item["context"], json.dumps(item.get("app_id"), sort_keys=True,
-                                     separators=(",", ":")))
+        (item["context"], item["app_id"])
         for item in named_checks
     ))
     return (
         reviews["require_code_owner_reviews"],
         reviews["dismiss_stale_reviews"],
         reviews["require_last_push_approval"],
+        conversations["enabled"],
         reviews["required_approving_review_count"],
         checks["strict"],
         tuple(sorted(contexts)),
@@ -509,7 +522,6 @@ def _require_strict_source_protection(protection):
         administrators["enabled"],
         force_pushes["enabled"],
         deletions["enabled"],
-        conversation["enabled"],
     )
 
 
