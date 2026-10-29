@@ -174,7 +174,8 @@ public final class NativeHttp implements AutoCloseable {
                         exchange.state.readyNanos = exchange.state.spawnNanos;
                     }
                     worker.actor.send(exchange.moveTo(worker.actor, type, binding,
-                            authorityClass, scopeGeneration, nextDispatchSequence(), true));
+                            authorityClass, scopeGeneration, nextDispatchSequence(),
+                            scopeGeneration > 0));
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
@@ -198,7 +199,8 @@ public final class NativeHttp implements AutoCloseable {
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
                 actor.send(exchange.moveTo(actor, type, binding,
-                        authorityClass, scopeGeneration, nextDispatchSequence(), true));
+                        authorityClass, scopeGeneration, nextDispatchSequence(),
+                        scopeGeneration > 0));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
