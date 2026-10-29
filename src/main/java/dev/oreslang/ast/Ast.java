@@ -1449,25 +1449,29 @@ public final class Ast {
      */
     public record CpuScalarRegionExpr(Expr value) implements Expr {
         public CpuScalarRegionExpr {
-            if (!closedScalar(value)) {
+            // Bound both recursion depth and total work at admission. An
+            // expression with shallow nesting can still contain many nodes.
+            if (!closedScalar(value, 0, new int[]{512})) {
                 throw new IllegalArgumentException(
-                        "cpu scalar execution region requires a closed int literal or checked +, -, * arithmetic; "
+                        "cpu scalar execution region requires a bounded closed int literal or checked +, -, * arithmetic; "
                                 + "captures, calls, suspension and effects are not enabled");
             }
         }
 
-        private static boolean closedScalar(Expr expr) {
+        private static boolean closedScalar(Expr expr, int depth, int[] remaining) {
+            if (depth > 64 || --remaining[0] < 0) return false;
             if (expr instanceof LiteralExpr literal) {
                 return literal.value() instanceof Long || literal.value() instanceof Integer;
             }
             if (expr instanceof UnaryExpr unary) {
                 return (unary.operator().equals("-") || unary.operator().equals("+"))
-                        && closedScalar(unary.operand());
+                        && closedScalar(unary.operand(), depth + 1, remaining);
             }
             if (expr instanceof BinaryExpr binary) {
                 return (binary.operator().equals("+") || binary.operator().equals("-")
                         || binary.operator().equals("*"))
-                        && closedScalar(binary.left()) && closedScalar(binary.right());
+                        && closedScalar(binary.left(), depth + 1, remaining)
+                        && closedScalar(binary.right(), depth + 1, remaining);
             }
             return false;
         }
