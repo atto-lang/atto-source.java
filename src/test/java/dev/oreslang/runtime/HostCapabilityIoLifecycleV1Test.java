@@ -46,4 +46,22 @@ final class HostCapabilityIoLifecycleV1Test {
         assertTrue(gate.revokeActor(43, 1)); // exhausted revocation storage => fail closed
         assertNull(gate.reserve(true, true, true, 44, 1, 55));
     }
+    @Test void shutdownFencesEveryDispatchButDoesNotPretendToCloseSockets() {
+        var gate = new HostCapabilityIoLifecycleV1(2, 2);
+        var started = gate.reserve(true, true, true, 77, 1, 88);
+        var queued = gate.reserve(true, true, true, 78, 1, 89);
+        assertNotNull(started);
+        assertNotNull(queued);
+        assertTrue(gate.dispatch(started, 77, 1, 88));
+        assertTrue(gate.shutdown());
+        assertFalse(gate.shutdown());
+        assertEquals(2, gate.inFlight());
+        assertFalse(gate.dispatch(queued, 78, 1, 89));
+        assertNull(gate.reserve(true, true, true, 79, 1, 90));
+        assertFalse(gate.retire(started, 77, 1, false));
+        assertTrue(gate.complete(started, 77, 1));
+        assertTrue(gate.retire(started, 77, 1, true));
+        assertTrue(gate.retire(queued, 78, 1, true));
+        assertEquals(0, gate.inFlight());
+    }
 }
