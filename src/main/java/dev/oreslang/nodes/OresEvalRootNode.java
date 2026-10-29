@@ -317,8 +317,16 @@ public final class OresEvalRootNode extends RootNode {
                     || fn.kind() != Ast.CallableKind.FNC
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.genericParameters().isEmpty()
+                    || fn.async() || fn.suspends() || fn.generator()
+                    || fn.trapped() || fn.structural()
                     || !fn.effects().isEmpty()
-                    || fn.parameters().stream().anyMatch(Ast.Param::mutable)) {
+                    || fn.returnType() == null
+                    || !fn.returnType().name().equals("int")
+                    || !fn.returnType().arguments().isEmpty()
+                    || fn.parameters().stream().anyMatch(p ->
+                            p.mutable() || p.type() == null
+                                    || !p.type().name().equals("int")
+                                    || !p.type().arguments().isEmpty())) {
                 throw new IllegalArgumentException(
                         "linked namespace member is no longer an eligible public root fnc: "
                                 + binding + "." + member);
