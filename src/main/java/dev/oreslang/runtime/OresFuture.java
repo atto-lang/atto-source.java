@@ -313,14 +313,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 Throwable terminalFailure = unwrap(failure);
                 final boolean cancelled;
                 try {
-                    // A CancellationException in the failure chain is not
-                    // proof that this particular stage was cancelled: an
-                    // ordinary failed CompletionStage may propagate such a
-                    // user exception through CompletionException. Only a
-                    // host Future that authenticates cancellation via its
-                    // own state may be mapped to CANCELLED. Other stages
-                    // remain FAILED, preserving the original exception.
-                    cancelled = stage instanceof Future<?> hostFuture
+                    // CancellationException by itself is not cancellation
+                    // authority: dependent stages can propagate one while
+                    // remaining FAILED. Conversely, a foreign Future whose
+                    // isCancelled() spuriously reports true must not erase an
+                    // unrelated ordinary failure. Require BOTH the host's
+                    // cancellation state and a cancellation-shaped failure.
+                    // This is still only a HOST signal, not an Oreslang-owned
+                    // cancellation capability; the runtime preserves its own
+                    // authenticated state separately.
+                    cancelled = terminalFailure instanceof CancellationException
+                            && stage instanceof Future<?> hostFuture
                             && hostFuture.isCancelled();
                 } catch (Throwable observationFailure) {
                     if (observationFailure instanceof VirtualMachineError fatal) throw fatal;
