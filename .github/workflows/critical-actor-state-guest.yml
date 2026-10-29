@@ -27,6 +27,7 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           test -z "$(git status --porcelain)"
+          test "$(git ls-files 'src/test/resources/parity/actor-critical-modes/*.ores' | wc -l)" -eq 8
           for file in \
             src/main/java/dev/oreslang/ast/Ast.java \
             src/main/java/dev/oreslang/parser/Parser.java \
@@ -51,9 +52,10 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=ActorCriticalStateModeTest,ActorStateLoanTest,ActorSingleStateSchemaTest test
+          mvn -B -ntp -Dtest=ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorStateLoanTest,ActorSingleStateSchemaTest test
           for spec in \
             ActorCriticalStateModeTest:12 \
+            ActorCriticalModeConformanceTest:8 \
             ActorStateLoanTest:9 \
             ActorSingleStateSchemaTest:7; do
             class="${spec%%:*}"
@@ -66,4 +68,4 @@ jobs:
             done
             echo "GUEST_SUITE_PASS ${class} tests=${expected}"
           done
-          echo 'NATIVE_GRAAL_CRITICAL_MODES_PASS tests=28'
+          echo 'NATIVE_GRAAL_CRITICAL_MODES_PASS tests=36'

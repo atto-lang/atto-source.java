@@ -1,0 +1,20 @@
+// Cross-backend critical state-loan conformance case: reject_await_in_write
+// Must be compiled by a real Oreslang backend, not a Node simulator.
+define actor Probe as
+  state { revision: int = 0; }
+  receive(ActorMail<String> mail): void {
+    self.handle_state(critical[write] |s| -> {
+      await self.get_done();
+    });
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn Probe();
+  await worker.get_ready();
+  worker.send("tick");
+  await worker.get_done();
+  return;
+}
