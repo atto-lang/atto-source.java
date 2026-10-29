@@ -23,7 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * 0ba32f019a0c1dfcf9aaa2f91accb030178f5a45.
  * Four additional saga fixtures: feat/native-checkout-saga-20261029;
  * their exact Git blobs are pinned below after same-organization copying.
- * This file's expected Git blobs bind all thirteen copied source fixtures.
+ * This file's expected Git blobs bind all fourteen copied source fixtures. The
+ * 14th fixture is an actor-owned in-memory effect receipt ledger. The
+ * coordinator fixture is the proposed sealed-state source, not the legacy
+ * ordinary compatibility-field actor. Native compiler acceptance pending.
  */
 final class SourceActorDemoWorkflowExecutionTest {
 
@@ -78,7 +81,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void rejectsForeignDuplicateAndOutOfOrderMessages() throws Exception {
-        assertGuest("coordinator-state", "workflow:state-guarded", "d91bfa28323d198c0001ece58747e68d9980597f");
+        assertGuest("coordinator-state", "workflow:state-guarded", "baef061676411aa00ee1a0596a1a9a9b19b09f12");
     }
 
     @Test
@@ -104,6 +107,13 @@ final class SourceActorDemoWorkflowExecutionTest {
     void doesNotReleaseInventoryAfterUnconfirmedPaymentVoid() throws Exception {
         assertGuest("order-saga-void-unknown", "saga:compensation-incomplete",
                 "82c9e08e95ab443e9ae5949466d322478ddec20a");
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void rejectsDuplicateAndForeignEffectReceiptsAndBlocksUnknownCancellation() throws Exception {
+        assertGuest("effect-receipt-ledger", "effect:fixture-reconciled-no-replay",
+                "56535ad1df72c1eaf2493e3e97e9d562c611c666");
     }
 
     private static void assertGuest(String fixture, String expected, String expectedGitBlob)

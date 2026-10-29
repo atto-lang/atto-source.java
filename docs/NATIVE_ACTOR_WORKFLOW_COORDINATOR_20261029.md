@@ -74,3 +74,19 @@ worker dispatch, supervisor receipts and durable transactional recovery.
 Do not move private Oreslang source across GitHub organizations without the
 independent security authorization required by
 [platform-conformance issue #22](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/22).
+
+## Draft 14-case sealed-state expansion (2026-10-29)
+
+A separately stacked PR carries the exact 14-case demo fixture set including
+`effect-receipt-ledger.ores` and the **sealed `state` / `handle_state(critical-write ...)`**
+coordinator source. The original 13 demo-case / 4 baseline-case candidate
+remains historical; the expanded suite requires **14 + 4 = 18** actual Java/Graal
+`Context.eval` JUnit executions and two source-matched Git blobs:
+`56535ad1df72c1eaf2493e3e97e9d562c611c666` for the effect ledger
+and `baef061676411aa00ee1a0596a1a9a9b19b09f12` for the coordinator.
+
+Neither the proposed `define isolated actor` nor `critical-write` spelling is
+assumed to compile. A real compiler diagnostic is expected and must be
+remediated at the compiler/parser/type/effect layer; substituting compatibility
+fields would invalidate the contract. No native guest run, heap isolation,
+durability, authenticated receipt, or crash recovery is claimed here.
