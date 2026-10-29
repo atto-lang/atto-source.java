@@ -58,6 +58,28 @@ final class ParserAnnotationRetentionGateTest {
     }
 
     @Test
+    void rejectsDuplicateCallableReturnAnnotations() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("@Ret(int) @Ret(bool) fnc main(): int { return 1; }"));
+        assertTrue(error.getMessage().contains("duplicate @Ret"), error.getMessage());
+    }
+
+    @Test
+    void rejectsCompilerDirectivesMisplacedOnModulesButKeepsOpaqueMetadata() {
+        for (String directive : new String[] {
+                "@Ret(int)", "@FromJson(\"id\")", "@ActorMaxThreads",
+                "@Critical(1)", "@RequiresPermission(\"ffi\")",
+                "@CallerRole(Admin)", "@NamedParams(x=1)", "@Unsafe"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(directive + " define module demo as end"), directive);
+            assertTrue(error.getMessage().contains("not a supported module annotation"),
+                    error.getMessage());
+        }
+        assertDoesNotThrow(() -> Parser.parse("@BuildMetadata define module demo as end"));
+    }
+
+    @Test
     void retainsSpecializedCallableAnnotationError() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("@structural define class Example as end"));
