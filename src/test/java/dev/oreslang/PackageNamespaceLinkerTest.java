@@ -239,6 +239,22 @@ final class PackageNamespaceLinkerTest {
     }
 
     @Test
+    void pinnedSourceGraphRejectsTooManyUnitsBeforeParsing() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> inputs = new LinkedHashMap<>();
+        Map<String, String> owners = new LinkedHashMap<>();
+        for (int i = 0; i < 1025; i++) {
+            String id = "foo/file_" + i + ".ores";
+            inputs.put(id, "namespace a; pub fnc value(): int { return 1; }");
+            owners.put(id, "foo@v1");
+        }
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> compiler.compilePinned(inputs, Map.of(), owners, Map.of()));
+        assertTrue(denied.getMessage().contains("1024"), denied.getMessage());
+    }
+
+    @Test
     void legacyIncrementalCompilerMustNeverFakeNamespaceExecution() {
         String code = "import ns a from 'pkg:foo';\n"
                 + "pub fnc main(): int { return a.foo(); }\n";
