@@ -68,6 +68,15 @@ public record IsolatePolicy(
                 && !capabilities.contains(Capability.JAVA_INTEROP)) {
             throw new IllegalArgumentException("JAVA_SOURCE_INTEROP requires JAVA_INTEROP");
         }
+        // No privilege flags can convert an adversarial VM guest into a native
+        // code execution domain. Keep this independent of guest import checks.
+        for (Capability forbidden : new Capability[] {
+                Capability.NATIVE, Capability.FFI, Capability.REFLECTION}) {
+            if (adversarial && capabilities.contains(forbidden)) {
+                throw new IllegalArgumentException(
+                        "adversarial isolates cannot grant " + forbidden);
+            }
+        }
         if (adversarial && capabilities.contains(Capability.THREAD_CREATE)) {
             throw new IllegalArgumentException("adversarial isolates cannot grant THREAD_CREATE");
         }
@@ -165,6 +174,13 @@ public record IsolatePolicy(
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode) {
         NativeBuildMode.requireCompatible(profile);
+        // This builder creates a VM guest context, never a privileged native
+        // extension host. Native/FFI flags cannot grant execution here even
+        // for non-adversarial contexts.
+        if (allows(Capability.NATIVE) || allows(Capability.FFI)) {
+            throw new SecurityException(
+                    "VM-isolate contexts cannot receive NATIVE or FFI capabilities");
+        }
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
         if (!hostClasses.isEmpty()) {
             require(Capability.JAVA_INTEROP, "Java host imports");
