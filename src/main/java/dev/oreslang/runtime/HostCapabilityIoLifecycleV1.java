@@ -32,7 +32,7 @@ final class HostCapabilityIoLifecycleV1 {
             boolean requestedAllowed, boolean selectedAllowed,
             long actor, long incarnation, long selectedBinding) {
         if (closed || !authenticated || !requestedAllowed || !selectedAllowed ||
-                actor == 0 || incarnation == 0 || selectedBinding == 0 ||
+                actor <= 0 || incarnation <= 0 || selectedBinding <= 0 ||
                 isRevoked(actor, incarnation)) return null;
         for (int i = 0; i < slots.length; ++i) {
             var slot = slots[i];
@@ -104,7 +104,7 @@ final class HostCapabilityIoLifecycleV1 {
     }
 
     public synchronized boolean revokeActor(long actor, long incarnation) {
-        if (actor == 0 || incarnation == 0 || isRevoked(actor, incarnation)) return false;
+        if (actor <= 0 || incarnation <= 0 || isRevoked(actor, incarnation)) return false;
         if (revokedCount >= revoked.length) closeAll();
         else revoked[revokedCount++] = new Revoked(actor, incarnation);
         for (Slot slot : slots) {
