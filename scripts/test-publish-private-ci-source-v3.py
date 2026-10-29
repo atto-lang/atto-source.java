@@ -602,6 +602,84 @@ class PrivateCiV3Test(unittest.TestCase):
                 "trusted/ci", 1482, "ci/test-plans/java-pr1482.json",
             )
 
+    def test_native_actor_storage_plan_requires_exact_reviewed_pins(self):
+        image = (
+            "maven@sha256:407c4423cec0cf2981055bc2c6c0dc211d9605b6669279b95997f2d1c7e91e2c"
+        )
+        native_image = (
+            "ghcr.io/graalvm/native-image-community@sha256:"
+            "0d936f32bb8acb5bc60c41b33e05f064d7a6aaf36b726538296c54949bd4a3c0"
+        )
+        plan = {
+            "schema": "ores-private-ci-test-plan-v1",
+            "source_repo": v3.legacy.SOURCE_REPO,
+            "source_repo_id": v3.SOURCE_REPOSITORY_ID,
+            "allowed_prs": [2012],
+            "allowed_sources_by_pr": {
+                "2012": {"head_sha": "1" * 40, "root_tree_sha": "2" * 40},
+            },
+            "sandbox_image": image,
+            "native_sandbox_image": native_image,
+            "required_surefire_suites_by_pr": {
+                "2012": {
+                    "ActorNativeStorageStandaloneTest": 8,
+                    "ScopedTaskReadRuntimeTest": 9,
+                },
+            },
+            "commands": [
+                {"sandbox": "native", "argv": ["bash", "scripts/check-native-arena-abi.sh"],
+                 "cwd": ".", "timeout_seconds": 300,
+                 "stdout_contains": (
+                     "PASS source-native-JNI ABI: 1000 allocations, zero-fill, "
+                     "isolation, word layout, release"
+                 )},
+                {"sandbox": "native", "argv": ["sh", "scripts/build-native-thread.sh"],
+                 "cwd": ".", "timeout_seconds": 300,
+                 "stdout_contains": "built target/native/liboresthread.so"},
+                {"sandbox": "native", "argv": ["nm", "-D", "target/native/liboresthread.so"],
+                 "cwd": ".", "timeout_seconds": 60,
+                 "stdout_contains": "Java_dev_oreslang_runtime_ActorNativeArena_allocateNative"},
+                {"sandbox": "native", "argv": ["nm", "-D", "target/native/liboresthread.so"],
+                 "cwd": ".", "timeout_seconds": 60,
+                 "stdout_contains": "Java_dev_oreslang_runtime_ActorNativeArena_releaseNative"},
+                {"argv": ["mvn", "-B", "-ntp",
+                          "-Dtest=ActorNativeStorageStandaloneTest,ScopedTaskReadRuntimeTest",
+                          "test"],
+                 "cwd": ".", "timeout_seconds": 1800,
+                 "stdout_contains": "BUILD SUCCESS"},
+            ],
+        }
+
+        def verify(data):
+            return v3.validate_test_plan(json.dumps(data).encode(), 2012)
+
+        accepted = verify(plan)
+        self.assertEqual(accepted["source_head_pin"], "1" * 40)
+        self.assertEqual(accepted["source_tree_pin"], "2" * 40)
+        self.assertEqual(accepted["required_source_blobs"], {})
+        self.assertTrue(accepted["uses_maven"])
+
+        for name, mutate in (
+            ("source_id", lambda d: d.update(source_repo_id=999)),
+            ("wrong_head", lambda d: d["allowed_sources_by_pr"]["2012"].update(
+                head_sha="3" * 40)),
+            ("wrong_tree", lambda d: d["allowed_sources_by_pr"]["2012"].update(
+                root_tree_sha="invalid")),
+            ("broad_command", lambda d: d["commands"][0].update(
+                argv=["bash", "-c", "echo unsafe"])),
+            ("wrong_image", lambda d: d.update(sandbox_image="maven:latest")),
+            ("bad_suite", lambda d: d["required_surefire_suites_by_pr"]["2012"].update(
+                ActorNativeStorageStandaloneTest=0)),
+            ("wrong_maven", lambda d: d["commands"][4].update(
+                argv=["mvn", "-DskipTests", "test"])),
+            ("unexpected_field", lambda d: d.update(unreviewed=True)),
+            ("missing_pins", lambda d: d.pop("allowed_sources_by_pr")),
+        ):
+            altered = json.loads(json.dumps(plan))
+            mutate(altered)
+            with self.subTest(name=name), self.assertRaises(v3.Denied):
+                verify(altered)
+
     def test_publisher_identity_is_required_in_reviewed_contract(self):
         raw = {
             "schema": 1,
