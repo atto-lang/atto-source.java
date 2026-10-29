@@ -142,6 +142,9 @@ public final class AsyncNativeIo implements AutoCloseable {
             throw new RejectedExecutionException(
                     "native resource is closed, unregistered or shutdown-sealed");
         }
+        // Enforce revocation at the actual physical-loan boundary, including
+        // calls from a worker whose earlier admission captured this actor.
+        ActorRuntime.requireCurrentActorAuthorityActive("borrow native I/O resource");
         ActorRuntime.ActorId actorId = currentOwnerActor();
         state.active++;
         incrementActorOperationLocked(actorId);
@@ -457,6 +460,12 @@ public final class AsyncNativeIo implements AutoCloseable {
                     currentOwnerActor()));
             throw new IllegalStateException("I/O context closed");
         }
+        // Check AFTER the closed-path quarantine branch: a resource created
+        // by an already-running operation during shutdown must remain tracked
+        // until physical retirement, even if its delegation was revoked.
+        // In the normal open path, reject revoked actor/worker authority
+        // before publishing a new native resource to the context.
+        ActorRuntime.requireCurrentActorAuthorityActive("register native I/O resource");
         resources.add(resource);
         resourceLoans.put(resource, new ResourceLeaseState(
                 nextResourceGeneration.incrementAndGet(), resource,
