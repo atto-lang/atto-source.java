@@ -4544,7 +4544,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireNotActorGroupMailman("spawn delegated child actor");
         ActorCell<?> parent = currentActor.get();
         if (parent == null || delegation == null
-                || delegation.runtime != this || delegation.parentId != parent.ref.id()) {
+                || delegation.runtime != this || !delegation.parentId.equals(parent.ref.id())) {
             throw new SecurityException("actor permission delegation has a foreign issuer");
         }
         if (!delegation.consumed.compareAndSet(false, true)) {
