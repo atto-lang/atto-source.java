@@ -95,9 +95,66 @@ public final class WorkflowHostServiceRegistryTest {
         }
         count++;
     }
+    // A malicious CompletionStage can register a callback and then throw.
+    // The second, later callback must never release a permit twice.
+    private static void completionRegistrationThrowsAfterRegistration() throws Exception {
+        final class UnreliableStage extends CompletableFuture<Reply> {
+            @Override public CompletableFuture<Reply> whenComplete(
+                    java.util.function.BiConsumer<? super Reply, ? super Throwable> action) {
+                super.whenComplete(action);
+                throw new IllegalStateException("after-callback-registration");
+            }
+        }
+        UnreliableStage stage = new UnreliableStage();
+        Service service = ignored -> stage;
+        try (ProvisioningScope scope = WorkflowHostServiceRegistry.provisionForHost(service);
+             WorkflowHostServiceRegistry r = WorkflowHostServiceRegistry.forNewContext()) {
+            ok(await(r, message("faulty-stage")).status() == Status.FAILED,
+                    "invalid completion stage fails closed");
+            stage.complete(reply("faulty-stage"));
+            java.lang.reflect.Field field = WorkflowHostServiceRegistry.class.getDeclaredField("inFlight");
+            field.setAccessible(true);
+            AtomicInteger outstanding = (AtomicInteger) field.get(r);
+            ok(outstanding.get() == 0, "double-release of one admission slot must not occur");
+        }
+        count++;
+    }
+    private static void staleScopeCannotEraseNewProvision() throws Exception {
+        Service first = ignored -> CompletableFuture.completedFuture(reply("first"));
+        Service second = request -> CompletableFuture.completedFuture(reply(request.requestId()));
+        ProvisioningScope stale = WorkflowHostServiceRegistry.provisionForHost(first);
+        try (WorkflowHostServiceRegistry consumed = WorkflowHostServiceRegistry.forNewContext()) {
+            ok(consumed.isProvisioned(), "initial provision consumed");
+        }
+        try (ProvisioningScope newer = WorkflowHostServiceRegistry.provisionForHost(second)) {
+            stale.close();
+            try (WorkflowHostServiceRegistry next = WorkflowHostServiceRegistry.forNewContext()) {
+                ok(next.isProvisioned(), "stale scope did not erase newer provision");
+                ok(await(next, message("second")).status() == Status.OK, "correct provision usable");
+            }
+        }
+        count++;
+    }
+    private static void workerIdentityNotThreadName() throws Exception {
+        Service service = request -> CompletableFuture.completedFuture(reply(request.requestId()));
+        try (ProvisioningScope scope = WorkflowHostServiceRegistry.provisionForHost(service)) {
+            WorkflowHostServiceRegistry registry = WorkflowHostServiceRegistry.forNewContext();
+            ok(await(registry, message("spawn-worker")).status() == Status.OK, "worker created");
+            java.util.concurrent.atomic.AtomicReference<Throwable> failed = new java.util.concurrent.atomic.AtomicReference<>();
+            Thread other = new Thread(() -> {
+                try { registry.close(); } catch (Throwable error) { failed.set(error); }
+            }, "ores-workflow-host");
+            other.start(); other.join(3000);
+            ok(!other.isAlive() && failed.get() == null, "close uses actual worker identity");
+            ok(await(registry, message("after-close")).status() == Status.CLOSED, "closed");
+        }
+        count++;
+    }
     public static void main(String[] args) throws Exception {
         defaultDeny(); oneShotScope(); ownerWorkerAndBackpressure();
         denyForgedReplyAndFailedHost(); noNestedProvision();
+        completionRegistrationThrowsAfterRegistration(); staleScopeCannotEraseNewProvision();
+        workerIdentityNotThreadName();
         System.out.println("WORKFLOW_HOST_REGISTRY_RESULT passed=" + count + " host_only=true");
     }
 }
