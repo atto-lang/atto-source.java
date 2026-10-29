@@ -53,6 +53,17 @@ public final class IncrementalCompiler {
                 throw new IllegalArgumentException("duplicate normalized source unit '" + id + "'");
             }
         }
+        // This runnable namespace slice rejects legacy imports until their
+        // source/package boundary and capabilities have checked authority.
+        for (Map.Entry<String, Ast.Program> source : parsed.entrySet()) {
+            for (Ast.ImportDecl imported : source.getValue().imports()) {
+                if (imported.kind() != Ast.ImportKind.NAMESPACE) {
+                    throw new IllegalArgumentException(
+                            "pinned namespace build does not yet admit ordinary file/host imports: "
+                                    + imported.path() + " from " + source.getKey());
+                }
+            }
+        }
         Map<String, String> owners = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sourceOwners.entrySet()) {
             if (owners.putIfAbsent(normalizeUnitId(entry.getKey()), entry.getValue()) != null) {

@@ -1,54 +1,66 @@
-# Java namespace import / verified package-local assembly — phase 1
+# Java/Graal package-owned namespace imports — executable pinned-host slice
 
-Status: **parser plus source-only namespace graph; not executable package namespace imports**.
+**Status:** The Java feature branch now contains a real Truffle/Graal guest
+execution path for a **closed host-supplied package inventory**, plus parser,
+type checker, runtime namespace facade, member provenance and source/ABI
+dependency invalidation. The focused 10-source / 3-namespace test **asserts
+main() exits 43**. It has **not yet executed on a verified runner**.
 
-## Accepted source form
+## Syntax
 
     import ns a from 'pkg:foo';
 
-"ns" is contextual in import position. The AST selector is NAMESPACE, and
-namespace a; remains the flat source-header declaration. This selector does
-not merge define module a, file imports, or public symbols from any other package.
+Each source in foo may contribute to namespace a by declaring namespace a;
+in its file header, regardless of directory. Identity is always
+(PackageInstanceId, NamespaceName), not a global string. No namespace merges
+across different package instances; define module remains a different scope.
 
-The Java PackageNamespaceLinker.link(programs, sourceOwners, pinnedAliases)
-API validates and aggregates only simple public, root-level, non-generic,
-non-actor fnc declarations at this stage. Identity:
-(PackageInstanceId, namespaceName). Explicit sourceOwners cover EXACTLY the
-provided programs. Every namespace import selects an explicitly pinned target
-package instance and exact namespace, without fallback to directory, CWD or
-the source-header text. Cross-package identity never merges, even when names
-match or different package versions share the same name. The linker refuses
-unsupported public class/type/actor namespace exports until checked nominal
-identity and ABI lowering are available.
+## Host-supplied entry point
 
-**Boundary:** sourceOwners and pinnedAliases MUST come from a separately
-verified manifest and lockfile resolver. These maps are assertions, not
-cryptographic package verification; do not construct them by trusting a
-namespace header or the filesystem's apparent directory grouping. The linker
-does not itself validate symlink/hardlink canonical identity or signatures,
-and it does not typecheck function bodies.
+    PinnedNamespaceProgramRunner.run(
+        sources, sourceOwners, pinnedAliases, entrySource,
+        IsolatePolicy.developer(), ExecutionProfile.serverJit());
 
-The pre-existing IncrementalCompiler / LinkedProgramRunner / standalone
-Evaluator currently use file-unit imports and **reject import ns** explicitly.
-They must not incorrectly evaluate pkg:foo as a filesystem path, resolve
-same-spelling namespaces from another package, or return Unknown at runtime.
-This PR does not change that until actual runtime namespace facade/call-site
-lowering and verified dependency source inventory are implemented.
+The runner passes an exact closed source map through
+IncrementalCompiler.compilePinned, PackageNamespaceLinker, TypeChecker and
+OwnershipChecker, then runs all checked source units in a Graal Context.
+The package graph adds all member file dependencies for initialization and ABI
+invalidations. The host registers each public function's EXACT source ID,
+name and arity. Runtime dispatch validates that the selected function is a
+public nonactor fnc in the original file-root; it does not use named module
+lookup, copy or move function bodies, or resolve a same-spelling global name.
 
-## Next acceptance gates
+**IMPORTANT:** the host is REQUIRED to authenticate sourceOwners and
+pinnedAliases against a pinned manifest+lockfile graph before invoking the API.
+These maps are NOT itself a verified manifest; the new runner does not
+discover, read or authenticate .ores.pkg.toml, sign the import inventory, nor
+perform canonical-path/symlink/security checks. The source-free API is intended
+for trusted compiler hosts or an isolated conformance gate, not as a public
+filesystem package resolver.
 
-1. Wire a verified, pinned package manifest/lockfile inventory to the linker
-   (including explicit source ownership and canonical path validation).
-2. Typecheck qualified namespace member calls against the linked exports,
-   checked effects and overload resolution, and reject missing/private names.
-3. Lower runtime namespace interfaces to callable cross-unit handles; run
-   the ten-source / three-namespace consumer to **43** on Java/Graal, not a
-   source-free mock.
-4. Ensure correct once-only initialization, hot reload/ABI invalidation,
-   module isolation and capability separation.
-5. Repeat on LLVM, .NET, Forge, Wasm and JS ESM, including explicit-only
-   public exports and source maps.
-6. Prove actual CI execution: a job with steps:null is not test evidence.
+Initial accepted exports: file-root public, synchronous, non-generic,
+non-actor, nontrapped functions with explicit int-only params and int return.
+Private exports, named modules, aliases, classes, actors, type aliases,
+pub[file]/pub[pkg], generic overload identity, effects, suspensions, classes,
+deep ownership and re-exports require later checked interface lowering.
+Ordinary file/Java host/bare imports in compilePinned are intentionally
+rejected: no silent legacy filesystem fallback across package boundaries.
+Existing filesystem LinkedProgramRunner and standalone evaluation remain
+fail-closed for import ns.
 
-Contract: oreslang-common-source PR #189. Related Java PRs: #2169,
-#2066 and #1315 need reconciliation.
+## Required follow-up and acceptance
+
+1. Implement **real verified schema-v2 .ores.pkg.toml and pinned lockfile**
+   graph with canonical source ownership, exact file hashes/signed provenance
+   and no symlink escape. Only then allow filesystem-based package import ns.
+2. Obtain **actual** JDK25 GraalVM execution for PinnedNamespaceRuntimeTest,
+   including the target code returning 43. CI jobs with steps:null are
+   NOT_EXECUTED and are not test passes.
+3. Expand the shared fixture into the full visibility matrix
+   (pub[pkg]/pub[file], cross-file private declarations, nominal classes),
+   ABI stability, overloads, transitive package imports, import cycles.
+4. Verify Java/Graal JIT and Native Image AOT and LLVM native execution;
+   then .NET, Forge, Wasm and JS ESM parity.
+
+Shared contract: oreslang-common-source PR #189.
+Java PR: #2255. LLVM source-only graph PR: #1162.

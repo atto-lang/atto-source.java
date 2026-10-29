@@ -99,6 +99,35 @@ final class PinnedNamespaceRuntimeTest {
     }
 
     @Test
+    void wrongArityAndWrongTypeAreRejectedBeforeRuntime() {
+        Map<String, String> arity = sources("""
+                import ns a from 'pkg:foo';
+                pub fnc main(): int { return a.add(10); }
+                """);
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> run(arity, owners(), PINS));
+        assertTrue(missing.getMessage().contains("does not export"), missing.getMessage());
+
+        Map<String, String> type = sources("""
+                import ns a from 'pkg:foo';
+                pub fnc main(): int { return a.add("not an integer", 1); }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> run(type, owners(), PINS));
+    }
+
+    @Test
+    void ordinaryImportsCannotBypassPinnedNamespaceSourceAuthority() {
+        Map<String, String> src = sources("""
+                import fnc danger from '../other_pkg/impl';
+                pub fnc main(): int { return 0; }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> run(src, owners(), PINS));
+        assertTrue(denied.getMessage().contains("ordinary file/host imports"),
+                denied.getMessage());
+    }
+
+    @Test
     void legacyNoPackageGraphCompilationStillFailsClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(Map.of(ENTRY, """
