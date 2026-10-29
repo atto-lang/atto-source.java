@@ -37,8 +37,12 @@ BLOCKING_INCIDENT_IDS = {
     127: 5935338521,
     171: 6042555082,  # recovery/runtime source-bearing private carrier; pending classification
     172: 6042602777,  # LLVM exact-tree carrier; independent placement review outstanding
+    198: 6070465058,  # Java CI-script source blobs in ClaimGraph
+    200: 6071264936,  # Java governance blobs retained in ClaimGraph
+    212: 6087989978,  # unapproved LLVM source execution in honeypot carrier
+    222: 6092501448,  # retained Oreslang source refs in Daedalus carrier
 }
-BLOCKING_INCIDENTS = (22, 77, 127, 171, 172)
+BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200, 212, 222)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
     "agent-pontifex-test/agent-pontifex-e2e-tests",
