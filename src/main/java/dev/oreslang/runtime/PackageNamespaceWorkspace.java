@@ -27,12 +27,15 @@ import java.util.Set;
  */
 final class PackageNamespaceWorkspace {
     record Workspace(List<Path> manifests, List<Path> files, Map<String, String> aliases,
-                     Set<String> rootPackageIds) {
+                     Set<String> rootPackageIds, Map<Path, String> dependencySourcePins,
+                     Map<Path, String> dependencyManifestPins) {
         Workspace {
             manifests = List.copyOf(manifests);
             files = List.copyOf(files);
             aliases = Map.copyOf(aliases);
             rootPackageIds = Set.copyOf(rootPackageIds);
+            dependencySourcePins = Map.copyOf(dependencySourcePins);
+            dependencyManifestPins = Map.copyOf(dependencyManifestPins);
         }
     }
 
@@ -53,6 +56,8 @@ final class PackageNamespaceWorkspace {
         LinkedHashSet<Path> manifests = new LinkedHashSet<>();
         LinkedHashSet<Path> files = new LinkedHashSet<>();
         LinkedHashMap<String, String> aliases = new LinkedHashMap<>();
+        LinkedHashMap<Path, String> sourcePins = new LinkedHashMap<>();
+        LinkedHashMap<Path, String> manifestPins = new LinkedHashMap<>();
         manifests.add(manifest);
         TomlParseResult root = checkedManifest(manifest);
         files.addAll(members(manifest, root));
@@ -109,6 +114,8 @@ final class PackageNamespaceWorkspace {
                 }
                 manifests.add(canonical);
                 files.addAll(owned);
+                sourcePins.put(canonical, sourcesSha);
+                manifestPins.put(canonical, manifestSha);
                 aliases.put(alias, PackageNamespaceIndex.packageId(canonical, packageKey));
             }
         }
@@ -116,7 +123,7 @@ final class PackageNamespaceWorkspace {
             throw new IllegalArgumentException("namespace workspace exceeds manifest/source limits");
         }
         return new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
-                aliases, rootPackageIds);
+                aliases, rootPackageIds, sourcePins, manifestPins);
     }
 
     private static TomlParseResult checkedManifest(Path path) throws IOException {
@@ -207,6 +214,41 @@ final class PackageNamespaceWorkspace {
             throw new IllegalArgumentException("missing required namespace dependency field: " + field);
         }
         return value;
+    }
+
+    /**
+     * Re-verify pinned dependency bytes against the *same admitted source text*
+     * that the compiler will parse, not just an earlier filesystem read.
+     */
+    static void verifyPinnedSnapshot(Workspace workspace, Map<String, String> admitted)
+            throws IOException {
+        for (var entry : workspace.dependencySourcePins().entrySet()) {
+            Path manifest = entry.getKey();
+            String pinnedManifestHash = workspace.dependencyManifestPins().get(manifest);
+            if (!sha256(Files.readAllBytes(manifest)).equals(pinnedManifestHash)) {
+                throw new SecurityException("dependency manifest changed during admission");
+            }
+            Path root = manifest.toRealPath().getParent();
+            String relativeRoot = checkedManifest(manifest).getString("project.root");
+            if (relativeRoot != null && !".".equals(relativeRoot)) {
+                root = root.resolve(relativeRoot).normalize().toRealPath();
+            }
+            List<String> parts = new ArrayList<>();
+            for (Path source : members(manifest, checkedManifest(manifest))) {
+                String id = source.toRealPath().toString().replace('\\', '/');
+                String admittedText = admitted.get(id);
+                if (admittedText == null) {
+                    throw new IllegalArgumentException("pinned namespace provider is absent: " + id);
+                }
+                parts.add(root.relativize(source.toRealPath()).toString().replace('\\', '/')
+                        + "\n" + sha256(admittedText.getBytes(StandardCharsets.UTF_8)) + "\n");
+            }
+            parts.sort(String::compareTo);
+            if (!sha256(String.join("", parts).getBytes(StandardCharsets.UTF_8))
+                    .equals(entry.getValue())) {
+                throw new SecurityException("dependency source content changed during admission");
+            }
+        }
     }
 
     static String sourceDigest(Path manifest, List<Path> sourceFiles) throws IOException {

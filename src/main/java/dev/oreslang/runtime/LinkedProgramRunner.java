@@ -401,8 +401,13 @@ public final class LinkedProgramRunner {
             if (code == null || !code.hasOresSource()) {
                 throw new IllegalStateException("namespace member missing from admitted source graph: " + member);
             }
+            if (code.hasJavaSource()) {
+                throw new SecurityException(
+                        "namespace member must be native Oreslang without embedded Java: " + member);
+            }
             admitted.put(code.unitId(), code.oresSource());
         }
+        PackageNamespaceWorkspace.verifyPinnedSnapshot(workspace, admitted);
         PackageNamespaceIndex index = PackageNamespaceIndex.load(
                 workspace.manifests(), admitted, workspace.aliases());
         // External alias authority belongs to the *root* manifest packages.

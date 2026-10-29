@@ -214,7 +214,7 @@ final class PackageNamespaceIndexTest {
                 """);
         IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
                 () -> LinkedProgramRunner.validate(entry));
-        assertTrue(rejection.getMessage().contains("runtime linking"));
+        assertTrue(rejection.getMessage().contains("package index"));
     }
 
     @Test

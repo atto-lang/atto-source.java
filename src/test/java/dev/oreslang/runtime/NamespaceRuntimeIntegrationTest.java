@@ -125,6 +125,36 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void wrongArgumentTypeAndUnknownCallAreRejectedByStaticLinker() throws Exception {
+        Path project = temp.resolve("checkout");
+        billing(project);
+        Path main = source(project, "src/main.ores", "client", """
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  stdio.println(payments.charge("wrong"));
+                  return;
+                }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, Files.readString(manifest).replace(
+                "  \"src/billing/invoice.ores\",",
+                "  \"src/billing/invoice.ores\",\n  \"src/main.ores\","));
+        assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(main));
+
+        Files.writeString(main, """
+                namespace client;
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  payments.missing();
+                  return;
+                }
+                """);
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(main));
+        assertTrue(missing.getMessage().contains("namespace call does not resolve"));
+    }
+
+    @Test
     void pinnedSourceMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
         Path providerManifest = billing(provider);

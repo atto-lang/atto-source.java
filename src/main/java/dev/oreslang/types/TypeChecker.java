@@ -3841,6 +3841,15 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr receiver
+                    && env.lookup(receiver.name()) == null
+                    && linkedNamespaceFunctions.containsKey(receiver.name())) {
+                throw new IllegalArgumentException(
+                        "linked namespace member '" + receiver.name() + "."
+                                + member.member()
+                                + "' requires direct statically checked invocation; "
+                                + "first-class namespace member extraction is not yet supported");
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
