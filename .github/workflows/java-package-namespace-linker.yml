@@ -1,0 +1,33 @@
+name: java-package-namespace-linker
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/imports/ImportRules.java'
+      - 'src/main/java/dev/oreslang/compiler/ImportGraph.java'
+      - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
+      - 'src/main/java/dev/oreslang/compiler/PackageNamespaceLinker.java'
+      - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/PackageNamespaceLinkerTest.java'
+      - 'docs/PACKAGE_LOCAL_NAMESPACE_PHASE1.md'
+      - '.github/workflows/java-package-namespace-linker.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-namespace-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Compile parser/linker and execute exact-head regression suite
+        run: ./mvnw -B -Dtest=PackageNamespaceLinkerTest,ImportSelectorSyntaxTest test
