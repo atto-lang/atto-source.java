@@ -3214,10 +3214,19 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "cannot transfer worker after stop/cancellation was admitted");
                 }
+                // Ownership transfer must be authorized by the exact runtime-issued
+                // reference, not by a caller-supplied ID/generation tuple.
+                // Validate inside the same authority lock as the owner CAS:
+                // a forged ref must not clear the real actor's ownership token
+                // while leaving its managedWorkers entry behind.
+                ActorCell<?> cell = requireExactLiveActorCell(worker);
                 if (!managedWorkers.containsKey(worker.id())) return false;
-                ActorCell<?> cell = actors.get(worker.id());
                 if (cell == null || cell.stopped.get()) {
                     throw new IllegalStateException("cannot transfer a stopped worker");
+                }
+                if (managedWorkers.get(worker.id()) != worker) {
+                    throw new ActorInvalidReferenceException(
+                            "ActorGroup worker must match its original managed reference");
                 }
                 if (!cell.managedByGroup.compareAndSet(id, null)) {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
