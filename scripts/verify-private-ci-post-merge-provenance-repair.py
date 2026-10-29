@@ -18,6 +18,7 @@ SOURCE_MAIN_SHA = "9f4f4a3b75dd4b124e8509b65a88a98213c11ab5"
 MANIFEST = "docs/security/private-ci-post-merge-provenance-repair-20261027.json"
 LEDGER = ".github/private-ci-approved-repositories.txt"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+MAX_MANIFEST_BYTES = 1024 * 1024
 EXPECTED = {
     ".github/CODEOWNERS": "078909add1bb1d37eefc22c11dfa8e7ceb76aace",
     ".github/workflows/private-ci-mirror-preflight.yml": "288da01fdc0414cf9fbd3f47be459e7569927771",
@@ -40,6 +41,10 @@ def unique_object(pairs):
             raise Rejected("duplicate JSON key")
         result[key] = value
     return result
+
+
+def reject_nonfinite_json(value: str):
+    raise Rejected("invalid provenance snapshot JSON")
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -75,9 +80,15 @@ def read_regular(root: Path, relative: str) -> bytes:
 
 def load_manifest(root: Path):
     raw = read_regular(root, MANIFEST)
+    if not raw or len(raw) > MAX_MANIFEST_BYTES or raw.startswith(bytes.fromhex("efbbbf")):
+        raise Rejected("invalid provenance snapshot JSON")
     try:
-        doc = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        doc = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_nonfinite_json,
+        )
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise Rejected("invalid provenance snapshot JSON") from exc
     required = {
         "schema", "source_repository", "source_repository_id", "source_main_sha",
