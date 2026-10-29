@@ -528,7 +528,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             codeowners=True, stale=True, admins=True,
                             approvals=1, force=False, deletions=False,
                             bypasses=None, strict_checks=True, contexts=None,
-                            named_checks=None, source_id=None, codeowners_file=None):
+                            named_checks=None, source_id=None, codeowners_file=None,
+                            last_push=True, conversations=True):
         routes = []
         if contexts is None:
             contexts = ["private-ci-gate"]
@@ -555,6 +556,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main/protection":
                 reviews = {"require_code_owner_reviews": codeowners,
                            "dismiss_stale_reviews": stale,
+                           "require_last_push_approval": last_push,
                            "required_approving_review_count": approvals}
                 if bypasses is not None:
                     reviews["bypass_pull_request_allowances"] = bypasses
@@ -565,6 +567,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             "checks": list(named_checks),
                         },
                         "enforce_admins": {"enabled": admins},
+                        "required_conversation_resolution": {"enabled": conversations},
                         "allow_force_pushes": {"enabled": force},
                         "allow_deletions": {"enabled": deletions}}
             if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
@@ -647,6 +650,37 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with patch.object(pub, "gh_api", side_effect=api):
                     with self.assertRaisesRegex(pub.Denied, "strict required CI"):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_requires_latest_push_approval_and_conversation_resolution(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\\n").digest()
+        for changes in (
+            {"last_push": False},
+            {"last_push": None},
+            {"conversations": False},
+            {"conversations": None},
+        ):
+            with self.subTest(changes=changes):
+                api, _ = self.verified_origin_api(**changes)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "last-push approval"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_missing_or_malformed_governance_metadata(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\\n").digest()
+        api, _ = self.verified_origin_api()
+        path = "repos/" + pub.SOURCE_REPO + "/branches/main/protection"
+        for invalid in (
+            None, False, [], {}, {"required_pull_request_reviews": {}},
+        ):
+            def broken(route, method="GET", payload=None):
+                if route == path:
+                    return invalid
+                return api(route, method, payload)
+            with self.subTest(invalid=invalid), patch.object(
+                pub, "gh_api", side_effect=broken
+            ):
+                with self.assertRaises(pub.Denied):
+                    ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_rejects_author_codeowner_instead_of_independent_security_owner(self):
         bad = (
