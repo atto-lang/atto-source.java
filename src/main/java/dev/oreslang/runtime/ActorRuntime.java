@@ -4934,6 +4934,12 @@ public final class ActorRuntime implements AutoCloseable {
             // Reject ActorRef, native handles, arbitrary host objects and
             // mutable arrays until the compiler/runtime can prove authority.
             if (argument instanceof String string) {
+                // Check UTF-16 length first to avoid allocating an unbounded
+                // temporary UTF-8 array for an already-over-budget input.
+                if (string.length() > 4096) {
+                    throw new IllegalArgumentException(
+                            "source actor init startup payload exceeds 4096 bytes");
+                }
                 int length = string.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
                 bytes = Math.addExact(bytes, length);
             } else if (argument instanceof Boolean) {
