@@ -89,6 +89,23 @@ public final class CoreLibrarySources {
         return false;
     }
 
+    /**
+     * Prevent linked import metadata from laundering the compiler-owned unsafe
+     * module behind a benign path. Resolve/import unit IDs are not source paths,
+     * and must be checked independently of the original import declaration.
+     */
+    public static boolean isUnsafeStdUnitId(String unitId) {
+        if (unitId == null) return false;
+        String normalized = unitId.replace('\\', '/');
+        if (normalized.startsWith("@std/")) {
+            return isUnsafeStdImport("std/" + normalized.substring("@std/".length()));
+        }
+        if (normalized.startsWith("@ores.std/")) {
+            return isUnsafeStdImport("ores.std/" + normalized.substring("@ores.std/".length()));
+        }
+        return false;
+    }
+
     /** Reserve canonical library roots before filesystem/ORESLANG_PATH fallback. */
     public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
