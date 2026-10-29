@@ -1,5 +1,5 @@
 {
-  "schema": "ores-private-ci-carrier-candidate-review-v1",
+  "schema": "ores-private-ci-carrier-candidate-review-v2",
   "source_repository": "ores-truffle-oreslang/oreslang-source.java",
   "source_pr": 2222,
   "source_head_sha": "ce23fb32485cd59282eb09bf06b480177b90b277",
@@ -8,14 +8,21 @@
   "carrier_repository": "honeypot-r-us-test/hnpt-lib-core",
   "carrier_repository_id": 1343209023,
   "carrier_review_pr": 24,
-  "carrier_review_head_sha": "8607b3f79284e2cea29bbfe756b0400b9d498d86",
-  "carrier_workflow_blob_sha": "859e8dfed2ff83bba5c9759720da690f8ce41730",
-  "carrier_manifest_blob_sha": "6857fcc84cc53c393f5bcc437f34382ae9c08aae",
-  "carrier_test_plan_blob_sha": "81dcc6cdbc05052ad5cd341d5ca7c4350f86bd95",
-  "carrier_verifier_blob_sha": "995aed5dc295f3e0d7291da2acddbe12985b7787",
-  "funded_run_id": 40814545566,
-  "funded_job_id": 123252451308,
+  "carrier_review_head_sha": "174ddd52861b2aefd64b0648c41dec1340aab032",
+  "carrier_main_protected": false,
+  "carrier_review_workflow_blob_sha": "805f8a1919afc8e5949bbabf3447ed1d7ced8d46",
+  "carrier_execution_workflow_blob_sha": "480f73da8205287ca59683df18183b5feaace588",
+  "carrier_codeowners_blob_sha": "0110a557c162204a399ebf1e628e50c9ed991439",
+  "carrier_manifest_blob_sha": "924b2478cbe03efed78f0f4337fe9e6996849605",
+  "carrier_test_plan_blob_sha": "0894f7241eb0b510f335351b8ad33378946f9503",
+  "carrier_candidate_verifier_blob_sha": "a26ca47b00280e58114315a9b1ffbc5e5b291e18",
+  "carrier_source_verifier_blob_sha": "4eccdaf0235d7bb4d05461341bbb4ded09249fde",
+  "carrier_runner_blob_sha": "a77ea1e03b36dd2d3a34b7904ab7f1196bed21bf",
+  "carrier_adversarial_test_blob_sha": "b32803b230819740360b31acf80ce9326c3001c8",
+  "funded_run_id": 40817432664,
+  "funded_job_id": 123261702887,
   "funded_result": "success",
+  "carrier_exact_head_approved": false,
   "blocking_incidents": [
     22,
     77,
@@ -23,10 +30,11 @@
     171,
     172
   ],
+  "incidents_resolved": false,
   "reviewed_destination_allowlist_contains_carrier": false,
   "carrier_contract_contains_carrier": false,
   "source_exact_head_approved": false,
   "transfer_authorized": false,
   "status": "hold",
-  "purpose": "review-only source-side receipt for a funded source-free carrier candidate"
+  "purpose": "review-only source-side receipt for a funded, source-free, V3-compatible exact-tree carrier candidate"
 }
