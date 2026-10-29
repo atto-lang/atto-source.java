@@ -104,7 +104,7 @@ public final class PinnedNamespacePackageInventory {
                 throw new IllegalArgumentException("manifest parent is not its real package root");
 
             byte[] manifestBytes;
-            try (var input = Files.newInputStream(manifest)) {
+            try (var input = Files.newInputStream(manifest, LinkOption.NOFOLLOW_LINKS)) {
                 manifestBytes = input.readNBytes(MAX_MANIFEST_BYTES + 1);
             }
             if (manifestBytes.length > MAX_MANIFEST_BYTES)
@@ -165,7 +165,15 @@ public final class PinnedNamespacePackageInventory {
                     }
                 }
                 admitted.add(real);
-                BoundedSourceReader.ReadResult read = BoundedSourceReader.readWithByteCount(real);
+                BoundedSourceReader.ReadResult read = BoundedSourceReader.readWithByteCountNoFollow(real);
+                // Detect a path rebind observed during admission, after the
+                // complete bounded file read. SHA pin remains the content
+                // authority even if the directory is concurrently modified.
+                rejectSymlinkComponents(root, candidate);
+                if (!candidate.toRealPath().equals(real)) {
+                    throw new IllegalArgumentException(
+                            "pinned package source path changed during admission");
+                }
                 budget.admit(read.byteCount(), 0);
                 requireDigest(read.text().getBytes(StandardCharsets.UTF_8),
                         pin.sourceSha256().get(relative), real.toString());

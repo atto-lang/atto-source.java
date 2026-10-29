@@ -22,8 +22,18 @@ public final class BoundedSourceReader {
     }
 
     public static ReadResult readWithByteCount(Path path) throws IOException {
+        return readWithByteCountOptions(path);
+    }
+
+    /** Pinned packages forbid following a final-component source symlink. */
+    public static ReadResult readWithByteCountNoFollow(Path path) throws IOException {
+        return readWithByteCountOptions(path, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+    }
+
+    private static ReadResult readWithByteCountOptions(
+            Path path, java.nio.file.OpenOption... options) throws IOException {
         byte[] bytes;
-        try (InputStream input = Files.newInputStream(path)) {
+        try (InputStream input = Files.newInputStream(path, options)) {
             bytes = input.readNBytes(MAX_BYTES + 1);
         }
         if (bytes.length > MAX_BYTES) {
