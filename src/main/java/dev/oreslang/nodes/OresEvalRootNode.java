@@ -11068,8 +11068,13 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' is read before initialization");
             }
             if (!writable && value != null
-                    && !(value instanceof String || value instanceof Number
-                        || value instanceof Boolean || value instanceof Character)) {
+                    && !(value instanceof String || value instanceof Boolean
+                        || value instanceof Character || value instanceof Byte
+                        || value instanceof Short || value instanceof Integer
+                        || value instanceof Long || value instanceof Float
+                        || value instanceof Double
+                        || value instanceof java.math.BigInteger
+                        || value instanceof java.math.BigDecimal)) {
                 // Composite values may contain mutable aliases. Fail closed
                 // until a provably immutable/snapshot view is implemented.
                 throw new IllegalArgumentException(
