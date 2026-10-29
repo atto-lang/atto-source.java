@@ -47,8 +47,9 @@ public final class OresContext implements AutoCloseable {
     /** Typed intrinsic only; returns guest-owned scalar data, never host handles. */
     public OresFuture<java.util.List<Object>> submitWorkflowGuest(Object payload) {
         requireCapability(IsolatePolicy.Capability.WORKFLOW_STORAGE, "rt workflow_request");
-        if (isolatePolicy.adversarial()) {
-            throw new SecurityException("untrusted isolate cannot invoke workflow host services");
+        if (isolatePolicy.adversarial()
+                || ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+            throw new SecurityException("untrusted actor/isolate cannot invoke workflow host services");
         }
         return WorkflowGuestPort.submit(workflowHostServices, payload);
     }
