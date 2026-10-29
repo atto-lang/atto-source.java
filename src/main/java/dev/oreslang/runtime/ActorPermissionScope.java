@@ -12,12 +12,18 @@ import java.util.Objects;
  * context-level policy and the actor's coarse IsolatePolicy as well.
  */
 final class ActorPermissionScope {
+    private static final int MAX_RESTRICTION_LAYERS = 128;
     private final ActorPermissionScope parent;
     private final RuntimePermissions restrictions;
+    private final int depth;
 
     private ActorPermissionScope(ActorPermissionScope parent, RuntimePermissions restrictions) {
         this.parent = parent;
         this.restrictions = Objects.requireNonNull(restrictions, "restrictions");
+        this.depth = parent == null ? 1 : parent.depth + 1;
+        if (depth > MAX_RESTRICTION_LAYERS) {
+            throw new SecurityException("actor permission delegation depth limit exceeded");
+        }
     }
 
     static ActorPermissionScope root(RuntimePermissions ceiling) {
@@ -29,7 +35,9 @@ final class ActorPermissionScope {
     }
 
     void require(RuntimePermissions.Permission permission, String resource, String operation) {
-        if (parent != null) parent.require(permission, resource, operation);
-        restrictions.require(permission, resource, operation);
+        // No recursive stack growth, even with adversarial nested delegation.
+        for (ActorPermissionScope layer = this; layer != null; layer = layer.parent) {
+            layer.restrictions.require(permission, resource, operation);
+        }
     }
 }
