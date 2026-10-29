@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 
 const yaml = readFileSync(new URL('../.github/workflows/private-exact-main-validation.yml', import.meta.url), 'utf8');
 const owners = readFileSync(new URL('../.github/CODEOWNERS', import.meta.url), 'utf8');
+const incidentGovernance = existsSync(new URL(
+  '../.github/private-ci-incident-dispositions.json', import.meta.url));
 
-function verify(w, c) {
+function verify(w, c, incidentControlled = incidentGovernance) {
   // A duplicate YAML root key (especially on/jobs/permissions) can shadow
   // the reviewed block. Fail closed before checking individual sections.
   // This workflow intentionally has one fixed, minimal root shape.
@@ -128,15 +130,27 @@ function verify(w, c) {
   ]) assert.ok(allow.includes(step), 'missing phase ' + step);
   assert.ok(c.split('\n').includes('/tests/private-exact-main-admission.test.mjs @ORESoftware'));
   assert.ok(c.split('\n').includes('/.github/workflows/private-exact-main-validation.yml @ORESoftware'));
-  assert.deepEqual(c.trimEnd().split('\n').slice(-7), [
+  // V3 incident governance adds one independently owned terminal rule.
+  // A seven-rule checkout must never be accepted when incident governance
+  // exists, and an eight-rule checkout must never pass before it exists.
+  const incidentRule = '/.github/private-ci-incident-dispositions.json @ORESoftware';
+  const tail = [
     '/.github/CODEOWNERS @ORESoftware',
     '/.github/private-ci-approved-repositories.txt @ORESoftware',
+    ...(incidentControlled ? [incidentRule] : []),
     '/.github/private-ci-carrier-contracts.json @ORESoftware',
     '/scripts/check-private-ci-destination.sh @ORESoftware',
     '/scripts/run-in-private-ci-destination.sh @ORESoftware',
     '/scripts/publish-private-ci-source.py @ORESoftware',
     '/scripts/publish-private-ci-source-v3.py @ORESoftware',
-  ]);
+  ];
+  const codeownerRules = c.trimEnd().split('\n').filter(line =>
+    line.trim() && !line.trimStart().startsWith('#'));
+  assert.equal(codeownerRules.filter(line =>
+    line.startsWith('/.github/private-ci-incident-dispositions.json ')).length,
+  incidentControlled ? 1 : 0, 'incident governance ownership mismatch');
+  assert.deepEqual(codeownerRules.slice(-tail.length), tail,
+    'missing exact terminal private-export security ownership');
 }
 
 test('manual-only trusted exact-main admission', () => verify(yaml, owners));
@@ -185,6 +199,23 @@ test('duplicate and unreviewed root-level YAML fields rejected', () => {
     '\npermissions: {contents: write}'), owners));
   assert.throws(() => verify(yaml.replace('\nconcurrency:',
     '\n\tconcurrency:'), owners));
+});
+
+test('incident governance transition preserves exact security ownership', () => {
+  const incidentRule = '/.github/private-ci-incident-dispositions.json @ORESoftware';
+  const next = owners.replace(
+    '/.github/private-ci-carrier-contracts.json @ORESoftware',
+    incidentRule + '\n/.github/private-ci-carrier-contracts.json @ORESoftware');
+  assert.notEqual(next, owners, 'missing insertion anchor');
+  // Current standalone PR uses seven final rules; the integrated V3 uses eight.
+  assert.doesNotThrow(() => verify(yaml, owners, false));
+  assert.doesNotThrow(() => verify(yaml, next, true));
+  assert.throws(() => verify(yaml, owners, true),
+    undefined, 'incident governance must not accept seven old rules');
+  assert.throws(() => verify(yaml, next, false),
+    undefined, 'pre-incident governance must not accept an unexpected rule');
+  assert.throws(() => verify(yaml, next.replace(incidentRule, ''), true));
+  assert.throws(() => verify(yaml, next + '\n* @another-owner\n', true));
 });
 
 test('CODEOWNERS tampering rejected', () => {
