@@ -631,6 +631,12 @@ def carrier_commit_tree(repository, commit_sha):
 
 
 def checked_carrier_main(repository, contract):
+    """Require enforceable carrier main protection, never a reviewed-PR fallback.
+
+    Recheck the exact pinned main commit and branch protection before and after
+    CODEOWNERS verification. Unprotected carriers cannot receive source Git
+    objects, even if a historical PR has an independent approval.
+    """
     branch = legacy.gh_api(f"repos/{repository}/branches/main")
     if branch.get("name") != "main":
         raise Denied("carrier main branch identity changed")
@@ -639,62 +645,33 @@ def checked_carrier_main(repository, contract):
     )
     if base_sha != contract["base_sha"]:
         raise Denied("carrier main advanced beyond reviewed base")
-
     if branch.get("protected") is not True:
-        raise Denied(
-            "carrier main is not protected; review history cannot substitute for branch protection"
-        )
+        raise Denied("carrier main is not protected; source transfer denied")
 
     protection = legacy.gh_api(f"repos/{repository}/branches/main/protection")
-    reviews = protection.get("required_pull_request_reviews")
-    checks = protection.get("required_status_checks")
-    conversation = protection.get("required_conversation_resolution")
-    contexts = checks.get("contexts") if isinstance(checks, dict) else None
-    named_checks = checks.get("checks") if isinstance(checks, dict) else None
-    if (not isinstance(reviews, dict)
-            or reviews.get("require_code_owner_reviews") is not True
-            or reviews.get("dismiss_stale_reviews") is not True
-            or reviews.get("require_last_push_approval") is not True
-            or not isinstance(reviews.get("required_approving_review_count"), int)
-            or isinstance(reviews.get("required_approving_review_count"), bool)
-            or reviews.get("required_approving_review_count", 0) < 1):
-        raise Denied(
-            "carrier main does not enforce independent CODEOWNER, stale-review, and last-push approval"
-        )
-    if (not isinstance(checks, dict)
-            or checks.get("strict") is not True
-            or not isinstance(contexts, list)
-            or not isinstance(named_checks, list)
-            or not (contexts or named_checks)
-            or any(not isinstance(name, str) or not name.strip() for name in contexts)
-            or any(not isinstance(item, dict)
-                   or not isinstance(item.get("context"), str)
-                   or not item["context"].strip() for item in named_checks)
-            or not isinstance(conversation, dict)
-            or conversation.get("enabled") is not True):
-        raise Denied(
-            "carrier main must enforce strict required CI and conversation resolution"
-        )
-    admins = protection.get("enforce_admins")
-    force = protection.get("allow_force_pushes")
-    delete = protection.get("allow_deletions")
-    if (not isinstance(admins, dict) or admins.get("enabled") is not True
-            or not isinstance(force, dict) or force.get("enabled") is not False
-            or not isinstance(delete, dict) or delete.get("enabled") is not False):
-        raise Denied("carrier main admin/force/delete protection incomplete")
-    bypasses = reviews.get("bypass_pull_request_allowances")
-    if bypasses is not None:
-        if (not isinstance(bypasses, dict)
-                or any(not isinstance(bypasses.get(key, []), list)
-                       or bypasses.get(key) for key in ("users", "teams", "apps"))):
-            raise Denied("carrier main has pull-request review bypasses")
-
+    # Share the stricter source-main governance contract: CODEOWNER reviews,
+    # stale-review dismissal, strict required checks, administrator enforcement,
+    # and no review bypass, force push, or branch deletion.
+    protection_contract = legacy._require_strict_source_protection(protection)
     codeowners, _ = remote_carrier_file(
         repository, legacy.CODEOWNERS_PATH, base_sha, MAX_GOVERNANCE_FILE
     )
     require_carrier_security_codeowners(codeowners)
-    return base_sha
 
+    final_branch = legacy.gh_api(f"repos/{repository}/branches/main")
+    if (final_branch.get("name") != "main"
+            or final_branch.get("protected") is not True
+            or valid_sha(
+                final_branch.get("commit", {}).get("sha"),
+                "carrier main SHA invalid",
+            ) != base_sha):
+        raise Denied("carrier main changed during protection attestation")
+    final_protection = legacy.gh_api(
+        f"repos/{repository}/branches/main/protection"
+    )
+    if legacy._require_strict_source_protection(final_protection) != protection_contract:
+        raise Denied("carrier main protection changed during attestation")
+    return base_sha
 
 def checked_destination(repository, contract):
     repo = legacy.checked_repo(repository, contract["repository_id"])
@@ -909,7 +886,8 @@ def validate_test_plan(plan_bytes, source_pr):
         raise Denied("reviewed test plan source/schema mismatch")
     allowed_fields = {
         "schema", "source_repo", "allowed_prs", "commands",
-        "required_source_blobs", "maven_pom_blob_sha",
+        "required_source_blobs", "required_source_head_sha",
+        "required_source_root_tree_sha", "maven_pom_blob_sha",
         "maven_prefetch_artifacts",
     }
     if not set(plan).issubset(allowed_fields):
@@ -921,6 +899,19 @@ def validate_test_plan(plan_bytes, source_pr):
                    for x in allowed)
             or len(set(allowed)) != len(allowed)):
         raise Denied("reviewed test plan does not authorize source PR")
+
+    required_head = plan.get("required_source_head_sha")
+    required_tree = plan.get("required_source_root_tree_sha")
+    if required_head is None and required_tree is None:
+        raise Denied("reviewed test plan source snapshot pins required")
+    if (required_head is None) != (required_tree is None):
+        raise Denied("reviewed test plan source snapshot pins must be paired")
+    required_head = valid_sha(
+        required_head, "reviewed test plan source head pin invalid"
+    )
+    required_tree = valid_sha(
+        required_tree, "reviewed test plan source root tree pin invalid"
+    )
 
     required = plan.get("required_source_blobs", {})
     if not isinstance(required, dict):
@@ -987,10 +978,23 @@ def validate_test_plan(plan_bytes, source_pr):
     return {
         "sha256": hashlib.sha256(plan_bytes).hexdigest(),
         "required_source_blobs": checked_required,
+        "required_source_head_sha": required_head,
+        "required_source_root_tree_sha": required_tree,
         "uses_maven": uses_maven,
         "maven_pom_blob_sha": checked_required.get("pom.xml"),
         "maven_prefetch_artifacts": extras,
     }
+
+
+def verify_required_source_snapshot(plan_meta, source_commit, source_tree=None):
+    required_head = plan_meta.get("required_source_head_sha")
+    required_tree = plan_meta.get("required_source_root_tree_sha")
+    if required_head is None or required_tree is None:
+        raise Denied("reviewed test plan source snapshot pins are incomplete")
+    if source_commit != required_head:
+        raise Denied("source head differs from reviewed test plan")
+    if source_tree is not None and source_tree != required_tree:
+        raise Denied("source root tree differs from reviewed test plan")
 
 
 def verify_required_source_blobs(files, required):
@@ -1249,6 +1253,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     source_repo_id = verify_source_pr(source_pr, source_commit, authority_sha)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
     plan_meta = validate_test_plan(plan_bytes, source_pr)
+    # Bind reviewed plan to this exact source head before reading source bytes.
+    verify_required_source_snapshot(plan_meta, source_commit)
     # Ref cleanup is not object erasure. Refuse a new source read if any
     # older payload/authorization handoff is still reachable in the carrier.
     require_clean_handoff_namespace(repository, contract["repository_id"])
@@ -1262,6 +1268,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     files = legacy.collect_source(source, trusted_root)
     verify_required_source_blobs(files, plan_meta["required_source_blobs"])
     source_tree = legacy.verified_exact_source_tree(files, source_commit)
+    # Bind the computed exact tree before the first source-bearing write.
+    verify_required_source_snapshot(plan_meta, source_commit, source_tree)
     rows, manifest_sha256 = manifest(files)
     # Recheck after snapshot verification but before the first persistent
     # source-object write.
