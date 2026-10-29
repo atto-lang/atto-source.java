@@ -54,7 +54,7 @@ final class NamespacePackageIdentityTest {
                 second.units().get("src/service.ores").packageId());
         assertNotEquals(first.units().get("src/service.ores").namespace(),
                 second.units().get("src/service.ores").namespace());
-        assertTrue(second.rebuilt().contains("src/service.ores"));
+        assertTrue(second.rebuilt("src/service.ores"));
     }
 
     @Test
