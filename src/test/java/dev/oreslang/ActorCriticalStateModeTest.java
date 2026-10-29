@@ -41,10 +41,15 @@ final class ActorCriticalStateModeTest {
                     self.handle_state(critical[write] |state| -> {
                       state.revision = 1;
                     });
+                    let String observed_status = "critical-read-failed";
                     self.handle_state(critical[read] |state| -> {
-                      val observed = state.revision;
+                      if state.revision == 1; do
+                        observed_status = "critical-modes-ok";
+                      fi
                     });
-                    stdio.stdout.write("critical-modes-ok");
+                    // The output proves the actual loaned value was read,
+                    // not just that a callback with a constant message ran.
+                    stdio.stdout.write(observed_status);
                 """) + """
                 pub async routine main(): void {
                   val worker = spawn Counter();
@@ -72,8 +77,10 @@ final class ActorCriticalStateModeTest {
                       s.revision = 42;
                     });
                 """);
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(error.getMessage().contains("readonly")
+                || error.getMessage().contains("read-only"), error.getMessage());
     }
 
     @Test
@@ -83,8 +90,10 @@ final class ActorCriticalStateModeTest {
                       val mutable_alias = &mut s;
                     });
                 """);
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(error.getMessage().contains("shared borrow"),
+                error.getMessage());
     }
 
     @Test
@@ -94,8 +103,10 @@ final class ActorCriticalStateModeTest {
                       val current = s.revision;
                     });
                 """);
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(error.getMessage().contains("critical state access mode"),
+                error.getMessage());
     }
 
     @Test
