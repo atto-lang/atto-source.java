@@ -837,8 +837,6 @@ class PrivateCiV3Test(unittest.TestCase):
                     "ci/test-plans/java-pr1482.json": {
                         "blob_sha": PLAN_BLOB,
                         "allowed_prs": [1482],
-            "required_source_head_sha": SOURCE_HEAD,
-            "required_source_root_tree_sha": SOURCE_TREE,
                     }
                 },
             }
@@ -943,8 +941,6 @@ class PrivateCiV3Test(unittest.TestCase):
                         "ci/test-plans/java-pr1482.json": {
                             "blob_sha": PLAN_BLOB,
                             "allowed_prs": [1482],
-            "required_source_head_sha": SOURCE_HEAD,
-            "required_source_root_tree_sha": SOURCE_TREE,
                         }
                     },
                 }
