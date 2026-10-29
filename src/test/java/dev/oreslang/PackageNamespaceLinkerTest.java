@@ -279,6 +279,19 @@ final class PackageNamespaceLinkerTest {
     }
 
     @Test
+    void pinnedSourceAdmissionRejectsNulAndUnpairedSurrogatesBeforeParser() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        for (String malformed : List.of(
+                "namespace a;" + Character.toString(0),
+                "namespace a;" + Character.toString(0xD800))) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    compiler.compilePinned(
+                            Map.of("foo/a.ores", malformed), Map.of(),
+                            Map.of("foo/a.ores", "foo@1"), Map.of()));
+        }
+    }
+
+    @Test
     void legacyIncrementalCompilerMustNeverFakeNamespaceExecution() {
         String code = "import ns a from 'pkg:foo';\n"
                 + "pub fnc main(): int { return a.foo(); }\n";
