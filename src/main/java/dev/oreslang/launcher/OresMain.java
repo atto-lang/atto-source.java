@@ -77,6 +77,11 @@ public final class OresMain {
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
+        // Explicit on-device LLVM AOT build path. Never interpret "build" as a source file.
+        // This is intentionally limited to LLVM's currently supported host subset.
+        if (args.length > 0 && args[0].equals("build")) {
+            return DeviceBuildCommand.run(args);
+        }
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println(buildInfoJson());
             return 0;
