@@ -783,6 +783,56 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.checked_carrier_main("trusted/ci", carrier)
                 codeowners.assert_not_called()
 
+    def test_carrier_last_push_or_conversation_revocation_during_attestation(self):
+        carrier = contract()
+        strong = {
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
+                "required_approving_review_count": 1,
+            },
+            "required_status_checks": {
+                "strict": True, "contexts": ["synthetic-required-check"],
+                "checks": [],
+            },
+            "required_conversation_resolution": {"enabled": True},
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        for kind in ("last_push", "conversations"):
+            calls = [0]
+
+            def api(route, method="GET", payload=None):
+                if route == "repos/trusted/ci/branches/main":
+                    return {"name": "main", "protected": True,
+                            "commit": {"sha": BASE}}
+                if route == "repos/trusted/ci/branches/main/protection":
+                    calls[0] += 1
+                    protection = json.loads(json.dumps(strong))
+                    if calls[0] == 2:
+                        if kind == "last_push":
+                            protection["required_pull_request_reviews"][
+                                "require_last_push_approval"
+                            ] = False
+                        else:
+                            protection["required_conversation_resolution"][
+                                "enabled"
+                            ] = False
+                    return protection
+                raise AssertionError("unexpected API route " + route)
+
+            with (
+                self.subTest(kind=kind),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+                patch.object(v3, "remote_carrier_file",
+                             return_value=(CARRIER_CODEOWNERS, CARRIER_CODEOWNERS_BLOB)),
+            ):
+                with self.assertRaisesRegex(v3.Denied, "last-push approval"):
+                    v3.checked_carrier_main("trusted/ci", carrier)
+            self.assertEqual(calls[0], 2)
+
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
             '{"schema":1,"schema":1,"carriers":{"trusted/ci":{'
