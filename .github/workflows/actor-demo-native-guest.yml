@@ -4,14 +4,7 @@ on:
     branches:
       - feat/actor-step-source-guest-baseline-20261028
   pull_request:
-    paths:
-      - '.github/workflows/actor-demo-native-guest.yml'
-      - 'src/test/java/dev/oreslang/SourceActorDemoWorkflowExecutionTest.java'
-      - 'src/test/java/dev/oreslang/SourceActorStepWorkflowExecutionTest.java'
-      - 'src/test/resources/parity/step-demo-v1/**'
-      - 'src/test/resources/parity/actor-step-*.ores'
-      - 'src/main/**'
-      - 'pom.xml'
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -49,4 +42,15 @@ jobs:
           mvn -B -ntp -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test
           test -s target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
           test -s target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
-          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER'
+          # Surefire can generate valid XML for partial test selection or skips.
+          # Require the exact expected executed case totals, and no errors/failures/skips.
+          for suite in \
+            target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml; do
+            for zero in errors failures skipped; do
+              grep -Eq "$zero=\"0\"" "$suite"
+            done
+          done
+          grep -Eq 'tests="3"' target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
+          grep -Eq 'tests="9"' target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
+          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER cases=12'
