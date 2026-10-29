@@ -167,11 +167,11 @@ public final class ConstraintValidationBridge {
                         "CONSTRAINT_PREDICATE_UNSUPPORTED: " + predicate.id());
             };
             if (!accepted) {
+                // Never retain rejected input values in diagnostics. The
+                // stable predicate ID is enough for callers and CI.
                 throw new Violation(
                         predicate.errorId(),
-                        "value " + value + " violates " + predicate.operator()
-                                + " " + predicate.operand() + " for "
-                                + descriptor.qualifiedTypeName());
+                        "constrained i64 alias predicate was not satisfied");
             }
         }
 
