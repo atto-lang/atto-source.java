@@ -129,6 +129,20 @@ final class ActorInitPublicationGateTest {
     }
 
     @Test
+    void abortDuringIssuingCannotCorruptCommittedPublicationState() {
+        var gate = new ActorInitPublicationGate(List.of("count"));
+        gate.stage("count", 1L);
+        gate.seal();
+        assertEquals("ref", gate.publish(state -> {
+            var rejected = assertThrows(IllegalStateException.class, gate::abort);
+            assertTrue(rejected.getMessage().contains("while publication is issuing"));
+            assertEquals(ActorInitPublicationGate.Phase.ISSUING, gate.phase());
+            return "ref";
+        }));
+        assertEquals(ActorInitPublicationGate.Phase.PUBLISHED, gate.phase());
+    }
+
+    @Test
     void emptyStateCanBeInitializedAndPublished() {
         var gate = new ActorInitPublicationGate(List.of());
         gate.seal();
