@@ -52,6 +52,8 @@ public final class OresEvalRootNode extends RootNode {
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
+    public static final String REGISTER_NAMESPACE_MEMBER_COMMAND =
+            "__ores_internal_register_namespace_member__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -91,6 +93,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         Evaluator current = evaluator(context);
+        if (arguments.length == 5
+                && REGISTER_NAMESPACE_MEMBER_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof String binding
+                && arguments[2] instanceof String member
+                && arguments[3] instanceof Integer arity
+                && arguments[4] instanceof String targetId) {
+            current.registerNamespaceMember(binding, member, arity, targetId);
+            return null;
+        }
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
             return null;
@@ -183,6 +194,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
+        private final Map<String, Map<String, String>> linkedNamespaceFunctions = new HashMap<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
         private final Map<String, HostClassFacade> hostSymbols = new HashMap<>();
@@ -246,9 +258,10 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.ImportDecl imported : program.imports()) {
                 ImportRules.validate(imported);
                 if (imported.kind() == Ast.ImportKind.NAMESPACE) {
-                    throw new IllegalArgumentException(
-                            "import ns requires verified package namespace lowering; "
-                                    + "standalone evaluator cannot resolve a package namespace as a file");
+                    String binding = imported.names().getFirst();
+                    if (namespaceImports.putIfAbsent(binding, imported) != null)
+                        throw new IllegalArgumentException("duplicate namespace import " + binding);
+                    continue;
                 }
                 if (ImportRules.isJavaPath(imported.path())) {
                     indexHostImport(imported);
@@ -269,6 +282,46 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
             }
+        }
+
+        private void registerNamespaceMember(String binding, String member, int arity, String targetId) {
+            Ast.ImportDecl imported = namespaceImports.get(binding);
+            if (imported == null || imported.kind() != Ast.ImportKind.NAMESPACE)
+                throw new IllegalArgumentException("cannot register undeclared namespace binding " + binding);
+            if (member.isBlank() || arity < 0 || targetId.isBlank())
+                throw new IllegalArgumentException("invalid linked namespace member");
+            Map<String, String> members =
+                    linkedNamespaceFunctions.computeIfAbsent(binding, ignored -> new HashMap<>());
+            String slot = member + "/" + arity;
+            if (members.putIfAbsent(slot, targetId) != null)
+                throw new IllegalArgumentException("duplicate registered namespace slot " + binding + "." + slot);
+        }
+
+        private Invocation prepareLinkedNamespaceInvocation(
+                String binding, String member, List<Object> args) {
+            String selected = linkedNamespaceFunctions.getOrDefault(binding, Map.of())
+                    .get(member + "/" + args.size());
+            if (selected == null) {
+                throw new IllegalArgumentException("namespace '" + binding
+                        + "' does not export function '" + member + "' at arity " + args.size());
+            }
+            Object target = context.linkedCodeUnit(selected);
+            if (!(target instanceof Evaluator owner)) {
+                throw new IllegalStateException("namespace target unit '" + selected + "' not linked");
+            }
+            // EXACT file-root slot: a named module containing a same-spelling
+            // public function cannot hijack the namespace's exported source.
+            Ast.FunctionDecl fn = owner.findQualifiedFunction(
+                    Parser.ROOT_MODULE + "." + member, args.size());
+            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                    || fn.kind() != Ast.CallableKind.FNC
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || !fn.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "linked namespace member is no longer an eligible public root fnc: "
+                                + binding + "." + member);
+            }
+            return owner.functionInvocation(fn, args);
         }
 
         private void indexHostImport(Ast.ImportDecl imported) {
@@ -7086,6 +7139,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
 
+                if (receiver instanceof LinkedPackageNamespace namespace) {
+                    return namespace.owner().prepareLinkedNamespaceInvocation(
+                            namespace.binding(), methodCall.member(), args);
+                }
                 if (receiver instanceof ImportedNamespace namespace) {
                     return namespace.owner().prepareImportedInvocation(
                             namespace.kind(), methodCall.member(), args);
@@ -8370,6 +8427,10 @@ public final class OresEvalRootNode extends RootNode {
                         "overloaded builtin BooleanOps." + name
                                 + " must be called so arity can select the scalar or list overload");
             }
+            if (receiver instanceof LinkedPackageNamespace namespace) {
+                return (Invokable) args -> namespace.owner().invoke(
+                        namespace.owner().prepareLinkedNamespaceInvocation(namespace.binding(), name, args));
+            }
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
             if (receiver instanceof ClassFacade klass) {
@@ -8930,7 +8991,11 @@ public final class OresEvalRootNode extends RootNode {
                         .exportValue(direct.declaration().kind(), direct.sourceName());
             }
             Ast.ImportDecl namespace = namespaceImports.get(name);
-            if (namespace != null) return new ImportedNamespace(importedTarget(namespace), namespace.kind());
+            if (namespace != null) {
+                if (namespace.kind() == Ast.ImportKind.NAMESPACE)
+                    return new LinkedPackageNamespace(this, name);
+                return new ImportedNamespace(importedTarget(namespace), namespace.kind());
+            }
             return Env.MISSING;
         }
 
@@ -11096,6 +11161,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
+    private record LinkedPackageNamespace(Evaluator owner, String binding) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }

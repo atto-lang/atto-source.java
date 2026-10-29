@@ -85,10 +85,32 @@ final class ImportGraph {
             Map<String, Ast.Program> programs,
             Set<String> available,
             Map<String, Map<String, String>> importResolutions) {
+        return resolveDependencies(programs, available, importResolutions, null);
+    }
+
+    static Map<String, Set<String>> resolveDependencies(
+            Map<String, Ast.Program> programs,
+            Set<String> available,
+            Map<String, Map<String, String>> importResolutions,
+            PackageNamespaceLinker.Result namespaceGraph) {
         LinkedHashMap<String, Set<String>> dependencies = new LinkedHashMap<>();
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             LinkedHashSet<String> resolved = new LinkedHashSet<>();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                if (imported.kind() == Ast.ImportKind.NAMESPACE) {
+                    if (namespaceGraph == null) {
+                        throw new IllegalArgumentException("import ns requires verified package graph");
+                    }
+                    var selected = namespaceGraph.resolved(entry.getKey(), imported.names().getFirst());
+                    if (selected == null) throw new IllegalArgumentException(
+                            "namespace import lacks checked package binding for " + entry.getKey());
+                    for (String source : selected.target().sourceUnits()) {
+                        if (!available.contains(source)) throw new IllegalArgumentException(
+                                "namespace import source outside verified program graph: " + source);
+                        resolved.add(source);
+                    }
+                    continue;
+                }
                 String target = resolveImportUnitId(entry.getKey(), imported, available, importResolutions);
                 if (target != null) resolved.add(target);
             }
@@ -104,10 +126,24 @@ final class ImportGraph {
     static void validateLinkedImports(
             Map<String, Ast.Program> programs,
             Map<String, Map<String, String>> importResolutions) {
+        validateLinkedImports(programs, importResolutions, null);
+    }
+
+    static void validateLinkedImports(
+            Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions,
+            PackageNamespaceLinker.Result namespaceGraph) {
         Set<String> available = programs.keySet();
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             String importer = entry.getKey();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                if (imported.kind() == Ast.ImportKind.NAMESPACE) {
+                    if (namespaceGraph == null
+                            || namespaceGraph.resolved(importer, imported.names().getFirst()) == null) {
+                        throw new IllegalArgumentException("namespace import has no pinned package graph binding");
+                    }
+                    continue;
+                }
                 String targetId = resolveImportUnitId(importer, imported, available, importResolutions);
                 if (targetId == null) continue; // package resolver owns unresolved non-relative imports.
                 Ast.Program target = programs.get(targetId);

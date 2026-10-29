@@ -34,9 +34,48 @@ public final class IncrementalCompiler {
         return compile(sources, Map.of());
     }
 
+    public record PinnedBuildResult(BuildResult build, PackageNamespaceLinker.Result namespaceGraph) { }
+
+    /**
+     * Trusted-host compilation of an exact closed source graph with externally
+     * verified package instance ownership and pinned aliases. This overload
+     * does not discover or authenticate manifests; callers own that boundary.
+     */
+    public synchronized PinnedBuildResult compilePinned(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            Map<String, String> sourceOwners,
+            Map<String, Map<String, String>> pinnedAliases) {
+        Map<String, Ast.Program> parsed = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : sources.entrySet()) {
+            String id = normalizeUnitId(entry.getKey());
+            if (parsed.putIfAbsent(id, AnnotationExpander.expand(Parser.parse(entry.getValue()))) != null) {
+                throw new IllegalArgumentException("duplicate normalized source unit '" + id + "'");
+            }
+        }
+        Map<String, String> owners = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : sourceOwners.entrySet()) {
+            if (owners.putIfAbsent(normalizeUnitId(entry.getKey()), entry.getValue()) != null) {
+                throw new IllegalArgumentException("duplicate normalized source owner '" + entry.getKey() + "'");
+            }
+        }
+        PackageNamespaceLinker.Result graph =
+                PackageNamespaceLinker.link(parsed, owners, pinnedAliases);
+        return new PinnedBuildResult(
+                compileInternal(sources, importResolutions, graph, owners), graph);
+    }
+
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
+        return compileInternal(sources, importResolutions, null, Map.of());
+    }
+
+    private BuildResult compileInternal(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            PackageNamespaceLinker.Result namespaceGraph,
+            Map<String, String> sourceOwners) {
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
         if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
 
@@ -68,7 +107,7 @@ public final class IncrementalCompiler {
         // preflight is exposed separately by PackageNamespaceLinker.
         for (Map.Entry<String, Ast.Program> source : parsed.entrySet()) {
             for (Ast.ImportDecl imported : source.getValue().imports()) {
-                if (imported.kind() == Ast.ImportKind.NAMESPACE) {
+                if (imported.kind() == Ast.ImportKind.NAMESPACE && namespaceGraph == null) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + source.getKey()
                                     + "': import ns requires pinned package graph and runtime namespace lowering; "
@@ -78,9 +117,10 @@ public final class IncrementalCompiler {
         }
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
-        ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
+        ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions, namespaceGraph);
         Map<String, Set<String>> dependencies =
-                ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
+                ImportGraph.resolveDependencies(parsed, normalized.keySet(),
+                        normalizedImportResolutions, namespaceGraph);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
@@ -140,7 +180,7 @@ public final class IncrementalCompiler {
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
-                    packageId(id, checked),
+                    namespaceGraph == null ? packageId(id, checked) : sourceOwners.get(id),
                     checked.namespace(),
                     hashes.get(id),
                     abiHashes.get(id),
