@@ -1567,6 +1567,55 @@ class PrivateCiV3Test(unittest.TestCase):
             policy.assert_not_called()
             repo.assert_not_called()
 
+    def test_publish_rejects_valid_but_mismatched_source_pins_before_git_writes(self):
+        """Syntax-valid pin substitutions must fail at the publication boundary."""
+        carrier = contract()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\\n")
+
+            for name, head_pin, tree_pin in (
+                ("changed_head", "3" * 40, SOURCE_TREE),
+                ("changed_tree", "4" * 40, "5" * 40),
+            ):
+                metadata = {
+                    "sha256": "1" * 64,
+                    "required_source_blobs": {},
+                    "source_head_pin": head_pin,
+                    "source_tree_pin": tree_pin,
+                }
+                with self.subTest(name=name), (
+                    patch.object(v3.legacy, "require_preflight"),
+                    patch.object(v3.legacy, "checked_policy_approval",
+                                 return_value=(POLICY, carrier["repository_id"])),
+                    patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                    patch.object(v3, "checked_control_plane"),
+                    patch.object(v3, "checked_contract", return_value=carrier),
+                    patch.object(v3, "verify_source_pr",
+                                 return_value=v3.SOURCE_REPOSITORY_ID),
+                    patch.object(v3, "checked_destination",
+                                 return_value=({"id": carrier["repository_id"]},
+                                               "3" * 40, b"{}")),
+                    patch.object(v3, "validate_test_plan", return_value=metadata),
+                    patch.object(v3.legacy, "collect_source",
+                                 return_value=[("hello.ores", b"synthetic\\n", "100644")]),
+                    patch.object(v3.legacy, "verified_exact_source_tree",
+                                 return_value=SOURCE_TREE),
+                    patch.object(v3, "authorize_write") as authorize_write,
+                    patch.object(v3.legacy, "gh_api") as write_api,
+                ):
+                    with self.assertRaisesRegex(
+                        v3.Denied, "source head/tree differs from reviewed carrier plan pins"
+                    ):
+                        v3.publish(
+                            "trusted/ci", source, "4" * 40, 1482,
+                            "ci/test-plans/java-pr1482.json", root,
+                        )
+                    authorize_write.assert_not_called()
+                    write_api.assert_not_called()
+
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
         mismatched = dict(carrier, repository_id=carrier["repository_id"] + 1)
