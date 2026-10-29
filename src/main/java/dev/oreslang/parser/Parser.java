@@ -3974,7 +3974,9 @@ public final class Parser {
         int parens = 0;
         for (int i = current; i < tokens.size(); i++) {
             Token token = tokens.get(i);
-            if (i - current > 1024) {
+            // Count the closing delimiter too: this is a strict 1,024-
+            // token window, not 1,025 tokens due to zero-based indexing.
+            if (i - current >= 1024) {
                 throw error(token, "scalar cpu region exceeds token budget");
             }
             if (token.type() == LBRACE) {
@@ -3984,8 +3986,15 @@ public final class Parser {
             if (token.type() == LPAREN && ++parens > 64) {
                 throw error(token, "scalar cpu region exceeds parenthesis depth budget");
             }
-            if (token.type() == RPAREN) parens--;
-            if (token.type() == RBRACE && parens == 0) return;
+            if (token.type() == RPAREN && --parens < 0) {
+                throw error(token, "unmatched ')' in scalar cpu region");
+            }
+            if (token.type() == RBRACE) {
+                if (parens != 0) {
+                    throw error(token, "unclosed '(' in scalar cpu region");
+                }
+                return;
+            }
             if (token.type() == EOF) break;
         }
         throw error(peek(), "unterminated scalar cpu region");
