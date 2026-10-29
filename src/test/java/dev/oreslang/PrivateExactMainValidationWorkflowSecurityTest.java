@@ -75,7 +75,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}";
         assertEquals(expectedGate, jobProperty(job, "if"),
                 "the actual runner admission condition must match exactly");
-        assertEquals("runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]",
+        assertEquals("runs-on:",
                 jobProperty(job, "runs-on"),
                 "no hosted or shared-runner fallback is permitted");
         assertTrue(hasExactLine(job, 10,
@@ -407,7 +407,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha"));
         assertTrue(allowed.contains(
                 "vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == inputs.candidate_sha"));
-        assertEquals("runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]",
+        assertEquals("runs-on:",
                 jobProperty(admit, "runs-on"));
         assertEquals("runs-on: ubuntu-24.04", jobProperty(deny, "runs-on"));
         assertFalse(deny.contains("actions/checkout@"));
@@ -845,6 +845,42 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void privateSourceJobsMustUseDedicatedRunnerGroupAndExactLabels() throws Exception {
+        String[] workflows = {
+                ".github/workflows/private-exact-main-validation.yml",
+                ".github/workflows/private-exact-candidate-validation.yml",
+                ".github/workflows/private-exact-publisher-validation.yml"
+        };
+        String selector = "    runs-on:\n"
+                + "      group: oreslang-java-private-ephemeral-v1\n"
+                + "      labels: [self-hosted, linux, x64, oreslang-private-ephemeral]\n";
+        for (String path : workflows) {
+            String yaml = Files.readString(Path.of(path));
+            String runner = yaml.substring(yaml.indexOf("  validate-"));
+            assertEquals(1L, runner.lines().filter("    runs-on:"::equals).count(),
+                    "exactly one private runner selector required: " + path);
+            assertEquals(selector, section(runner, "    runs-on:\n",
+                    "    timeout-minutes:"),
+                    "the private job must require the reviewed organization group and labels: " + path);
+            assertFalse(runner.contains("runs-on: [self-hosted"),
+                    "a label-only selector must never admit private jobs: " + path);
+            assertFalse(runner.contains("runs-on: ubuntu"),
+                    "hosted fallback must not execute private source: " + path);
+            for (String candidate : new String[] {
+                    selector.replace("oreslang-java-private-ephemeral-v1", "Default"),
+                    selector.replace("      group: oreslang-java-private-ephemeral-v1\n", ""),
+                    selector.replace("      labels: [self-hosted, linux, x64, oreslang-private-ephemeral]\n",
+                            "      labels: ubuntu-latest\n"),
+                    selector.replace("      group:", "      # group:"),
+                    selector + "      group: Default\n"
+            }) {
+                assertNotEquals(selector, candidate,
+                        "weakening group or labels must invalidate exact policy: " + path);
+            }
+        }
+    }
+
+    @Test
     void sourceRepositoryIdPinCannotBeDroppedFromAdmissionExpressions() throws Exception {
         String workflow = Files.readString(WORKFLOW);
         String deny = section(workflow, "  deny-unapproved:", "  validate-exact-main:");
@@ -866,12 +902,12 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
 
     private static String jobProperty(String job, String property) {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
-                "(?m)^    " + java.util.regex.Pattern.quote(property) + ": ([^\\r\\n]+)$")
+                "(?m)^    " + java.util.regex.Pattern.quote(property) + ":([^\\r\\n]*)$")
                 .matcher(job);
         assertTrue(matcher.find(), "missing job property: " + property);
         String value = matcher.group(1);
         assertFalse(matcher.find(), "duplicate job property: " + property);
-        return property + ": " + value;
+        return property + ":" + (value.isBlank() ? "" : " " + value.trim());
     }
 
     private static long countLines(String text, String exact) {
