@@ -168,4 +168,127 @@ final class ImplicitValInitializeSyntaxTest {
                 end
                 """));
     }
+
+    @Test
+    void initializesFixedFieldExactlyOnceInEitherBranch() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {
+                    if id eq 0 then
+                      self.connection_id = 1;
+                    else
+                      self.connection_id = id;
+                    fi
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void rejectsMissingFieldInOneBranch() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {
+                    if id eq 0 then
+                      self.connection_id = id;
+                    fi
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("must initialize fixed field"),
+                error::toString);
+    }
+
+    @Test
+    void rejectsReachableDoubleWriteAfterBranchMerge() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {
+                    if id eq 0 then
+                      self.connection_id = id;
+                    else
+                      self.connection_id = 1;
+                    fi
+                    self.connection_id = 2;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("more than once"), error::toString);
+    }
+
+    @Test
+    void rejectsEarlyReturnOnIncompleteBranch() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {
+                    if id eq 0 then
+                      return;
+                    fi
+                    self.connection_id = id;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("returns before every fixed field"),
+                error::toString);
+    }
+
+    @Test
+    void rejectsSelfEscapeThroughLocalAliasBeforeInitialization() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {
+                    let Connection leaked = self;
+                    self.connection_id = id;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("uses or escapes self"), error::toString);
+    }
+
+    @Test
+    void rejectsSelfEscapeThroughIndirectCallArgument() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {
+                    publish(self);
+                    self.connection_id = id;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("uses or escapes self"), error::toString);
+    }
+
+    @Test
+    void rejectsUnprovenLoopBeforeFixedSlotInitialization() {
+        String source = """
+                define class Connection as
+                  final int connection_id;
+                  initialize(int id) -> void {
+                    loop {
+                      self.connection_id = id;
+                    }
+                  }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
 }
