@@ -126,4 +126,85 @@ final class ActorContinuationLedgerTest {
         assertEquals(0, ledger.snapshot().running());
         assertThrows(IllegalStateException.class, receipt::run);
     }
+    /** Deterministic closure release check: do not depend on GC timing. */
+    private static Object retainedCallback(ActorContinuationLedger.Admission receipt)
+            throws ReflectiveOperationException {
+        var field = ActorContinuationLedger.Admission.class.getDeclaredField("callback");
+        field.setAccessible(true);
+        return field.get(receipt);
+    }
+
+    @Test
+    void consumedAndDiscardedReceiptsReleaseTheirCallbackClosures() throws Exception {
+        ActorContinuationLedger ledger = new ActorContinuationLedger(3);
+        var executed = ledger.admit(ActorContinuationLedger.Lane.ORDINARY, () -> {});
+        var closed = ledger.admit(ActorContinuationLedger.Lane.ORDINARY, () -> {});
+        var stopped = ledger.admit(ActorContinuationLedger.Lane.ORDINARY, () -> {});
+
+        assertNotNull(retainedCallback(executed));
+        assertNotNull(retainedCallback(closed));
+        assertNotNull(retainedCallback(stopped));
+        executed.run();
+        closed.close();
+        ledger.sealOrdinary();
+        stopped.run(); // STOP discards this queued ordinary callback.
+
+        for (var receipt : java.util.List.of(executed, closed, stopped)) {
+            assertNull(retainedCallback(receipt),
+                    "terminal receipt must not retain guest callback closures");
+            assertThrows(IllegalStateException.class, receipt::run,
+                    "no terminal receipt may replay its detached callback");
+        }
+        assertEquals(0, ledger.snapshot().queued());
+        assertEquals(0, ledger.snapshot().running());
+    }
+
+    @Test
+    void runningReceiptReleasesItsFieldWithoutForgingPhysicalRetirement()
+            throws Exception {
+        ActorContinuationLedger ledger = new ActorContinuationLedger(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger completions = new AtomicInteger();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        var receipt = ledger.admit(ActorContinuationLedger.Lane.ORDINARY, () -> {
+            entered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("callback was not released");
+                }
+                completions.incrementAndGet();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+        Thread worker = Thread.ofPlatform().start(() -> {
+            try {
+                receipt.run();
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertNull(retainedCallback(receipt),
+                    "executing stack, not retained receipt, owns callback body");
+            assertEquals(1, ledger.snapshot().running(),
+                    "clearing receipt's closure cannot complete the running turn");
+            ledger.sealOrdinary();
+            receipt.close();
+            assertEquals(1, ledger.snapshot().running(),
+                    "foreign close cannot forge physical callback retirement");
+        } finally {
+            release.countDown();
+            worker.join(5_000);
+        }
+        assertFalse(worker.isAlive());
+        assertNull(failure.get());
+        assertEquals(1, completions.get());
+        assertEquals(0, ledger.snapshot().running());
+        assertNull(retainedCallback(receipt));
+    }
+
 }
