@@ -1316,6 +1316,19 @@ public final class TypeChecker {
             for (Object value : values) if (visit.test(value)) return true;
             return false;
         }
+        if (node instanceof java.util.Map<?, ?> entries) {
+            for (var entry : entries.entrySet()) {
+                if (visit.test(entry.getKey()) || visit.test(entry.getValue())) return true;
+            }
+            return false;
+        }
+        if (node instanceof Object[] values) {
+            for (Object value : values) if (visit.test(value)) return true;
+            return false;
+        }
+        if (node instanceof java.util.Optional<?> optional) {
+            return optional.isPresent() && visit.test(optional.get());
+        }
         if (!(node instanceof Record record)) return false;
         for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
             try {
