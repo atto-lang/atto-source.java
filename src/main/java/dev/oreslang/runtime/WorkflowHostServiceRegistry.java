@@ -53,8 +53,12 @@ public final class WorkflowHostServiceRegistry implements AutoCloseable {
             }, new ThreadPoolExecutor.AbortPolicy());
     private volatile Service service;
 
+    interface ProvisioningScope extends AutoCloseable {
+        @Override void close();
+    }
+
     /** Used only from trusted LinkedProgramRunner embedding code. */
-    static AutoCloseable provisionForHost(Service implementation) {
+    static ProvisioningScope provisionForHost(Service implementation) {
         Objects.requireNonNull(implementation, "host workflow service");
         if (PENDING_HOST_SERVICE.get() != null) {
             throw new IllegalStateException("nested workflow host provisioning refused");
