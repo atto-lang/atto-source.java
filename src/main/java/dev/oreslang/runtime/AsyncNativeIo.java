@@ -256,9 +256,15 @@ public final class AsyncNativeIo implements AutoCloseable {
             return result;
         }
 
+        // Capture actor authorization at admission, not on the worker.
+        // Nested native-I/O admissions inherit the same immutable chain.
+        ActorRuntime.NativeIoAuthority ioAuthority =
+                ActorRuntime.captureNativeIoAuthority();
+        ActorRuntime.ActorId admittedActor = ioAuthority == null
+                ? ActorRuntime.currentActorId().orElse(null)
+                : ioAuthority.actorId();
         Operation<T> op = new Operation<>(
-                operation, work, result, admitted,
-                ActorRuntime.currentActorId().orElse(null));
+                operation, work, result, admitted, admittedActor, ioAuthority);
         admitted.add(op); // Reserve before publishing work to any executor.
         incrementActorOperationLocked(op.admittedActor);
         long queuedAt = CorePerf.start();
@@ -281,17 +287,20 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final OresFuture<T> completion;
         private final Set<Operation<?>> owner;
         private final ActorRuntime.ActorId admittedActor;
+        private final ActorRuntime.NativeIoAuthority ioAuthority;
         private final AtomicReference<OperationState> state =
                 new AtomicReference<>(OperationState.ADMITTED);
         private long queuedAt;
 
         private Operation(String operation, Callable<T> work, OresFuture<T> completion,
-                Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor) {
+                Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor,
+                ActorRuntime.NativeIoAuthority ioAuthority) {
             this.operation = operation;
             this.work = work;
             this.completion = completion;
             this.owner = owner;
             this.admittedActor = admittedActor;
+            this.ioAuthority = ioAuthority;
         }
 
         @Override public void run() {
@@ -301,15 +310,17 @@ public final class AsyncNativeIo implements AutoCloseable {
             long workPerf = CorePerf.start();
             T value = null;
             Throwable failure = null;
+            boolean authorityEntered = false;
             try {
                 if (admittedActor != null) currentOperationActor.set(admittedActor);
+                ActorRuntime.enterNativeIoAuthority(ioAuthority);
+                authorityEntered = ioAuthority != null;
                 value = work.call();
             } catch (Throwable caught) {
                 failure = caught;
                 CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
                 SourceBoundaryTrace.record(caught, "native:io", operation, "I/O");
             } finally {
-                currentOperationActor.remove();
                 CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
             }
 
@@ -328,13 +339,21 @@ public final class AsyncNativeIo implements AutoCloseable {
             } finally {
                 state.set(OperationState.RETIRED);
                 ActorRuntime.ActorId retireActor;
-                synchronized (AsyncNativeIo.this) {
-                    owner.remove(this);
-                    retireActor = decrementActorOperationLocked(admittedActor);
-                    retireDeferredUnregisterLocked();
-                    AsyncNativeIo.this.notifyAll();
+                try {
+                    synchronized (AsyncNativeIo.this) {
+                        owner.remove(this);
+                        retireActor = decrementActorOperationLocked(admittedActor);
+                        retireDeferredUnregisterLocked();
+                        AsyncNativeIo.this.notifyAll();
+                    }
+                } finally {
+                    try {
+                        if (authorityEntered) ActorRuntime.exitNativeIoAuthority(ioAuthority);
+                    } finally {
+                        currentOperationActor.remove();
+                        executingWorker.remove();
+                    }
                 }
-                executingWorker.remove();
                 notifyActorRetirement(retireActor);
             }
             if (failure instanceof VirtualMachineError fatal) throw fatal;
