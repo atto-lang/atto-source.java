@@ -617,7 +617,8 @@ def validate_test_plan(plan_bytes, source_pr):
         raise Denied("reviewed test plan source/schema mismatch")
     allowed_fields = {
         "schema", "source_repo", "allowed_prs", "commands",
-        "required_source_blobs", "maven_pom_blob_sha",
+        "required_source_blobs", "required_source_head_sha",
+        "required_source_root_tree_sha", "maven_pom_blob_sha",
         "maven_prefetch_artifacts",
     }
     if not set(plan).issubset(allowed_fields):
@@ -629,6 +630,19 @@ def validate_test_plan(plan_bytes, source_pr):
                    for x in allowed)
             or len(set(allowed)) != len(allowed)):
         raise Denied("reviewed test plan does not authorize source PR")
+
+    required_head = plan.get("required_source_head_sha")
+    required_tree = plan.get("required_source_root_tree_sha")
+    if required_head is None and required_tree is None:
+        raise Denied("reviewed test plan source snapshot pins required")
+    if (required_head is None) != (required_tree is None):
+        raise Denied("reviewed test plan source snapshot pins must be paired")
+    required_head = valid_sha(
+        required_head, "reviewed test plan source head pin invalid"
+    )
+    required_tree = valid_sha(
+        required_tree, "reviewed test plan source root tree pin invalid"
+    )
 
     required = plan.get("required_source_blobs", {})
     if not isinstance(required, dict):
@@ -695,10 +709,23 @@ def validate_test_plan(plan_bytes, source_pr):
     return {
         "sha256": hashlib.sha256(plan_bytes).hexdigest(),
         "required_source_blobs": checked_required,
+        "required_source_head_sha": required_head,
+        "required_source_root_tree_sha": required_tree,
         "uses_maven": uses_maven,
         "maven_pom_blob_sha": checked_required.get("pom.xml"),
         "maven_prefetch_artifacts": extras,
     }
+
+
+def verify_required_source_snapshot(plan_meta, source_commit, source_tree=None):
+    required_head = plan_meta.get("required_source_head_sha")
+    required_tree = plan_meta.get("required_source_root_tree_sha")
+    if required_head is None or required_tree is None:
+        raise Denied("reviewed test plan source snapshot pins are incomplete")
+    if source_commit != required_head:
+        raise Denied("source head differs from reviewed test plan")
+    if source_tree is not None and source_tree != required_tree:
+        raise Denied("source root tree differs from reviewed test plan")
 
 
 def verify_required_source_blobs(files, required):
@@ -953,6 +980,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     source_repo_id = verify_source_pr(source_pr, source_commit)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
     plan_meta = validate_test_plan(plan_bytes, source_pr)
+    # Bind the independently reviewed carrier plan to this exact source head
+    # before reading any private source bytes.
+    verify_required_source_snapshot(plan_meta, source_commit)
 
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -963,6 +993,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     files = legacy.collect_source(source, trusted_root)
     verify_required_source_blobs(files, plan_meta["required_source_blobs"])
     source_tree = legacy.verified_exact_source_tree(files, source_commit)
+    # Recheck the reviewed root-tree pin before the first source-bearing write.
+    verify_required_source_snapshot(plan_meta, source_commit, source_tree)
     rows, manifest_sha256 = manifest(files)
     branch = "ci/oreslang-" + source_tree
 
