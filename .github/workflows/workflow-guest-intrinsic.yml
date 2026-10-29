@@ -42,3 +42,8 @@ jobs:
           java -cp "target/classes:$(cat target/runtime-classpath.txt)" \
             dev.oreslang.launcher.OresMain --check examples/workflow-host-request.ores \
             --allow=WORKFLOW_STORAGE
+      - name: Execute real guest with deliberately unprovisioned host service
+        run: |
+          java -cp "target/classes:$(cat target/runtime-classpath.txt)" \
+            dev.oreslang.launcher.OresMain examples/workflow-host-request.ores \
+            --allow=WORKFLOW_STORAGE
