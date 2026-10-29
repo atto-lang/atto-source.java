@@ -61,7 +61,7 @@ public final class AgentHostDispatchGate {
             tokenCap <= 0 || s.measuredTokens() > tokenCap) return false;
         try {
             final long admittedAt = host.nowMs();
-            if (admittedAt < 0 || s.expiresAtMs() <= admittedAt) return false;
+            if (admittedAt <= 0 || s.expiresAtMs() <= admittedAt) return false;
             if (!host.isCurrent(s) || !host.authorize(s) || !host.claimOnce(s) ||
                 !host.isCurrent(s) || !host.authorize(s)) return false;
             final long beforeSubmit = host.nowMs();
