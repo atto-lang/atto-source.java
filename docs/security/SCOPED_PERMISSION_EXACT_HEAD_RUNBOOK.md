@@ -11,6 +11,9 @@ Stacked draft PRs:
 - #2287 listener-port-zero PR: outbound network authorization denies port 0; explicit HTTP listener authorization can request OS-assigned port 0
 - revocable-delegation follow-on draft: issuer-only, monotonic child-scope revocation; all subsequent actor/native-I/O resource authorization must deny after revocation (not preemptive syscall cancellation)
 - queued I/O/listener-hardening follow-on draft: a native worker rechecks the captured delegation before running queued work; HTTP listener startup rejects both actor turns and actor-owned I/O workers (not a linearizable OS-operation cutoff)
+- physical-resource-loan follow-on draft: new native loans and resource registrations reject already-revoked actor/native-worker scopes; shutdown quarantine of handles created by in-flight work remains intact (still not a complete syscall fence)
+
+**Native resource admission:** `AsyncNativeIo.borrow()` now refuses any caller whose actor/worker permission delegation was revoked, before incrementing physical loan counts. `register()` refuses revoked authority before publishing new resources on an open context, but deliberately keeps the prior closed-context quarantine branch for handles created by already-running operations. Test worker-authority revocation while a job is live, denial of both borrow and registration, preservation of host-owned ordinary loans, and exactly-once handle closure. A denied registration leaves handle ownership with its caller, which must close it.
 
 **Queued worker hardening:** `AsyncNativeIo.Operation.run` rejects a revoked actor-scoped authorization *before* entering `work.call()`. Test with one blocked physical worker, one queued work item, parent revocation before releasing the blocker, and proof that the queued callable was not invoked. Separately test that an authorized queued callable executes exactly once. The `NativeHttp` listener supervisor admission test must reject both direct actor turns and workers carrying `NativeIoAuthority`, while host-only admission remains possible. These are integration tests until actually executed at the pinned head.
 
@@ -47,7 +50,7 @@ git rev-parse HEAD^{tree}
 java -version        # must report GraalVM JDK 25
 mvn -version
 mvn -B -ntp -Dores.runtime.carriers=native \
-  -Dtest=AdversarialPermissionCeilingTest,ActorScopedPermissionDelegationTest,ActorPermissionRevocationTest,QueuedNativeIoRevocationTest,HttpListenerAdmissionAuthorityTest,RuntimePermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsIdentityHardeningTest,RuntimePermissionsPortZeroContractTest,ScopedPermissionInteropTest \
+  -Dtest=AdversarialPermissionCeilingTest,ActorScopedPermissionDelegationTest,ActorPermissionRevocationTest,QueuedNativeIoRevocationTest,HttpListenerAdmissionAuthorityTest,PhysicalIoLoanRevocationTest,RuntimePermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsIdentityHardeningTest,RuntimePermissionsPortZeroContractTest,ScopedPermissionInteropTest \
   test
 mvn -B -ntp -Dores.runtime.carriers=native verify
 mvn -B -ntp -Pnative-aot -DskipTests package
