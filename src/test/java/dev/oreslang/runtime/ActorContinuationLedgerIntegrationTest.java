@@ -104,6 +104,57 @@ final class ActorContinuationLedgerIntegrationTest {
     }
 
     @Test
+    void borrowedSuspendedReceiveCompletionDoesNotRetainRetiredActorOrRuntime()
+            throws Exception {
+        CountDownLatch registered = new CountDownLatch(1);
+        OresFuture<Integer> borrowed = new OresFuture<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                runtime.suspendCurrentUserMailboxUntil(borrowed);
+                registered.countDown();
+            });
+            actor.send("suspend");
+            assertTrue(registered.await(5, TimeUnit.SECONDS),
+                    "the source receive callback must be registered before inspection");
+
+            // The borrowed producer may remain pending after STOP. It must
+            // not pin the actor or the runtime through callback capture.
+            var waitersField = OresFuture.class.getDeclaredField("waiters");
+            waitersField.setAccessible(true);
+            Object queue = waitersField.get(borrowed);
+            assertInstanceOf(java.util.Collection.class, queue);
+            var registrations = (java.util.Collection<?>) queue;
+            assertEquals(1, registrations.size());
+            Object registration = registrations.iterator().next();
+            var callbackField = registration.getClass().getDeclaredField("callback");
+            callbackField.setAccessible(true);
+            Object callback = callbackField.get(registration);
+
+            int weakCaptures = 0;
+            for (var field : callback.getClass().getDeclaredFields()) {
+                field.setAccessible(true);
+                Object captured = field.get(callback);
+                assertNotSame(runtime, captured,
+                        "pending foreign producer must not strongly capture the runtime");
+                assertFalse(captured != null
+                                && captured.getClass().getName().contains("ActorRuntime$ActorCell"),
+                        "pending foreign producer must not strongly capture the actor cell");
+                if (captured instanceof java.lang.ref.WeakReference<?>) weakCaptures++;
+            }
+            assertEquals(2, weakCaptures,
+                    "borrowed callback should capture only weak runtime/cell identities");
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(borrowed.completeFromRuntime(42),
+                    "borrowed producer survives actor termination");
+            assertEquals(42, borrowed.join());
+            assertTrue(actor.failure().isEmpty(),
+                    "late borrowed completion must not resurrect the stopped actor");
+        }
+    }
+
+    @Test
     void aTargetCannotBeUsedThroughAnotherRuntime() throws Exception {
         CountDownLatch captured = new CountDownLatch(1);
         AtomicReference<ActorRuntime.ContinuationTarget> target = new AtomicReference<>();
