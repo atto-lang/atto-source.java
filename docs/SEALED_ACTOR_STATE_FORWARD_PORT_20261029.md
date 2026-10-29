@@ -68,3 +68,11 @@ preserving all mainline effects, and verify no unexpected permission widening.
    In-memory state is not durable WAL/outbox recovery.
 
 No new private source was mirrored to another organization in this work.
+
+## Critical-loan transitive-effect hardening (2026-10-29)
+
+The original #1806 checker recursively inspected call arguments but **admitted the call itself**. That allowed guest I/O such as `stdio.stdout.write` or an actor method with unknown effects while holding an exclusive state loan. The reconciled branch now fails closed on *all* calls, object construction, trap expressions and unbounded `loop` forms inside a live state callback. This is an intentionally restrictive P0 rule until a transitive pure/nonblocking effect proof and bounded resource admission exist.
+
+The imported positive loan JUnit fixture moves stdout **after** closing its loans. Three new negative JUnit cases cover stdout, unverified helper calls, and unbounded loop. These tests have **not executed** on this exact head because GitHub Actions continues to fail before job admission; they are requirements, not passing evidence.
+
+All for-of, for, do/while and bare loop forms are also rejected inside a loan until a checkable finite bound is available. This intentionally blocks the graph actors' current unbounded traversal callbacks; the corrective design must separate an immutable snapshot/traversal phase from a brief critical commit and enforce bounded admission.

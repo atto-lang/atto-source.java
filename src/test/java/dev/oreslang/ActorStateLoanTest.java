@@ -26,9 +26,11 @@ final class ActorStateLoanTest {
                     });
                     self.handle_state(|state| -> {
                       if state.revision == 1; do
-                        stdio.stdout.write("loan-ok");
+                        state.revision = state.revision + 1;
                       fi
                     });
+                    // External output is outside both exclusive state loans.
+                    stdio.stdout.write("loan-ok");
                     self.end();
                     return;
                   }
@@ -132,6 +134,91 @@ final class ActorStateLoanTest {
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(program));
         assertTrue(error.getMessage().contains("requires an actor with a state"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsStdoutSideEffectsInsideLoan() {
+        String program = """
+                define actor Bad as
+                  state { revision: int = 0; }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|s| -> {
+                      stdio.stdout.write("unsafe");
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("cannot suspend"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsUnknownHelperEffectsInsideLoan() {
+        String program = """
+                define actor Bad as
+                  state { revision: int = 0; }
+                  pub helper(): void { return; }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|s| -> {
+                      self.helper();
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("cannot suspend"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsUnboundedLoopInsideLoan() {
+        String program = """
+                define actor Bad as
+                  state { revision: int = 0; }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|s| -> {
+                      loop {
+                        s.revision = s.revision + 1;
+                      }
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("cannot suspend"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsIterationWithoutStaticBoundProof() {
+        String program = """
+                define actor Bad as
+                  state { revision: int = 0; }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|s| -> {
+                      for (const item of [1, 2]) {
+                        s.revision = s.revision + item;
+                      }
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("cannot suspend"), error.getMessage());
     }
 
     private static String run(String sourceText, String name) throws Exception {

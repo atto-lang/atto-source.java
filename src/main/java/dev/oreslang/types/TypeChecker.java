@@ -5894,32 +5894,17 @@ public final class TypeChecker {
                     || stateLoanBlockHasForbiddenSuspensionOrEscape(attempted.catchBody())
                     || stateLoanBlockHasForbiddenSuspensionOrEscape(attempted.finallyBody());
         }
-        if (stmt instanceof Ast.ForOfStmt loop) {
-            return loop.asyncIteration()
-                    || stateLoanExprHasForbiddenSuspensionOrEscape(loop.iterable())
-                    || stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body());
-        }
-        if (stmt instanceof Ast.ForOfDestructureStmt loop) {
-            return loop.asyncIteration()
-                    || stateLoanExprHasForbiddenSuspensionOrEscape(loop.iterable())
-                    || stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body());
-        }
-        if (stmt instanceof Ast.ForStmt loop) {
-            return (loop.initializer() != null
-                            && stateLoanStmtHasForbiddenSuspensionOrEscape(loop.initializer()))
-                    || (loop.condition() != null
-                            && stateLoanExprHasForbiddenSuspensionOrEscape(loop.condition()))
-                    || (loop.update() != null
-                            && stateLoanExprHasForbiddenSuspensionOrEscape(loop.update()))
-                    || stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body());
-        }
-        if (stmt instanceof Ast.DoWhileStmt loop) {
-            return stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body())
-                    || stateLoanExprHasForbiddenSuspensionOrEscape(loop.condition());
-        }
-        if (stmt instanceof Ast.LoopStmt loop) {
-            return stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body());
-        }
+        // Generic loops, including for-of and do/while, lack a statically
+        // verified iteration bound. An exclusive actor loan must not be held
+        // across potentially unbounded work or async iteration.
+        if (stmt instanceof Ast.ForOfStmt
+                || stmt instanceof Ast.ForOfDestructureStmt
+                || stmt instanceof Ast.ForStmt
+                || stmt instanceof Ast.DoWhileStmt) return true;
+        // A free-running loop can retain the critical loan for unbounded
+        // time. Require an independently checked finite bound before
+        // allowing loops in a future critical state callback revision.
+        if (stmt instanceof Ast.LoopStmt) return true;
         if (stmt instanceof Ast.SelectStmt) return true;
         return true;
     }
@@ -5973,13 +5958,11 @@ public final class TypeChecker {
         if (expr instanceof Ast.SpreadExpr spread) {
             return stateLoanExprHasForbiddenSuspensionOrEscape(spread.expression());
         }
-        if (expr instanceof Ast.CallExpr call) {
-            if (stateLoanExprHasForbiddenSuspensionOrEscape(call.callee())) return true;
-            for (Ast.Expr argument : call.arguments()) {
-                if (stateLoanExprHasForbiddenSuspensionOrEscape(argument)) return true;
-            }
-            return false;
-        }
+        // Fail closed: a call may hide I/O, blocking, state re-entry or
+        // suspension through an unverified transitive effect. Do not permit
+        // *any* call under a live exclusive loan until a typed pure/no-suspend
+        // effect proof is available, including stdio, tools and helper calls.
+        if (expr instanceof Ast.CallExpr) return true;
         if (expr instanceof Ast.MemberExpr member) {
             return stateLoanExprHasForbiddenSuspensionOrEscape(member.receiver());
         }
@@ -5987,15 +5970,11 @@ public final class TypeChecker {
             return stateLoanExprHasForbiddenSuspensionOrEscape(indexed.receiver())
                     || stateLoanExprHasForbiddenSuspensionOrEscape(indexed.index());
         }
-        if (expr instanceof Ast.NewExpr created) {
-            for (Ast.Expr argument : created.arguments()) {
-                if (stateLoanExprHasForbiddenSuspensionOrEscape(argument)) return true;
-            }
-            return false;
-        }
-        if (expr instanceof Ast.TrapExpr trapped) {
-            return stateLoanExprHasForbiddenSuspensionOrEscape(trapped.expression());
-        }
+        // Constructors/allocations have unverified effects and resource
+        // bounds; reject until the actor-state allocator/effect contract
+        // accounts for their worst-case admission and lifetime.
+        if (expr instanceof Ast.NewExpr) return true;
+        if (expr instanceof Ast.TrapExpr) return true;
         if (expr instanceof Ast.ListExpr list) {
             for (Ast.Expr element : list.elements()) {
                 if (stateLoanExprHasForbiddenSuspensionOrEscape(element)) return true;
