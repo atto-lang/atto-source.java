@@ -111,7 +111,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                 }
                 long next=before+1;
                 try(PreparedStatement q=db.prepareStatement("INSERT INTO state(tenant,actor,slot,version,snapshot_version,snapshot_schema,snapshot) VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant,actor,slot) DO UPDATE SET version=excluded.version,snapshot_version=CASE WHEN ?=1 THEN excluded.snapshot_version ELSE state.snapshot_version END,snapshot_schema=CASE WHEN ?=1 THEN excluded.snapshot_schema ELSE state.snapshot_schema END,snapshot=CASE WHEN ?=1 THEN excluded.snapshot ELSE state.snapshot END")) {
-                    bindKey(q,id);q.setLong(4,next);q.setLong(5,next);q.setInt(6,w.schemaVersion());q.setBytes(7,w.ownedPayload());
+                    bindKey(q,id);q.setLong(4,next);q.setLong(5,w.kind()==Kind.SNAPSHOT?next:0);q.setInt(6,w.kind()==Kind.SNAPSHOT?w.schemaVersion():0);
+                    if(w.kind()==Kind.SNAPSHOT)q.setBytes(7,w.ownedPayload());else q.setNull(7,java.sql.Types.BLOB);
                     int isSnapshot=w.kind()==Kind.SNAPSHOT?1:0;
                     q.setInt(8,isSnapshot);q.setInt(9,isSnapshot);q.setInt(10,isSnapshot);q.executeUpdate();
                 }
