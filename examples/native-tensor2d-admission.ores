@@ -12,6 +12,16 @@ pub routine main(): void {
     rt fail("valid exact rank-2 contiguous layout rejected");
   fi
 
+  // Exact contiguous capacity must equal, not merely exceed, element size.
+  val TensorView2D one_exact = new TensorView2D(1, 1, 1, 1, 8, 8, true);
+  if !valid_contiguous_tensor_2d(&one_exact); do
+    rt fail("exact 1x1 capacity rejected");
+  fi
+  val TensorView2D one_oversized = new TensorView2D(1, 1, 1, 1, 8, 9, true);
+  if valid_contiguous_tensor_2d(&one_oversized); do
+    rt fail("oversized 1x1 incorrectly accepted as exact contiguous");
+  fi
+
   val TensorView2D padded = new TensorView2D(3, 4, 8, 1, 4, 80, true);
   if !valid_tensor_view_2d(&padded); do
     rt fail("valid padded row-major layout rejected");

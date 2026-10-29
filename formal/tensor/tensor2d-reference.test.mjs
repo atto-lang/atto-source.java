@@ -38,6 +38,8 @@ function broadcasts(a,b) {
 test("guest fixture positive and negative vectors match BigInt independent oracle",()=>{
   assert.equal(admit([3,4,4,1,8,96,true]),true);
   assert.equal(exact([3,4,4,1,8,96,true]),true);
+  assert.equal(exact([1,1,1,1,8,8,true]),true);
+  assert.equal(exact([1,1,1,1,8,9,true]),false);
   assert.equal(admit([3,4,8,1,4,80,true]),true);
   assert.equal(exact([3,4,8,1,4,80,true]),false);
   assert.equal(admit([3,4,0,0,8,8,false]),true);
