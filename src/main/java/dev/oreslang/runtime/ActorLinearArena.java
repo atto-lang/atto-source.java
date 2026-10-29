@@ -36,7 +36,12 @@ public final class ActorLinearArena implements AutoCloseable {
     // uses this preallocated array so lexical cleanup itself creates no Java
     // objects or collections on the hot path.
     private final long[] ownedCleanup;
+    // Each entry retains an admission serial independent of its current stack
+    // index. A lexical mark must remain valid when an older owner is moved or
+    // dropped; array length alone is not a stable lifetime checkpoint.
+    private final int[] ownedCleanupSerial;
     private int ownedCleanupCount;
+    private int lastCleanupSerial;
     private int cursor;
     private int nextSlot;
     private int freeCount;
@@ -54,6 +59,7 @@ public final class ActorLinearArena implements AutoCloseable {
         live = new boolean[slots];
         freeSlots = new int[slots];
         ownedCleanup = new long[slots];
+        ownedCleanupSerial = new int[slots];
     }
 
     public int capacityBytes() { return memory.capacity(); }
@@ -94,7 +100,7 @@ public final class ActorLinearArena implements AutoCloseable {
     /** Primitive lexical-scope checkpoint emitted by ownership lowering. */
     public int cleanupMark() {
         if (closed) throw new IllegalStateException("actor arena is closed");
-        return ownedCleanupCount;
+        return lastCleanupSerial;
     }
 
     /**
@@ -102,6 +108,9 @@ public final class ActorLinearArena implements AutoCloseable {
      * allocating a Java cleanup object.
      */
     public long allocateOwned(int bytes, int alignment) {
+        // Never wrap a lexical checkpoint: a wrapped serial could silently
+        // spare inner-scope owners or free owners from an enclosing scope.
+        if (lastCleanupSerial == Integer.MAX_VALUE) return INVALID_HANDLE;
         long handle = allocate(bytes, alignment);
         if (handle == INVALID_HANDLE) return INVALID_HANDLE;
         if (ownedCleanupCount >= ownedCleanup.length) {
@@ -110,7 +119,8 @@ public final class ActorLinearArena implements AutoCloseable {
             if (!remove(handle)) throw new IllegalStateException("failed to roll back untracked owner");
             throw new IllegalStateException("actor arena cleanup stack exhausted");
         }
-        ownedCleanup[ownedCleanupCount++] = handle;
+        ownedCleanup[ownedCleanupCount] = handle;
+        ownedCleanupSerial[ownedCleanupCount++] = ++lastCleanupSerial;
         return handle;
     }
 
@@ -127,8 +137,10 @@ public final class ActorLinearArena implements AutoCloseable {
     /** Adopt a live transferred owner into the current lexical scope. */
     public boolean adoptOwned(long handle) {
         if (validSlot(handle) < 0 || cleanupIndex(handle) >= 0
-                || ownedCleanupCount >= ownedCleanup.length) return false;
-        ownedCleanup[ownedCleanupCount++] = handle;
+                || ownedCleanupCount >= ownedCleanup.length
+                || lastCleanupSerial == Integer.MAX_VALUE) return false;
+        ownedCleanup[ownedCleanupCount] = handle;
+        ownedCleanupSerial[ownedCleanupCount++] = ++lastCleanupSerial;
         return true;
     }
 
@@ -146,12 +158,13 @@ public final class ActorLinearArena implements AutoCloseable {
      */
     public boolean cleanupTo(int mark) {
         if (closed) throw new IllegalStateException("actor arena is closed");
-        if (mark < 0 || mark > ownedCleanupCount)
+        if (mark < 0 || mark > lastCleanupSerial)
             throw new IllegalArgumentException("invalid actor arena cleanup mark");
         boolean ok = true;
-        while (ownedCleanupCount > mark) {
+        while (ownedCleanupCount > 0 && ownedCleanupSerial[ownedCleanupCount - 1] > mark) {
             long handle = ownedCleanup[--ownedCleanupCount];
             ownedCleanup[ownedCleanupCount] = INVALID_HANDLE;
+            ownedCleanupSerial[ownedCleanupCount] = 0;
             if (!remove(handle)) ok = false;
         }
         return ok;
@@ -215,6 +228,7 @@ public final class ActorLinearArena implements AutoCloseable {
             lengths[i] = 0;
         }
         java.util.Arrays.fill(ownedCleanup, INVALID_HANDLE);
+        java.util.Arrays.fill(ownedCleanupSerial, 0);
         ownedCleanupCount = 0;
         cursor = 0;
         nextSlot = 0;
@@ -232,8 +246,12 @@ public final class ActorLinearArena implements AutoCloseable {
 
     private void untrackAt(int index) {
         int moved = ownedCleanupCount - index - 1;
-        if (moved > 0) System.arraycopy(ownedCleanup, index + 1, ownedCleanup, index, moved);
+        if (moved > 0) {
+            System.arraycopy(ownedCleanup, index + 1, ownedCleanup, index, moved);
+            System.arraycopy(ownedCleanupSerial, index + 1, ownedCleanupSerial, index, moved);
+        }
         ownedCleanup[--ownedCleanupCount] = INVALID_HANDLE;
+        ownedCleanupSerial[ownedCleanupCount] = 0;
     }
 
     private int validSlot(long handle) {
