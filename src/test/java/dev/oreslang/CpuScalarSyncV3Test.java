@@ -47,7 +47,7 @@ final class CpuScalarSyncV3Test {
         for (String body : new String[]{
                 "value", "print(42)", "await value", "rt take value",
                 "gpu { 42 }", "cpu task { return 42; }",
-                "40 / 2", "\\\"host-effect\\\""
+                "40 / 2", "\"host-effect\""
         }) {
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(prefix + body + " };"),
