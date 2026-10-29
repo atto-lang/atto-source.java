@@ -96,6 +96,41 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void changingPackageInstanceInvalidatesConsumerWithIdenticalProviderFilesAndAbi()
+            throws IOException {
+        Map<String, String> sources = new LinkedHashMap<>();
+        Path root = temporary.resolve("checkout");
+        add(sources, root, "src/charge.ores", "billing",
+                "pub fnc charge(): int { return 1; }");
+        Path importer = temporary.resolve("client/main.ores");
+        add(sources, temporary.resolve("client"), "main.ores", "client", """
+                import namespace billing as payments from "checkout";
+                pub fnc answer(): int { return payments.charge(); }
+                """);
+        String importerId = id(importer);
+        Path m = manifest(root, "first", List.of("src/charge.ores"));
+        String first = PackageNamespaceIndex.packageId(m, "first");
+        var indexA = PackageNamespaceIndex.load(List.of(m), sources, Map.of("checkout", first));
+        var compiler = new IncrementalCompiler();
+
+        var initial = compiler.compile(sources, Map.of(), indexA);
+        assertTrue(initial.rebuilt(importerId));
+        var unchanged = compiler.compile(sources, Map.of(), indexA);
+        assertTrue(unchanged.reused(importerId));
+
+        // Same real source file and ABI; only manifest package identity
+        // and the exact alias -> PackageInstanceId resolution change.
+        manifest(root, "second", List.of("src/charge.ores"));
+        String second = PackageNamespaceIndex.packageId(m, "second");
+        assertNotEquals(first, second);
+        var indexB = PackageNamespaceIndex.load(List.of(m), sources, Map.of("checkout", second));
+        var relinked = compiler.compile(sources, Map.of(), indexB);
+        assertTrue(relinked.rebuilt(importerId));
+        assertTrue(relinked.reusedUnits().isEmpty());
+        assertEquals(second, indexB.resolve(importerId, "checkout", "billing").packageId());
+    }
+
+    @Test
     void sameNamespaceNameDoesNotCrossPackageInstanceBoundary() throws IOException {
         Map<String, String> sources = new LinkedHashMap<>();
         Path alpha = temporary.resolve("alpha");

@@ -29,6 +29,10 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // Not part of CompiledUnit's public ABI: a unit's imported namespace
+    // routes are host manifest authority and must be refreshed even when
+    // the provider file set and exported source ABIs remain identical.
+    private final Map<String, String> namespaceBindingFingerprints = new LinkedHashMap<>();
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -50,7 +54,11 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions,
             PackageNamespaceIndex namespaceIndex) {
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
-        if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
+        if (sources.isEmpty()) {
+            cache.clear();
+            namespaceBindingFingerprints.clear();
+            return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
+        }
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
@@ -81,6 +89,11 @@ public final class IncrementalCompiler {
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(),
                         normalizedImportResolutions, namespaceIndex);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
+        LinkedHashMap<String, String> resolvedNamespaceBindings = new LinkedHashMap<>();
+        for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+            resolvedNamespaceBindings.put(entry.getKey(),
+                    namespaceBindingFingerprint(entry.getKey(), entry.getValue(), namespaceIndex));
+        }
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
@@ -91,7 +104,9 @@ public final class IncrementalCompiler {
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id))
                     || !previous.packageId().equals(currentPackageId);
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
+            boolean namespaceBindingChanged = !resolvedNamespaceBindings.get(id).equals(
+                    namespaceBindingFingerprints.getOrDefault(id, ""));
+            if (sourceChanged || depsChanged || namespaceBindingChanged) dirty.add(id);
             if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
         }
 
@@ -158,11 +173,38 @@ public final class IncrementalCompiler {
 
         cache.keySet().retainAll(normalized.keySet());
         cache.putAll(next);
+        namespaceBindingFingerprints.keySet().retainAll(normalized.keySet());
+        namespaceBindingFingerprints.putAll(resolvedNamespaceBindings);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    private static String namespaceBindingFingerprint(
+            String importerId, Ast.Program importer, PackageNamespaceIndex index) {
+        StringBuilder routes = new StringBuilder("package-namespace-binding-v1\n");
+        for (Ast.ImportDecl use : importer.imports()) {
+            if (use.sourceNamespace() == null) continue;
+            if (index == null) throw new IllegalArgumentException(
+                    "import namespace requires verified package identity");
+            PackageNamespaceIndex.Binding binding =
+                    index.resolve(importerId, use.path(), use.sourceNamespace());
+            routes.append("import ").append(use.namespace()).append(" from ")
+                    .append(use.path()).append(" namespace ")
+                    .append(use.sourceNamespace()).append(" owner ")
+                    .append(binding.packageId()).append('\n');
+            binding.exports().entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> routes.append(entry.getKey()).append(" -> ")
+                            .append(entry.getValue().sourceUnitId())
+                            .append('\n'));
+            binding.providerUnitIds().stream().sorted()
+                    .forEach(provider -> routes.append("provider ")
+                            .append(provider).append('\n'));
+        }
+        return digest(routes.toString());
     }
 
     /**
