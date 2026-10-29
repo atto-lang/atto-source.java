@@ -83,10 +83,15 @@ public final class WorkflowHostServiceRegistry implements AutoCloseable {
 
     /** A Truffle context consumes the host provision exactly once. */
     static WorkflowHostServiceRegistry forNewContext() {
+        return forNewContext(true);
+    }
+
+    /** Adversarial isolates consume and discard any ambient host provision. */
+    static WorkflowHostServiceRegistry forNewContext(boolean trustedContext) {
         WorkflowHostServiceRegistry registry = new WorkflowHostServiceRegistry();
         Provision supplied = PENDING_HOST_SERVICE.get();
         PENDING_HOST_SERVICE.remove();
-        if (supplied != null) registry.service = supplied.service();
+        if (trustedContext && supplied != null) registry.service = supplied.service();
         return registry;
     }
 
