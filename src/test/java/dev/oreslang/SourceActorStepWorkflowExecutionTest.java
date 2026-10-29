@@ -3,10 +3,12 @@ package dev.oreslang;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -18,13 +20,21 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  */
 final class SourceActorStepWorkflowExecutionTest {
     @Test
+    @Timeout(value=30,unit=TimeUnit.SECONDS)
     void executesThreeIndependentStepActorsInSequence() throws Exception {
         assertEquals("complete", runResource("/parity/actor-step-sequential.ores"));
     }
 
     @Test
+    @Timeout(value=30,unit=TimeUnit.SECONDS)
     void executesTwoStepActorsAndJoinsTheirOutputs() throws Exception {
         assertEquals("inventory|invoice", runResource("/parity/actor-step-parallel.ores"));
+    }
+
+    @Test
+    @Timeout(value=30,unit=TimeUnit.SECONDS)
+    void rejectsInvalidStepInputBeforeStartingDownstreamActors() throws Exception {
+        assertEquals("rejected", runResource("/parity/actor-step-rejection.ores"));
     }
 
     private static String runResource(String resourceName) throws Exception {
