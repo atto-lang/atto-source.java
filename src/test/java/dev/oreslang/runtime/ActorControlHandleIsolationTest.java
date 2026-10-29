@@ -269,6 +269,46 @@ final class ActorControlHandleIsolationTest {
     }
 
     @Test
+    void forgedActorRefCannotJoinOrInspectAnotherActorsGroupMembership() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
+            ActorRuntime.ActorRef<Integer> victim = runtime.spawnPrivateTrusted(
+                    factory -> (message, context) -> { });
+            victim.getReady().get(5, TimeUnit.SECONDS);
+
+            var constructor = ActorRuntime.ActorRef.class.getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<Integer> forgery =
+                    (ActorRuntime.ActorRef<Integer>) constructor.newInstance(
+                            runtime, victim.id(), victim.kind(), victim.generation());
+
+            assertFalse(group.contains(victim));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> group.join(forgery, capability));
+            assertFalse(group.contains(victim),
+                    "forged join must not enroll the genuine actor");
+            group.join(victim, capability);
+            assertTrue(group.contains(victim),
+                    "the real reference must retain membership authority");
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> group.contains(forgery),
+                    "a forged reference cannot inspect the genuine actor's membership");
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> group.join(forgery, capability),
+                    "an existing membership must not bypass exact-reference admission");
+
+            victim.stop();
+            assertTrue(victim.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void forgedStructuredChildHandleCannotCancelItsLiveLookalike() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
