@@ -25,7 +25,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           git diff --exit-code
           git diff --cached --exit-code
-          test "$(git ls-files 'src/test/resources/parity/step-demo-v1/*.ores' | wc -l)" -eq 12
+          test "$(git ls-files 'src/test/resources/parity/step-demo-v1/*.ores' | wc -l)" -eq 13
           echo "NATIVE_GUEST_SOURCE_HEAD=$EXPECTED_SHA"
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
@@ -34,7 +34,7 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Compile and execute fifteen real Oreslang guest cases
+      - name: Compile and execute sixteen real Oreslang guest cases
         shell: bash
         run: |
           set -euo pipefail

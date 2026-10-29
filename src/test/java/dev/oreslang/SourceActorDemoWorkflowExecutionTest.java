@@ -21,9 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  *
  * Nine base fixtures: oreslang-step-function-demo at
  * 0ba32f019a0c1dfcf9aaa2f91accb030178f5a45.
- * Three additional saga fixtures: feat/native-checkout-saga-20261029;
+ * Four additional saga fixtures: feat/native-checkout-saga-20261029;
  * their exact Git blobs are pinned below after same-organization copying.
- * This file's expected Git blobs bind all twelve copied source fixtures.
+ * This file's expected Git blobs bind all thirteen copied source fixtures.
  */
 final class SourceActorDemoWorkflowExecutionTest {
 
@@ -97,6 +97,13 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void quarantinesAmbiguousSagaOutcomeWithoutCompensation() throws Exception {
         assertGuest("order-saga-ambiguous", "saga:reconciliation-required", "51ca94e1cbf983a495ed89f1531e9e740d50c34d");
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void doesNotReleaseInventoryAfterUnconfirmedPaymentVoid() throws Exception {
+        assertGuest("order-saga-void-unknown", "saga:compensation-incomplete",
+                "82c9e08e95ab443e9ae5949466d322478ddec20a");
     }
 
     private static void assertGuest(String fixture, String expected, String expectedGitBlob)
