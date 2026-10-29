@@ -44,6 +44,14 @@ public final class OresContext implements AutoCloseable {
     // Host-provisioned at context creation; default is DENY with no service.
     private final WorkflowHostServiceRegistry workflowHostServices;
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    /** Typed intrinsic only; returns guest-owned scalar data, never host handles. */
+    public OresFuture<java.util.List<Object>> submitWorkflowGuest(Object payload) {
+        requireCapability(IsolatePolicy.Capability.WORKFLOW_STORAGE, "rt workflow_request");
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException("untrusted isolate cannot invoke workflow host services");
+        }
+        return WorkflowGuestPort.submit(workflowHostServices, payload);
+    }
     private final OutboundEgressPolicy.Policy outboundHttpPolicy =
             OutboundEgressPolicy.Policy.loopbackOnly();
     private final PinnedHttpTransport.ConnectionBudget outboundHttpBudget =
