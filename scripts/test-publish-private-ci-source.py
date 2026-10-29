@@ -652,7 +652,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_requires_latest_push_approval_and_conversation_resolution(self):
-        digest = hashlib.sha256(b"trusted/ci 246810\\n").digest()
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         for changes in (
             {"last_push": False},
             {"last_push": None},
@@ -666,7 +666,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_rejects_missing_or_malformed_governance_metadata(self):
-        digest = hashlib.sha256(b"trusted/ci 246810\\n").digest()
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         api, _ = self.verified_origin_api()
         path = "repos/" + pub.SOURCE_REPO + "/branches/main/protection"
         for invalid in (
