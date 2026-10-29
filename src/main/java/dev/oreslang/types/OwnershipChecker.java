@@ -968,6 +968,11 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.LambdaExpr loan
+                && loan.criticalLoanMode() != Ast.CriticalLoanMode.NONE) {
+            throw error("critical state loan requires compiler-checked "
+                    + "exclusive ownership and nonescaping lexical borrow lowering");
+        }
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
             VarState source = match.subject() instanceof Ast.NameExpr name

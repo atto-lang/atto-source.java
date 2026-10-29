@@ -1919,17 +1919,31 @@ public final class Ast {
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
-    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
+    /**
+     * Syntax-only compiler tag for an actor state-loan callback. Both
+     * critical[write] and critical-write normalize to WRITE; likewise read.
+     * The tag carries no runtime capability until checked loan lowering exists.
+     */
+    public enum CriticalLoanMode { NONE, READ, WRITE }
+
+    public record LambdaExpr(
+            List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+            boolean nonLexical, CriticalLoanMode criticalLoanMode) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
+            java.util.Objects.requireNonNull(criticalLoanMode, "critical loan mode");
             if ((expressionBody == null) == (blockBody == null)) {
                 throw new IllegalArgumentException(
                         "lambda requires exactly one expression body or block body");
             }
         }
+        public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+                boolean nonLexical) {
+            this(parameters, expressionBody, blockBody, nonLexical, CriticalLoanMode.NONE);
+        }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
-            this(parameters, expressionBody, blockBody, false);
+            this(parameters, expressionBody, blockBody, false, CriticalLoanMode.NONE);
         }
     }
 }
