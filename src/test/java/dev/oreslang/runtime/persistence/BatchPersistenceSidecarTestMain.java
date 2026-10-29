@@ -122,6 +122,48 @@ public final class BatchPersistenceSidecarTestMain {
                 }
             }
         });
+        test("stale epoch cannot use old dedupe receipt", () -> {
+            MemoryStore store = new MemoryStore();store.grantEpoch("tenant-1","a",1);
+            try (var sidecar = newSidecar(store,10,5)) {
+                Write old=write("a","shared",1,0);
+                check(get(sidecar.submit(old)).status()==Status.COMMITTED,"initial commit failed");
+                store.grantEpoch("tenant-1","a",2);
+                check(get(sidecar.submit(old)).status()==Status.STALE_EPOCH,"stale replay leaked receipt");
+                check(get(sidecar.submit(write("a","shared",2,1))).status()==Status.OP_ID_CONFLICT,
+                    "reused operation id under new epoch must be rejected");
+            }
+        });
+        test("control characters rejected in all identity components", () -> {
+            for (String invalid : new String[]{"bad\u0000id", "bad\nactor", "bad\tname"}) {
+                boolean rejected=false;
+                try { new Identity("tenant-1", invalid, "main"); }
+                catch (IllegalArgumentException expected) { rejected=true; }
+                check(rejected,"control-character identity accepted");
+            }
+        });
+        test("in-flight storage occupies admission quota", () -> {
+            CountDownLatch inside = new CountDownLatch(1), release = new CountDownLatch(1);
+            MemoryStore memory = new MemoryStore(); memory.grantEpoch("tenant-1","a",1);
+            Store delayed = new Store() {
+                public void grantEpoch(String t,String a,long e) { memory.grantEpoch(t,a,e); }
+                public java.util.List<Result> commit(java.util.List<Write> writes) throws Exception {
+                    inside.countDown();
+                    if (!release.await(2,TimeUnit.SECONDS)) throw new RuntimeException("test deadline");
+                    return memory.commit(writes);
+                }
+            };
+            try (var sidecar = new BatchPersistenceSidecar("tenant-1",delayed,1,4096,8,1,8,5000)) {
+                var first=sidecar.submit(write("a","one",1,0));
+                try { check(inside.await(2,TimeUnit.SECONDS),"writer did not start"); }
+                catch (InterruptedException e) { throw new RuntimeException(e); }
+                boolean full=false;
+                try { sidecar.submit(write("a","two",1,1)); }
+                catch (AdmissionException e) { full=e.code.equals("BACKPRESSURE"); }
+                check(full,"in-flight message released credits prematurely");
+                release.countDown();
+                check(get(first).status()==Status.COMMITTED,"in-flight write not committed");
+            } finally { release.countDown(); }
+        });
         System.out.println("PASS "+tested+"/"+tested+" host adapter tests");
     }
 }
