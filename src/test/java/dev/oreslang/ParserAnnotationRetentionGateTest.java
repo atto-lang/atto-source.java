@@ -93,6 +93,19 @@ final class ParserAnnotationRetentionGateTest {
     }
 
     @Test
+    void rejectsMisplacedReturnAnnotationBeforeAstOrExpansion() {
+        for (String source : new String[] {
+                "define class Example as @Ret(int) id: int; end",
+                "define class Example as @Ret(int) constructor() {} end",
+                "define module demo as @Ret(int) let int id = 1; end"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("@Ret is only valid"), error.getMessage());
+        }
+    }
+
+    @Test
     void retainsSpecializedCallableAnnotationError() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("@structural define class Example as end"));
