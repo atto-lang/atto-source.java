@@ -245,6 +245,13 @@ public final class OresEvalRootNode extends RootNode {
         private void indexImports() {
             for (Ast.ImportDecl imported : program.imports()) {
                 ImportRules.validate(imported);
+                // Do not reinterpret a package namespace import as a one-file
+                // wildcard alias when directly evaluating a guest program.
+                // Only a verified multi-provider runtime linker may admit it.
+                if (imported.sourceNamespace() != null) {
+                    throw new IllegalArgumentException(
+                            "import namespace requires manifest-verified multi-file runtime binding");
+                }
                 if (ImportRules.isJavaPath(imported.path())) {
                     indexHostImport(imported);
                     continue;

@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.PackageNamespaceIndex;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.LinkedProgramRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -150,6 +151,41 @@ final class PackageNamespaceIndexTest {
         manifest(root, "checkout", List.of("src/first.ores", "src/first.ores"));
         assertThrows(IllegalArgumentException.class,
                 () -> PackageNamespaceIndex.load(List.of(m), sources, Map.of()));
+    }
+
+    @Test
+    void samePackageNamespaceTracksAllOtherProvidersButNotItself() throws IOException {
+        Map<String, String> sources = new LinkedHashMap<>();
+        Path root = temporary.resolve("checkout");
+        add(sources, root, "src/billing/a.ores", "billing", """
+                import namespace billing from "+/";
+                pub fnc a(): int { return 1; }
+                """);
+        add(sources, root, "src/billing/b.ores", "billing",
+                "pub fnc b(): int { return 2; }");
+        Path m = manifest(root, "checkout", List.of("src/billing/a.ores", "src/billing/b.ores"));
+        var index = PackageNamespaceIndex.load(List.of(m), sources, Map.of());
+        String a = id(root.resolve("src/billing/a.ores"));
+        String b = id(root.resolve("src/billing/b.ores"));
+        assertEquals(Set.of(a, b), index.resolve(a, "+/", "billing").providerUnitIds());
+
+        var build = new IncrementalCompiler().compile(sources, Map.of(), index);
+        assertEquals(Set.of(b), build.units().get(a).dependencies());
+        assertEquals(PackageNamespaceIndex.packageId(m, "checkout"),
+                build.units().get(a).packageId());
+    }
+
+    @Test
+    void runtimeLoaderRejectsNamespaceImportsUntilProviderBindingIsImplemented() throws IOException {
+        Path entry = temporary.resolve("entry.ores");
+        Files.writeString(entry, """
+                namespace client;
+                import namespace billing from "checkout";
+                pub fnc answer(): int { return 42; }
+                """);
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(rejection.getMessage().contains("runtime linking"));
     }
 
     @Test
