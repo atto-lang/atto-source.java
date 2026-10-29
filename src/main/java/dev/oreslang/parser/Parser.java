@@ -1525,7 +1525,11 @@ public final class Parser {
             if (List.of("derive", "Derive", "repr", "Repr", "align",
                     "cfg", "Cfg", "inline", "Inline", "expand", "GenerateBuilder",
                     "GenerateSchema", "GenerateClient", "ActorMessage",
-                    "PipelineStage", "RequiresState").contains(name)) {
+                    "PipelineStage", "RequiresState",
+                    "Critical", "RequiresPermission", "Permission",
+                    "GrantPermission", "Unsafe", "Trusted", "Untrusted",
+                    "AllowAll", "CallerRole", "CallableBy", "ActorMiddleware",
+                    "ActorMaxThreads").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
