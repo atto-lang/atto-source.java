@@ -874,8 +874,10 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     selector.replace("      group:", "      # group:"),
                     selector + "      group: Default\n"
             }) {
-                assertNotEquals(selector, candidate,
-                        "weakening group or labels must invalidate exact policy: " + path);
+                String mutatedRunner = runner.replace(selector, candidate);
+                assertNotEquals(selector, section(mutatedRunner, "    runs-on:\n",
+                        "    timeout-minutes:"),
+                        "the executable runner selector must reject mutations: " + path);
             }
         }
     }
