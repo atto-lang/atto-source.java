@@ -72,7 +72,7 @@ public final class OresMain {
                 + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
                 + "\",\"managed_reference_mode\":\""
                 + NativeBuildMode.managedReferenceMode().name().toLowerCase(Locale.ROOT)
-                + "\",\"guest_execution\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
+                + "\",\"guest_execution\":true,\"guest_execution_mode\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
                     ? "interpreter-no-jit" : "runtime-selected") + "\"}";
     }
 
