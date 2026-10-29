@@ -24,9 +24,15 @@ public final class DurableLocalDispatchClaimTest {
             var store = new DurableLocalDispatchClaim(dir);
             var s = scope("dispatch", "b".repeat(64));
             check(DurableLocalDispatchClaim.claimFilename(s).equals(
-                "094cebe33e39cfe9c78133d726cbe2ea792b663bd24c596b77b903dc1dbf3e66.claim"));
+                "0d308e5482aa6701e9dc55b9c1e70e311eb83188e26c8bf86befa838c2d11e21.claim"));
             check(store.claimOnce(s)); check(!store.claimOnce(s));
             check(!store.claimOnce(scope("dispatch", "c".repeat(64))));
+            // Stable idempotency key must survive reincarnation and reload.
+            var reincarnated = new AgentHostDispatchGate.Scope("tenant", "worker", 8, 10,
+                "c".repeat(40), "dispatch", "b".repeat(64), 10000, 1024, 24);
+            check(DurableLocalDispatchClaim.claimFilename(s).equals(
+                DurableLocalDispatchClaim.claimFilename(reincarnated)));
+            check(!store.claimOnce(reincarnated));
             check(store.claimOnce(scope("independent", "b".repeat(64))));
             // Independent OS processes must compete on the same exclusive name.
             List<Process> processes = new ArrayList<>();
