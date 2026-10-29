@@ -116,7 +116,16 @@ public final class ActorCriticalLoanPreflight {
                 || lambda.nonLexical() || lambda.parameters().size() != 1) {
             throw error("state loan requires one lexical critical callback parameter");
         }
-        String name = lambda.parameters().getFirst().name();
+        Ast.Param parameter = lambda.parameters().getFirst();
+        // The state view is compiler-provided. A source type annotation,
+        // explicit mutable referent or structural marker must not authorize
+        // a forged state capability.
+        if (!parameter.type().equals(Ast.TypeRef.inferred())
+                || parameter.mutable() || parameter.structural()) {
+            throw error("critical state loan parameter must be an untyped "
+                    + "compiler-bound lexical name");
+        }
+        String name = parameter.name();
         if (name.equals("_") || name.isBlank()) {
             throw error("state loan requires a named state parameter");
         }
@@ -149,6 +158,12 @@ public final class ActorCriticalLoanPreflight {
                 checkExpr(returned.value(), loanName, mode, stateFields);
             }
         } else if (stmt instanceof Ast.BindingStmt binding) {
+            // Reject lexical shadowing of the borrowed state name in nested
+            // blocks; otherwise a string-based source preflight could inspect
+            // the wrong object and misclassify state reads/writes.
+            if (binding.name().equals(loanName)) {
+                throw error("critical state loan parameter cannot be shadowed");
+            }
             checkExpr(binding.initializer(), loanName, mode, stateFields);
         } else if (stmt instanceof Ast.BlockStmt block) {
             for (Ast.Stmt nested : block.body()) {
@@ -204,22 +219,22 @@ public final class ActorCriticalLoanPreflight {
             Ast.TypeRef type = fields.get(member.member());
             if (type == null) throw error("undeclared actor state field " + member.member());
             if (!scalar(type)) throw error("reference-valued state write lacks ownership proof");
-            checkExpr(assignment.value(), loanName, mode, fields, effects);
+            checkExpr(assignment.value(), loanName, mode, fields);
             return;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            checkExpr(binary.left(), loanName, mode, fields, effects);
-            checkExpr(binary.right(), loanName, mode, fields, effects);
+            checkExpr(binary.left(), loanName, mode, fields);
+            checkExpr(binary.right(), loanName, mode, fields);
             return;
         }
         if (expr instanceof Ast.UnaryExpr unary) {
-            checkExpr(unary.operand(), loanName, mode, fields, effects);
+            checkExpr(unary.operand(), loanName, mode, fields);
             return;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
-            checkExpr(conditional.condition(), loanName, mode, fields, effects);
-            checkExpr(conditional.whenTrue(), loanName, mode, fields, effects);
-            checkExpr(conditional.whenFalse(), loanName, mode, fields, effects);
+            checkExpr(conditional.condition(), loanName, mode, fields);
+            checkExpr(conditional.whenTrue(), loanName, mode, fields);
+            checkExpr(conditional.whenFalse(), loanName, mode, fields);
             return;
         }
         // Calls can hide I/O, spawn, state re-entry, effects or suspension;
