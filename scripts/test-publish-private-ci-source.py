@@ -460,6 +460,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(pub.Denied, "identity/state"):
                     pub.checked_repo("trusted/ci", 246810)
 
+    def test_empty_reviewed_allowlist_denies_candidate_carriers(self):
+        policy = b"""# Private CI destinations explicitly approved for source transfers.
+# No repositories are approved by default.
+"""
+        for candidate in (
+            "opto-sync-test/go-java-validation",
+            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+        ):
+            with self.subTest(candidate=candidate):
+                with self.assertRaisesRegex(
+                    pub.Denied, "destination approval was revoked or absent"
+                ):
+                    pub._parse_policy_approval(
+                        policy, candidate, "private CI approval policy"
+                    )
+
     def test_preflight_treats_checkout_guard_as_data_only(self):
         digest = b"x" * 32
         with (
@@ -627,7 +643,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if contexts is None:
             contexts = ["private-ci-gate"]
         if named_checks is None:
-            named_checks = []
+            named_checks = [
+                {"context": name, "app_id": 15368}
+                for name in contexts
+            ]
         if source_id is None:
             source_id = pub.SOURCE_REPOSITORY_ID
         if codeowners_file is None:
@@ -782,19 +801,39 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "solely owned"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
-    def test_origin_protection_fingerprint_handles_duplicate_context_app_ids(self):
-        api, _ = self.verified_origin_api(
-            contexts=[],
-            named_checks=[
-                {"context": "private-ci-gate", "app_id": None},
+    def test_origin_rejects_unpinned_ambiguous_status_checks(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        for contexts, named_checks in (
+            (["private-ci-gate"], []),
+            (["private-ci-gate"], [{"context": "private-ci-gate"}]),
+            (["private-ci-gate"], [{"context": "private-ci-gate", "app_id": None}]),
+            (["private-ci-gate"], [{"context": "private-ci-gate", "app_id": -1}]),
+            (["private-ci-gate"], [{"context": "private-ci-gate", "app_id": True}]),
+            (["private-ci-gate"], [{"context": "other", "app_id": 15368}]),
+            (["private-ci-gate"], [
                 {"context": "private-ci-gate", "app_id": 15368},
-            ],
+                {"context": "private-ci-gate", "app_id": 25},
+            ]),
+            (["private-ci-gate", "private-ci-gate"],
+             [{"context": "private-ci-gate", "app_id": 15368}]),
+        ):
+            with self.subTest(contexts=contexts, named_checks=named_checks):
+                api, _ = self.verified_origin_api(
+                    contexts=contexts, named_checks=named_checks
+                )
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "strict required CI"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_accepts_explicitly_pinned_required_app_checks(self):
+        api, _ = self.verified_origin_api(
+            contexts=["private-ci-gate"],
+            named_checks=[{"context": "private-ci-gate", "app_id": 15368}],
         )
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         with patch.object(pub, "gh_api", side_effect=api):
             self.assertEqual(
-                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
-                A,
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest), A
             )
 
     def test_origin_rejects_nonterminal_security_codeowners(self):
