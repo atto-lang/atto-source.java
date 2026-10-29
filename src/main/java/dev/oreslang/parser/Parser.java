@@ -2185,7 +2185,12 @@ public final class Parser {
         if (!explicitReturnType) {
             throw error(peek(), "end-delimited callable bodies require an explicit return type");
         }
-        match(DOUBLE_COLON);
+        // Without an explicit '::' the body must begin on a new source
+        // line. Otherwise a malformed declaration can consume the next
+        // class member or enclosing class terminator as a method body.
+        if (!match(DOUBLE_COLON) && peek().line() <= previous().line()) {
+            throw error(peek(), "implicit callable body requires a newline after the return type; use '::' for an inline header");
+        }
         List<Ast.Stmt> body = new ArrayList<>();
         while (!check(END) && !check(EOF)) body.add(parseStatement());
         consume(END, "expected 'end' to close callable body");
