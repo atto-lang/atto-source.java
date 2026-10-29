@@ -119,7 +119,7 @@ final class SourceActorNativeStorageTest {
                     // not just the checked-in file path. Reject a stale/mutated
                     // resource before executing or claiming any guest result.
                     MessageDigest digest = MessageDigest.getInstance("SHA-1");
-                    digest.update(("blob " + bytes.length + "\\0")
+                    digest.update(("blob " + bytes.length + "\0")
                             .getBytes(StandardCharsets.US_ASCII));
                     digest.update(bytes);
                     assertEquals(expectedBlob, HexFormat.of().formatHex(digest.digest()),
