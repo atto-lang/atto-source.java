@@ -41,19 +41,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          java -version
-          mvn -B -ntp -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test
-          test -s target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
-          test -s target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
-          # Surefire can generate valid XML for partial test selection or skips.
-          # Require the exact expected executed case totals, and no errors/failures/skips.
-          for suite in \
-            target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml \
-            target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml; do
-            for zero in errors failures skipped; do
-              grep -Eq "$zero=\"0\"" "$suite"
-            done
-          done
-          grep -Eq 'tests="4"' target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
-          grep -Eq 'tests="14"' target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
-          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER cases=18'
+          node scripts/test-native-guest-reports.mjs
+          mkdir -p target
+          git rev-parse HEAD > target/native-guest-provenance.txt
+          java -version 2>> target/native-guest-provenance.txt
+          mvn -B -ntp -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test 2>&1 | tee target/native-guest-maven.log
+          java scripts/VerifyNativeGuestReports.java target/surefire-reports
+      - name: Preserve compiler and guest evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: actor-native-guest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/surefire-reports/
+            target/native-guest-provenance.txt
+            target/native-guest-maven.log
+          if-no-files-found: warn
+          retention-days: 7
