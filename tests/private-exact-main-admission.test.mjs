@@ -1,13 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 const yaml = readFileSync(new URL('../.github/workflows/private-exact-main-validation.yml', import.meta.url), 'utf8');
 const owners = readFileSync(new URL('../.github/CODEOWNERS', import.meta.url), 'utf8');
+const preflight = readFileSync(new URL('../.github/workflows/private-ci-mirror-preflight.yml', import.meta.url), 'utf8');
 const incidentGovernance = existsSync(new URL(
   '../.github/private-ci-incident-dispositions.json', import.meta.url));
 
+// Git object identity is deliberately security-reviewed: updating any workflow
+// command, job, env, action parameter, or YAML field requires updating this pin
+// in the same independently reviewed change. Keep semantic assertions as defense
+// in depth rather than treating the hash as a substitute for policy review.
+function exactGitBlob(text) {
+  return createHash('sha1')
+    .update('blob ' + Buffer.byteLength(text, 'utf8') + String.fromCharCode(0))
+    .update(text, 'utf8').digest('hex');
+}
+
 function verify(w, c, incidentControlled = incidentGovernance) {
+  assert.equal(exactGitBlob(w), '794850b5ca8b66de3a263953eaf58ec0750f13f1',
+    'unreviewed exact-main workflow bytes: update the immutable pin only with independent review');
   // A duplicate YAML root key (especially on/jobs/permissions) can shadow
   // the reviewed block. Fail closed before checking individual sections.
   // This workflow intentionally has one fixed, minimal root shape.
@@ -246,6 +260,77 @@ test('incident governance transition preserves exact security ownership', () => 
     undefined, 'pre-incident governance must not accept an unexpected rule');
   assert.throws(() => verify(yaml, next.replace(incidentRule, ''), true));
   assert.throws(() => verify(yaml, next + '\n* @another-owner\n', true));
+});
+
+test('full workflow command, env, with and job settings tampering rejected', () => {
+  for (const [from, to] of [
+    ["      fetch-depth: 1", "      fetch-depth: 0"],
+    ["    timeout-minutes: 180", "    timeout-minutes: 999"],
+    ["        shell: bash", "        shell: pwsh"],
+    ["          set -euo pipefail", "          set +e"],
+    ["          test \"$GITHUB_SHA\" = \"$APPROVED_SHA\"", "          echo unchecked"],
+    ["      - name: Verify toolchain", "      - name: Verify toolchain\n        continue-on-error: true"],
+    ["      - name: Verify toolchain", "      - name: Verify toolchain\n        env:\n          UNREVIEWED: enabled"],
+    ["      - name: Verify toolchain", "      - name: Verify toolchain\n        working-directory: /tmp"],
+    ["      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4", "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with:\n          repository: unreviewed/repo"],
+    ["      - name: Native AOT image and compiled guest smoke", "      - name: Native AOT image and compiled guest smoke\n        run: echo skipped"],
+    ["      - name: Complete GraalVM JDK 25 Maven verification", "      - name: Complete GraalVM JDK 25 Maven verification\n        if: false"],
+    ["    env:\n      APPROVED_SHA:", "    env:\n      UNREVIEWED: true\n      APPROVED_SHA:"],
+    ["      - name: Prove fresh exact-main full JUnit suite execution", "      - name: Prove fresh exact-main full JUnit suite execution\n        timeout-minutes: 1"],
+    ["    timeout-minutes: 180", "    timeout-minutes: 180\n    strategy:\n      matrix: {runner: [unreviewed]}"],
+  ]) {
+    assert.ok(yaml.includes(from), 'missing reviewed workflow mutation anchor: ' + from);
+    assert.throws(() => verify(yaml.replace(from, to), owners), undefined,
+      'unreviewed executable configuration accepted');
+  }
+});
+
+function verifyPreflight(p) {
+  // Fail closed on any preflight workflow change, including a missed path
+  // trigger, run-script modification, or checkout authorization change.
+  assert.equal(exactGitBlob(p), 'c1826995c200dfd5ff6e480d64d69d3f67c36f72',
+    'unreviewed preflight workflow bytes');
+  assert.match(p, /^permissions:\n  contents: read$/m);
+  assert.match(p, /^          node --test tests\/private-exact-main-admission\.test\.mjs$/m);
+  assert.match(p, /^      - uses: actions\/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09$/m);
+  assert.match(p, /^          python3 scripts\/test-publish-private-ci-source-v3\.py$/m);
+  const eventBlock = p.slice(p.indexOf('\non:\n') + 1, p.indexOf('\npermissions:\n'));
+  assert.ok(eventBlock.startsWith('on:\n  pull_request:\n'));
+  assert.equal(eventBlock.split('  pull_request:\n').length - 1, 1);
+  assert.equal(eventBlock.split('  push:\n').length - 1, 1);
+  const [pr, push] = eventBlock.split('  push:\n');
+  for (const block of [pr, push]) {
+    assert.match(block, /\n    paths:\n/);
+    const paths = [...block.matchAll(/^      - '([^']+)'$/gm)].map(m => m[1]);
+    assert.equal(paths.length, new Set(paths).size, 'duplicated private CI trigger');
+    for (const critical of [
+      '.github/CODEOWNERS',
+      '.github/private-ci-incident-dispositions.json',
+      '.github/workflows/private-ci-mirror-preflight.yml',
+      '.github/workflows/private-exact-main-validation.yml',
+      'tests/private-exact-main-admission.test.mjs',
+    ]) assert.equal(paths.filter(path => path === critical).length, 1,
+      'missing or duplicated trigger path: ' + critical);
+  }
+}
+
+test('private CI preflight triggers both PR and push on all sensitive edits', () => {
+  verifyPreflight(preflight);
+  for (const [from, to] of [
+    ["      - '.github/workflows/private-ci-mirror-preflight.yml'", ''],
+    ["      - '.github/workflows/private-exact-main-validation.yml'", ''],
+    ["      - 'tests/private-exact-main-admission.test.mjs'", ''],
+    ["      - '.github/private-ci-incident-dispositions.json'", ''],
+    ['  push:\n    paths:', '  push:\n    branches: [main]\n    paths:'],
+    ['          node --test tests/private-exact-main-admission.test.mjs',
+     '          echo no-admission-test'],
+    ['          bash scripts/test-private-ci-codeowners-contract.sh',
+     '          echo no-owner-check'],
+  ]) {
+    assert.ok(preflight.includes(from), 'missing preflight mutation anchor');
+    assert.throws(() => verifyPreflight(preflight.replace(from, to)),
+      undefined, 'unsafe preflight mutation accepted');
+  }
 });
 
 test('CODEOWNERS tampering rejected', () => {
