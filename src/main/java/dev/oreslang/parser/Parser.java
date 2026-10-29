@@ -3973,6 +3973,18 @@ public final class Parser {
             return new Ast.RuntimeCallExpr("cooperate", List.of());
         }
 
+        if (name.equals("workflow_request")) {
+            if (mutableBorrow) {
+                throw error(operation, "rt mut workflow_request is not supported");
+            }
+            consume(LPAREN, "rt workflow_request requires one parenthesized payload");
+            Ast.Expr payload = parseExpression();
+            consume(RPAREN, "expected ')' after rt workflow_request payload");
+            // The runtime validates a fixed 15-element scalar list, never an
+            // arbitrary Java object, JNI pointer or host policy callback.
+            return new Ast.RuntimeCallExpr("workflow_request", List.of(payload));
+        }
+
         if (!name.equals("copy") && !name.equals("take")
                 && !name.equals("borrow") && !name.equals("share") && !name.equals("fail")) {
             throw error(operation,
