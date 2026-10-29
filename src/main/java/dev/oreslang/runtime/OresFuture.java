@@ -206,25 +206,31 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         OresFuture<T> future = new OresFuture<>();
         AtomicBoolean callbackClaimed = new AtomicBoolean();
 
+        // The registrar may keep this capability forever, even when the
+        // Oreslang observer is cancelled and abandoned. Do not let that
+        // foreign registration pin the Future or its actor/task owner graph.
+        // The caller holding the returned Future keeps it strongly live.
+        WeakReference<OresFuture<T>> observerRef = new WeakReference<>(future);
         Callback<T> completion = new Callback<>() {
-            private boolean claim(String operation) {
+            private OresFuture<T> claim(String operation) {
                 if (!callbackClaimed.compareAndSet(false, true)) {
                     throw new AlreadySettledException(
                             "callback Future already settled; duplicate " + operation);
                 }
 
-                // Consumer cancellation may legitimately win before a foreign
-                // callback arrives. The first late producer callback is then a
-                // no-op rather than an exception escaping onto the producer's
-                // thread. Marking the callback claimed still diagnoses any
-                // subsequent duplicate callback invocation.
-                return !future.isCancelled();
+                // Claim exactly once even if the Future was cancelled or
+                // collected. A first late invocation becomes a no-op, but a
+                // subsequent invocation still fails as a duplicate. Retain
+                // the observer strongly on this stack only while settling.
+                OresFuture<T> observer = observerRef.get();
+                return observer == null || observer.isCancelled() ? null : observer;
             }
 
             @Override
             public void resolve(T value) {
-                if (!claim("resolve")) return;
-                if (!future.completeFromRuntime(value) && !future.isCancelled()) {
+                OresFuture<T> observer = claim("resolve");
+                if (observer == null) return;
+                if (!observer.completeFromRuntime(value) && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before resolve");
                 }
@@ -233,8 +239,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             @Override
             public void reject(Throwable failure) {
                 Objects.requireNonNull(failure, "failure");
-                if (!claim("reject")) return;
-                if (!future.failFromRuntime(failure) && !future.isCancelled()) {
+                OresFuture<T> observer = claim("reject");
+                if (observer == null) return;
+                if (!observer.failFromRuntime(failure) && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before reject");
                 }
@@ -242,8 +249,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
             @Override
             public void cancel() {
-                if (!claim("cancel")) return;
-                if (!future.cancel(false) && !future.isCancelled()) {
+                OresFuture<T> observer = claim("cancel");
+                if (observer == null) return;
+                if (!observer.cancel(false) && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before cancel");
                 }
@@ -251,7 +259,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
             @Override
             public boolean isDone() {
-                return callbackClaimed.get() || future.isDone();
+                OresFuture<T> observer = observerRef.get();
+                return callbackClaimed.get() || observer == null || observer.isDone();
             }
         };
 
