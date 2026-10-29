@@ -1071,6 +1071,22 @@ public final class OwnershipChecker {
                         ValueKind.COPY,
                         null);
             }
+            if (runtime.operation().equals("workflow_request")) {
+                checkSuspensionBorrows(scope, "workflow_request");
+                if (runtime.arguments().size() != 1) {
+                    throw error("rt workflow_request requires one scalar payload");
+                }
+                ValueInfo source = checkExpr(runtime.arguments().getFirst(), scope, false);
+                if (isBorrowValue(source) || containsMutexGuardType(source.type)) {
+                    throw error("rt workflow_request requires an owned scalar list, not borrowed/guarded data");
+                }
+                return new ValueInfo(
+                        new Ast.TypeRef("Future",
+                                List.of(new Ast.TypeRef("Array",
+                                        List.of(Ast.TypeRef.inferred()), false)),
+                                false),
+                        ValueKind.MOVE_ONLY, null);
+            }
             if (runtime.operation().equals("cooperate")) {
                 checkSuspensionBorrows(scope, "cooperate");
                 if (!runtime.arguments().isEmpty()) {
