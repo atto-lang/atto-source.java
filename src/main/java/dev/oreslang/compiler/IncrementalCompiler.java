@@ -161,8 +161,14 @@ public final class IncrementalCompiler {
             // even if its text and dependency source IDs are identical.
             boolean ownerChanged = namespaceGraph != null && previous != null
                     && !java.util.Objects.equals(previous.packageId(), sourceOwners.get(id));
-            if (sourceChanged || depsChanged || ownerChanged) dirty.add(id);
-            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
+            // Pinned namespace exports can change when alias pins or package
+            // versions change without changing a source ID or its text.
+            // Until those identities enter the ABI cache key, recheck every
+            // pinned source unit and its imports on each pinned build.
+            // Ordinary file-only incremental builds retain existing reuse.
+            if (sourceChanged || depsChanged || ownerChanged || namespaceGraph != null) dirty.add(id);
+            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))
+                    || ownerChanged || namespaceGraph != null) abiChanged.add(id);
         }
 
         /*
