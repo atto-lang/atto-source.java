@@ -80,6 +80,56 @@ final class CpuScalarSyncV3Test {
                 """));
     }
 
+    @Test void scalarRegionRejectsExcessiveDepthBeforeEvaluatorExecution() {
+        // Depth counts AST nodes: 64 unary operators plus one literal is
+        // 65 levels from root (depth 64) and is admitted.
+        assertDoesNotThrow(() -> new Ast.CpuScalarRegionExpr(
+                scalarUnaryTree(64)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CpuScalarRegionExpr(scalarUnaryTree(65)));
+        String deepSource = "pub fnc main():int{return cpu { "
+                + "-".repeat(65) + "1 };}";
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(deepSource));
+    }
+
+    @Test void scalarRegionBoundsTotalNodesIndependentlyOfDepth() {
+        // 256 leaves + 255 binary additions = 511 AST nodes. The next
+        // leaf brings the balanced tree to 513 nodes, despite shallow depth.
+        assertDoesNotThrow(() -> new Ast.CpuScalarRegionExpr(
+                balancedScalarTree(256)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CpuScalarRegionExpr(balancedScalarTree(257)));
+    }
+
+    @Test void directAstConstructionCannotSmuggleEffectsOrCaptures() {
+        for (Ast.Expr invalid : new Ast.Expr[]{
+                new Ast.NameExpr("secret"),
+                new Ast.AwaitExpr(new Ast.LiteralExpr(42L)),
+                new Ast.BinaryExpr("+", new Ast.LiteralExpr(1L),
+                        new Ast.NameExpr("actor_state")),
+                new Ast.LiteralExpr("42")
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new Ast.CpuScalarRegionExpr(invalid));
+        }
+    }
+
+    private static Ast.Expr scalarUnaryTree(int unaryCount) {
+        Ast.Expr value = new Ast.LiteralExpr(1L);
+        for (int i = 0; i < unaryCount; i++)
+            value = new Ast.UnaryExpr("-", value);
+        return value;
+    }
+
+    private static Ast.Expr balancedScalarTree(int leaves) {
+        if (leaves == 1) return new Ast.LiteralExpr(1L);
+        int left = leaves / 2;
+        return new Ast.BinaryExpr("+",
+                balancedScalarTree(left),
+                balancedScalarTree(leaves - left));
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
