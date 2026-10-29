@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.PackageNamespaceIndex;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.interop.MixedInteropBridge;
@@ -65,8 +66,10 @@ public final class LinkedProgramRunner {
         projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+        SourceAdmissionBudget budget = new SourceAdmissionBudget();
+        collectImportClosure(entry, units, projectConfig, importResolutions, budget, 0);
+        PackageNamespaceIndex namespaceIndex = admitNamespaceWorkspace(
+                entry, units, projectConfig, importResolutions, budget);
         ensureJavaEntryContainsOres(entry, units);
 
         if (policy != null) {
@@ -82,7 +85,7 @@ public final class LinkedProgramRunner {
 
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
-                new IncrementalCompiler().compile(sources, importResolutions);
+                new IncrementalCompiler().compile(sources, importResolutions, namespaceIndex);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         if (policy != null) {
             for (Ast.Program program : programs.values()) {
@@ -182,8 +185,10 @@ public final class LinkedProgramRunner {
         projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+        SourceAdmissionBudget budget = new SourceAdmissionBudget();
+        collectImportClosure(entry, units, projectConfig, importResolutions, budget, 0);
+        PackageNamespaceIndex namespaceIndex = admitNamespaceWorkspace(
+                entry, units, projectConfig, importResolutions, budget);
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -197,7 +202,7 @@ public final class LinkedProgramRunner {
 
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
-                new IncrementalCompiler().compile(sources, importResolutions);
+                new IncrementalCompiler().compile(sources, importResolutions, namespaceIndex);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         int exitStatus = 0;
         String entryId = unitId(entry);
@@ -247,6 +252,10 @@ public final class LinkedProgramRunner {
                                     resolution.getValue());
                         }
                     }
+
+                    // Link the complete, host-verified symbol-to-provider table
+                    // before any guest source unit initializes.
+                    registerNamespaceProviders(programs, namespaceIndex, parsedUnits);
 
                     for (String id : ids) parsedUnits.get(id).execute(OresEvalRootNode.LINK_ONLY_COMMAND);
                     for (List<String> group : build.initializationGroups()) {
@@ -372,6 +381,49 @@ public final class LinkedProgramRunner {
         return sources;
     }
 
+    private static PackageNamespaceIndex admitNamespaceWorkspace(
+            Path entry,
+            Map<String, MixedSourceUnit> units,
+            OresProjectConfig projectConfig,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget) throws IOException {
+        PackageNamespaceWorkspace.Workspace workspace = PackageNamespaceWorkspace.discover(entry);
+        if (workspace == null) return null;
+        for (Path file : workspace.files()) {
+            collectImportClosure(file, units, projectConfig, importResolutions, budget, 0);
+        }
+        return PackageNamespaceIndex.load(
+                workspace.manifests(), oresSources(units), workspace.aliases());
+    }
+
+    private static void registerNamespaceProviders(
+            Map<String, Ast.Program> programs,
+            PackageNamespaceIndex index,
+            Map<String, Value> parsedUnits) {
+        for (Map.Entry<String, Ast.Program> unit : programs.entrySet()) {
+            for (Ast.ImportDecl imported : unit.getValue().imports()) {
+                if (imported.sourceNamespace() == null) continue;
+                if (index == null) {
+                    throw new IllegalArgumentException(
+                            "namespace imports require an explicit v2 package manifest");
+                }
+                var binding = index.resolve(unit.getKey(), imported.path(), imported.sourceNamespace());
+                Value consumer = parsedUnits.get(unit.getKey());
+                if (consumer == null) throw new IllegalStateException(
+                        "missing parsed namespace consumer: " + unit.getKey());
+                for (var symbol : binding.exports().values()) {
+                    if (!parsedUnits.containsKey(symbol.sourceUnitId())) {
+                        throw new IllegalStateException("namespace provider was not linked: "
+                                + symbol.sourceUnitId());
+                    }
+                    consumer.execute(OresEvalRootNode.REGISTER_NAMESPACE_PROVIDER_COMMAND,
+                            imported.namespace(), symbol.name(), symbol.arity(),
+                            symbol.kind(), symbol.sourceUnitId());
+                }
+            }
+        }
+    }
+
     private static void collectImportClosure(
             Path unit,
             Map<String, MixedSourceUnit> units,
@@ -395,9 +447,10 @@ public final class LinkedProgramRunner {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (imported.sourceNamespace() != null) {
-                throw new IllegalArgumentException(
-                        "import namespace needs manifest-verified multi-file runtime linking; "
-                                + "source-file wildcard resolution cannot substitute for it");
+                // The package index resolves every member against the exact
+                // manifest snapshot after all provider files are admitted.
+                // This import MUST NOT be delegated to resolveImport().
+                continue;
             }
             if (ImportRules.isJavaPath(imported.path())) continue;
 

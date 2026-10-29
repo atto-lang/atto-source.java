@@ -95,11 +95,11 @@ public final class OresEvalRootNode extends RootNode {
                 && REGISTER_NAMESPACE_PROVIDER_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String localAlias
                 && arguments[2] instanceof String member
-                && arguments[3] instanceof Integer arity
+                && arguments[3] instanceof Number arity
                 && arguments[4] instanceof String kind
                 && arguments[5] instanceof String providerId) {
             context.registerLinkedNamespaceProvider(
-                    codeUnitId, localAlias, member, arity, kind, providerId);
+                    codeUnitId, localAlias, member, Math.toIntExact(arity.longValue()), kind, providerId);
             return null;
         }
 
@@ -8998,8 +8998,10 @@ public final class OresEvalRootNode extends RootNode {
             var routes = context.linkedNamespaceProviders(codeUnitId, alias);
             String kind = null;
             int arity = -1;
-            for (var provider : routes.values()) {
-                if (!routes.containsKey(provider.kind() + ":" + member + ":" + provider.arity())) {
+            for (var entry : routes.entrySet()) {
+                var provider = entry.getValue();
+                if (!entry.getKey().equals(provider.kind() + ":" + member + ":"
+                        + provider.arity())) {
                     continue;
                 }
                 if (kind != null) {
