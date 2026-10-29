@@ -386,11 +386,19 @@ def _require_strict_source_protection(protection):
             or checks.get("strict") is not True
             or not isinstance(contexts, list)
             or not isinstance(named_checks, list)
-            or not (contexts or named_checks)
+            or not named_checks
             or any(not isinstance(name, str) or not name.strip() for name in contexts)
             or any(not isinstance(item, dict)
                    or not isinstance(item.get("context"), str)
-                   or not item["context"].strip() for item in named_checks)
+                   or not item["context"].strip()
+                   or type(item.get("app_id")) is not int
+                   or item["app_id"] <= 0
+                   for item in named_checks)
+            or len(set(contexts)) != len(contexts)
+            or len({item["context"] for item in named_checks}) != len(named_checks)
+            or not set(contexts).issubset(
+                {item["context"] for item in named_checks}
+            ))
             or not isinstance(administrators, dict)
             or administrators.get("enabled") is not True
             or not isinstance(force_pushes, dict)
@@ -399,8 +407,9 @@ def _require_strict_source_protection(protection):
             or deletions.get("enabled") is not False):
         raise Denied(
             "origin main must enforce CODEOWNER approvals, last-push approval, "
-            "conversation resolution, stale-review dismissal, strict required CI, "
-            "administrator protection and deny forced pushes/deletions")
+            "conversation resolution, stale-review dismissal, strict required CI "
+            "pinned to GitHub App IDs, administrator protection and deny "
+            "forced pushes/deletions")
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
         if (not isinstance(bypasses, dict)
@@ -409,8 +418,7 @@ def _require_strict_source_protection(protection):
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
     named_contract = tuple(sorted(
-        (item["context"], json.dumps(item.get("app_id"), sort_keys=True,
-                                     separators=(",", ":")))
+        (item["context"], item["app_id"])
         for item in named_checks
     ))
     return (
