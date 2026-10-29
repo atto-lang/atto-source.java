@@ -55,9 +55,16 @@ final class CpuScalarSyncV3Test {
                 "gpu { 42 }", "cpu task { return 42; }",
                 "40 / 2", "\"host-effect\""
         }) {
-            assertThrows(IllegalArgumentException.class,
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(prefix + body + suffix),
                     "unadmitted scalar region: " + body);
+            // These valid expression forms must fail at the *scalar-domain
+            // admission gate*, not at an unrelated syntax/return-type error.
+            if (body.equals("value") || body.equals("print(42)")
+                    || body.equals("40 / 2") || body.equals("\"host-effect\"")) {
+                assertTrue(error.getMessage().contains("cpu scalar execution region"),
+                        () -> "wrong rejection gate for " + body + ": " + error.getMessage());
+            }
         }
     }
 
