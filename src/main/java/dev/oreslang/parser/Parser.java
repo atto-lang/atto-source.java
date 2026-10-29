@@ -89,7 +89,13 @@ public final class Parser {
                         i > 0 && tokens.get(i - 1).type() == NB
                                 && i + 1 < tokens.size()
                                 && tokens.get(i + 1).type() == LBRACE;
-                if (!canonicalTask && !legacyNbTask) {
+                // Stage-v3 scalar CPU blocks have a dedicated *restricted*
+                // AST. GPU sync blocks remain reserved; arbitrary cpu blocks
+                // fail in the scalar AST constructor before type checking.
+                boolean scalarCpuRegion = token.type() == CPU
+                        && i + 1 < tokens.size()
+                        && tokens.get(i + 1).type() == LBRACE;
+                if (!canonicalTask && !legacyNbTask && !scalarCpuRegion) {
                     throw error(token, "synchronous execution domain '" + token.lexeme()
                             + " { ... }' is reserved but not production-lowered yet;"
                             + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
@@ -3882,6 +3888,16 @@ public final class Parser {
             Ast.ExecutionDomain domain = domainToken.type() == CPU
                     ? Ast.ExecutionDomain.CPU : Ast.ExecutionDomain.GPU;
             if (!matchContextualKeyword("task")) {
+                if (domain == Ast.ExecutionDomain.CPU && match(LBRACE)) {
+                    // Deliberately not parseBlock(): a scalar CPU region is
+                    // one expression, optionally prefixed by return, rather
+                    // than an arbitrary host block or a detached Task.
+                    match(RETURN);
+                    Ast.Expr scalar = parseExpression();
+                    match(SEMICOLON);
+                    consume(RBRACE, "scalar cpu { } accepts exactly one closed scalar expression");
+                    return new Ast.CpuScalarRegionExpr(scalar);
+                }
                 throw error(domainToken,
                         "synchronous " + domainToken.lexeme()
                                 + " { ... } lowering is not enabled yet; use "
