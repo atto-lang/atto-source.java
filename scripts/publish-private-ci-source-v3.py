@@ -494,6 +494,12 @@ def review_attested_carrier_main(repository, contract, branch):
 
 
 def checked_carrier_main(repository, contract):
+    """Require enforceable carrier main protection, never a reviewed-PR fallback.
+
+    Recheck the exact pinned main commit and branch protection before and after
+    CODEOWNERS verification. Unprotected carriers cannot receive source Git
+    objects, even if a historical PR has an independent approval.
+    """
     branch = legacy.gh_api(f"repos/{repository}/branches/main")
     if branch.get("name") != "main":
         raise Denied("carrier main branch identity changed")
@@ -502,39 +508,33 @@ def checked_carrier_main(repository, contract):
     )
     if base_sha != contract["base_sha"]:
         raise Denied("carrier main advanced beyond reviewed base")
-
     if branch.get("protected") is not True:
-        return review_attested_carrier_main(repository, contract, branch)
+        raise Denied("carrier main is not protected; source transfer denied")
 
     protection = legacy.gh_api(f"repos/{repository}/branches/main/protection")
-    reviews = protection.get("required_pull_request_reviews")
-    if (not isinstance(reviews, dict)
-            or reviews.get("require_code_owner_reviews") is not True
-            or reviews.get("dismiss_stale_reviews") is not True
-            or not isinstance(reviews.get("required_approving_review_count"), int)
-            or isinstance(reviews.get("required_approving_review_count"), bool)
-            or reviews.get("required_approving_review_count", 0) < 1):
-        raise Denied("carrier main does not enforce independent CODEOWNER review")
-    admins = protection.get("enforce_admins")
-    force = protection.get("allow_force_pushes")
-    delete = protection.get("allow_deletions")
-    if (not isinstance(admins, dict) or admins.get("enabled") is not True
-            or not isinstance(force, dict) or force.get("enabled") is not False
-            or not isinstance(delete, dict) or delete.get("enabled") is not False):
-        raise Denied("carrier main admin/force/delete protection incomplete")
-    bypasses = reviews.get("bypass_pull_request_allowances")
-    if bypasses is not None:
-        if (not isinstance(bypasses, dict)
-                or any(not isinstance(bypasses.get(key, []), list)
-                       or bypasses.get(key) for key in ("users", "teams", "apps"))):
-            raise Denied("carrier main has pull-request review bypasses")
-
+    # Share the stricter source-main governance contract: CODEOWNER reviews,
+    # stale-review dismissal, strict required checks, administrator enforcement,
+    # and no review bypass, force push, or branch deletion.
+    protection_contract = legacy._require_strict_source_protection(protection)
     codeowners, _ = remote_carrier_file(
         repository, legacy.CODEOWNERS_PATH, base_sha, MAX_GOVERNANCE_FILE
     )
     require_carrier_security_codeowners(codeowners)
-    return base_sha
 
+    final_branch = legacy.gh_api(f"repos/{repository}/branches/main")
+    if (final_branch.get("name") != "main"
+            or final_branch.get("protected") is not True
+            or valid_sha(
+                final_branch.get("commit", {}).get("sha"),
+                "carrier main SHA invalid",
+            ) != base_sha):
+        raise Denied("carrier main changed during protection attestation")
+    final_protection = legacy.gh_api(
+        f"repos/{repository}/branches/main/protection"
+    )
+    if legacy._require_strict_source_protection(final_protection) != protection_contract:
+        raise Denied("carrier main protection changed during attestation")
+    return base_sha
 
 def checked_destination(repository, contract):
     repo = legacy.checked_repo(repository, contract["repository_id"])
@@ -880,9 +880,9 @@ def authorize_write(
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state changed during transfer")
-    branch = legacy.gh_api(f"repos/{repository}/branches/main")
-    if (branch.get("name") != "main"
-            or branch.get("commit", {}).get("sha") != contract["base_sha"]):
+    # A pinned main SHA alone is insufficient: protections can be removed
+    # without moving the commit. Re-attest enforcement before every write.
+    if checked_carrier_main(repository, contract) != contract["base_sha"]:
         raise Denied("carrier main changed during source-bearing write")
     if verify_source_pr(source_pr, source_commit) != source_repo_id:
         raise Denied("source PR authorization changed during transfer")
