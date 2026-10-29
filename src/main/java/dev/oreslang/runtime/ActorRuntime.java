@@ -1769,6 +1769,23 @@ public final class ActorRuntime implements AutoCloseable {
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
 
+        /**
+         * Bounded, detached startup inputs transferred by the runtime to the
+         * actor's first execution turn. Existing source executors remain
+         * compatible, but must never silently discard nonempty init arguments.
+         * Not a user-callable actor method and not a constructor.
+         */
+        default ActorOwnedGuestState initializeActor(
+                String actorTypeName,
+                ActorContext<Object> context,
+                List<Object> initArguments) throws Exception {
+            if (!initArguments.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "source actor executor has no initialized argument ABI");
+            }
+            return initializeActor(actorTypeName, context);
+        }
+
         void receiveActor(
                 String actorTypeName,
                 ActorOwnedGuestState state,
@@ -4860,11 +4877,37 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             ActorCodeExecutor executor,
             String actorTypeName) {
+        return spawnCodeActor(kind, policy, executor, actorTypeName, List.of());
+    }
+
+    /**
+     * Compiler-only startup-input bridge. V1 deliberately admits only
+     * immutable scalar values, with bounded count and serialized size.
+     * ActorRef/capability/owned-heap transfers must receive separate,
+     * generation-fenced cross-tenant ownership proofs before admission.
+     * This method does NOT imply that source 'init' syntax is lowered yet.
+     */
+    public ActorRef<Object> spawnCodeActor(
+            ActorKind kind,
+            ActorCodeExecutor executor,
+            String actorTypeName,
+            List<Object> initArguments) {
+        return spawnCodeActor(
+                kind, defaultSpawnPolicy(), executor, actorTypeName, initArguments);
+    }
+
+    public ActorRef<Object> spawnCodeActor(
+            ActorKind kind,
+            IsolatePolicy policy,
+            ActorCodeExecutor executor,
+            String actorTypeName,
+            List<Object> initArguments) {
         Objects.requireNonNull(executor, "executor");
         if (actorTypeName == null || actorTypeName.isBlank()) {
             throw new IllegalArgumentException(
                     "source actor type name cannot be blank");
         }
+        List<Object> detached = validateSourceInitArguments(initArguments);
         SharedCodeImageStore.CodeImage image =
                 Objects.requireNonNull(executor.codeImage(), "executor codeImage");
         return spawnInternal(
@@ -4874,7 +4917,43 @@ public final class ActorRuntime implements AutoCloseable {
                 false,
                 image,
                 executor,
-                actorTypeName);
+                actorTypeName,
+                detached);
+    }
+
+    private static List<Object> validateSourceInitArguments(List<Object> arguments) {
+        Objects.requireNonNull(arguments, "source actor init arguments");
+        if (arguments.size() > 32) {
+            throw new IllegalArgumentException(
+                    "source actor init exceeds 32 startup arguments");
+        }
+        int bytes = 0;
+        ArrayList<Object> checked = new ArrayList<>(arguments.size());
+        for (Object argument : arguments) {
+            // An immutable scalar cannot alias caller-owned mutable state.
+            // Reject ActorRef, native handles, arbitrary host objects and
+            // mutable arrays until the compiler/runtime can prove authority.
+            if (argument instanceof String string) {
+                int length = string.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                bytes = Math.addExact(bytes, length);
+            } else if (argument instanceof Boolean) {
+                bytes = Math.addExact(bytes, 1);
+            } else if (argument instanceof Long || argument instanceof Integer) {
+                bytes = Math.addExact(bytes, 8);
+            } else if (argument instanceof Double d && Double.isFinite(d)) {
+                bytes = Math.addExact(bytes, 8);
+            } else {
+                throw new IllegalArgumentException(
+                        "source actor init only admits immutable int/bool/finite-float/string "
+                                + "scalars until typed capability transfer is implemented");
+            }
+            if (bytes > 4096) {
+                throw new IllegalArgumentException(
+                        "source actor init startup payload exceeds 4096 bytes");
+            }
+            checked.add(argument);
+        }
+        return List.copyOf(checked);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -4906,6 +4985,19 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory,
+                codeImage, codeExecutor, codeActorType, List.of());
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            List<Object> initArguments) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -4989,6 +5081,7 @@ public final class ActorRuntime implements AutoCloseable {
                         codeImage,
                         codeExecutor,
                         codeActorType,
+                        initArguments,
                         parent);
 
                 if (parent != null) {
@@ -7530,6 +7623,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCodeExecutor codeExecutor;
         /** Closed-world source actor declaration selected for this actor. */
         private final String codeActorType;
+        /** One-shot immutable, bounded startup inputs. Cleared after admission. */
+        private List<Object> codeInitArguments;
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
@@ -7655,6 +7750,7 @@ public final class ActorRuntime implements AutoCloseable {
                 SharedCodeImageStore.CodeImage codeImage,
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
+                List<Object> codeInitArguments,
                 ActorCell<?> parent) {
             this.ref = ref;
             this.kind = kind;
@@ -7666,6 +7762,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeImage = codeImage;
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
+            this.codeInitArguments = List.copyOf(codeInitArguments);
             this.parent = parent;
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
@@ -8470,12 +8567,19 @@ public final class ActorRuntime implements AutoCloseable {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
                                 (ActorContext<Object>) (ActorContext<?>) context;
-                        ActorOwnedGuestState created =
-                                Objects.requireNonNull(
-                                        codeExecutor.initializeActor(
-                                                codeActorType,
-                                                sourceContext),
-                                        "source actor executor returned null state");
+                        ActorOwnedGuestState created;
+                        try {
+                            created = Objects.requireNonNull(
+                                    codeExecutor.initializeActor(
+                                            codeActorType,
+                                            sourceContext,
+                                            codeInitArguments),
+                                    "source actor executor returned null state");
+                        } finally {
+                            // Never retain caller-supplied startup values in the
+                            // reusable runtime cell after startup or failure.
+                            codeInitArguments = List.of();
+                        }
                         if (!created.ownerActorId().equals(ref.id())) {
                             throw new SecurityException(
                                     "source actor state owner "
