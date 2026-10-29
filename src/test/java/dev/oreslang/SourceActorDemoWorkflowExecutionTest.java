@@ -19,8 +19,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * This is not host-side simulation. Fixture string approvals/evidence are not
  * authenticated production capabilities and state remains non-durable.
  *
- * Source: oreslang-step-function-demo at 0ba32f019a0c1dfcf9aaa2f91accb030178f5a45
- * This file's expected Git blobs bind the byte-for-byte same-org copies.
+ * Nine base fixtures: oreslang-step-function-demo at
+ * 0ba32f019a0c1dfcf9aaa2f91accb030178f5a45.
+ * Three additional saga fixtures: feat/native-checkout-saga-20261029;
+ * their exact Git blobs are pinned below after same-organization copying.
+ * This file's expected Git blobs bind all twelve copied source fixtures.
  */
 final class SourceActorDemoWorkflowExecutionTest {
 
