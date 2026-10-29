@@ -1,0 +1,198 @@
+// Native Oreslang workflow: a coordinator ACTOR owns transitions and fork/join.
+// This is deliberately non-durable: private compatibility fields are not the
+// compiler-sealed handle_state critical loans. The tenant/run literals below
+// are fixture labels, NOT authenticated capabilities or trusted actor identity.
+// The main task is an actor-step executor: it spawns children only when the
+// coordinator emits an explicit dispatch command, not on its own graph choice.
+define actor ValidateWorkflowStep as
+  receive(ActorMail<String> mail): void {
+    if mail.value == "order"; do
+      self.send("accepted");
+    else
+      self.send("rejected");
+    fi
+    self.end();
+    return;
+  }
+end
+
+define actor ReserveWorkflowInventory as
+  receive(ActorMail<String> mail): void {
+    if mail.value == "accepted"; do
+      self.send("inventory-reserved");
+    else
+      self.send("inventory-rejected");
+    fi
+    self.end();
+    return;
+  }
+end
+
+define actor AuthorizeWorkflowPayment as
+  receive(ActorMail<String> mail): void {
+    if mail.value == "accepted"; do
+      self.send("payment-authorized");
+    else
+      self.send("payment-rejected");
+    fi
+    self.end();
+    return;
+  }
+end
+
+define actor WorkflowCoordinator as
+  let String compatibility_phase = "created";
+  let bool inventory_done = false;
+  let bool payment_done = false;
+
+  receive(ActorMail<String> mail): void {
+    // Explicit fixed-run admission only. Real multi-tenant authority MUST use
+    // authenticated sender and capability checks before admitting messages.
+    if mail.value == "tenant-a:run-1:start"; do
+      if self.compatibility_phase == "created"; do
+        self.compatibility_phase = "validating";
+        self.send("dispatch-validation");
+      else
+        self.send("duplicate-start");
+      fi
+      return;
+    fi
+
+    if mail.value == "tenant-a:run-1:validated"; do
+      if self.compatibility_phase == "validating"; do
+        self.compatibility_phase = "forked";
+        self.send("dispatch-parallel");
+      else
+        self.send("out-of-order");
+      fi
+      return;
+    fi
+
+    if mail.value == "tenant-a:run-1:inventory-reserved"; do
+      if self.compatibility_phase != "forked"; do
+        self.send("out-of-order");
+        return;
+      fi
+      if self.inventory_done; do
+        self.send("duplicate-receipt");
+        return;
+      fi
+      self.inventory_done = true;
+      if self.payment_done; do
+        self.compatibility_phase = "completed";
+        self.send("complete");
+        self.end();
+      else
+        self.send("pending");
+      fi
+      return;
+    fi
+
+    if mail.value == "tenant-a:run-1:payment-authorized"; do
+      if self.compatibility_phase != "forked"; do
+        self.send("out-of-order");
+        return;
+      fi
+      if self.payment_done; do
+        self.send("duplicate-receipt");
+        return;
+      fi
+      self.payment_done = true;
+      if self.inventory_done; do
+        self.compatibility_phase = "completed";
+        self.send("complete");
+        self.end();
+      else
+        self.send("pending");
+      fi
+      return;
+    fi
+
+    // Unknown outcomes fail closed. In production an untrusted actor could
+    // spoof these literal strings: a transport-authenticated receipt is required.
+    self.send("rejected");
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val coordinator = await spawn WorkflowCoordinator();
+
+  // Reject an out-of-order completion and a foreign run before starting.
+  coordinator.send("tenant-a:run-1:inventory-reserved");
+  val early = (await coordinator.outputs.next()).value.unwrap();
+  if early.value != "out-of-order"; do
+    stdio.stdout.write("workflow:unsafe-early");
+    return;
+  fi
+  coordinator.send("tenant-b:run-1:start");
+  val foreign = (await coordinator.outputs.next()).value.unwrap();
+  if foreign.value != "rejected"; do
+    stdio.stdout.write("workflow:unsafe-foreign");
+    return;
+  fi
+
+  coordinator.send("tenant-a:run-1:start");
+  val dispatch_validation = (await coordinator.outputs.next()).value.unwrap();
+  if dispatch_validation.value != "dispatch-validation"; do
+    stdio.stdout.write("workflow:unsafe-validate-dispatch");
+    return;
+  fi
+
+  val validate = await spawn ValidateWorkflowStep();
+  validate.send("order");
+  val accepted = (await validate.outputs.next()).value.unwrap();
+  await validate.get_done();
+  if accepted.value != "accepted"; do
+    stdio.stdout.write("workflow:validation-failed");
+    return;
+  fi
+
+  coordinator.send("tenant-a:run-1:validated");
+  val dispatch_parallel = (await coordinator.outputs.next()).value.unwrap();
+  if dispatch_parallel.value != "dispatch-parallel"; do
+    stdio.stdout.write("workflow:unsafe-fork-dispatch");
+    return;
+  fi
+
+  // Both child actors start before the executor waits on either result.
+  val inventory = await spawn ReserveWorkflowInventory();
+  val payment = await spawn AuthorizeWorkflowPayment();
+  inventory.send(accepted.value);
+  payment.send(accepted.value);
+  val stock = (await inventory.outputs.next()).value.unwrap();
+  val charge = (await payment.outputs.next()).value.unwrap();
+  await inventory.get_done();
+  await payment.get_done();
+  if stock.value != "inventory-reserved"; do
+    stdio.stdout.write("workflow:inventory-failed");
+    return;
+  fi
+  if charge.value != "payment-authorized"; do
+    stdio.stdout.write("workflow:payment-failed");
+    return;
+  fi
+
+  coordinator.send("tenant-a:run-1:inventory-reserved");
+  val pending = (await coordinator.outputs.next()).value.unwrap();
+  if pending.value != "pending"; do
+    stdio.stdout.write("workflow:unsafe-premature-join");
+    return;
+  fi
+  coordinator.send("tenant-a:run-1:inventory-reserved");
+  val repeated = (await coordinator.outputs.next()).value.unwrap();
+  if repeated.value != "duplicate-receipt"; do
+    stdio.stdout.write("workflow:unsafe-duplicate-join");
+    return;
+  fi
+
+  coordinator.send("tenant-a:run-1:payment-authorized");
+  val completed = (await coordinator.outputs.next()).value.unwrap();
+  await coordinator.get_done();
+  if completed.value == "complete"; do
+    stdio.stdout.write("workflow:actor-fork-join");
+    return;
+  fi
+  stdio.stdout.write("workflow:unsafe-completion");
+  return;
+}
