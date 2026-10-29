@@ -118,7 +118,11 @@ public final class AnnotationExpander {
             if (hasAnnotation(method.annotations(), FROM_JSON)) {
                 throw new IllegalArgumentException("@FromJson is only valid on class fields, not method '" + klass.name() + "." + method.name() + "'");
             }
-            signatures.put(signature(method.name(), method.arity()), method);
+            String methodSignature = signature(method.name(), method.arity());
+            if (signatures.putIfAbsent(methodSignature, method) != null) {
+                throw new IllegalArgumentException("duplicate method signature '" + klass.name() + "."
+                        + methodSignature + "' in @FromJson accessor admission");
+            }
         }
 
         Map<String, String> jsonKeys = new LinkedHashMap<>();
@@ -173,10 +177,10 @@ public final class AnnotationExpander {
         String key = signature(generated.name(), generated.arity());
         Ast.MethodDecl existing = signatures.get(key);
         if (existing != null) {
-            boolean sameGeneratedKind = getter
-                    ? isGeneratedFromJsonGetter(existing)
-                    : isGeneratedFromJsonSetter(existing);
-            if (sameGeneratedKind) return; // idempotent expansion
+            // A marker alone is not proof of the accessor's target field, JSON
+            // key, type or body. In particular, foo_bar and fooBar can map to
+            // the same accessor signature. Idempotence requires the exact AST.
+            if (existing.equals(generated)) return;
             throw new IllegalArgumentException("@FromJson generated accessor '" + klass.name() + "."
                     + generated.name() + "' collides with an existing method of arity " + generated.arity());
         }
