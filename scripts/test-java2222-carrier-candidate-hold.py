@@ -51,12 +51,12 @@ def main():
         fail("carrier identity")
     if doc["carrier_review_pr"] != 24:
         fail("carrier review PR")
-    if doc["carrier_review_head_sha"] != "174ddd52861b2aefd64b0648c41dec1340aab032":
+    if doc["carrier_review_head_sha"] != "bbe7eb933cf5acd2cacb6e827737e1a94da827b7":
         fail("carrier review head")
     for key, expected in EXPECTED_BLOBS.items():
         if doc.get(key) != expected:
             fail(key)
-    if doc["funded_run_id"] != 40817432664 or doc["funded_job_id"] != 123261702887:
+    if doc["funded_run_id"] != 40818316006 or doc["funded_job_id"] != 123264563331:
         fail("funded receipt identity")
     if doc["funded_result"] != "success":
         fail("funded result")
