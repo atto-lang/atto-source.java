@@ -26,6 +26,15 @@ public final class DurableLocalDispatchClaimTest {
             check(DurableLocalDispatchClaim.claimFilename(s).equals(
                 "0d308e5482aa6701e9dc55b9c1e70e311eb83188e26c8bf86befa838c2d11e21.claim"));
             check(store.claimOnce(s)); check(!store.claimOnce(s));
+            // Mutable JVM properties must not supply filesystem ownership authority.
+            String originalHome = System.getProperty("user.home");
+            try {
+                System.setProperty("user.home", "/nonexistent/ores-spoofed-owner");
+                check(store.claimOnce(scope("os-owner", "b".repeat(64))));
+            } finally {
+                if (originalHome != null) System.setProperty("user.home", originalHome);
+                else System.clearProperty("user.home");
+            }
             check(!store.claimOnce(scope("dispatch", "c".repeat(64))));
             // Stable idempotency key must survive reincarnation and reload.
             var reincarnated = new AgentHostDispatchGate.Scope("tenant", "worker", 8, 10,
