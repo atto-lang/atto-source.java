@@ -7895,10 +7895,15 @@ public final class OresEvalRootNode extends RootNode {
                         return handler.pooled((int) size);
                     };
                     case "scoped" -> (Invokable) args -> {
-                        requireTwo(args, "HttpHandler.scoped");
+                        if (args.size() != 3 || !(args.get(2) instanceof Number generation)
+                                || !isIntegral(generation)) {
+                            throw new IllegalArgumentException(
+                                    "HttpHandler.scoped requires binding, authority class and generation");
+                        }
                         return handler.scoped(
                                 requireString(args.get(0), "binding"),
-                                requireString(args.get(1), "authority class"));
+                                requireString(args.get(1), "authority class"),
+                                generation.longValue());
                     };
                     case "dispatch" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
@@ -7934,17 +7939,21 @@ public final class OresEvalRootNode extends RootNode {
                     case "dispatch_handler" -> exchange.dispatchHandler();
                     case "dispatch_binding" -> exchange.dispatchBinding();
                     case "dispatch_authority_class" -> exchange.dispatchAuthorityClass();
+                    case "dispatch_scope_generation" -> exchange.dispatchScopeGeneration();
                     case "dispatch_actor_generation" -> exchange.dispatchActorGeneration();
                     case "dispatch_exchange_generation" -> exchange.dispatchExchangeGeneration();
                     case "dispatch_sequence" -> exchange.dispatchSequence();
                     case "dispatch_receipt_valid" -> (Invokable) args -> {
-                        if (args.size() != 3)
+                        if (args.size() != 4 || !(args.get(3) instanceof Number generation)
+                                || !isIntegral(generation)) {
                             throw new IllegalArgumentException(
-                                    "dispatch_receipt_valid requires handler, binding and authority class");
+                                    "dispatch_receipt_valid requires handler, binding, authority class and generation");
+                        }
                         return exchange.dispatchReceiptValid(
                                 requireString(args.get(0), "handler"),
                                 requireString(args.get(1), "binding"),
-                                requireString(args.get(2), "authority class"));
+                                requireString(args.get(2), "authority class"),
+                                generation.longValue());
                     };
                     case "completion" -> exchange.completion();
                     case "operation_id" -> exchange.operationId();
