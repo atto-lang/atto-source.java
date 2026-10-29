@@ -50,8 +50,14 @@ final class PrivateExactPublisherValidationWorkflowSecurityTest {
                 "vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_SHA == inputs.candidate_sha"));
         assertTrue(runIf.contains(
                 "vars.ORESLANG_PRIVATE_PUBLISHER_WORKFLOW_SHA == github.sha"));
-        assertTrue(approval.contains(
-                "runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]"));
+        String runner = approval.substring(approval.indexOf("    runs-on:\n"),
+                approval.indexOf("    timeout-minutes:"));
+        assertEquals("    runs-on:\n"
+                + "      group: oreslang-java-private-ephemeral-v1\n"
+                + "      labels: [self-hosted, linux, x64, oreslang-private-ephemeral]\n",
+                runner, "publisher runner must stay in dedicated selected-workflow group");
+        assertFalse(approval.contains("runs-on: [self-hosted"),
+                "publisher must not use a label-only or default-group runner");
         assertFalse(text.contains("secrets."));
         assertFalse(text.contains("|| 'ubuntu-24.04'"));
     }
