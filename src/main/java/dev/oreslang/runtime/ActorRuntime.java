@@ -3062,6 +3062,9 @@ public final class ActorRuntime implements AutoCloseable {
         // group admission revocation and clearing managed-worker references.
         private final OresFuture<Void> closedWorkersDone =
                 new OresFuture<>(() -> false, () -> { });
+        // Protected by authorityLock. Cardinality of the workers captured at
+        // close admission, after their public ActorRefs have been revoked.
+        private int closedWorkerCount;
         private final Object authorityLock = new Object();
         // Trusted runtime resource closures, not guest callbacks. Invoked
         // outside authorityLock after the group is fenced but before worker
@@ -3294,14 +3297,21 @@ public final class ActorRuntime implements AutoCloseable {
             requireObserver("await ActorGroup workers completion");
             final List<ActorRef<?>> snapshot;
             final boolean groupWasClosed;
+            final int closeCount;
             synchronized (authorityLock) {
                 groupWasClosed = groupClosed.get();
+                closeCount = closedWorkerCount;
                 snapshot = groupWasClosed
                         ? List.of()
                         : List.copyOf(managedWorkers.values());
             }
             if (groupWasClosed) {
-                return OresFutures.all(List.of(closedWorkersDone));
+                // Preserve the completion-result shape (one Void slot per
+                // worker owned at close), including an empty closed group.
+                // Every slot observes the same noncancellable close fence;
+                // no actor references are retained or re-exposed.
+                return OresFutures.all(
+                        Collections.nCopies(closeCount, closedWorkersDone));
             }
             return OresFutures.all(
                     snapshot.stream().map(ActorRef::done).toList());
@@ -3637,6 +3647,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(managedWorkers.values());
+                closedWorkerCount = owned.size();
                 infrastructureClosures = List.copyOf(infrastructureCloseHooks);
                 infrastructureCloseHooks.clear();
                 managedWorkers.clear();
