@@ -95,13 +95,18 @@ The caller does not choose the executable carrier branch. After proving the
 complete source Git tree, the dispatcher derives exactly
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
 the current head of the named open PR against source `main`, with the latest
-immutable security-owner review approving that exact head. V3 validates that
-authorization before reading source and again before **every source-bearing Git
-object write**. Each per-write check also reattests the original protected-main
-authority and the reviewed control-plane/carrier-contract bytes. Weakening
-source protection, moving source `main`, changing the reviewed control plane or
-carrier contract, closing the PR, moving its head, or dismissing/revoking the
-exact-head approval therefore stops the next persistent destination write. V3
+immutable security-owner review approving that exact head. Protected source and
+carrier `main` must require CODEOWNER review, stale-review dismissal,
+last-push approval, at least one approval, review-thread/conversation resolution,
+administrator enforcement, no force-push/deletion/review bypass, and the exact
+issuer-bound required security check. V3 validates that authorization before
+reading source and again before **every source-bearing Git object write**. Each
+per-write check also reattests the original protected-main authority and the
+reviewed control-plane/carrier-contract bytes. Weakening source or carrier
+protection, moving source or carrier `main`, changing the reviewed control
+plane or carrier contract, closing the PR, moving its head, or
+dismissing/revoking the exact-head approval therefore stops the next persistent
+destination write. V3
 also rechecks once more immediately before executable carrier refs are created.
 
 The checked-in policy file must explicitly list the destination. The
@@ -220,8 +225,17 @@ the private destination; a follow-up retention policy is still needed.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
-guarantee that the source directory itself is free of secrets. Run only from a checkout whose private-CI governance exactly matches the protected-main or review-attested authority accepted by V3, using narrowly scoped credentials.
-There is no permission to use a public repository when CI minutes run out.
+guarantee that the source directory itself is free of secrets. Run only from a
+checkout whose private-CI governance exactly matches the protected source
+`main` accepted by V3, using narrowly scoped credentials. The destination
+carrier `main` must also be protected; exact-head review or tree attestation is
+evidence, not a substitute for enforced carrier protection.
+
+Private repositories must be hosted on a GitHub plan/account that actually
+supports the required protected-branch/ruleset policy. If GitHub reports that
+private protection requires a plan upgrade, publication fails closed until that
+capability is enabled. There is no permission to make source or carrier public
+to work around plan limits or exhausted CI minutes.
 
 Test without network access or sending any source:
 
@@ -236,8 +250,9 @@ API operations. V3 tests additionally prove protected carrier-contract parsing,
 source-free base enforcement, exact open-PR binding, receipt construction,
 tree-derived branch naming, and dispatcher-authorization ref creation. The
 real allowlist remains empty and **no destination is authorized** unless
-separately reviewed and either protected-main enforcement or the exact-tree
-review-attested carrier mode is satisfied.
+separately reviewed and both source and carrier protected-main enforcement are
+satisfied. Exact-tree review evidence never substitutes for protected carrier
+`main`.
 
 ## Active disclosure incident
 

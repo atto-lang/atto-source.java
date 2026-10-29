@@ -1,21 +1,8 @@
 name: Private CI destination policy self-test
 on:
+  # This check is required by protected main, so it must exist for every PR.
+  # Path-filtering a required context can deadlock unrelated pull requests.
   pull_request:
-    paths:
-      - 'scripts/check-private-ci-destination.sh'
-      - 'scripts/test-private-ci-destination.sh'
-      - 'scripts/test-private-ci-codeowners-contract.sh'
-      - 'scripts/run-in-private-ci-destination.sh'
-      - 'scripts/publish-private-ci-source.py'
-      - 'scripts/test-publish-private-ci-source-v3.py'
-      - 'scripts/publish-private-ci-source-v3.py'
-      - 'scripts/test-publish-private-ci-source.py'
-      - '.github/private-ci-approved-repositories.txt'
-      - '.github/private-ci-carrier-contracts.json'
-      - '.github/CODEOWNERS'
-      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
-      - 'tools/verify-exact-source-tree.sh'
-      - 'tools/test-verify-exact-source-tree.sh'
   push:
     paths:
       - 'scripts/check-private-ci-destination.sh'
