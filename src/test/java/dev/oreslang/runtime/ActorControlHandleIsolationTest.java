@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -130,6 +131,11 @@ final class ActorControlHandleIsolationTest {
             ActorRuntime.ActorRef<Integer> victim = runtime.spawnPrivateTrusted(
                     factory -> (message, context) -> { });
             victim.getReady().get(5, TimeUnit.SECONDS);
+            AtomicInteger revocationCalls = new AtomicInteger();
+            runtime.setForceCancellationHook((id, domain) -> {
+                revocationCalls.incrementAndGet();
+                return false;
+            });
             // Reconstruct an object with the same logical UUID, kind and
             // generation. It must remain a different, unauthorized ActorRef.
             var constructor = ActorRuntime.ActorRef.class.getDeclaredConstructor(
@@ -193,13 +199,27 @@ final class ActorControlHandleIsolationTest {
             ActorRuntime.ActorControlHandle forgedControl =
                     controlConstructor.newInstance(runtime, forgery);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::id);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::kind);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     forgedControl::isAlive);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::failure);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     forgedControl::parentId);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     forgedControl::childIds);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> forgedControl.awaitTermination(0, TimeUnit.NANOSECONDS));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::stop);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgedControl::cancel);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     forgedControl::kill);
+            assertEquals(0, revocationCalls.get(),
+                    "forged kill must never invoke the host force-revocation hook");
             assertTrue(victim.isAlive(), "forged reference must not change target lifecycle");
 
             // Exact runtime-minted reference retains its legitimate authority.
@@ -208,6 +228,45 @@ final class ActorControlHandleIsolationTest {
         }
     }
 
+
+    @Test
+    void forgedReadinessCannotScheduleAnUnstartedActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicInteger actorStarts = new AtomicInteger();
+            ActorRuntime.ActorRef<Integer> victim = runtime.spawnPrivateTrusted(
+                    factory -> {
+                        actorStarts.incrementAndGet();
+                        return (message, context) -> { };
+                    });
+            assertEquals(0, actorStarts.get(), "spawn alone must not start the actor");
+
+            var constructor = ActorRuntime.ActorRef.class.getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<Integer> forgery =
+                    (ActorRuntime.ActorRef<Integer>) constructor.newInstance(
+                            runtime, victim.id(), victim.kind(), victim.generation());
+
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::ready);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::getReady);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    forgery::readyRef);
+            assertEquals(0, actorStarts.get(),
+                    "a forged readiness observer must not schedule the real actor");
+
+            victim.ready().get(5, TimeUnit.SECONDS);
+            assertEquals(1, actorStarts.get(),
+                    "the genuine reference must still initialize the actor exactly once");
+            victim.stop();
+            assertTrue(victim.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
 
     @Test
     void forgedStructuredChildHandleCannotCancelItsLiveLookalike() throws Exception {
