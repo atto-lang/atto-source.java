@@ -279,6 +279,7 @@ public final class IncrementalCompiler {
 
     private static boolean isPortableNamespaceCallable(Ast.FunctionDecl fn) {
         if (fn.visibility() != Ast.Visibility.PUBLIC
+                || "init".equals(fn.name()) // lifecycle hook, not a cross-package callable
                 || fn.kind() != Ast.CallableKind.FNC
                 || fn.actorKind() != Ast.ActorKind.NONE
                 || fn.async() || fn.suspends() || fn.generator()

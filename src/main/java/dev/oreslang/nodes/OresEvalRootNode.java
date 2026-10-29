@@ -9004,6 +9004,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private static boolean isSupportedNamespaceFnc(Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC
+                    || "init".equals(fn.name())
                     || fn.kind() != Ast.CallableKind.FNC
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || fn.async() || fn.suspends() || fn.generator()

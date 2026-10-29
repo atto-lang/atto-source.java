@@ -258,8 +258,17 @@ public final class LinkedProgramRunner {
                     registerNamespaceProviders(programs, namespaceIndex, parsedUnits);
 
                     for (String id : ids) parsedUnits.get(id).execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+                    // Manifest membership admits code for linking, not for
+                    // executing startup hooks. Only the entry's transitive
+                    // import graph may initialize; unreferenced namespaces
+                    // cannot run arbitrary init code merely by being listed.
+                    Set<String> initializing = reachableFromEntry(entryId, build.units());
                     for (List<String> group : build.initializationGroups()) {
-                        for (String id : group) parsedUnits.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                        for (String id : group) {
+                            if (initializing.contains(id)) {
+                                parsedUnits.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                            }
+                        }
                     }
 
                     LinkedHashMap<String, MixedInteropBridge.Invoker> bridgeInvokers = new LinkedHashMap<>();
@@ -289,6 +298,23 @@ public final class LinkedProgramRunner {
             }
         }
         return new RunResult(build, exitStatus);
+    }
+
+    private static Set<String> reachableFromEntry(
+            String entryId, Map<String, IncrementalCompiler.CompiledUnit> units) {
+        LinkedHashSet<String> reachable = new LinkedHashSet<>();
+        java.util.ArrayDeque<String> queue = new java.util.ArrayDeque<>();
+        queue.add(entryId);
+        while (!queue.isEmpty()) {
+            String id = queue.removeFirst();
+            if (!reachable.add(id)) continue;
+            IncrementalCompiler.CompiledUnit unit = units.get(id);
+            if (unit == null) {
+                throw new IllegalStateException("entry initialization references unlinked unit: " + id);
+            }
+            for (String dependency : unit.dependencies()) queue.addLast(dependency);
+        }
+        return Set.copyOf(reachable);
     }
 
     private static int requireExitStatus(Value value) {

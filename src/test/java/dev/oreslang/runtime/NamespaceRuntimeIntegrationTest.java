@@ -214,6 +214,62 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void unrelatedManifestNamespaceDoesNotInitialize() throws Exception {
+        Path project = temp.resolve("checkout");
+        billing(project);
+        source(project, "src/unrelated.ores", "telemetry", """
+                pub fnc init(): void {
+                  stdio.println("UNRELATED_INIT_MUST_NOT_RUN");
+                  return;
+                }
+                pub fnc observe(): int { return 99; }
+                """);
+        Path entry = source(project, "src/main.ores", "client", """
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  stdio.println(payments.refund());
+                  return;
+                }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, Files.readString(manifest).replace(
+                "  \"src/billing/invoice.ores\",",
+                "  \"src/billing/invoice.ores\",\n  \"src/main.ores\",\n  \"src/unrelated.ores\","));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var build = run(entry, out);
+        assertEquals(6, build.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("2"));
+        assertTrue(!out.toString(StandardCharsets.UTF_8)
+                .contains("UNRELATED_INIT_MUST_NOT_RUN"));
+    }
+
+    @Test
+    void lifecycleInitCannotBeCalledViaNamespaceQualification() throws Exception {
+        Path project = temp.resolve("checkout");
+        billing(project);
+        Path init = source(project, "src/billing/startup.ores", "billing", """
+                pub fnc init(): void {
+                  stdio.println("INIT_ONLY_AT_STARTUP");
+                  return;
+                }
+                """);
+        Path entry = source(project, "src/main.ores", "client", """
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  payments.init();
+                  return;
+                }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, Files.readString(manifest).replace(
+                "  \"src/billing/invoice.ores\",",
+                "  \"src/billing/invoice.ores\",\n  \"src/billing/startup.ores\",\n  \"src/main.ores\","));
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(entry));
+        assertTrue(denied.getMessage().contains("namespace call does not resolve"));
+    }
+
+    @Test
     void wrongArgumentTypeAndUnknownCallAreRejectedByStaticLinker() throws Exception {
         Path project = temp.resolve("checkout");
         billing(project);
