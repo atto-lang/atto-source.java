@@ -150,8 +150,8 @@ public final class AnnotationExpander {
             }
 
             String suffix = accessorSuffix(field.name());
-            addGeneratedAccessor(klass, methods, signatures, getter(field, jsonKey, "get" + suffix), true);
-            addGeneratedAccessor(klass, methods, signatures, setter(field, jsonKey, "set" + suffix), false);
+            addGeneratedAccessor(klass, methods, signatures, getter(field, jsonKey, "get" + suffix));
+            addGeneratedAccessor(klass, methods, signatures, setter(field, jsonKey, "set" + suffix));
         }
 
         return new Ast.ClassDecl(
@@ -172,8 +172,7 @@ public final class AnnotationExpander {
             Ast.ClassDecl klass,
             List<Ast.MethodDecl> methods,
             Map<String, Ast.MethodDecl> signatures,
-            Ast.MethodDecl generated,
-            boolean getter) {
+            Ast.MethodDecl generated) {
         String key = signature(generated.name(), generated.arity());
         Ast.MethodDecl existing = signatures.get(key);
         if (existing != null) {
