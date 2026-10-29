@@ -58,7 +58,7 @@ final class ActorPermissionScope {
         for (ActorPermissionScope layer = this; layer != null; layer = layer.parent) {
             layer.restrictions.requireNetworkListen(resource, operation);
         }
-        // Detect a revocation racing the authorization walk before it returns.
+        // Recheck after policy matching; final admission still races later revoke.
         requireActive(operation);
     }
 
@@ -68,8 +68,9 @@ final class ActorPermissionScope {
         for (ActorPermissionScope layer = this; layer != null; layer = layer.parent) {
             layer.restrictions.require(permission, resource, operation);
         }
-        // Monotonic revocation can race a check; close that admission window.
-        // This does NOT cancel OS operations that already passed admission.
+        // Recheck after policy matching to reduce the revocation race window.
+        // This is NOT a linearizable OS-operation fence and cannot roll back
+        // operations that have already passed authorization.
         requireActive(operation);
     }
 }
