@@ -102,6 +102,44 @@ final class ExecutionDomainAdmissionTest {
     }
 
     @Test
+    void scalarCpuPreflightRejectsMismatchedParenthesesAtTheCorrectGate() {
+        for (String body : List.of("1)", "(1", "((1)", "(1))")) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("pub fnc main():int{return cpu { "
+                            + body + " };}"));
+            assertTrue(error.getMessage().contains("scalar cpu region"),
+                    () -> "expected scalar-region diagnostic: " + error.getMessage());
+        }
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc main():int{return cpu { (40 + 2) };}"));
+    }
+
+    @Test
+    void scalarCpuTokenBudgetCountsTheClosingBraceWithoutOffByOne() {
+        String start = "pub fnc main():int{return cpu { ";
+        String end = " };}";
+        // 512 constants = 1,023 arithmetic tokens; adding the closing
+        // RBRACE is precisely 1,024 tokens. This passes lexical admission
+        // and fails the separate scalar AST depth/node budget.
+        String atLimit = "1" + " + 1".repeat(511);
+        IllegalArgumentException astBudget = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse(start + atLimit + end));
+        assertTrue(astBudget.getMessage().contains("cpu scalar execution region"),
+                astBudget::getMessage);
+
+        // 513 constants = 1,025 arithmetic tokens, so lexing must reject
+        // before parsing the oversized scalar expression.
+        String tooMany = "1" + " + 1".repeat(512);
+        IllegalArgumentException tokenBudget = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse(start + tooMany + end));
+        assertTrue(tokenBudget.getMessage().contains("scalar cpu region exceeds token budget"),
+                tokenBudget::getMessage);
+    }
+
+    @Test
     void commentsStringsAndNonKeywordsStayOrdinarySource() {
         assertDoesNotThrow(() -> Parser.parse("""
                 // gpu { cpu { quantum } }
