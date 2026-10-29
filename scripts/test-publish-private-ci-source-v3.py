@@ -626,6 +626,7 @@ class PrivateCiV3Test(unittest.TestCase):
             "required_pull_request_reviews": {
                 "require_code_owner_reviews": True,
                 "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
                 "required_approving_review_count": 1,
                 "bypass_pull_request_allowances": {
                     "users": [], "teams": [], "apps": [],
@@ -637,6 +638,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 "checks": [],
             },
             "enforce_admins": {"enabled": True},
+            "required_conversation_resolution": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
         }
@@ -689,6 +691,7 @@ class PrivateCiV3Test(unittest.TestCase):
             "required_pull_request_reviews": {
                 "require_code_owner_reviews": True,
                 "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
                 "required_approving_review_count": 1,
                 "bypass_pull_request_allowances": {
                     "users": [], "teams": [], "apps": [],
@@ -699,6 +702,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 "checks": [],
             },
             "enforce_admins": {"enabled": True},
+            "required_conversation_resolution": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
         }
@@ -731,6 +735,53 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "required CI"):
                 v3.checked_carrier_main("trusted/ci", carrier)
+
+    def test_carrier_protection_rejects_last_push_and_conversation_gaps(self):
+        carrier = contract()
+        good = {
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
+                "required_approving_review_count": 1,
+            },
+            "required_status_checks": {
+                "strict": True, "contexts": ["synthetic-required-check"],
+                "checks": [],
+            },
+            "required_conversation_resolution": {"enabled": True},
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        for field, value in (
+            ("require_last_push_approval", False),
+            ("require_last_push_approval", None),
+            ("required_conversation_resolution", {"enabled": False}),
+            ("required_conversation_resolution", None),
+        ):
+            weak = json.loads(json.dumps(good))
+            if field == "require_last_push_approval":
+                weak["required_pull_request_reviews"][field] = value
+            else:
+                weak[field] = value
+
+            def api(route, method="GET", payload=None):
+                if route == "repos/trusted/ci/branches/main":
+                    return {"name": "main", "protected": True,
+                            "commit": {"sha": BASE}}
+                if route == "repos/trusted/ci/branches/main/protection":
+                    return weak
+                raise AssertionError("unexpected API route " + route)
+
+            with (
+                self.subTest(field=field, value=value),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+                patch.object(v3, "remote_carrier_file") as codeowners,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "last-push approval"):
+                    v3.checked_carrier_main("trusted/ci", carrier)
+                codeowners.assert_not_called()
 
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
