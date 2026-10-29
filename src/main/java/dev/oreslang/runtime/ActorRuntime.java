@@ -3417,10 +3417,19 @@ public final class ActorRuntime implements AutoCloseable {
             if (caller != null && !caller.equals(ref.id())) {
                 throw new SecurityException("actor code may only join itself to an ActorGroup");
             }
-            joinId(ref.id(), capability);
+            // Caller-supplied reference identity is authority; a UUID is not.
+            // Check again under the membership lock to cover concurrent joins.
+            joinId(ref.id(), capability, ref);
         }
 
         private void joinId(ActorId actorId, ActorGroupJoinCapability capability) {
+            joinId(actorId, capability, null);
+        }
+
+        private void joinId(
+                ActorId actorId,
+                ActorGroupJoinCapability capability,
+                ActorRef<?> expectedRef) {
             // One admission boundary across ALL groups, including creator
             // auto-memberships. Never reserve a slot on duplicate join.
             synchronized (groupMembershipLock) {
@@ -3428,6 +3437,10 @@ public final class ActorRuntime implements AutoCloseable {
                     requireOpen();
                     requireCapabilityLocked(capability);
                     ActorCell<?> cell = actors.get(actorId);
+                    if (cell != null && expectedRef != null && cell.ref != expectedRef) {
+                        throw new ActorInvalidReferenceException(
+                                "stale or forged ActorRef cannot join an ActorGroup");
+                    }
                     if (cell == null || cell.stopped.get()) {
                         throw new IllegalStateException("actor is not alive: " + actorId);
                     }
@@ -3466,7 +3479,10 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(ref, "ref");
             requireObserver("inspect ActorGroup membership");
             if (!ref.ownedBy(ActorRuntime.this)) return false;
-            return members.contains(ref.id());
+            synchronized (groupMembershipLock) {
+                requireExactLiveActorCell(ref);
+                return members.contains(ref.id());
+            }
         }
 
         private void requireObserver(String operation) {
