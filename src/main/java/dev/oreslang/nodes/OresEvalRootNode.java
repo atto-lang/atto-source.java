@@ -5044,7 +5044,9 @@ public final class OresEvalRootNode extends RootNode {
                         try {
                             continuation.accept(
                                     t,
-                                    applyRuntimeOwnership(runtime.operation(), value),
+                                    runtime.operation().equals("workflow_request")
+                                            ? submitWorkflowGuestIntrinsic(value, env)
+                                            : applyRuntimeOwnership(runtime.operation(), value),
                                     null);
                         } catch (RuntimeException | Error ownershipFailure) {
                             continuation.accept(t, null, ownershipFailure);
@@ -7228,6 +7230,17 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException(name + " operands must be bool");
         }
 
+        private OresFuture<java.util.List<Object>> submitWorkflowGuestIntrinsic(
+                Object payload, Env env) {
+            // A storage effect may become in-doubt even if its future is
+            // cancelled: no implicit retry, and no held guest mutex guard.
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "rt workflow_request cannot run while holding a live MutexGuard");
+            }
+            return context.submitWorkflowGuest(payload);
+        }
+
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
                 case "fail" -> {
@@ -7534,6 +7547,9 @@ public final class OresEvalRootNode extends RootNode {
                             "rt " + runtime.operation() + " expects exactly one argument");
                 }
                 Object value = eval(runtime.arguments().getFirst(), env);
+                if (runtime.operation().equals("workflow_request")) {
+                    return submitWorkflowGuestIntrinsic(value, env);
+                }
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
