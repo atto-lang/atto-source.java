@@ -88,6 +88,9 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    // Only the verified pinned namespace graph may populate these signatures.
+    private Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>>
+            linkedNamespaceFunctions = Map.of();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -232,6 +235,18 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(
+                program, linkedClasses, linkedAliases, linkedContracts, Map.of());
+    }
+
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>> namespaceFunctions) {
+        if (namespaceFunctions == null) {
+            throw new IllegalArgumentException("linked namespace interface cannot be null");
+        }
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -253,6 +268,14 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        for (String alias : namespaceFunctions.keySet()) {
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.NAMESPACE
+                            && use.names().getFirst().equals(alias));
+            if (!imported) throw new IllegalArgumentException(
+                    "linked namespace has no lexical import: " + alias);
+        }
+        checker.linkedNamespaceFunctions = Map.copyOf(namespaceFunctions);
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
@@ -2859,6 +2882,30 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr qualified
+                    && qualified.receiver() instanceof Ast.NameExpr ns
+                    && env.lookup(ns.name()) == null
+                    && linkedNamespaceFunctions.containsKey(ns.name())) {
+                if (call.typeArgumentsPresent()) throw new IllegalArgumentException(
+                        "pinned namespace call does not admit generic arguments");
+                Map<Integer, Ast.FunctionDecl> overloads =
+                        linkedNamespaceFunctions.get(ns.name()).get(qualified.member());
+                Ast.FunctionDecl fn = overloads == null
+                        ? null : overloads.get(call.arguments().size());
+                if (fn == null) throw new IllegalArgumentException(
+                        "namespace '" + ns.name() + "' does not export '"
+                                + qualified.member() + "' at arity " + call.arguments().size());
+                Function signature = trapFunctionType(fn, Set.of(), null);
+                if (signature.parameters().size() != call.arguments().size())
+                    throw new IllegalArgumentException("linked namespace signature mismatch");
+                for (int i = 0; i < call.arguments().size(); ++i) {
+                    Type actual = typeOf(call.arguments().get(i), env, generics, self);
+                    requireAssignable(actual, signature.parameters().get(i),
+                            "argument " + (i + 1) + " to namespace "
+                                    + ns.name() + "." + qualified.member());
+                }
+                return signature.result();
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -3767,6 +3814,19 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr ns
+                    && env.lookup(ns.name()) == null
+                    && linkedNamespaceFunctions.containsKey(ns.name())) {
+                Map<Integer, Ast.FunctionDecl> overloads =
+                        linkedNamespaceFunctions.get(ns.name()).get(member.member());
+                if (overloads == null || overloads.isEmpty())
+                    throw new IllegalArgumentException("namespace '" + ns.name()
+                            + "' has no public member '" + member.member() + "'");
+                if (overloads.size() != 1)
+                    throw new IllegalArgumentException("overloaded namespace function '"
+                            + ns.name() + "." + member.member() + "' requires direct call");
+                return trapFunctionType(overloads.values().iterator().next(), Set.of(), null);
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
