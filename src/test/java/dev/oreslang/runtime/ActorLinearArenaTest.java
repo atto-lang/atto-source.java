@@ -114,4 +114,57 @@ final class ActorLinearArenaTest {
         }
     }
 
+    @Test
+    void lexicalMarkSurvivesMoveOfAnOlderOwner() {
+        try (var arena = new ActorLinearArena(256, 8)) {
+            int outer = arena.cleanupMark();
+            long persistent = arena.allocateOwned(16);
+            int inner = arena.cleanupMark();
+            long temporaryA = arena.allocateOwned(16);
+            long temporaryB = arena.allocateOwned(16);
+
+            assertTrue(arena.releaseOwned(persistent));
+            assertTrue(arena.cleanupTo(inner));
+            assertEquals(1, arena.liveAllocations());
+            assertThrows(IllegalStateException.class, () -> arena.getLong(temporaryA, 0));
+            assertThrows(IllegalStateException.class, () -> arena.getLong(temporaryB, 0));
+            assertTrue(arena.adoptOwned(persistent));
+            assertTrue(arena.cleanupTo(outer));
+            assertEquals(0, arena.liveAllocations());
+        }
+    }
+
+    @Test
+    void lexicalMarkSurvivesRemovalOfAllEarlierOwners() {
+        try (var arena = new ActorLinearArena(256, 8)) {
+            long first = arena.allocateOwned(16);
+            long second = arena.allocateOwned(16);
+            int inner = arena.cleanupMark();
+            assertTrue(arena.dropOwned(first));
+            assertTrue(arena.releaseOwned(second));
+            long child = arena.allocateOwned(16);
+            assertTrue(arena.cleanupTo(inner));
+            assertThrows(IllegalStateException.class, () -> arena.getLong(child, 0));
+            assertEquals(1, arena.liveAllocations());
+            assertTrue(arena.remove(second));
+            assertEquals(0, arena.liveAllocations());
+        }
+    }
+
+    @Test
+    void movedOwnershipDoesNotEvadeOuterCleanup() {
+        try (var arena = new ActorLinearArena(256, 8)) {
+            int outer = arena.cleanupMark();
+            long moved = arena.allocateOwned(16);
+            int inner = arena.cleanupMark();
+            assertTrue(arena.releaseOwned(moved));
+            assertTrue(arena.adoptOwned(moved));
+            assertTrue(arena.cleanupTo(inner),
+                    "adopting after an inner mark belongs to that inner scope");
+            assertThrows(IllegalStateException.class, () -> arena.getLong(moved, 0));
+            assertTrue(arena.cleanupTo(outer));
+            assertEquals(0, arena.liveAllocations());
+        }
+    }
+
 }
