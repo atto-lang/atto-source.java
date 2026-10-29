@@ -114,6 +114,16 @@ final class PackageNamespaceWorkspace {
                 if (!(packageTable instanceof TomlTable)) {
                     throw new IllegalArgumentException("pinned package not declared: " + packageKey);
                 }
+                // The current index admits *every* declared package from
+                // each supplied manifest. Until it supports package-filtered
+                // source admission, accepting a multi-package dependency
+                // would initialize providers outside the pinned package.
+                Object allPackages = parsed.get("packages");
+                if (!(allPackages instanceof TomlTable dependencyPackages)
+                        || dependencyPackages.size() != 1) {
+                    throw new SecurityException(
+                            "pinned dependency manifest must contain exactly one package: " + alias);
+                }
                 List<Path> owned = members(canonical, parsed);
                 if (!sourceDigest(canonical, owned).equals(sourcesSha)) {
                     throw new SecurityException("namespace dependency source pin mismatch: " + alias);

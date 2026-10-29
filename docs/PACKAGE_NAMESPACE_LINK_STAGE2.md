@@ -29,6 +29,12 @@ manifest_sha256 = "<lowercase SHA-256 of exact dependency manifest bytes>"
 sources_sha256 = "<lowercase SHA-256 of sorted manifest-relative file path, newline, file SHA-256, newline entries>"
 ```
 
+For this initial runtime slice, each pinned **dependency manifest must
+declare exactly one package**. A manifest with multiple packages is rejected,
+rather than silently admitting unrelated sibling packages and running their
+initialization. Package-filtered multi-package dependency snapshots are a
+separate follow-on feature.
+
 Only root-manifest-owned sources can use the root dependency aliases;
 namespace names do not authorize package access. Unlisted files cannot join
 a namespace merely because their headers match. No ambient package lookup,

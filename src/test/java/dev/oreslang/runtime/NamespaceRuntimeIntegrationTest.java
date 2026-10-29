@@ -244,6 +244,45 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void dependencyAliasCannotAdmitSiblingPackageFromOneManifest() throws Exception {
+        Path provider = temp.resolve("checkout");
+        Path manifest = billing(provider);
+        Path rogue = source(provider, "src/rogue.ores", "internal", """
+                pub fnc hidden(): int { return 999; }
+                """);
+        Files.writeString(manifest, Files.readString(manifest) + """
+                [packages.rogue]
+                files = ["src/rogue.ores"]
+                """);
+        Path client = temp.resolve("client");
+        Path main = source(client, "src/main.ores", "app", """
+                import namespace billing as payments from "checkout";
+                pub fnc main(): void { stdio.println(payments.refund()); return; }
+                """);
+        Files.writeString(client.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                [namespace_dependencies.checkout]
+                manifest = "../checkout/.ores.pkg.toml"
+                package = "checkout"
+                manifest_sha256 = "%s"
+                sources_sha256 = "%s"
+                """.formatted(
+                PackageNamespaceWorkspace.sha256(Files.readAllBytes(manifest)),
+                PackageNamespaceWorkspace.sourceDigest(manifest, List.of(
+                        provider.resolve("src/billing/charge.ores"),
+                        provider.resolve("src/billing/refund.ores"),
+                        provider.resolve("src/billing/balance.ores"),
+                        provider.resolve("src/billing/invoice.ores"), rogue))));
+        SecurityException rejected = assertThrows(
+                SecurityException.class, () -> LinkedProgramRunner.validate(main));
+        assertTrue(rejected.getMessage().contains("exactly one package"));
+    }
+
+    @Test
     void pinnedSourceMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
         Path providerManifest = billing(provider);
