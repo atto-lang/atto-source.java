@@ -110,9 +110,10 @@ class NativeHttpTest {
             end
             pub async routine main(): void {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
-              val handler = http.handler("Worker")
-                .scoped("proxy:greeting", "local-no-net", 7)
-                .pooled(1);
+              val base_handler = http.handler("Worker");
+              val scoped_handler = base_handler.scoped(
+                "proxy:greeting", "local-no-net", 7);
+              val handler = scoped_handler.pooled(1);
               stdio.println(server.port);
               for (let int i = 0; i < 2; i = i + 1) {
                 val request = await server.accept();
