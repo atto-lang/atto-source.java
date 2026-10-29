@@ -7894,6 +7894,12 @@ public final class OresEvalRootNode extends RootNode {
                         if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
                         return handler.pooled((int) size);
                     };
+                    case "scoped" -> (Invokable) args -> {
+                        requireTwo(args, "HttpHandler.scoped");
+                        return handler.scoped(
+                                requireString(args.get(0), "binding"),
+                                requireString(args.get(1), "authority class"));
+                    };
                     case "dispatch" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
                             throw new IllegalArgumentException("dispatch requires HTTP exchange");
@@ -7925,6 +7931,21 @@ public final class OresEvalRootNode extends RootNode {
                     case "move_to_claim_ns" -> exchange.transferNanos();
                     case "request_id" -> exchange.requestId();
                     case "admitted_ns" -> exchange.admittedNanos();
+                    case "dispatch_handler" -> exchange.dispatchHandler();
+                    case "dispatch_binding" -> exchange.dispatchBinding();
+                    case "dispatch_authority_class" -> exchange.dispatchAuthorityClass();
+                    case "dispatch_actor_generation" -> exchange.dispatchActorGeneration();
+                    case "dispatch_exchange_generation" -> exchange.dispatchExchangeGeneration();
+                    case "dispatch_sequence" -> exchange.dispatchSequence();
+                    case "dispatch_receipt_valid" -> (Invokable) args -> {
+                        if (args.size() != 3)
+                            throw new IllegalArgumentException(
+                                    "dispatch_receipt_valid requires handler, binding and authority class");
+                        return exchange.dispatchReceiptValid(
+                                requireString(args.get(0), "handler"),
+                                requireString(args.get(1), "binding"),
+                                requireString(args.get(2), "authority class"));
+                    };
                     case "completion" -> exchange.completion();
                     case "operation_id" -> exchange.operationId();
                     case "pipeline_id" -> (long) exchange.pipelineId();
