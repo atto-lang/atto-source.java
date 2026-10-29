@@ -227,6 +227,13 @@ public final class OresContext implements AutoCloseable {
         ActorRuntime.requireCurrentActorPermission(permission, resource, api);
     }
 
+    /** Only actual listener bind sites may request ephemeral port zero. */
+    public void requireNetworkListenPermission(String resource, String api) {
+        requireCapability(IsolatePolicy.Capability.NETWORK, api);
+        runtimePermissions.requireNetworkListen(resource, api);
+        ActorRuntime.requireCurrentActorNetworkListen(resource, api);
+    }
+
     static void requireEffectiveCapability(
             IsolatePolicy contextPolicy,
             IsolatePolicy.Capability capability,
