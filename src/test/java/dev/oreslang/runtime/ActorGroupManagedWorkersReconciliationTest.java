@@ -259,6 +259,51 @@ final class ActorGroupManagedWorkersReconciliationTest {
     }
 
     @Test
+    void failingInfrastructureCloseDoesNotCompleteActiveWorkerBarrierEarly() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch exit = new CountDownLatch(1);
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    ctx -> (value, turn) -> {
+                        entered.countDown();
+                        while (exit.getCount() != 0) {
+                            try {
+                                exit.await(50, TimeUnit.MILLISECONDS);
+                            } catch (InterruptedException ignored) {
+                                // Keep shutdown's worker retirement observable.
+                            }
+                        }
+                    });
+            group.registerInfrastructureClose(() -> {
+                throw new IllegalStateException("infrastructure cleanup failed");
+            });
+            try {
+                worker.send(1);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                IllegalStateException failure = assertThrows(
+                        IllegalStateException.class, group::close);
+                assertEquals("infrastructure cleanup failed", failure.getMessage());
+                assertTrue(group.closed());
+                assertTrue(group.workers().isEmpty());
+                OresFuture<java.util.List<Void>> observed = group.workersDone();
+                assertFalse(observed.isDone(),
+                        "ordinary hook failure must not fake worker retirement");
+                assertFalse(group.closedDone().isDone());
+
+                exit.countDown();
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> group.closedDone().get(5, TimeUnit.SECONDS));
+                assertTrue(observed.isDone());
+                assertFalse(worker.isAlive());
+            } finally {
+                exit.countDown();
+            }
+        }
+    }
+
+    @Test
     void workersDoneAndGroupCloseRaceCannotProduceAnEarlyEmptyBarrier() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch entered = new CountDownLatch(1);
