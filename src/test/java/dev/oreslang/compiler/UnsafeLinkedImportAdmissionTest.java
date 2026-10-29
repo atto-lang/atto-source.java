@@ -21,7 +21,8 @@ final class UnsafeLinkedImportAdmissionTest {
         Ast.ImportDecl imported = benignImport().imports().getFirst();
         for (String target : new String[] {
                 "@std/unsafe", "@std/unsafe.ores", "@std/unsafe/ffi.ores",
-                "@ores.std/unsafe/memory.ores", "@std\\unsafe\\native.ores"}) {
+                "@ores.std/unsafe/memory.ores", "@std\\unsafe\\native.ores",
+                "@std.unsafe.ffi", "@std:unsafe.ffi", "@ores.std:unsafe"}) {
             assertTrue(CoreLibrarySources.isUnsafeStdUnitId(target), target);
             SecurityException denied = assertThrows(SecurityException.class, () ->
                     ImportGraph.resolveImportUnitId(
