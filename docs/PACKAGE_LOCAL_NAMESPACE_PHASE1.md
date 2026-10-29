@@ -48,11 +48,43 @@ rejected: no silent legacy filesystem fallback across package boundaries.
 Existing filesystem LinkedProgramRunner and standalone evaluation remain
 fail-closed for import ns.
 
+## Explicit local package manifest admission
+
+The package verifier now also reads actual schema-v2 .ores.pkg.toml files:
+
+    PinnedNamespacePackageInventory.load(
+        Map<String, PackagePin> pinnedPackages,
+        Map<String, Map<String,String>> pinnedAliases);
+
+Each externally pinned PackagePin contains the manifest path, the EXACT
+SHA-256 digest of manifest bytes, and the EXACT digest for each enumerated
+.ores file. The manifest must declare schema_version="2", project.name,
+project.root=".", and [packages.NAME].files. The enumerated file paths and
+pinned hash entries must be equal sets. This verifier rejects malformed
+manifest UTF-8, mismatched hashes, unnormalized/escaping file paths, symlinked
+source paths, aliasing/hardlinks between admitted files, and unpinned alias
+targets. Source admission is bounded (64 packages, 1024 source units,
+64 MiB aggregate, 1 MiB/manifest). Runtime consumes the verified source bytes,
+not a subsequent filesystem reread.
+
+Inventory.run(entryUnit, policy, profile) executes its loaded graph in Graal.
+Tests provide two REAL temporary package manifests and sources and assert 43.
+
+This API is deliberately **not** a lockfile/registry discovery mechanism:
+a trusted host must supply the approved manifest/source checksums and exact
+package-instance names. It does not fetch or sign packages, authenticate the
+host's lockfile, or integrate zed-pkg's signed builds; a local attacker who
+controls BOTH package bytes and the host-provided expected hashes is outside
+this verifier's trust model. Ordinary CLI LinkedProgramRunner still rejects
+pkg: namespace imports without a validated package resolver.
+
 ## Required follow-up and acceptance
 
-1. Implement **real verified schema-v2 .ores.pkg.toml and pinned lockfile**
-   graph with canonical source ownership, exact file hashes/signed provenance
-   and no symlink escape. Only then allow filesystem-based package import ns.
+1. Connect the manifest verifier to an authenticated **zed-pkg lockfile**,
+   and to the normal Java CLI import resolver. Schema-v2 source inventories,
+   SHA-256 pins, path checks and in-memory compilation are now implemented as
+   explicit host-injected APIs; automatic dependency discovery, cryptographic
+   signature verification, lockfile trust, and CLI integration are NOT done.
 2. Obtain **actual** JDK25 GraalVM execution for PinnedNamespaceRuntimeTest,
    including the target code returning 43. CI jobs with steps:null are
    NOT_EXECUTED and are not test passes.
