@@ -46,6 +46,9 @@ final class PackageNamespaceWorkspace {
         Path manifest = null;
         for (Path cursor = canonicalEntry.getParent(); cursor != null; cursor = cursor.getParent()) {
             Path candidate = cursor.resolve(".ores.pkg.toml");
+            if (Files.isSymbolicLink(candidate)) {
+                throw new SecurityException("symlinked root package manifest is forbidden");
+            }
             if (Files.isRegularFile(candidate)) {
                 manifest = candidate.toRealPath();
                 break;
@@ -99,6 +102,9 @@ final class PackageNamespaceWorkspace {
                 if (!Files.isRegularFile(dependencyManifest)) {
                     throw new IllegalArgumentException("namespace dependency manifest not found: " + alias);
                 }
+                if (Files.size(dependencyManifest) > 1024 * 1024) {
+                    throw new IllegalArgumentException("dependency manifest exceeds byte budget");
+                }
                 if (!sha256(Files.readAllBytes(dependencyManifest)).equals(manifestSha)) {
                     throw new SecurityException("namespace dependency manifest pin mismatch: " + alias);
                 }
@@ -114,12 +120,19 @@ final class PackageNamespaceWorkspace {
                 }
                 manifests.add(canonical);
                 files.addAll(owned);
-                sourcePins.put(canonical, sourcesSha);
-                manifestPins.put(canonical, manifestSha);
+                String olderSourcePin = sourcePins.putIfAbsent(canonical, sourcesSha);
+                String olderManifestPin = manifestPins.putIfAbsent(canonical, manifestSha);
+                if ((olderSourcePin != null && !olderSourcePin.equals(sourcesSha))
+                        || (olderManifestPin != null && !olderManifestPin.equals(manifestSha))) {
+                    throw new SecurityException("conflicting pins for one package instance: " + canonical);
+                }
                 aliases.put(alias, PackageNamespaceIndex.packageId(canonical, packageKey));
             }
         }
-        if (manifests.size() > 33 || files.size() > 4096) {
+        long totalBytes = 0;
+        for (Path path : files) totalBytes += Files.size(path);
+        if (manifests.size() > 33 || files.size() > 4096
+                || totalBytes > 64L * 1024 * 1024) {
             throw new IllegalArgumentException("namespace workspace exceeds manifest/source limits");
         }
         return new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
@@ -159,6 +172,7 @@ final class PackageNamespaceWorkspace {
             throw new IllegalArgumentException("package manifest needs bounded [packages]");
         }
         LinkedHashSet<Path> files = new LinkedHashSet<>();
+        long sourceBytes = 0;
         for (String key : packages.keySet()) {
             Object value = packages.get(key);
             if (!(value instanceof TomlTable table)
@@ -195,8 +209,10 @@ final class PackageNamespaceWorkspace {
                 if (!files.add(canonical)) {
                     throw new IllegalArgumentException("duplicate namespace file membership: " + canonical);
                 }
-                if (Files.size(canonical) > 8L * 1024 * 1024) {
-                    throw new IllegalArgumentException("namespace source file exceeds byte budget");
+                long bytes = Files.size(canonical);
+                sourceBytes += bytes;
+                if (bytes > 8L * 1024 * 1024 || sourceBytes > 64L * 1024 * 1024) {
+                    throw new IllegalArgumentException("namespace source snapshot exceeds byte budget");
                 }
             }
         }
