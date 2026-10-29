@@ -78,6 +78,24 @@ final class SourceActorDemoWorkflowExecutionTest {
         assertGuest("coordinator-state", "workflow:state-guarded", "d91bfa28323d198c0001ece58747e68d9980597f");
     }
 
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void executesSagaSuccessWithNoCompensation() throws Exception {
+        assertGuest("order-saga-success", "saga:complete", "1d47ce2cfb929d43a7501fbc4bf2363ec2195fde");
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void compensatesKnownNoEffectRejectionInReverseOrder() throws Exception {
+        assertGuest("order-saga-compensated", "saga:compensated", "d4782060ff0f53588b00e8c2eb9b7f87f5824e3d");
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void quarantinesAmbiguousSagaOutcomeWithoutCompensation() throws Exception {
+        assertGuest("order-saga-ambiguous", "saga:reconciliation-required", "51ca94e1cbf983a495ed89f1531e9e740d50c34d");
+    }
+
     private static void assertGuest(String fixture, String expected, String expectedGitBlob)
             throws Exception {
         String resource = "/parity/step-demo-v1/" + fixture + ".ores";
