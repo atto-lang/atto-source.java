@@ -88,9 +88,24 @@ final class HostCapabilityIoLifecycleV1 {
         return true;
     }
 
+    /** Stop all new host operations, preserving every credit until real close. */
+    public synchronized boolean shutdown() {
+        if (closed) return false;
+        closeAll();
+        return true;
+    }
+
+    private void closeAll() {
+        closed = true;
+        for (Slot slot : slots) {
+            if (slot.phase == Phase.RESERVED || slot.phase == Phase.DISPATCHED)
+                slot.phase = Phase.CANCEL_REQUESTED;
+        }
+    }
+
     public synchronized boolean revokeActor(long actor, long incarnation) {
         if (actor == 0 || incarnation == 0 || isRevoked(actor, incarnation)) return false;
-        if (revokedCount >= revoked.length) closed = true;
+        if (revokedCount >= revoked.length) closeAll();
         else revoked[revokedCount++] = new Revoked(actor, incarnation);
         for (Slot slot : slots) {
             if (slot.actor == actor && slot.incarnation == incarnation &&
