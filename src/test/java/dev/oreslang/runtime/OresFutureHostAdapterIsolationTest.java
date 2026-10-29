@@ -129,6 +129,55 @@ final class OresFutureHostAdapterIsolationTest {
     }
 
     @Test
+    void aggregateCancellationRacingChildSettlementOnlyDetachesBorrowedWaiters()
+            throws Exception {
+        for (int iteration = 0; iteration < 96; iteration++) {
+            OresFuture<Integer> first = new OresFuture<>();
+            OresFuture<Integer> second = new OresFuture<>();
+            OresFuture<java.util.List<Integer>> observed =
+                    OresFutures.all(java.util.List.of(first, second));
+            CountDownLatch start = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<Throwable> threadFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            Thread cancel = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    if (!observed.cancel(false)) {
+                        throw new AssertionError("aggregate is pending until both children settle");
+                    }
+                } catch (Throwable error) {
+                    threadFailure.compareAndSet(null, error);
+                }
+            });
+            Thread settle = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    first.completeFromRuntime(11);
+                } catch (Throwable error) {
+                    threadFailure.compareAndSet(null, error);
+                }
+            });
+            start.countDown();
+            cancel.join();
+            settle.join();
+
+            assertNull(threadFailure.get());
+            assertTrue(observed.isCancelled());
+            assertEquals(0, first.pendingRuntimeWaiterCount(),
+                    "cancelled aggregate must detach from settled child");
+            assertEquals(0, second.pendingRuntimeWaiterCount(),
+                    "cancelled aggregate must detach from pending child");
+            assertFalse(first.isCancelled());
+            assertFalse(second.isCancelled(),
+                    "aggregate observer cannot cancel a borrowed sibling");
+            assertTrue(second.completeFromRuntime(12));
+            assertEquals(11, first.join());
+            assertEquals(12, second.join());
+        }
+    }
+
+    @Test
     void notificationDrainReceiptWaitsForBlockedHostRuntimeWaiter() throws Exception {
         OresFuture<Integer> future = new OresFuture<>();
         CountDownLatch waiterEntered = new CountDownLatch(1);
