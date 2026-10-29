@@ -78,16 +78,20 @@ public final class NativeHttp implements AutoCloseable {
         private final ActorRuntime.ActorKind kind;
         private final String binding;
         private final String authorityClass;
+        private final long scopeGeneration;
         private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
-            this(code, type, kind, type, "local-default");
+            this(code, type, kind, type, "local-default", 0);
         }
         private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind,
-                        String binding, String authorityClass) {
+                        String binding, String authorityClass, long scopeGeneration) {
             this.code = code;
             this.type = type;
             this.kind = kind;
             this.binding = receiptLabel(binding, "binding");
             this.authorityClass = receiptLabel(authorityClass, "authority class");
+            if (scopeGeneration < 0)
+                throw new IllegalArgumentException("HTTP dispatch receipt scope generation cannot be negative");
+            this.scopeGeneration = scopeGeneration;
         }
         private Worker[] workers;
         private int cursor;
@@ -102,17 +106,19 @@ public final class NativeHttp implements AutoCloseable {
          * transport metadata, not permission grants: they cannot widen the
          * actor's runtime capabilities.
          */
-        public Handler scoped(String binding, String authorityClass) {
+        public Handler scoped(String binding, String authorityClass, long scopeGeneration) {
             supervisor();
             if (workers != null) throw new IllegalStateException("scope must be configured before pooled");
-            return new Handler(code, type, kind, binding, authorityClass);
+            if (scopeGeneration <= 0)
+                throw new IllegalArgumentException("scoped HTTP dispatch requires a positive generation");
+            return new Handler(code, type, kind, binding, authorityClass, scopeGeneration);
         }
         public Handler pooled(int size) {
             supervisor();
             if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
             synchronized (NativeHttp.this) {
                 if (closed) throw new IllegalStateException("HTTP runtime closed");
-                Handler pool = new Handler(code, type, kind, binding, authorityClass);
+                Handler pool = new Handler(code, type, kind, binding, authorityClass, scopeGeneration);
                 pool.workers = new Worker[size];
                 pools.add(pool);
                 return pool;
@@ -168,7 +174,7 @@ public final class NativeHttp implements AutoCloseable {
                         exchange.state.readyNanos = exchange.state.spawnNanos;
                     }
                     worker.actor.send(exchange.moveTo(worker.actor, type, binding,
-                            authorityClass, nextDispatchSequence(), true));
+                            authorityClass, scopeGeneration, nextDispatchSequence(), true));
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
@@ -192,7 +198,7 @@ public final class NativeHttp implements AutoCloseable {
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
                 actor.send(exchange.moveTo(actor, type, binding,
-                        authorityClass, nextDispatchSequence(), true));
+                        authorityClass, scopeGeneration, nextDispatchSequence(), true));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
@@ -379,6 +385,7 @@ public final class NativeHttp implements AutoCloseable {
             String handlerType,
             String binding,
             String authorityClass,
+            long scopeGeneration,
             ActorRuntime.ActorId actorId,
             long actorGeneration,
             ActorRuntime.ActorKind actorKind,
@@ -514,19 +521,20 @@ public final class NativeHttp implements AutoCloseable {
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
-            return moveTo(destination, "manual", "manual", "unscoped", 0, false);
+            return moveTo(destination, "manual", "manual", "unscoped", 0, 0, false);
         }
 
         private String moveTo(ActorRuntime.ActorRef<?> destination, String handlerType,
-                              String binding, String authorityClass, long sequence,
-                              boolean attested) {
+                              String binding, String authorityClass, long scopeGeneration,
+                              long sequence, boolean attested) {
             synchronized (state) {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
-                if (attested && sequence <= 0) throw new IllegalArgumentException("attested HTTP dispatch sequence must be positive");
+                if (attested && (scopeGeneration <= 0 || sequence <= 0))
+                    throw new IllegalArgumentException("attested HTTP dispatch generation and sequence must be positive");
                 state.movedNanos = System.nanoTime();
                 state.generation++;
                 state.owner = destination.id();
@@ -535,6 +543,7 @@ public final class NativeHttp implements AutoCloseable {
                         receiptLabel(handlerType, "handler"),
                         receiptLabel(binding, "binding"),
                         receiptLabel(authorityClass, "authority class"),
+                        scopeGeneration,
                         destination.id(),
                         destination.generation(),
                         destination.kind(),
@@ -588,7 +597,8 @@ public final class NativeHttp implements AutoCloseable {
         }
 
         public boolean dispatchReceiptValid(String expectedHandler, String expectedBinding,
-                                            String expectedAuthorityClass) {
+                                            String expectedAuthorityClass,
+                                            long expectedScopeGeneration) {
             synchronized (state) {
                 DispatchReceipt receipt = claimedDispatchReceipt();
                 Optional<ActorRuntime.ActorId> currentId = ActorRuntime.currentActorId();
@@ -599,7 +609,8 @@ public final class NativeHttp implements AutoCloseable {
                         && receipt.actorGeneration() == currentGeneration.getAsLong()
                         && receipt.handlerType().equals(expectedHandler)
                         && receipt.binding().equals(expectedBinding)
-                        && receipt.authorityClass().equals(expectedAuthorityClass);
+                        && receipt.authorityClass().equals(expectedAuthorityClass)
+                        && receipt.scopeGeneration() == expectedScopeGeneration;
             }
         }
 
@@ -611,6 +622,9 @@ public final class NativeHttp implements AutoCloseable {
         }
         public String dispatchAuthorityClass() {
             synchronized (state) { return claimedDispatchReceipt().authorityClass(); }
+        }
+        public long dispatchScopeGeneration() {
+            synchronized (state) { return claimedDispatchReceipt().scopeGeneration(); }
         }
         public long dispatchActorGeneration() {
             synchronized (state) { return claimedDispatchReceipt().actorGeneration(); }
