@@ -34,6 +34,13 @@ final class ActorPermissionScope {
         return new ActorPermissionScope(this, requested);
     }
 
+    void requireNetworkListen(String resource, String operation) {
+        // Listener admission must satisfy every parent restriction too.
+        for (ActorPermissionScope layer = this; layer != null; layer = layer.parent) {
+            layer.restrictions.requireNetworkListen(resource, operation);
+        }
+    }
+
     void require(RuntimePermissions.Permission permission, String resource, String operation) {
         // No recursive stack growth, even with adversarial nested delegation.
         for (ActorPermissionScope layer = this; layer != null; layer = layer.parent) {
