@@ -54,6 +54,8 @@ public final class OresEvalRootNode extends RootNode {
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
     public static final String REGISTER_NAMESPACE_MEMBER_COMMAND =
             "__ores_internal_register_namespace_member__";
+    public static final String REGISTER_NAMESPACE_BINDING_COMMAND =
+            "__ores_internal_register_namespace_binding__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -93,6 +95,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         Evaluator current = evaluator(context);
+        if (arguments.length == 2
+                && REGISTER_NAMESPACE_BINDING_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof String binding) {
+            current.registerNamespaceBinding(binding);
+            return null;
+        }
         if (arguments.length == 5
                 && REGISTER_NAMESPACE_MEMBER_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String binding
@@ -195,6 +203,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Map<String, Map<String, String>> linkedNamespaceFunctions = new HashMap<>();
+        private final Set<String> verifiedNamespaceBindings = new HashSet<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
         private final Map<String, HostClassFacade> hostSymbols = new HashMap<>();
@@ -284,7 +293,21 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private void registerNamespaceBinding(String binding) {
+            Ast.ImportDecl declared = namespaceImports.get(binding);
+            if (declared == null || declared.kind() != Ast.ImportKind.NAMESPACE) {
+                throw new IllegalArgumentException("cannot register undeclared namespace binding " + binding);
+            }
+            if (linkedCodeImage != null || !verifiedNamespaceBindings.add(binding)) {
+                throw new IllegalArgumentException("namespace binding must be registered exactly once before link: " + binding);
+            }
+        }
+
         private void registerNamespaceMember(String binding, String member, int arity, String targetId) {
+            if (linkedCodeImage != null || !verifiedNamespaceBindings.contains(binding)) {
+                throw new IllegalArgumentException(
+                        "namespace member requires pre-link verified package binding: " + binding);
+            }
             Ast.ImportDecl imported = namespaceImports.get(binding);
             if (imported == null || imported.kind() != Ast.ImportKind.NAMESPACE)
                 throw new IllegalArgumentException("cannot register undeclared namespace binding " + binding);
@@ -580,6 +603,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private synchronized void link() {
+            for (Map.Entry<String, Ast.ImportDecl> entry : namespaceImports.entrySet()) {
+                if (entry.getValue().kind() == Ast.ImportKind.NAMESPACE
+                        && !verifiedNamespaceBindings.contains(entry.getKey())) {
+                    throw new IllegalArgumentException(
+                            "import ns requires pre-verified pinned package binding: " + entry.getKey());
+                }
+            }
             if (startupPhase == StartupPhase.FAILED) {
                 throw new IllegalStateException("cannot relink failed code unit " + codeUnitId);
             }

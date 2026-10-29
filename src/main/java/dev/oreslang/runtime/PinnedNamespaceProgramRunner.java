@@ -94,6 +94,8 @@ public final class PinnedNamespaceProgramRunner {
                 bindings.sort(String::compareTo);
                 for (String binding : bindings) {
                     PackageNamespaceLinker.NamespaceImport selected = selections.get(binding);
+                    executable.execute(
+                            OresEvalRootNode.REGISTER_NAMESPACE_BINDING_COMMAND, binding);
                     for (PackageNamespaceLinker.Export member : selected.target().exports()) {
                         executable.execute(
                                 OresEvalRootNode.REGISTER_NAMESPACE_MEMBER_COMMAND,

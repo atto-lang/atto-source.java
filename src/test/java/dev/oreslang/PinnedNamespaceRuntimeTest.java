@@ -128,6 +128,24 @@ final class PinnedNamespaceRuntimeTest {
     }
 
     @Test
+    void standaloneTruffleEvaluationCannotLinkUnverifiedNamespace() {
+        assertThrows(RuntimeException.class, () -> {
+            try (org.graalvm.polyglot.Context context = IsolatePolicy.developer()
+                    .restrictedContextBuilder(ExecutionProfile.serverJit(), java.util.Set.of()).build()) {
+                org.graalvm.polyglot.Source source = org.graalvm.polyglot.Source
+                        .newBuilder(dev.oreslang.OresLanguage.ID, """
+                                import ns a from 'pkg:foo';
+                                pub fnc main(): int { return 0; }
+                                """, "standalone-namespace.ores")
+                        .mimeType(dev.oreslang.OresLanguage.MIME_TYPE)
+                        .buildLiteral();
+                context.parse(source).execute(
+                        dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
+            }
+        });
+    }
+
+    @Test
     void legacyNoPackageGraphCompilationStillFailsClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(Map.of(ENTRY, """
