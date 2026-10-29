@@ -404,6 +404,15 @@ public final class CapabilityChecker {
                 }
                 return;
             }
+            if (runtime.operation().equals("workflow_request")) {
+                require(policy, IsolatePolicy.Capability.WORKFLOW_STORAGE,
+                        "rt workflow_request");
+                if (runtime.arguments().size() != 1) {
+                    throw new SecurityException("rt workflow_request requires one scalar payload");
+                }
+                for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
+                return;
+            }
             if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
