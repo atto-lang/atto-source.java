@@ -30,21 +30,17 @@ run cannot substitute for live source-main protection. If source `main`
 reports `protected: false` or the required protection cannot be verified,
 private export is denied.
 
-Carrier `main` has a separate fail-closed choice: the unprotected fallback
-is bound by the **carrier contract**, not by an implicit trusted branch. If the
-carrier reports `protected: true`, V3 requires CODEOWNER review, stale-review
-dismissal, at least one approval, administrator enforcement, no review
-bypasses, no force pushes, no deletion, and the exact security CODEOWNERS file.
-If those private-repository protections are unavailable, the protected source
-contract must include an exact positive `review_pr`. That PR must be a
-same-repository PR merged to carrier `main`, authored by an account other than
-immutable reviewer ID `11139560` / login `ORESoftware`, and the latest
-review from that reviewer must be `APPROVED` on the PR's exact head before
-merge. V3 then requires the **entire final carrier main root-tree SHA** to equal
-the reviewed PR head root-tree SHA and requires the exact carrier CODEOWNERS
-bytes. Thus path, Git mode, or blob drift after review fails closed.
+Carrier `main` is also required to have **live enforceable protected-main
+governance**. V3 rejects `protected: false` and rejects any inaccessible
+protection API; an independent reviewed PR is no longer an authorization
+fallback. Both source and destination must enforce CODEOWNER review,
+stale-review dismissal, strict non-empty required status checks,
+administrator enforcement, no bypass allowances, no force pushes, and
+no branch deletion. Carrier CODEOWNERS must match the security-owned
+contract exactly. Carrier protection is re-attested before each
+source-bearing write and cannot be replaced by an exact-tree review.
 
-The exact carrier-main SHA is rechecked before every source-bearing destination
+The exact carrier-main SHA **and enforceable carrier protection** are rechecked before every source-bearing destination
 write. Full carrier review/tree attestation is repeated at initial admission,
 immediately before executable refs, and again while the source-bearing payload
 ref is still inert before creating the one-use authorization ref. Handoff ref
@@ -220,7 +216,7 @@ the private destination; a follow-up retention policy is still needed.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
-guarantee that the source directory itself is free of secrets. Run only from a checkout whose private-CI governance exactly matches the protected-main or review-attested authority accepted by V3, using narrowly scoped credentials.
+guarantee that the source directory itself is free of secrets. Run only from a checkout whose private-CI governance exactly matches the protected-main authority accepted by V3, using narrowly scoped credentials.
 There is no permission to use a public repository when CI minutes run out.
 
 Test without network access or sending any source:
@@ -236,8 +232,8 @@ API operations. V3 tests additionally prove protected carrier-contract parsing,
 source-free base enforcement, exact open-PR binding, receipt construction,
 tree-derived branch naming, and dispatcher-authorization ref creation. The
 real allowlist remains empty and **no destination is authorized** unless
-separately reviewed and either protected-main enforcement or the exact-tree
-review-attested carrier mode is satisfied.
+separately reviewed and enforceable protection is independently verified on
+both the source and carrier `main` branches.
 
 ## Active disclosure incident
 
