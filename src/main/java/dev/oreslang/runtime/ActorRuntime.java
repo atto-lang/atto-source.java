@@ -70,6 +70,9 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    /** Physical I/O workers inherit resource checks, never actor scheduler authority. */
+    private static final ThreadLocal<NativeIoAuthority> CURRENT_NATIVE_IO_AUTHORITY =
+            new ThreadLocal<>();
     /** Current actor-owned source task's logical quota, never a carrier's quota. */
     private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
             new ThreadLocal<>();
@@ -94,6 +97,67 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Object executionDomain,
             ActorPermissionScope permissionScope) { }
+
+    /**
+     * Runtime-minted permission identity carried to asynchronous native I/O.
+     * This is NOT actor-turn identity: an I/O worker must never gain mailbox,
+     * state, lifecycle, or scheduler privileges merely by carrying the token.
+     */
+    static final class NativeIoAuthority {
+        private final ActorRuntime runtime;
+        private final ActorId actorId;
+        private final IsolatePolicy coarsePolicy;
+        private final ActorPermissionScope scope;
+
+        private NativeIoAuthority(
+                ActorRuntime runtime, ActorId actorId,
+                IsolatePolicy coarsePolicy, ActorPermissionScope scope) {
+            this.runtime = runtime;
+            this.actorId = actorId;
+            this.coarsePolicy = coarsePolicy;
+            this.scope = scope;
+        }
+
+        ActorId actorId() { return actorId; }
+        ActorRuntime runtime() { return runtime; }
+        void requireCapability(IsolatePolicy.Capability capability, String operation) {
+            coarsePolicy.require(capability, operation);
+        }
+        void requirePermission(
+                RuntimePermissions.Permission permission, String resource, String operation) {
+            scope.require(permission, resource, operation);
+        }
+    }
+
+    static NativeIoAuthority captureNativeIoAuthority() {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            return new NativeIoAuthority(turn.runtime(), turn.actorId(),
+                    turn.policy(), turn.permissionScope());
+        }
+        return CURRENT_NATIVE_IO_AUTHORITY.get();
+    }
+
+    static NativeIoAuthority currentNativeIoAuthority() {
+        return CURRENT_NATIVE_IO_AUTHORITY.get();
+    }
+
+    static void enterNativeIoAuthority(NativeIoAuthority authority) {
+        if (authority == null) return;
+        if (CURRENT_ACTOR_EXECUTION.get() != null
+                || CURRENT_NATIVE_IO_AUTHORITY.get() != null) {
+            throw new SecurityException("native I/O worker cannot replace an active authorization identity");
+        }
+        CURRENT_NATIVE_IO_AUTHORITY.set(authority);
+    }
+
+    static void exitNativeIoAuthority(NativeIoAuthority authority) {
+        if (authority == null) return;
+        if (CURRENT_NATIVE_IO_AUTHORITY.get() != authority) {
+            throw new SecurityException("native I/O authorization owner changed during operation");
+        }
+        CURRENT_NATIVE_IO_AUTHORITY.remove();
+    }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -171,7 +235,11 @@ public final class ActorRuntime implements AutoCloseable {
     static void requireCurrentActorPermission(
             RuntimePermissions.Permission permission, String resource, String operation) {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
-        if (current != null) current.permissionScope().require(permission, resource, operation);
+        if (current != null) {
+            current.permissionScope().require(permission, resource, operation);
+        }
+        NativeIoAuthority nativeIo = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (nativeIo != null) nativeIo.requirePermission(permission, resource, operation);
     }
 
     public static ActorRuntime currentActorRuntime() {
