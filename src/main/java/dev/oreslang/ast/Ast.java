@@ -34,7 +34,7 @@ public final class Ast {
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
     }
 
-    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
+    public enum ImportKind { MODULE, NAMESPACE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
 
     public record ImportDecl(
             ImportKind kind,

@@ -394,6 +394,12 @@ public final class LinkedProgramRunner {
         Ast.Program program = Parser.parse(mixed.oresSource());
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (imported.kind() == Ast.ImportKind.NAMESPACE) {
+                throw new IllegalArgumentException(
+                        "import ns from '" + imported.path()
+                                + "' requires pinned package graph and runtime namespace lowering; "
+                                + "file-based source closure cannot resolve it");
+            }
             if (ImportRules.isJavaPath(imported.path())) continue;
 
             if (CoreLibrarySources.isStdImport(imported.path())) {

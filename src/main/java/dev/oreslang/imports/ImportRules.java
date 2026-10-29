@@ -10,6 +10,7 @@ public final class ImportRules {
     public static final String JAVA_PREFIX = "java:";
     private static final Pattern JAVA_BINARY_NAME =
             Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
+    private static final Pattern PACKAGE_ALIAS = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
     private ImportRules() { }
 
@@ -64,7 +65,7 @@ public final class ImportRules {
     public static boolean isTypeOnlyKind(Ast.ImportKind kind) {
         return switch (kind) {
             case ACTOR, CLASS, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES -> true;
-            case MODULE, FUNCTION, ALL -> false;
+            case MODULE, NAMESPACE, FUNCTION, ALL -> false;
         };
     }
 
@@ -80,6 +81,19 @@ public final class ImportRules {
         if (!isJavaPath(imported.path()) && isExplicitSelfPath(imported.path())) {
             throw new IllegalArgumentException(
                     "source file cannot import itself via '" + imported.path() + "'");
+        }
+
+        if (imported.kind() == Ast.ImportKind.NAMESPACE) {
+            if (imported.wildcard() || imported.namespace() != null
+                    || imported.names().size() != 1
+                    || !PACKAGE_ALIAS.matcher(imported.names().getFirst()).matches()) {
+                throw new IllegalArgumentException("import ns requires one flat namespace name and no alias or wildcard");
+            }
+            if (!imported.path().startsWith("pkg:")
+                    || !PACKAGE_ALIAS.matcher(imported.path().substring("pkg:".length())).matches()) {
+                throw new IllegalArgumentException(
+                        "import ns requires a declared pinned package selector such as 'pkg:foo'");
+            }
         }
 
         if (imported.wildcard()) {

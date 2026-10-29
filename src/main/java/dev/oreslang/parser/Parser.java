@@ -232,6 +232,18 @@ public final class Parser {
     }
 
     private Ast.ImportDecl parseImport() {
+        // "ns" is contextual; it must not reserve an identifier elsewhere.
+        // This selector names a namespace in a pinned package, NOT a named module
+        // or a source file. Package-qualified linking is a separate phase.
+        if (isContextualIdentifier("ns")) {
+            advance();
+            String selected = consume(IDENT, "expected flat namespace name after 'import ns'").lexeme();
+            if (check(DOT)) throw error(peek(), "imported namespaces cannot be nested or dotted");
+            consume(FROM, "expected 'from' after imported namespace");
+            String path = consume(STRING, "expected quoted package import path").lexeme();
+            consume(SEMICOLON, "expected ';' after namespace import");
+            return new Ast.ImportDecl(Ast.ImportKind.NAMESPACE, List.of(selected), false, null, path);
+        }
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
         boolean wildcard = false;

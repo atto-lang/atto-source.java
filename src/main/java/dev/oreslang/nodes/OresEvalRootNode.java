@@ -245,6 +245,11 @@ public final class OresEvalRootNode extends RootNode {
         private void indexImports() {
             for (Ast.ImportDecl imported : program.imports()) {
                 ImportRules.validate(imported);
+                if (imported.kind() == Ast.ImportKind.NAMESPACE) {
+                    throw new IllegalArgumentException(
+                            "import ns requires verified package namespace lowering; "
+                                    + "standalone evaluator cannot resolve a package namespace as a file");
+                }
                 if (ImportRules.isJavaPath(imported.path())) {
                     indexHostImport(imported);
                     continue;
@@ -9022,6 +9027,8 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "import " + kind.name().toLowerCase()
                                         + " is a type-only selector and cannot be evaluated as a runtime value");
+                case NAMESPACE -> throw new IllegalArgumentException(
+                        "namespace import must be lowered from a verified package namespace graph");
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
                     if (module == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");

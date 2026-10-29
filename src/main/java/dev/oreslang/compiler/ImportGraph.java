@@ -35,6 +35,10 @@ final class ImportGraph {
             Set<String> available,
             Map<String, Map<String, String>> importResolutions) {
         ImportRules.validate(imported);
+        if (imported.kind() == Ast.ImportKind.NAMESPACE) {
+            throw new IllegalArgumentException(
+                    "import ns requires a verified package namespace graph; file-unit import resolution is not valid");
+        }
         if (ImportRules.isJavaPath(imported.path())) return null;
 
         String normalizedUnitId = normalizeUnitId(unitId);
@@ -173,7 +177,7 @@ final class ImportGraph {
                             || (decl instanceof Ast.ClassDecl klass
                                     && klass.visibility() == Ast.Visibility.PUBLIC
                                     && klass.name().equals(name));
-                    case MODULE -> false;
+                    case MODULE, NAMESPACE -> false;
                 };
                 if (matched) matches++;
             }

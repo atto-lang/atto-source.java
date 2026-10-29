@@ -62,6 +62,20 @@ public final class IncrementalCompiler {
             abiHashes.put(entry.getKey(), abiDigest(program));
         }
 
+        // Existing per-file import resolution knows nothing about immutable
+        // package instances. It must NEVER treat pkg:foo as a source filename or
+        // namespace names as package IDs. Compile-time namespace graph
+        // preflight is exposed separately by PackageNamespaceLinker.
+        for (Map.Entry<String, Ast.Program> source : parsed.entrySet()) {
+            for (Ast.ImportDecl imported : source.getValue().imports()) {
+                if (imported.kind() == Ast.ImportKind.NAMESPACE) {
+                    throw new IllegalArgumentException(
+                            "Oreslang source unit '" + source.getKey()
+                                    + "': import ns requires pinned package graph and runtime namespace lowering; "
+                                    + "legacy per-file compilation cannot execute this import");
+                }
+            }
+        }
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
