@@ -59,6 +59,27 @@ public final class DurableLocalDispatchClaimTest {
             try {check(!new DurableLocalDispatchClaim(link).claimOnce(
                 scope("symlink", "b".repeat(64))));}
             finally {Files.delete(link);}
+            // A symlink at an ancestor (rather than the final directory)
+            // must not relocate the durable claim namespace.
+            Path outer = Files.createTempDirectory("ores-claim-ancestor-");
+            Path real = Files.createDirectory(outer.resolve("real"));
+            Path inner = Files.createDirectory(real.resolve("private"));
+            Files.setPosixFilePermissions(inner, PosixFilePermissions.fromString("rwx------"));
+            Path ancestorLink = outer.resolve("alias");
+            Files.createSymbolicLink(ancestorLink, real);
+            try {
+                check(!new DurableLocalDispatchClaim(ancestorLink.resolve("private"))
+                    .claimOnce(scope("ancestor-symlink", "b".repeat(64))));
+                check(!new DurableLocalDispatchClaim(inner.resolve("..").resolve("private"))
+                    .claimOnce(scope("noncanonical", "b".repeat(64))));
+                check(!new DurableLocalDispatchClaim(Path.of("relative-private"))
+                    .claimOnce(scope("relative-path", "b".repeat(64))));
+            } finally {
+                Files.delete(ancestorLink);
+                delete(inner);
+                Files.delete(real);
+                Files.delete(outer);
+            }
             System.out.println("DURABLE_LOCAL_CLAIM_PASS host-only; no remote provider");
         } finally {delete(dir);}
     }
