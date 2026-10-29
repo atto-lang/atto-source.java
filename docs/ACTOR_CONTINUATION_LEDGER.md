@@ -196,17 +196,20 @@ checks, with `-DfailIfNoTests=true`. A dedicated source-free verification
 script runs as the first post-checkout job step, **before GraalVM setup**.
 
 - Exact committed workflow blob: `3af46666ff47050acfef53e4a66195e002ec730c`
-- Exact committed offline guard blob: `4f3dd1992d9efdaf82158c2b3b9b273410ba5168`
+- Exact committed offline guard blob: `bd0dcfca28cd0f761bb7e0b212dda048f95179ef`
 - The local reconstruction of **both** files matched the GitHub blob hashes.
   `bash -n` succeeded, and running
   `bash tools/test-actor-continuation-workflow-selection.sh --self-test`
-  against the exact committed workflow passed **1 positive + 9 negative** cases.
+  against the exact committed workflow passed **1 positive + 12 negative** cases.
   The negative mutations removed either ledger selector, downgraded JDK 25,
   disabled `failIfNoTests`, removed the actor acceptance job, injected
   `continue-on-error: true`, skipped the Maven step with `if: false`,
   disabled JUnit via `-DskipTests`, or replaced Maven with `echo mvn`.
   The guard additionally resolves selectors from the actual named Maven
   `run: >` step rather than trusting unrelated step metadata.
+  Further negative controls prohibit ambient `env`/shell-hook overrides,
+  a false-green extra shell command, and an appended Maven failure mask.
+  Its active Maven command must remain exactly three lines.
 - Current exact-head source-org [actor workflow run 40930186407](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40930186407),
   `actor-runtime-exclusivity` job `123646235177`, failed before executing
   any steps. Source-free local shell checks **are not JUnit, Maven, GraalVM
