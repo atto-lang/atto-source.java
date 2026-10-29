@@ -60,6 +60,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             127: ("closed", "completed"),
             171: ("closed", "completed"),
             172: ("closed", "completed"),
+            198: ("closed", "completed"),
+            200: ("closed", "completed"),
+            212: ("closed", "completed"),
+            222: ("closed", "completed"),
         }
         repository_id = (
             pub.BLOCKING_INCIDENT_REPOSITORY_ID
@@ -101,6 +105,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 }
             raise AssertionError((method, route))
         return api
+
+    def test_all_new_source_exposure_incidents_fail_closed(self):
+        defaults = dict.fromkeys(pub.BLOCKING_INCIDENTS, ("closed", "completed"))
+        for issue in (198, 200, 212, 222):
+            with self.subTest(issue=issue):
+                states = dict(defaults)
+                states[issue] = ("open", None)
+                with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+                    with self.assertRaisesRegex(pub.Denied, f"#{issue} remains unresolved"):
+                        ORIGINAL_REQUIRE_RESOLVED()
+                drift_ids = dict(pub.BLOCKING_INCIDENT_IDS)
+                drift_ids[issue] += 1
+                with patch.object(
+                    pub, "gh_api", side_effect=self.incident_api(issue_ids=drift_ids)
+                ):
+                    with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                        ORIGINAL_REQUIRE_RESOLVED()
 
     def test_blocking_p0_incidents_accept_only_completed_closure(self):
         with patch.object(pub, "gh_api", side_effect=self.incident_api()):
