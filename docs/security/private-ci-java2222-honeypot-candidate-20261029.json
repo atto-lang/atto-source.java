@@ -1,0 +1,32 @@
+{
+  "schema": "ores-private-ci-carrier-candidate-review-v1",
+  "source_repository": "ores-truffle-oreslang/oreslang-source.java",
+  "source_pr": 2222,
+  "source_head_sha": "ce23fb32485cd59282eb09bf06b480177b90b277",
+  "source_main_sha": "9f4f4a3b75dd4b124e8509b65a88a98213c11ab5",
+  "source_main_protected": false,
+  "carrier_repository": "honeypot-r-us-test/hnpt-lib-core",
+  "carrier_repository_id": 1343209023,
+  "carrier_review_pr": 24,
+  "carrier_review_head_sha": "8607b3f79284e2cea29bbfe756b0400b9d498d86",
+  "carrier_workflow_blob_sha": "859e8dfed2ff83bba5c9759720da690f8ce41730",
+  "carrier_manifest_blob_sha": "6857fcc84cc53c393f5bcc437f34382ae9c08aae",
+  "carrier_test_plan_blob_sha": "81dcc6cdbc05052ad5cd341d5ca7c4350f86bd95",
+  "carrier_verifier_blob_sha": "995aed5dc295f3e0d7291da2acddbe12985b7787",
+  "funded_run_id": 40814545566,
+  "funded_job_id": 123252451308,
+  "funded_result": "success",
+  "blocking_incidents": [
+    22,
+    77,
+    127,
+    171,
+    172
+  ],
+  "reviewed_destination_allowlist_contains_carrier": false,
+  "carrier_contract_contains_carrier": false,
+  "source_exact_head_approved": false,
+  "transfer_authorized": false,
+  "status": "hold",
+  "purpose": "review-only source-side receipt for a funded source-free carrier candidate"
+}
