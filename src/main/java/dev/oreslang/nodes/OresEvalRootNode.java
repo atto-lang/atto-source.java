@@ -7256,8 +7256,10 @@ public final class OresEvalRootNode extends RootNode {
         private static long evalCpuScalarValue(Ast.Expr expr) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 Object value = literal.value();
+                // The scalar AST and type checker admit canonical signed i64
+                // Long values only. Never silently widen arbitrary host
+                // numeric payloads into the Oreslang execution domain.
                 if (value instanceof Long number) return number;
-                if (value instanceof Integer number) return number.longValue();
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 long operand = evalCpuScalarValue(unary.operand());
