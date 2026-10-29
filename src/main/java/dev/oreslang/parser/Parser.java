@@ -1747,20 +1747,40 @@ public final class Parser {
         List<Ast.TypeRef> thrown = List.of();
         List<Ast.TypeRef> raised = List.of();
         List<Ast.TypeRef> panicked = List.of();
+        boolean stateRead = false, stateWrite = false;
         java.util.Set<String> seen = new java.util.HashSet<>();
-        while (isContextualIdentifier("throws")
-                || isContextualIdentifier("raises")
-                || isContextualIdentifier("panics")) {
+        while (isContextualIdentifier("throws") || isContextualIdentifier("raises")
+                || isContextualIdentifier("panics") || isContextualIdentifier("with")) {
             String category = advance().lexeme();
             if (!seen.add(category)) {
                 throw error(previous(), "duplicate checked " + category + " clause");
             }
+            if (category.equals("with")) {
+                do {
+                    Token domain = consume(IDENT, "state effect must name state.read or state.write");
+                    if (!domain.lexeme().equals("state"))
+                        throw error(domain, "only state.read/state.write effects are supported");
+                    consume(DOT, "state effect requires a dot");
+                    Token selector = consume(IDENT, "state effect requires read or write");
+                    switch (selector.lexeme()) {
+                        case "read" -> {
+                            if (stateRead) throw error(selector, "duplicate state.read effect");
+                            stateRead = true;
+                        }
+                        case "write" -> {
+                            if (stateWrite) throw error(selector, "duplicate state.write effect");
+                            stateWrite = true;
+                        }
+                        default -> throw error(selector, "state effect must be read or write");
+                    }
+                } while (match(COMMA));
+                continue;
+            }
             List<Ast.TypeRef> types = new ArrayList<>();
             if (check(LBRACE) || check(SEMICOLON) || check(END)
                     || check(EOF) || check(RBRACE)
-                    || isContextualIdentifier("throws")
-                    || isContextualIdentifier("raises")
-                    || isContextualIdentifier("panics")) {
+                    || isContextualIdentifier("throws") || isContextualIdentifier("raises")
+                    || isContextualIdentifier("panics") || isContextualIdentifier("with")) {
                 throw error(peek(), "checked " + category + " requires a type");
             }
             types.add(parseTypeRef());
@@ -1775,10 +1795,11 @@ public final class Parser {
                 default -> throw new IllegalStateException("unknown checked effect");
             }
         }
-        return new Ast.EffectSpec(thrown, raised, panicked);
+        return new Ast.EffectSpec(thrown, raised, panicked,
+                new Ast.StateEffect(stateRead, stateWrite));
     }
 
-    private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
+        private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
         Ast.TypeRef annotated = null;
         for (Ast.Annotation annotation : annotations) {
             if (annotation.name().equals("Ret")) {

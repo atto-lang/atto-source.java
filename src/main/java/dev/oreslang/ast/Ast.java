@@ -260,25 +260,34 @@ public final class Ast {
     }
 
     /** Immutable, category-distinct declarations; effects are may-sets, not handlers. */
+    /** Source-level effect bounds; not themselves runtime capabilities. */
+    public record StateEffect(boolean read, boolean write) {
+        public static StateEffect none() { return new StateEffect(false, false); }
+    }
+
     public record EffectSpec(List<TypeRef> throwsTypes, List<TypeRef> raisesTypes,
-                             List<TypeRef> panicsTypes) {
+                             List<TypeRef> panicsTypes, StateEffect stateEffect) {
         public EffectSpec {
             throwsTypes = List.copyOf(throwsTypes);
             raisesTypes = List.copyOf(raisesTypes);
             panicsTypes = List.copyOf(panicsTypes);
+            java.util.Objects.requireNonNull(stateEffect, "state effect");
             if (new HashSet<>(throwsTypes).size() != throwsTypes.size()
                     || new HashSet<>(raisesTypes).size() != raisesTypes.size()
                     || new HashSet<>(panicsTypes).size() != panicsTypes.size()) {
                 throw new IllegalArgumentException("duplicate declared checked effect type");
             }
         }
-
-        public static EffectSpec none() {
-            return new EffectSpec(List.of(), List.of(), List.of());
+        public EffectSpec(List<TypeRef> throwsTypes, List<TypeRef> raisesTypes,
+                          List<TypeRef> panicsTypes) {
+            this(throwsTypes, raisesTypes, panicsTypes, StateEffect.none());
         }
-
+        public static EffectSpec none() {
+            return new EffectSpec(List.of(), List.of(), List.of(), StateEffect.none());
+        }
         public boolean isEmpty() {
-            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty()
+                    && panicsTypes.isEmpty() && !stateEffect.read() && !stateEffect.write();
         }
     }
 
