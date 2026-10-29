@@ -56,6 +56,11 @@ public final class IncrementalCompiler {
             if (text == null || text.length() > 16 * 1024 * 1024) {
                 throw new IllegalArgumentException("pinned source unit exceeds 16 MiB");
             }
+            if (text.indexOf(0) >= 0
+                    || !java.nio.charset.StandardCharsets.UTF_8.newEncoder().canEncode(text)) {
+                throw new IllegalArgumentException(
+                        "pinned source contains NUL or malformed UTF-16");
+            }
             int bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
             if (bytes > 16 * 1024 * 1024 || bytes > 64L * 1024 * 1024 - admittedSourceBytes) {
                 throw new IllegalArgumentException("pinned source graph exceeds 64 MiB");
