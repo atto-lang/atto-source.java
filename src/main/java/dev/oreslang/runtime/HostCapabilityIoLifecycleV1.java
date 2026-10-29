@@ -6,7 +6,7 @@ package dev.oreslang.runtime;
  * the requested resource and actual selected destination before reserve().
  * Synchronization here protects the model, not native socket lifetimes.
  */
-public final class HostCapabilityIoLifecycleV1 {
+final class HostCapabilityIoLifecycleV1 {
     public record Ticket(int slot, long nonce) { }
     private enum Phase { FREE, RESERVED, DISPATCHED, CANCEL_REQUESTED, SETTLED }
     private static final class Slot {
