@@ -103,6 +103,25 @@ final class ImplicitValInitializeSyntaxTest {
     }
 
     @Test
+    void implicitBodyRequiresPhysicalNewlineAndExplicitDelimiterAdmitsSameLine() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class C as
+                  ping() -> void return; end
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class C as
+                  initialize() -> void return; end
+                end
+                """));
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class C as
+                  ping() -> void :: return; end
+                end
+                """));
+    }
+
+    @Test
     void typedMethodBodiesSupportEndAndRejectAs() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class C as
