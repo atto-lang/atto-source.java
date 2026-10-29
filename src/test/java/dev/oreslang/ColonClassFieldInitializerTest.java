@@ -20,7 +20,7 @@ final class ColonClassFieldInitializerTest {
             assertDoesNotThrow(() -> TypeChecker.check(program));
             Ast.ClassDecl foo = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
             assertEquals(Ast.BindingKind.VAL, foo.fields().get(0).bindingKind());
-            assertEquals(Ast.BindingKind.LET, foo.fields().get(1).bindingKind());
+            assertEquals(Ast.BindingKind.VAL, foo.fields().get(1).bindingKind());
         }
     }
 
@@ -43,7 +43,7 @@ final class ColonClassFieldInitializerTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Foo as
-                  int count: 5
+                  let int count: 5
                   change(mut self)(): void {
                     self.count = 9;
                   }
