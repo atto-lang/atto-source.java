@@ -300,7 +300,7 @@ function verifyPreflight(p) {
   assert.equal(eventBlock.split('  push:\n').length - 1, 1);
   const [pr, push] = eventBlock.split('  push:\n');
   for (const block of [pr, push]) {
-    assert.match(block, /\n    paths:\n/);
+    assert.match(block, /(?:^|\n)    paths:\n/);
     const paths = [...block.matchAll(/^      - '([^']+)'$/gm)].map(m => m[1]);
     assert.equal(paths.length, new Set(paths).size, 'duplicated private CI trigger');
     for (const critical of [
