@@ -3249,12 +3249,9 @@ public final class TypeChecker {
                     boolean mutableStateLoan = true; // legacy one-argument write form
                     Ast.LambdaExpr lambda;
                     if (call.arguments().size() == 2
-                            && call.arguments().getFirst() instanceof Ast.LiteralExpr mode
-                            && mode.value() instanceof String selected
-                            && (selected.equals("critical:read")
-                                    || selected.equals("critical:write"))
+                            && call.arguments().getFirst() instanceof Ast.CriticalStateModeExpr mode
                             && call.arguments().get(1) instanceof Ast.LambdaExpr scoped) {
-                        mutableStateLoan = selected.equals("critical:write");
+                        mutableStateLoan = mode.mode() == Ast.StateLoanMode.WRITE;
                         lambda = scoped;
                     } else if (call.arguments().size() == 1
                             && call.arguments().getFirst() instanceof Ast.LambdaExpr legacy) {

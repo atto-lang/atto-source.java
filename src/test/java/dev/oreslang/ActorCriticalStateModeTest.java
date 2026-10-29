@@ -143,6 +143,30 @@ final class ActorCriticalStateModeTest {
     }
 
     @Test
+    void userStringCannotImpersonateInternalWriteSelector() {
+        String source = actor("""
+                    self.handle_state("critical:write", |s| -> {
+                      s.revision = 1;
+                    });
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(error.getMessage().contains("critical[read]")
+                || error.getMessage().contains("inline lexical lambda"), error.getMessage());
+    }
+
+    @Test
+    void userStringCannotImpersonateInternalReadSelector() {
+        String source = actor("""
+                    self.handle_state("critical:read", |s| -> {
+                      val value = s.revision;
+                    });
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
     void directActorStateFieldAccessStillRejected() {
         String source = actor("""
                     self.revision = 42;

@@ -1040,8 +1040,13 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, CriticalStateModeExpr { }
 
+    /** Intrinsic-only selector; a guest String cannot impersonate this capability. */
+    public enum StateLoanMode { READ, WRITE }
+    public record CriticalStateModeExpr(StateLoanMode mode) implements Expr {
+        public CriticalStateModeExpr { java.util.Objects.requireNonNull(mode, "state loan mode"); }
+    }
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }

@@ -4142,7 +4142,8 @@ public final class Parser {
                     if (!check(RPAREN)) {
                         throw error(peek(), "critical state access accepts exactly one callback");
                     }
-                    args = List.of(new Ast.LiteralExpr("critical:" + mode.lexeme()), callback);
+                    args = List.of(new Ast.CriticalStateModeExpr(mode.lexeme().equals("read")
+                            ? Ast.StateLoanMode.READ : Ast.StateLoanMode.WRITE), callback);
                 } else {
                     args = parseCallArgumentsUntil(RPAREN);
                 }

@@ -917,12 +917,8 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args) {
             boolean writable = true; // legacy one-argument exclusive loan
             Object handler;
-            if (args.size() == 2 && args.getFirst() instanceof String mode) {
-                if (!mode.equals("critical:read") && !mode.equals("critical:write")) {
-                    throw new IllegalArgumentException(
-                            "self.handle_state requires critical[read] or critical[write]");
-                }
-                writable = mode.equals("critical:write");
+            if (args.size() == 2 && args.getFirst() instanceof Ast.StateLoanMode mode) {
+                writable = mode == Ast.StateLoanMode.WRITE;
                 handler = args.get(1);
             } else if (args.size() == 1) {
                 handler = args.getFirst();
@@ -7319,6 +7315,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalStateException(
                         "exhaustive value match invariant violated at runtime");
+            }
+            if (expr instanceof Ast.CriticalStateModeExpr stateMode) {
+                return stateMode.mode();
             }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
