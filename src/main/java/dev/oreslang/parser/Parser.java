@@ -999,6 +999,17 @@ public final class Parser {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
+            // Actor init is a reserved one-shot lifecycle hook, never an ordinary
+            // callable method. Until the complete-state builder, spawn argument
+            // ABI and pre-publication atomic install are all implemented,
+            // accepting an ordinary init() would be unsound: guest code could
+            // call it repeatedly or publish partially initialized state.
+            if (check(IDENT) && peek().lexeme().equals("init")) {
+                throw error(peek(),
+                        "actor init(...) is reserved for one-shot spawn initialization; "
+                                + "complete-state construction and pre-publication lowering "
+                                + "are not yet enabled on this backend");
+            }
             if (check(IDENT) && peek().lexeme().equals("handle_state")) {
                 throw error(peek(), "handle_state is a sealed runtime actor intrinsic");
             }
