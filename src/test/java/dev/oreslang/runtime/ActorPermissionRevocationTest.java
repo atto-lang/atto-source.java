@@ -148,6 +148,52 @@ final class ActorPermissionRevocationTest {
     }
 
     @Test
+    void unrelatedActorCannotRevokeAnotherParentsDelegation() throws Exception {
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.ENVIRONMENT);
+        try (ActorRuntime runtime = new ActorRuntime(
+                policy, ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(),
+                null, envCeiling())) {
+            CountDownLatch minted = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.PermissionDelegation> token =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            var issuer = runtime.<String>spawnSharedTrusted(policy,
+                    factory -> (message, context) -> {
+                        try {
+                            token.set(context.runtime().delegatePermissions(envCeiling()));
+                        } catch (Throwable failure) {
+                            error.set(failure);
+                        } finally {
+                            minted.countDown();
+                        }
+                    });
+            issuer.send("mint");
+            assertTrue(minted.await(3, TimeUnit.SECONDS));
+            assertNull(error.get(), () -> String.valueOf(error.get()));
+            var unrelated = runtime.<String>spawnSharedTrusted(policy,
+                    factory -> (message, context) -> {
+                        try {
+                            assertThrows(SecurityException.class, () ->
+                                    context.runtime().revokePermissions(token.get()));
+                        } catch (Throwable failure) {
+                            error.set(failure);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+            unrelated.send("steal");
+            assertTrue(checked.await(3, TimeUnit.SECONDS));
+            assertNull(error.get(), () -> String.valueOf(error.get()));
+            issuer.stop();
+            unrelated.stop();
+        }
+    }
+
+    @Test
     void revokedActiveChildAndAdmittedNativeWorkerCannotReuseScope() throws Exception {
         IsolatePolicy policy = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.ENVIRONMENT);
