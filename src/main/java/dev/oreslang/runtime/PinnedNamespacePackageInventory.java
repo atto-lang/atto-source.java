@@ -56,7 +56,11 @@ public final class PinnedNamespacePackageInventory {
         public Inventory {
             sources = Map.copyOf(sources);
             sourceOwners = Map.copyOf(sourceOwners);
-            pinnedAliases = Map.copyOf(pinnedAliases);
+            Map<String, Map<String, String>> snapshots = new LinkedHashMap<>();
+            for (var aliasGroup : pinnedAliases.entrySet()) {
+                snapshots.put(aliasGroup.getKey(), Map.copyOf(aliasGroup.getValue()));
+            }
+            pinnedAliases = Map.copyOf(snapshots);
         }
         public PinnedNamespaceProgramRunner.Result run(
                 String entryUnit, IsolatePolicy policy, ExecutionProfile profile) {
@@ -106,7 +110,16 @@ public final class PinnedNamespacePackageInventory {
             if (manifestBytes.length > MAX_MANIFEST_BYTES)
                 throw new IllegalArgumentException("package manifest exceeds 1 MiB");
             requireDigest(manifestBytes, pin.manifestSha256(), manifest.toString());
-            TomlParseResult parsed = Toml.parse(new String(manifestBytes, StandardCharsets.UTF_8));
+            String manifestText;
+            try {
+                manifestText = StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                        .decode(java.nio.ByteBuffer.wrap(manifestBytes)).toString();
+            } catch (java.nio.charset.CharacterCodingException badEncoding) {
+                throw new IllegalArgumentException("package manifest is not strict UTF-8", badEncoding);
+            }
+            TomlParseResult parsed = Toml.parse(manifestText);
             if (!parsed.errors().isEmpty())
                 throw new IllegalArgumentException("invalid pinned package manifest: " + parsed.errors().getFirst());
             if (!"2".equals(parsed.getString("schema_version")))
