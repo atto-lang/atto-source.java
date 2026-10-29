@@ -43,11 +43,10 @@ public final class DurableLocalDispatchClaim {
             s.actorGeneration() <= 0 || s.activationEpoch() <= 0)
             throw new IllegalArgumentException("invalid trusted claim scope");
         // Newline cannot occur in IDs. Keep the content digest OUT of the
-        // filename key, to make different payloads for the same dispatch collide.
+        // filename key; stable logical actor identity survives generations/revisions.
+        // This key blocks changed payloads and actor-restart replays alike.
         String key = "ores-agent-dispatch-claim-v1\n" + s.tenantId() + "\n" +
-            s.actorId() + "\n" + s.actorGeneration() + "\n" +
-            s.activationEpoch() + "\n" + s.exactGitRevision() + "\n" +
-            s.dispatchId() + "\n";
+            s.actorId() + "\n" + s.dispatchId() + "\n";
         return sha256(key) + ".claim";
     }
     public boolean claimOnce(AgentHostDispatchGate.Scope scope) {
