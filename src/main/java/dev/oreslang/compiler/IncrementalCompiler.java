@@ -140,7 +140,12 @@ public final class IncrementalCompiler {
             CompiledUnit previous = cache.get(id);
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
+            // A namespace header is NOT a package identity. Never reuse a
+            // checked unit across a changed immutable package-instance owner
+            // even if its text and dependency source IDs are identical.
+            boolean ownerChanged = namespaceGraph != null && previous != null
+                    && !java.util.Objects.equals(previous.packageId(), sourceOwners.get(id));
+            if (sourceChanged || depsChanged || ownerChanged) dirty.add(id);
             if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
         }
 

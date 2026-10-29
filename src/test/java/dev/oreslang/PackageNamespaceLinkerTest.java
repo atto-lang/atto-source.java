@@ -224,6 +224,21 @@ final class PackageNamespaceLinkerTest {
     }
 
     @Test
+    void packageOwnerIdentityChangeInvalidatesCachedCheckedUnit() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = Map.of(
+                "src/a.ores", "namespace a; pub fnc result(): int { return 42; }");
+        var first = compiler.compilePinned(
+                sources, Map.of(), Map.of("src/a.ores", "foo@v1"), Map.of());
+        assertEquals("foo@v1", first.build().units().get("src/a.ores").packageId());
+        var changedOwner = compiler.compilePinned(
+                sources, Map.of(), Map.of("src/a.ores", "foo@v2"), Map.of());
+        assertTrue(changedOwner.build().rebuilt("src/a.ores"),
+                "source owner identity changes must recheck and rebuild");
+        assertEquals("foo@v2", changedOwner.build().units().get("src/a.ores").packageId());
+    }
+
+    @Test
     void legacyIncrementalCompilerMustNeverFakeNamespaceExecution() {
         String code = "import ns a from 'pkg:foo';\n"
                 + "pub fnc main(): int { return a.foo(); }\n";
