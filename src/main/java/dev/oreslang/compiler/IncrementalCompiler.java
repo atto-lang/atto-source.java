@@ -170,7 +170,9 @@ public final class IncrementalCompiler {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                                 Parser.parse(normalized.get(id)),
-                                linked.classes(), linked.aliases(), contracts);
+                                linked.classes(), linked.aliases(), contracts,
+                                namespaceGraph == null ? Map.of()
+                                        : linkedNamespaceFunctions(id, namespaceGraph));
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.classes(), analysis.shortInferredAliases());
@@ -198,6 +200,24 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    private static Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>>
+            linkedNamespaceFunctions(String source, PackageNamespaceLinker.Result graph) {
+        Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>> bindings =
+                new LinkedHashMap<>();
+        for (var entry : graph.importsBySource().getOrDefault(source, Map.of()).entrySet()) {
+            Map<String, Map<Integer, Ast.FunctionDecl>> members = new LinkedHashMap<>();
+            for (PackageNamespaceLinker.Export exported : entry.getValue().target().exports()) {
+                Map<Integer, Ast.FunctionDecl> overloads =
+                        members.computeIfAbsent(exported.name(), ignored -> new LinkedHashMap<>());
+                if (overloads.putIfAbsent(exported.arity(), exported.declaration()) != null) {
+                    throw new IllegalArgumentException("duplicate checked namespace callable slot");
+                }
+            }
+            bindings.put(entry.getKey(), Map.copyOf(members));
+        }
+        return Map.copyOf(bindings);
     }
 
     private record LinkedClasses(

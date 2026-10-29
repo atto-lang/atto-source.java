@@ -131,7 +131,16 @@ public final class PackageNamespaceLinker {
                     if (fn.visibility() != Ast.Visibility.PUBLIC) continue;
                     if (fn.kind() != Ast.CallableKind.FNC
                             || fn.actorKind() != Ast.ActorKind.NONE
-                            || !fn.genericParameters().isEmpty()) {
+                            || !fn.genericParameters().isEmpty()
+                            || fn.async() || fn.suspends() || fn.generator()
+                            || fn.trapped() || fn.structural()
+                            || fn.returnType() == null
+                            || !fn.returnType().name().equals("int")
+                            || !fn.returnType().arguments().isEmpty()
+                            || fn.parameters().stream().anyMatch(p ->
+                                    p.type() == null
+                                            || !p.type().name().equals("int")
+                                            || !p.type().arguments().isEmpty())) {
                         throw new IllegalArgumentException(
                                 "unsupported public namespace callable '" + fn.name()
                                         + "' in '" + source + "'; checked callable lowering required");
