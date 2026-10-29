@@ -101,8 +101,16 @@ final class ActorInitPublicationGate {
     }
 
     synchronized void abort() {
+        // A trusted publisher is invoked synchronously while ISSUING.
+        // Reentrant abort must not retroactively invalidate its in-flight
+        // commit and then let publish() overwrite FAILED with PUBLISHED.
+        if (phase == Phase.ISSUING) {
+            throw new IllegalStateException(
+                    "cannot abort actor init while publication is issuing");
+        }
         if (phase == Phase.PUBLISHED) {
-            throw new IllegalStateException("published actor must be stopped, not init-aborted");
+            throw new IllegalStateException(
+                    "published actor must be stopped, not init-aborted");
         }
         fields.clear();
         phase = Phase.FAILED;
