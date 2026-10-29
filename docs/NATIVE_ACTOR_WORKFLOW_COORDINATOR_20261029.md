@@ -82,8 +82,8 @@ A separately stacked PR carries the exact 14-case demo fixture set including
 coordinator source. The original 13 demo-case / 4 baseline-case candidate
 remains historical; the expanded suite requires **14 + 4 = 18** actual Java/Graal
 `Context.eval` JUnit executions and two source-matched Git blobs:
-`56535ad1df72c1eaf2493e3e97e9d562c611c666` for the effect ledger
-and `3e22866b88f6319b919849b4427dbb7df38c0adb` for the coordinator.
+`3cd0cd18654cb20ca0768ea791ad4c6d5e0cada6` for the effect ledger
+and `ad348f7bc0181737e5a486dde86bf61196a1c424` for the coordinator.
 
 Neither the proposed `define isolated actor` nor `critical-write` spelling is
 assumed to compile. A real compiler diagnostic is expected and must be
@@ -93,4 +93,8 @@ durability, authenticated receipt, or crash recovery is claimed here.
 
 ### Native coordinator actor-kind consistency
 
-The source-pinned coordinator resource is now `define isolated actor WorkflowCoordinator as`. Its exact Git blob is `3e22866b88f6319b919849b4427dbb7df38c0adb`, corresponding to Step Functions PR #11 at `0f2e9cf276a8bbad9089b258e4d33df9e80e6365`. As before, this only makes Java/Graal admission require the requested isolated semantics: **no physical heap isolation or Oreslang guest execution has been verified**.
+The source-pinned coordinator resource is now `define isolated actor WorkflowCoordinator as`. Its exact Git blob is `ad348f7bc0181737e5a486dde86bf61196a1c424`, corresponding to Step Functions PR #11 at `0f2e9cf276a8bbad9089b258e4d33df9e80e6365`. As before, this only makes Java/Graal admission require the requested isolated semantics: **no physical heap isolation or Oreslang guest execution has been verified**.
+
+### Canonical critical mode fixture sync
+
+Step Functions PR #11 head `081ba431a07c09703a5303b8d1e64530a9e50f77` uses `critical[write]` in the coordinator and effect-ledger instead of the synonymous `critical-write`. The Java/Graal fixture resources are copied byte-for-byte from that source and pinned to blobs `ad348f7bc0181737e5a486dde86bf61196a1c424` and `3cd0cd18654cb20ca0768ea791ad4c6d5e0cada6`. Canonical syntax is parser-only in stacked PR #2257; runtime loan enforcement and native guest execution are NOT yet complete.

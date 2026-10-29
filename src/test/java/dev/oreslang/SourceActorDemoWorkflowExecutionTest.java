@@ -81,7 +81,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void rejectsForeignDuplicateAndOutOfOrderMessages() throws Exception {
-        assertGuest("coordinator-state", "workflow:state-guarded", "3e22866b88f6319b919849b4427dbb7df38c0adb");
+        assertGuest("coordinator-state", "workflow:state-guarded", "ad348f7bc0181737e5a486dde86bf61196a1c424");
     }
 
     @Test
@@ -113,7 +113,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void rejectsDuplicateAndForeignEffectReceiptsAndBlocksUnknownCancellation() throws Exception {
         assertGuest("effect-receipt-ledger", "effect:fixture-reconciled-no-replay",
-                "56535ad1df72c1eaf2493e3e97e9d562c611c666");
+                "3cd0cd18654cb20ca0768ea791ad4c6d5e0cada6");
     }
 
     private static void assertGuest(String fixture, String expected, String expectedGitBlob)
