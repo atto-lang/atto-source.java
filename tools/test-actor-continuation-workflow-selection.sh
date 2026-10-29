@@ -7,7 +7,7 @@ mode="${1:---self-test}"
 workflow="${2:-.github/workflows/actor-exclusive-carrier-proof.yml}"
 fail() { printf 'ACTOR_CI_SELECTION_REJECTED: %s\n' "$1" >&2; exit 64; }
 check() {
-    local file="$1" job test_step selection test_name
+    local file="$1" job test_step command_lines selection test_name
     [[ -f "$file" && ! -L "$file" ]] || fail 'missing or symlinked workflow'
     job="$(awk '
         /^  actor-runtime-exclusivity:[[:space:]]*$/ { inside=1; next }
@@ -18,8 +18,8 @@ check() {
     # A skipped or allowed-to-fail acceptance step is not a test receipt.
     # Fail closed on conditional/soft-fail actor steps rather than claiming a
     # green job when Maven never executes or its failure is swallowed.
-    if grep -Eq '^[[:space:]]*(if|continue-on-error):' <<< "$job"; then
-        fail 'conditional or continue-on-error acceptance steps are forbidden'
+    if grep -Eq '^[[:space:]]*(if|continue-on-error|env|defaults|shell|working-directory):' <<< "$job"; then
+        fail 'conditional, environment-modified or continue-on-error acceptance steps are forbidden'
     fi
     grep -Fq 'graalvm/setup-graalvm@' <<< "$job" || fail 'GraalVM setup absent'
     grep -Eq "^[[:space:]]*java-version: ['\"]?25['\"]?[[:space:]]*$" <<< "$job" || fail 'JDK25 absent'
@@ -39,6 +39,12 @@ check() {
         <<< "$test_step"; then
         fail 'actor acceptance Maven command may not bypass test failures'
     fi
+    # GitHub folds this YAML scalar into one shell command. Allow exactly
+    # three literal command lines, not a later bypass, injected env, wrapper,
+    # or an additional shell command that masks the Maven exit status.
+    command_lines="$(sed -n '/^[[:space:]]*run: >[[:space:]]*$/,$p' <<< "$test_step" | sed '1d; /^[[:space:]]*$/d')"
+    [[ $(wc -l <<< "$command_lines") == 3 ]] \
+        || fail 'actor Maven acceptance command must have exactly three lines'
     selection="$(sed -n '/^[[:space:]]*-Dtest=/p' <<< "$test_step")"
     [[ $(wc -l <<< "$selection") == 1 ]] || fail 'exactly one Maven test selector required'
     selection="${selection#*-Dtest=}"
@@ -100,7 +106,19 @@ case "$mode" in
         if bash "$0" --check "$work/fake-maven.yml" >/dev/null 2>&1; then
             fail 'negative fixture pretending to run Maven was accepted'
         fi
-        printf 'ACTOR_CI_SELECTION_SELFTEST_PASS: 1 positive and 9 negative cases\n'
+        sed '/^          -DfailIfNoTests=true test$/a\          || :' "$workflow" > "$work/masked-maven.yml"
+        if bash "$0" --check "$work/masked-maven.yml" >/dev/null 2>&1; then
+            fail 'negative fixture masking Maven failures was accepted'
+        fi
+        sed '/^          -DfailIfNoTests=true test$/a\          echo BUILD_SUCCESS' "$workflow" > "$work/extra-shell.yml"
+        if bash "$0" --check "$work/extra-shell.yml" >/dev/null 2>&1; then
+            fail 'negative fixture injecting an extra command was accepted'
+        fi
+        sed '/^      - name: Compile and run actual actor execution boundary tests/a\        env:\n          BASH_ENV: /tmp/unreviewed-hook' "$workflow" > "$work/env-injection.yml"
+        if bash "$0" --check "$work/env-injection.yml" >/dev/null 2>&1; then
+            fail 'negative fixture injecting an ambient shell hook was accepted'
+        fi
+        printf 'ACTOR_CI_SELECTION_SELFTEST_PASS: 1 positive and 12 negative cases\n'
         ;;
     *) fail 'usage: script --check|--self-test [path to actor workflow]' ;;
 esac
