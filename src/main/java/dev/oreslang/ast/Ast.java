@@ -1464,12 +1464,12 @@ public final class Ast {
                 return literal.value() instanceof Long || literal.value() instanceof Integer;
             }
             if (expr instanceof UnaryExpr unary) {
-                return (unary.operator().equals("-") || unary.operator().equals("+"))
+                return ("-".equals(unary.operator()) || "+".equals(unary.operator()))
                         && closedScalar(unary.operand(), depth + 1, remaining);
             }
             if (expr instanceof BinaryExpr binary) {
-                return (binary.operator().equals("+") || binary.operator().equals("-")
-                        || binary.operator().equals("*"))
+                return ("+".equals(binary.operator()) || "-".equals(binary.operator())
+                        || "*".equals(binary.operator()))
                         && closedScalar(binary.left(), depth + 1, remaining)
                         && closedScalar(binary.right(), depth + 1, remaining);
             }
