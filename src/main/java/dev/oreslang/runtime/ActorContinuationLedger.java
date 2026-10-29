@@ -83,7 +83,11 @@ final class ActorContinuationLedger {
         private final Lane lane;
         private final long admittedGeneration;
         private final long sequence;
-        private final Runnable callback;
+        // Protected by the ledger monitor. A retired/discarded receipt may
+        // remain reachable through a foreign envelope or diagnostic handle;
+        // clear its closure at terminal transition to avoid pinning actor
+        // state long after the callback's execution lifetime has ended.
+        private Runnable callback;
         private State state = State.QUEUED;
 
         private Admission(Lane lane, long admittedGeneration, long sequence,
@@ -100,20 +104,26 @@ final class ActorContinuationLedger {
 
         @Override
         public void run() {
+            final Runnable admittedCallback;
             synchronized (ActorContinuationLedger.this) {
                 if (state != State.QUEUED) {
                     throw new IllegalStateException("actor continuation receipt replay: " + sequence);
                 }
                 if (allSealed || (lane == Lane.ORDINARY
                         && (ordinarySealed || admittedGeneration != generation))) {
+                    callback = null;
                     state = State.DISCARDED;
                     live.remove(this);
                     return;
                 }
+                admittedCallback = callback;
+                // The executing stack is the sole callback owner from now on.
+                // A foreign close() cannot retire this RUNNING receipt.
+                callback = null;
                 state = State.RUNNING;
             }
             try {
-                callback.run();
+                admittedCallback.run();
             } finally {
                 synchronized (ActorContinuationLedger.this) {
                     state = State.RETIRED;
@@ -126,6 +136,7 @@ final class ActorContinuationLedger {
         public void close() {
             synchronized (ActorContinuationLedger.this) {
                 if (state == State.QUEUED) {
+                    callback = null;
                     state = State.DISCARDED;
                     live.remove(this);
                 }
