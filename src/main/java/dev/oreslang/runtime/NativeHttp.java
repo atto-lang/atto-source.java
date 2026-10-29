@@ -219,10 +219,13 @@ public final class NativeHttp implements AutoCloseable {
             if (receipt != null && receipt.attested()) {
                 Optional<ActorRuntime.ActorId> currentId = ActorRuntime.currentActorId();
                 OptionalLong currentGeneration = ActorRuntime.currentActorGeneration();
+                ActorRuntime.ActorKind currentKind = ActorRuntime.currentActorKind();
                 if (currentId.isEmpty()
                         || currentGeneration.isEmpty()
+                        || currentKind == null
                         || !receipt.actorId().equals(currentId.get())
                         || receipt.actorGeneration() != currentGeneration.getAsLong()
+                        || receipt.actorKind() != currentKind
                         || receipt.exchangeGeneration() != exchange.generation) {
                     throw new SecurityException("HTTP dispatch receipt does not match current actor incarnation");
                 }
@@ -605,10 +608,13 @@ public final class NativeHttp implements AutoCloseable {
                 DispatchReceipt receipt = claimedDispatchReceipt();
                 Optional<ActorRuntime.ActorId> currentId = ActorRuntime.currentActorId();
                 OptionalLong currentGeneration = ActorRuntime.currentActorGeneration();
+                ActorRuntime.ActorKind currentKind = ActorRuntime.currentActorKind();
                 return currentId.isPresent()
                         && currentGeneration.isPresent()
+                        && currentKind != null
                         && receipt.actorId().equals(currentId.get())
                         && receipt.actorGeneration() == currentGeneration.getAsLong()
+                        && receipt.actorKind() == currentKind
                         && receipt.handlerType().equals(expectedHandler)
                         && receipt.binding().equals(expectedBinding)
                         && receipt.authorityClass().equals(expectedAuthorityClass)
