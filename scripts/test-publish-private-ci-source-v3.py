@@ -1099,6 +1099,8 @@ class PrivateCiV3Test(unittest.TestCase):
             },
         ), patch.object(
             v3, "checked_carrier_main", return_value=BASE
+        ), patch.object(
+            v3, "require_immutable_carrier_refs"
         ), patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "not source-free"):
                 v3.checked_destination("trusted/ci", carrier)
