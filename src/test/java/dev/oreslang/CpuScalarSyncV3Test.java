@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -78,6 +79,18 @@ final class CpuScalarSyncV3Test {
                   return;
                 }
                 """));
+    }
+
+    @Test void buildOptimizerPreservesTheExplicitCpuScalarExecutionBoundary() {
+        String source = "pub fnc main(): int { return cpu { 40 + 2 }; }";
+        Ast.Program optimized = OresCompiler
+                .compileForBuild(source, BuildOptions.executable())
+                .program();
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                optimized.modules().getFirst().declarations().getFirst();
+        Ast.ReturnStmt returning = (Ast.ReturnStmt) fn.body().getFirst();
+        assertInstanceOf(Ast.CpuScalarRegionExpr.class, returning.value(),
+                "tree shaker may not silently erase a checked execution-domain boundary");
     }
 
     @Test void scalarRegionRejectsExcessiveDepthBeforeEvaluatorExecution() {
