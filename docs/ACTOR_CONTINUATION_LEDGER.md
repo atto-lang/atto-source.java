@@ -157,6 +157,36 @@ No private source was sent to a different GitHub organization for this change.
 Both source-main protection and approved destination policy remain mandatory
 for any later private cross-org source export.
 
+## Borrowed suspended-receive Future callbacks (2026-10-29)
+
+`ActorRuntime.suspendCurrentUserMailboxUntil(future)` can observe an
+indefinitely pending *borrowed* producer. Its old terminal subscription
+implicitly retained both the actor cell and the containing ActorRuntime
+through the completion lambda, potentially keeping stopped actor state
+reachable until foreign completion.
+
+The subscription now captures only two `WeakReference` values: one for
+the exact originating ActorRuntime and one for the exact ActorCell.
+On completion it resolves both references, then delegates to a
+host-only runtime helper. Missing/collected identities are a no-op.
+If both remain live, the helper uses the existing actor identity and
+STOP admission checks, and only **enqueues** the continuation.
+No source guest code executes inline on a foreign producer thread.
+
+- Updated `ActorRuntime.java` blob:
+  `d07da8962c1e6606ae8dbd0d428c7a4dcb091d69`
+- `ActorContinuationLedgerIntegrationTest` now includes a reflection
+  test that verifies the registered waiter's callback captures exactly
+  two weak identities, contains no strong runtime/cell fields, and
+  accepts late completion of an independently owned producer after STOP.
+- The full actor integration JUnit test is **committed but unexecuted**:
+  the source organization still fails runner admission before any steps.
+- This is reachability isolation only. It does not prove GC timing,
+  weak-reference clearing, native source loan release, Task physical
+  retirement or complete host/guest semantics. A producer's callback
+  may still hold independent external objects, and strong actor
+  ownership in the actor table remains authoritative until retirement.
+
 ## What phase 1 does not claim
 
 This is **Java host/runtime execution accounting**, not a compiler feature
