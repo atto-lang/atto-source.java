@@ -121,6 +121,28 @@ final class ActorCriticalStateModeTest {
     }
 
     @Test
+    void criticalReadCannotEmitFromInsideLoan() {
+        String source = actor("""
+                    self.handle_state(critical[read] |s| -> {
+                      self.send("unsafe");
+                    });
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void criticalWriteRejectsUnknownExtraArguments() {
+        String source = actor("""
+                    self.handle_state(critical[write] |s| -> {
+                      s.revision = 1;
+                    }, 42);
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
     void directActorStateFieldAccessStillRejected() {
         String source = actor("""
                     self.revision = 42;
