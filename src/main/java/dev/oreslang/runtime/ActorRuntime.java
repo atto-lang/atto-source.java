@@ -127,6 +127,9 @@ public final class ActorRuntime implements AutoCloseable {
                 RuntimePermissions.Permission permission, String resource, String operation) {
             scope.require(permission, resource, operation);
         }
+        void requireNetworkListen(String resource, String operation) {
+            scope.requireNetworkListen(resource, operation);
+        }
     }
 
     static NativeIoAuthority captureNativeIoAuthority() {
@@ -232,6 +235,13 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /** Enforce the immutable resource policy of the current actor turn. */
+    static void requireCurrentActorNetworkListen(String resource, String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) turn.permissionScope().requireNetworkListen(resource, operation);
+        NativeIoAuthority nativeIo = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (nativeIo != null) nativeIo.requireNetworkListen(resource, operation);
+    }
+
     static void requireCurrentActorPermission(
             RuntimePermissions.Permission permission, String resource, String operation) {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
