@@ -164,21 +164,24 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
-    void ephemeralBindPortIsValidButNeverAWildcardGrant() {
+    void portZeroIsListenOnlyAndNeverAnOutboundServiceGrant() {
         RuntimePermissions scoped = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1:0");
-        assertTrue(scoped.allows(RuntimePermissions.Permission.NET, "127.0.0.1:0"));
+        assertFalse(scoped.allows(RuntimePermissions.Permission.NET, "127.0.0.1:0"));
+        assertTrue(scoped.allowsNetworkListen("127.0.0.1:0"));
         assertFalse(scoped.allows(RuntimePermissions.Permission.NET, "127.0.0.1:443"));
-        assertFalse(scoped.allows(RuntimePermissions.Permission.NET, "127.0.0.2:0"));
+        assertFalse(scoped.allowsNetworkListen("127.0.0.2:0"));
         RuntimePermissions roundTrip = RuntimePermissions.fromApplicationArguments(
                 scoped.applicationArguments(),
                 IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK));
-        assertTrue(roundTrip.allows(RuntimePermissions.Permission.NET, "127.0.0.1:0"));
+        assertFalse(roundTrip.allows(RuntimePermissions.Permission.NET, "127.0.0.1:0"));
+        assertTrue(roundTrip.allowsNetworkListen("127.0.0.1:0"));
         assertFalse(roundTrip.allows(RuntimePermissions.Permission.NET, "127.0.0.1:443"));
         RuntimePermissions denied = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*")
                 .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1:0");
         assertFalse(denied.allows(RuntimePermissions.Permission.NET, "127.0.0.1:0"));
+        assertFalse(denied.allowsNetworkListen("127.0.0.1:0"));
         assertTrue(denied.allows(RuntimePermissions.Permission.NET, "127.0.0.1:443"));
     }
 
