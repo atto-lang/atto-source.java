@@ -207,6 +207,11 @@ public final class OresContext implements AutoCloseable {
             throw new SecurityException(
                     "actor capability check crossed ActorRuntime boundary for " + api);
         }
+        ActorRuntime.NativeIoAuthority nativeIo = ActorRuntime.currentNativeIoAuthority();
+        if (nativeIo != null && nativeIo.runtime() != actors) {
+            throw new SecurityException(
+                    "native I/O capability check crossed ActorRuntime boundary for " + api);
+        }
         requireEffectiveCapability(isolatePolicy, capability, api);
     }
 
@@ -233,6 +238,8 @@ public final class OresContext implements AutoCloseable {
         // parent context into a private actor.
         IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
         if (actorPolicy != null) actorPolicy.require(capability, api);
+        ActorRuntime.NativeIoAuthority nativeIo = ActorRuntime.currentNativeIoAuthority();
+        if (nativeIo != null) nativeIo.requireCapability(capability, api);
         contextPolicy.require(capability, api);
     }
 
