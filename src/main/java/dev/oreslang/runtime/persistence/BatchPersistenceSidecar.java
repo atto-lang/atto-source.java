@@ -27,8 +27,9 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
         @Override public byte[] payload() { return payload.clone(); }
         byte[] ownedPayload() { return payload; }
     }
-    public record Result(String operationId, Status status, long version) {
-        public boolean durable() { return status == Status.COMMITTED || status == Status.DUPLICATE; }
+    public record Result(String operationId, Status status, long version, boolean durable) {
+        public Result { if (durable && status != Status.COMMITTED && status != Status.DUPLICATE)
+            throw new IllegalArgumentException("noncommit cannot be durable"); }
     }
     public interface Store {
         /** Trusted controller only. Must persist monotonically and fence at commit. */
@@ -201,21 +202,21 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
                 Dedup seen = operations.get(op);
                 if (seen != null) {
                     out.add(Arrays.equals(seen.digest(), hash)
-                        ? new Result(w.operationId(), Status.DUPLICATE, seen.result().version())
-                        : new Result(w.operationId(), Status.OP_ID_CONFLICT, -1));
+                        ? new Result(w.operationId(), Status.DUPLICATE, seen.result().version(), false)
+                        : new Result(w.operationId(), Status.OP_ID_CONFLICT, -1, false));
                     continue;
                 }
                 if (epochs.getOrDefault(epochKey(w.id().tenant(), w.id().actor()), 0L) != w.epoch()) {
-                    out.add(new Result(w.operationId(), Status.STALE_EPOCH, -1)); continue;
+                    out.add(new Result(w.operationId(), Status.STALE_EPOCH, -1, false)); continue;
                 }
                 Slot slot = new Slot(w.id());
                 long version = versions.getOrDefault(slot, 0L);
                 if (version != w.expectedVersion() || version == Long.MAX_VALUE) {
-                    out.add(new Result(w.operationId(), Status.VERSION_CONFLICT, version)); continue;
+                    out.add(new Result(w.operationId(), Status.VERSION_CONFLICT, version, false)); continue;
                 }
                 versions.put(slot, version + 1);
                 if (w.kind() == Kind.SNAPSHOT) snapshots.put(slot, w.payload());
-                Result result = new Result(w.operationId(), Status.COMMITTED, version + 1);
+                Result result = new Result(w.operationId(), Status.COMMITTED, version + 1, false);
                 operations.put(op, new Dedup(hash, result));
                 out.add(result);
             }
