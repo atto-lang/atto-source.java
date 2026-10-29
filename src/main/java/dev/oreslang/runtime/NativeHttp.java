@@ -76,22 +76,43 @@ public final class NativeHttp implements AutoCloseable {
         private final ActorRuntime.ActorCodeExecutor code;
         private final String type;
         private final ActorRuntime.ActorKind kind;
+        private final String binding;
+        private final String authorityClass;
         private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
-            this.code = code; this.type = type; this.kind = kind;
+            this(code, type, kind, type, "local-default");
+        }
+        private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind,
+                        String binding, String authorityClass) {
+            this.code = code;
+            this.type = type;
+            this.kind = kind;
+            this.binding = receiptLabel(binding, "binding");
+            this.authorityClass = receiptLabel(authorityClass, "authority class");
         }
         private Worker[] workers;
         private int cursor;
-        private long created, reused;
+        private long created, reused, dispatchSequence;
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
         private void supervisor() {
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP pools belong to the supervisor");
+        }
+        /**
+         * Bind an application-level service identity and authority class into
+         * every handler dispatch receipt. These labels are authenticated
+         * transport metadata, not permission grants: they cannot widen the
+         * actor's runtime capabilities.
+         */
+        public Handler scoped(String binding, String authorityClass) {
+            supervisor();
+            if (workers != null) throw new IllegalStateException("scope must be configured before pooled");
+            return new Handler(code, type, kind, binding, authorityClass);
         }
         public Handler pooled(int size) {
             supervisor();
             if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
             synchronized (NativeHttp.this) {
                 if (closed) throw new IllegalStateException("HTTP runtime closed");
-                Handler pool = new Handler(code, type, kind);
+                Handler pool = new Handler(code, type, kind, binding, authorityClass);
                 pool.workers = new Worker[size];
                 pools.add(pool);
                 return pool;
@@ -99,6 +120,11 @@ public final class NativeHttp implements AutoCloseable {
         }
         public synchronized long created() { supervisor(); return created; }
         public synchronized long reused() { supervisor(); return reused; }
+        private synchronized long nextDispatchSequence() {
+            if (dispatchSequence == Long.MAX_VALUE)
+                throw new IllegalStateException("HTTP handler dispatch sequence exhausted");
+            return ++dispatchSequence;
+        }
         private synchronized Worker worker() {
             int slot = cursor;
             cursor = (cursor + 1) % workers.length;
@@ -141,7 +167,8 @@ public final class NativeHttp implements AutoCloseable {
                         // one actor.done callback per completed request.
                         exchange.state.readyNanos = exchange.state.spawnNanos;
                     }
-                    worker.actor.send(exchange.moveTo(worker.actor));
+                    worker.actor.send(exchange.moveTo(worker.actor, type, binding,
+                            authorityClass, nextDispatchSequence(), true));
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
@@ -164,7 +191,8 @@ public final class NativeHttp implements AutoCloseable {
                     }
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
-                actor.send(exchange.moveTo(actor));
+                actor.send(exchange.moveTo(actor, type, binding,
+                        authorityClass, nextDispatchSequence(), true));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
@@ -179,6 +207,18 @@ public final class NativeHttp implements AutoCloseable {
         if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
         synchronized (exchange.state) {
             exchange.checkOwner();
+            DispatchReceipt receipt = exchange.state.dispatchReceipt;
+            if (receipt != null && receipt.attested()) {
+                Optional<ActorRuntime.ActorId> currentId = ActorRuntime.currentActorId();
+                OptionalLong currentGeneration = ActorRuntime.currentActorGeneration();
+                if (currentId.isEmpty()
+                        || currentGeneration.isEmpty()
+                        || !receipt.actorId().equals(currentId.get())
+                        || receipt.actorGeneration() != currentGeneration.getAsLong()
+                        || receipt.exchangeGeneration() != exchange.generation) {
+                    throw new SecurityException("HTTP dispatch receipt does not match current actor incarnation");
+                }
+            }
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
             exchange.state.ticket = null;
             exchange.state.claimedNanos = System.nanoTime();
@@ -330,6 +370,30 @@ public final class NativeHttp implements AutoCloseable {
         }
     }
 
+    /**
+     * Runtime-minted, actor-bound dispatch provenance. The receipt is kept
+     * inside the affine Exchange capability; guest mail contains only the
+     * opaque transfer token and cannot forge or mutate these fields.
+     */
+    private record DispatchReceipt(
+            String handlerType,
+            String binding,
+            String authorityClass,
+            ActorRuntime.ActorId actorId,
+            long actorGeneration,
+            ActorRuntime.ActorKind actorKind,
+            long exchangeGeneration,
+            long sequence,
+            String requestId,
+            boolean attested) { }
+
+    private static String receiptLabel(String value, String label) {
+        if (value == null || !value.matches("[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")) {
+            throw new IllegalArgumentException("invalid HTTP dispatch receipt " + label);
+        }
+        return value;
+    }
+
     private final class State {
         final Server server;
         final HttpExchange raw;
@@ -346,6 +410,7 @@ public final class NativeHttp implements AutoCloseable {
         volatile InputStream activeResponseInput;
         boolean transportClosed;
         String ticket;
+        DispatchReceipt dispatchReceipt;
         final String requestId = UUID.randomUUID().toString();
         final long admittedNanos = System.nanoTime();
         final OresFuture<Object> completion = new OresFuture<>(() -> false, () -> { });
@@ -420,6 +485,7 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (this) {
                 if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
+                dispatchReceipt = null;
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
@@ -448,14 +514,34 @@ public final class NativeHttp implements AutoCloseable {
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
+            return moveTo(destination, "manual", "manual", "unscoped", 0, false);
+        }
+
+        private String moveTo(ActorRuntime.ActorRef<?> destination, String handlerType,
+                              String binding, String authorityClass, long sequence,
+                              boolean attested) {
             synchronized (state) {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
+                if (attested && sequence <= 0) throw new IllegalArgumentException("attested HTTP dispatch sequence must be positive");
                 state.movedNanos = System.nanoTime();
-                state.generation++; state.owner = destination.id(); state.actor = destination;
+                state.generation++;
+                state.owner = destination.id();
+                state.actor = destination;
+                state.dispatchReceipt = new DispatchReceipt(
+                        receiptLabel(handlerType, "handler"),
+                        receiptLabel(binding, "binding"),
+                        receiptLabel(authorityClass, "authority class"),
+                        destination.id(),
+                        destination.generation(),
+                        destination.kind(),
+                        state.generation,
+                        sequence,
+                        state.requestId,
+                        attested);
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
@@ -489,6 +575,52 @@ public final class NativeHttp implements AutoCloseable {
         public long admittedNanos() { synchronized (state) { checkOwner(); return state.admittedNanos; } }
         public OresFuture<Object> completion() { synchronized (state) { checkOwner(); return state.completion; } }
         public String requestId() { synchronized (state) { checkOwner(); return state.requestId; } }
+
+        private DispatchReceipt claimedDispatchReceipt() {
+            checkOwner();
+            DispatchReceipt receipt = state.dispatchReceipt;
+            if (receipt == null || !receipt.attested() || state.ticket != null
+                    || receipt.exchangeGeneration() != generation
+                    || !receipt.requestId().equals(state.requestId)) {
+                throw new SecurityException("no claimed attested HTTP dispatch receipt");
+            }
+            return receipt;
+        }
+
+        public boolean dispatchReceiptValid(String expectedHandler, String expectedBinding,
+                                            String expectedAuthorityClass) {
+            synchronized (state) {
+                DispatchReceipt receipt = claimedDispatchReceipt();
+                Optional<ActorRuntime.ActorId> currentId = ActorRuntime.currentActorId();
+                OptionalLong currentGeneration = ActorRuntime.currentActorGeneration();
+                return currentId.isPresent()
+                        && currentGeneration.isPresent()
+                        && receipt.actorId().equals(currentId.get())
+                        && receipt.actorGeneration() == currentGeneration.getAsLong()
+                        && receipt.handlerType().equals(expectedHandler)
+                        && receipt.binding().equals(expectedBinding)
+                        && receipt.authorityClass().equals(expectedAuthorityClass);
+            }
+        }
+
+        public String dispatchHandler() {
+            synchronized (state) { return claimedDispatchReceipt().handlerType(); }
+        }
+        public String dispatchBinding() {
+            synchronized (state) { return claimedDispatchReceipt().binding(); }
+        }
+        public String dispatchAuthorityClass() {
+            synchronized (state) { return claimedDispatchReceipt().authorityClass(); }
+        }
+        public long dispatchActorGeneration() {
+            synchronized (state) { return claimedDispatchReceipt().actorGeneration(); }
+        }
+        public long dispatchExchangeGeneration() {
+            synchronized (state) { return claimedDispatchReceipt().exchangeGeneration(); }
+        }
+        public long dispatchSequence() {
+            synchronized (state) { return claimedDispatchReceipt().sequence(); }
+        }
         public String operationId() { synchronized (state) { checkOwner(); return state.operationId; } }
         public int pipelineId() { synchronized (state) { checkOwner(); return state.pipelineId; } }
         public int contractId() { synchronized (state) { checkOwner(); return state.contractId; } }
