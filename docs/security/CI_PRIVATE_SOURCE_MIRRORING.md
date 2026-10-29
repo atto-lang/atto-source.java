@@ -24,9 +24,9 @@ protected-origin verifier. It requires CODEOWNER review, stale-review dismissal,
 at least one approval, strict non-empty required status checks, administrator
 enforcement, no review bypasses, no force pushes, and no branch deletion.
 
-There is deliberately no review-attested fallback for the source repository.
-A reviewed governance PR, CODEOWNERS text, or successful source-free carrier
-run cannot substitute for live source-main protection. If source `main`
+There is deliberately no review-attested fallback for either source or
+carrier. A reviewed governance PR, CODEOWNERS text, or successful source-free
+runner canary cannot substitute for live protected-main enforcement. If source `main`
 reports `protected: false` or the required protection cannot be verified,
 private export is denied.
 
