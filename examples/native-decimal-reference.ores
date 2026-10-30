@@ -1,6 +1,6 @@
 import class BigIntValue from '../stdlib/bigint';
 import class DecimalValue, DecimalContext from '../stdlib/decimal';
-import fnc from_scaled_int, abs, neg, add, sub, mul, equal, compare from '../stdlib/decimal';
+import fnc from_scaled_int, abs, neg, add, sub, mul, equal, compare, div_exact, div, round from '../stdlib/decimal';
 
 fnc require(bool condition, String message): void {
   if !condition; do
@@ -35,10 +35,87 @@ pub routine main(): void {
   require(equal(&restored, &three_tenths), "decimal abs/neg exactness");
   require(compare(&negative, &three_tenths) < 0, "decimal signed comparison");
 
+  val DecimalValue four = from_scaled_int(4, 0);
+  val DecimalValue quarter = from_scaled_int(25, 2);
+  val DecimalValue exact_quarter = div_exact(&one, &four);
+  require(equal(&exact_quarter, &quarter), "decimal exact terminating 1/4");
+
+  val DecimalValue six = from_scaled_int(6, 0);
+  val DecimalValue half = from_scaled_int(5, 1);
+  val DecimalValue reduced_half = div_exact(&three, &six);
+  require(equal(&reduced_half, &half), "decimal exact division reduces common factors");
+
   val DecimalContext context = new DecimalContext(34, "HALF_EVEN", 64);
   require(context.precision == 34, "decimal context precision");
   require(context.rounding == "HALF_EVEN", "decimal context rounding");
   require(context.max_scale == 64, "decimal context max scale");
+
+  val DecimalContext p3_half_even =
+    new DecimalContext(3, "HALF_EVEN", 64);
+  val DecimalValue one_third = div(&one, &three, &p3_half_even);
+  val DecimalValue expected_one_third = from_scaled_int(333, 3);
+  require(equal(&one_third, &expected_one_third),
+          "decimal 1/3 precision-3 HALF_EVEN");
+  val DecimalValue ten = from_scaled_int(10, 0);
+  val DecimalValue ten_thirds = div(&ten, &three, &p3_half_even);
+  val DecimalValue expected_ten_thirds = from_scaled_int(333, 2);
+  require(equal(&ten_thirds, &expected_ten_thirds),
+          "decimal 10/3 precision-3 HALF_EVEN");
+
+  val DecimalValue two_point_five = from_scaled_int(25, 1);
+  val DecimalValue three_point_five = from_scaled_int(35, 1);
+  val DecimalValue two_point_one = from_scaled_int(21, 1);
+  val DecimalValue negative_two_point_one = from_scaled_int(-21, 1);
+  val DecimalValue integer_two = from_scaled_int(2, 0);
+  val DecimalValue integer_three = from_scaled_int(3, 0);
+  val DecimalValue integer_four = from_scaled_int(4, 0);
+  val DecimalValue negative_two = from_scaled_int(-2, 0);
+  val DecimalValue negative_three = from_scaled_int(-3, 0);
+
+  val DecimalContext p1_half_even =
+    new DecimalContext(1, "HALF_EVEN", 64);
+  val DecimalContext p1_half_up =
+    new DecimalContext(1, "HALF_UP", 64);
+  val DecimalContext p1_half_down =
+    new DecimalContext(1, "HALF_DOWN", 64);
+  val DecimalContext p1_up =
+    new DecimalContext(1, "UP", 64);
+  val DecimalContext p1_down =
+    new DecimalContext(1, "DOWN", 64);
+  val DecimalContext p1_ceiling =
+    new DecimalContext(1, "CEILING", 64);
+  val DecimalContext p1_floor =
+    new DecimalContext(1, "FLOOR", 64);
+  val DecimalContext p1_unnecessary =
+    new DecimalContext(1, "UNNECESSARY", 64);
+
+  val DecimalValue half_even_25 = round(&two_point_five, &p1_half_even);
+  val DecimalValue half_even_35 = round(&three_point_five, &p1_half_even);
+  require(equal(&half_even_25, &integer_two), "decimal HALF_EVEN 2.5 -> 2");
+  require(equal(&half_even_35, &integer_four), "decimal HALF_EVEN 3.5 -> 4");
+  require(equal(&round(&two_point_five, &p1_half_up), &integer_three),
+          "decimal HALF_UP tie away from zero");
+  require(equal(&round(&two_point_five, &p1_half_down), &integer_two),
+          "decimal HALF_DOWN tie toward zero");
+
+  require(equal(&round(&two_point_one, &p1_up), &integer_three),
+          "decimal UP positive away from zero");
+  require(equal(&round(&two_point_one, &p1_down), &integer_two),
+          "decimal DOWN positive toward zero");
+  require(equal(&round(&two_point_one, &p1_ceiling), &integer_three),
+          "decimal CEILING positive");
+  require(equal(&round(&two_point_one, &p1_floor), &integer_two),
+          "decimal FLOOR positive");
+  require(equal(&round(&negative_two_point_one, &p1_ceiling), &negative_two),
+          "decimal CEILING negative toward +infinity");
+  require(equal(&round(&negative_two_point_one, &p1_floor), &negative_three),
+          "decimal FLOOR negative toward -infinity");
+  require(equal(&round(&negative_two_point_one, &p1_up), &negative_three),
+          "decimal UP negative away from zero");
+  require(equal(&round(&negative_two_point_one, &p1_down), &negative_two),
+          "decimal DOWN negative toward zero");
+  require(equal(&round(&integer_two, &p1_unnecessary), &integer_two),
+          "decimal UNNECESSARY exact value");
 
   stdio.stdout.println("NATIVE-DECIMAL-REFERENCE-OK");
   return;
