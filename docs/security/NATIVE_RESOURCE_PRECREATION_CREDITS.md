@@ -72,7 +72,7 @@ JDK25 Maven:
 mvn test -Dtest=NativeResourceCreationPermitTest,ActorRegisteredResourceQuotaTest,ActorNativeIoIncarnationFenceTest,ActorSubtreeIoQuotaTest,PhysicalIoLoanRevocationTest,AsyncNativeIoTest
 ```
 
-Nine JUnit methods are checked in, including an actual actor self-STOP
+Eleven JUnit methods are checked in, including an actual actor self-STOP
 between creation credit and physical registration, with a live handle retained
 until the production actor/native shutdown coordinator joins it. The ninth
 method checks sibling-actor denial for foreign abort, attach, borrow and
@@ -92,3 +92,32 @@ satisfy this verification gate. Source-org runner/admission failures must not
 be treated as compiler or test failures. Never mirror private source to a
 different organization without a reviewed destination allowlist and
 independent authorization.
+
+## Additional exact-head 2026-10-30 hardening
+
+- Actor-owned native `java.net.Socket` resources may not be unregistered
+  by their actor until `Socket.close()` has completed. The quota and the
+  actor's native-liveness lease remain charged on early-unregister failure.
+- `Socket.isClosed()` is overridable, so the actor-side gate accepts only
+  exact `java.net.Socket` instances. Subclasses require trusted-host
+  cleanup rather than trusting an actor-controlled close flag.
+- Two additional JUnit methods cover early-unregister denial and malicious
+  subclass close-flag spoofing. Total focused `NativeResourceCreationPermitTest`
+  scenarios: 11, **committed but not executed**.
+- The same-repo `.github/workflows/native-resource-exact-head.yml`
+  uses read-only checkout, pinned source SHA/tree verification, GraalVM
+  JDK25 and nonempty Surefire reports. Source-org job admission remains
+  unverified; a zero-step CI failure is never proof of executing this suite.
+- Real local JDK21 loopback probes independently confirmed ordinary
+  `Socket.isClosed()` behavior and demonstrated that a subclass can report
+  `true` while a connected base socket remains open. These small probes
+  are **not** the Oreslang JVM/JUnit or Native Image build.
+- The checked private-source destination allowlist has zero active entries,
+  Java main protection remains unresolved in security issue #2300, and
+  two examined pinned private carrier runs also recorded zero steps.
+  No cross-organization private-source mirror was created.
+
+The actor-side close check covers the native TCP `Socket` path, not
+arbitrary actor-created `AutoCloseable` resource types. Those still require
+trusted adapter-specific, non-forgeable physical close receipts. Explicit
+host-initiated ownership transfers remain a separate trusted operation.
