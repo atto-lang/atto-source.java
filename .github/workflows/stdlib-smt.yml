@@ -8,6 +8,7 @@ on:
       - 'stdlib/bigint.ores'
       - 'stdlib/decimal.ores'
       - 'examples/native-bigint-reference.ores'
+      - 'examples/native-bigint-division-zero-rejected.ores'
       - 'examples/native-decimal-reference.ores'
       - 'examples/native-decimal-division-rejected.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
@@ -33,6 +34,7 @@ on:
       - 'stdlib/bigint.ores'
       - 'stdlib/decimal.ores'
       - 'examples/native-bigint-reference.ores'
+      - 'examples/native-bigint-division-zero-rejected.ores'
       - 'examples/native-decimal-reference.ores'
       - 'examples/native-decimal-division-rejected.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
@@ -127,6 +129,16 @@ jobs:
           mvn -B -ntp -DskipTests compile
           mvn -B -ntp exec:java -Dexec.args="examples/native-bigint-reference.ores" | tee "${RUNNER_TEMP}/bigint-reference.out"
           grep -Fx 'NATIVE-BIGINT-REFERENCE-OK' "${RUNNER_TEMP}/bigint-reference.out"
+      - name: Require BigInt division by zero to fail closed
+        run: |
+          set -euo pipefail
+          set +e
+          mvn -B -ntp exec:java -Dexec.args="examples/native-bigint-division-zero-rejected.ores" >"${RUNNER_TEMP}/bigint-div-zero.out" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -F 'bigint: division by zero' "${RUNNER_TEMP}/bigint-div-zero.out"
+          ! grep -F 'unexpectedly returned' "${RUNNER_TEMP}/bigint-div-zero.out"
       - name: Execute pure-Oreslang exact Decimal reference
         run: |
           set -euo pipefail
