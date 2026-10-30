@@ -21,7 +21,10 @@ if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
 fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
-printf '%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_EXTRA_LINE:-}"
+printf '%s\t%s\t%s\t%s\t%s\t%s%s\n' \
+  "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" \
+  "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_ARCHIVED:-false}" \
+  "${MOCK_DISABLED:-false}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 mkdir -p "$work/fixture/source"
 printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
@@ -43,6 +46,19 @@ expect_wrapper_reject() {
   test ! -e "$MOCK_EXEC_LOG"
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
+expect_ok trusted/ci
+# A repository may be private and correctly identified but unsafe for export
+# when archived, disabled, or the corresponding API field is null/unknown.
+for unsafe in true null; do
+  export MOCK_ARCHIVED="$unsafe"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  unset MOCK_ARCHIVED
+  export MOCK_DISABLED="$unsafe"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  unset MOCK_DISABLED
+done
 expect_ok trusted/ci
 export MOCK_REPOSITORY_ID=246811
 expect_fail trusted/ci
