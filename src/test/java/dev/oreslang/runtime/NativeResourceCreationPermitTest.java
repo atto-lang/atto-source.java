@@ -202,4 +202,87 @@ final class NativeResourceCreationPermitTest {
         }
     }
 
+    @Test
+    void siblingCannotAttachBorrowOrTransferAnotherActorsNativeResource()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 2);
+        var tracked = new Tracked();
+        var ticket = new java.util.concurrent.atomic.AtomicReference<
+                AsyncNativeIo.ResourceCreationPermit>();
+        var firstReady = new java.util.concurrent.CountDownLatch(1);
+        var checked = new java.util.concurrent.CountDownLatch(1);
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var wrongAttach = new java.util.concurrent.atomic.AtomicBoolean();
+        var wrongBorrow = new java.util.concurrent.atomic.AtomicBoolean();
+        var wrongUnregister = new java.util.concurrent.atomic.AtomicBoolean();
+
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var first = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, context) -> {
+                        try {
+                            ticket.set(io.reserveResourceCreation(0));
+                        } catch (Throwable error) {
+                            failure.compareAndSet(null, error);
+                        } finally {
+                            firstReady.countDown();
+                        }
+                    });
+            var second = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, context) -> {
+                        try {
+                            try {
+                                io.registerCreated(tracked, ticket.get());
+                            } catch (SecurityException foreign) {
+                                wrongAttach.set(true);
+                            }
+                            try {
+                                io.borrow(tracked).close();
+                            } catch (SecurityException foreign) {
+                                wrongBorrow.set(true);
+                            }
+                            try {
+                                io.unregister(tracked);
+                            } catch (SecurityException foreign) {
+                                wrongUnregister.set(true);
+                            }
+                        } catch (Throwable error) {
+                            failure.compareAndSet(null, error);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+
+            first.send("reserve");
+            assertTrue(firstReady.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertNotNull(ticket.get());
+            second.send("attempt foreign transfer");
+            assertTrue(checked.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertTrue(wrongAttach.get(), "foreign actor must not attach ticket");
+            assertTrue(wrongBorrow.get(), "foreign actor must not borrow owner handle");
+            assertTrue(wrongUnregister.get(), "foreign actor must not steal ownership");
+            assertTrue(ticket.get().quarantined());
+            assertEquals(1, io.registeredResourceCount());
+            assertEquals(0, tracked.closes.get());
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(first.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(second.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(1, tracked.closes.get());
+            assertEquals(0, io.registeredResourceCount());
+        } finally {
+            if (ticket.get() != null) ticket.get().close();
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
 }
