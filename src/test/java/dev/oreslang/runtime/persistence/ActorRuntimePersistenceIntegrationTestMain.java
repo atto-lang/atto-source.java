@@ -33,6 +33,7 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
         Path database = directory.resolve("persisted.sqlite");
         Identity key = new Identity("tenant-a", "ledger-42", "balance");
         AtomicReference<PrivateMemoryBlock> firstMemory = new AtomicReference<>();
+        AtomicReference<ActorPersistenceBridge.Activation> oldGrant = new AtomicReference<>();
         try {
             // Activation 1: persistent bytes originate ONLY from an actor-owned
             // direct-memory block, read inside its serialized actor execution.
@@ -49,6 +50,7 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                     block.writeLong(0, 1);
                     ActorPersistenceBridge.Activation binding =
                         ActorPersistenceBridge.bindTrustedCurrentActor(context, key, 1);
+                    oldGrant.set(binding);
                     return (delta, turn) -> {
                         long next = Math.addExact(block.readLong(0), delta);
                         block.writeLong(0, next);
@@ -82,6 +84,12 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                 persisted.get(15, TimeUnit.SECONDS);
                 actor.done().get(15, TimeUnit.SECONDS);
                 check(firstMemory.get().closed(), "first activation arena not revoked");
+                // Host and sibling actors cannot reuse an actor-incarnation token.
+                boolean denied = false;
+                try { ActorPersistenceBridge.submitOwnedSnapshot(
+                    oldGrant.get(), sidecar, "forged", 1, 1, encode(999)); }
+                catch (IllegalStateException | SecurityException expected) { denied = true; }
+                check(denied, "persistence token usable outside its actor execution");
             }
             // A genuinely new ActorRuntime and new actor-local heap; all state
             // is reloaded through the authoritative persistent provider.
