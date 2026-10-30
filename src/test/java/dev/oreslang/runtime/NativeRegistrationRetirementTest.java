@@ -184,6 +184,41 @@ final class NativeRegistrationRetirementTest {
     }
 
     @Test
+    void contextShutdownJoinsRegisteredHandleBeforeRetiringItsActor() throws Exception {
+        var io = new AsyncNativeIo(1);
+        var runtime = new ActorRuntime();
+        var socket = new Socket();
+        var entered = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                try {
+                    io.register(socket);
+                } catch (Throwable caught) {
+                    failure.set(caught);
+                } finally {
+                    entered.countDown();
+                }
+            });
+            actor.send("register");
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertEquals(1, io.outstandingActorOperations(actor.id()));
+            // The first actor close may be incomplete due to the registered
+            // handle; context join must close I/O, then retry actor finalization.
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(socket.isClosed());
+            assertEquals(0, io.outstandingActorOperations(actor.id()));
+            assertTrue(actor.done().isDone(),
+                    "joined context cannot publish success before actor DONE");
+        } finally {
+            try { io.close(); } finally { runtime.close(); }
+        }
+    }
+
+    @Test
     void actorOwnedGenericCloseableCannotTransferWithoutPhysicalWitness() throws Exception {
         var io = new AsyncNativeIo(1);
         var runtime = new ActorRuntime();
