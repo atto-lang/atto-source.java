@@ -848,13 +848,22 @@ public final class AsyncNativeIo implements AutoCloseable {
             }
             // Trusted host cleanup remains permitted; it owns the resource
             // transfer protocol and does not acquire guest actor privileges.
-            state.unregistered = true;
-            resources.remove(resource);
             if (state.active != 0) {
+                state.unregistered = true;
+                resources.remove(resource);
                 deferredUnregister.add(resource);
             } else {
-                retired = retireRegisteredResourceLocked(state);
+                // A bad quota receipt must not erase the last physical
+                // resource reference or allow a successful context join.
+                try {
+                    retired = retireRegisteredResourceLocked(state);
+                } catch (RuntimeException badReceipt) {
+                    recordIncomplete(badReceipt);
+                    throw badReceipt;
+                }
+                state.unregistered = true;
                 resourceLoans.remove(resource);
+                resources.remove(resource);
             }
         }
         notifyActorRetirement(retired);
@@ -921,10 +930,18 @@ public final class AsyncNativeIo implements AutoCloseable {
                         "native close receipt is no longer unique");
             }
             state.adapterCloseSucceeded = true;
+            // If a quota receipt is invalid, retain both strong ownership
+            // sets and quarantine the entire context. Never remove the handle
+            // from the sweep before its logical retirement is complete.
+            try {
+                retired = retireRegisteredResourceLocked(state);
+            } catch (RuntimeException badReceipt) {
+                recordIncomplete(badReceipt);
+                throw badReceipt;
+            }
             state.unregistered = true;
-            resources.remove(resource);
-            retired = retireRegisteredResourceLocked(state);
             resourceLoans.remove(resource);
+            resources.remove(resource);
             deferredUnregister.remove(resource);
             this.notifyAll();
         }
@@ -1121,7 +1138,8 @@ public final class AsyncNativeIo implements AutoCloseable {
                 resourceCloseActive = false;
             }
             synchronized (this) {
-                if (!resources.isEmpty()) {
+                if (!resources.isEmpty() || !resourceLoans.isEmpty()
+                        || pendingResourceCreations != 0) {
                     // A resource-close callback (or a concurrent late
                     // connector) can register another handle AFTER the
                     // closing snapshot. register() retains this late handle
