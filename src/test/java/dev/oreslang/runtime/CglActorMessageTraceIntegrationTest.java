@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Exercises the ACTUAL actor mailbox -> host/source handler boundary.
  * These are handler-call timestamps, not proof of guest instruction start.
  */
-@ResourceLock(value = org.junit.jupiter.api.parallel.ResourceLock.SYSTEM_PROPERTIES,
+@ResourceLock(value = org.junit.jupiter.api.parallel.Resources.SYSTEM_PROPERTIES,
               mode = ResourceAccessMode.READ_WRITE)
 final class CglActorMessageTraceIntegrationTest {
     @Test
