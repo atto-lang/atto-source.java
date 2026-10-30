@@ -179,6 +179,100 @@ define module decimal_math as
     return bigint_math.compare(&left_coefficient, &right_coefficient);
   }
 
+  fnc gcd_magnitude(
+    &BigIntValue left,
+    &BigIntValue right
+  ): BigIntValue {
+    let BigIntValue x = bigint_math.abs(&left);
+    let BigIntValue y = bigint_math.abs(&right);
+    // Euclid is bounded independently from the BigInt value-size bound so an
+    // adversarial pair cannot turn exact Decimal division into unbounded work.
+    for (let int i = 0; i < 512; i = i + 1) {
+      if y.signum() == 0; do
+        return x;
+      fi
+      val BigIntDivRem step = bigint_math.div_rem(&x, &y);
+      x = y;
+      y = bigint_math.abs(&step.remainder);
+    }
+    rt fail("decimal: gcd exceeds bounded operation policy");
+    return bigint_math.from_int(1);
+  }
+
+  pub fnc div_exact(
+    &DecimalValue left,
+    &DecimalValue right
+  ): DecimalValue {
+    if right.coefficient.signum() == 0; do
+      rt fail("decimal: division by zero");
+    fi
+    if left.coefficient.signum() == 0; do
+      return new DecimalValue(bigint_math.from_int(0), 0);
+    fi
+    if left.coefficient.limb_count() > 96
+        || right.coefficient.limb_count() > 96; do
+      rt fail("decimal: exact division exceeds bounded coefficient policy");
+    fi
+
+    val BigIntValue left_magnitude = bigint_math.abs(&left.coefficient);
+    val BigIntValue right_magnitude = bigint_math.abs(&right.coefficient);
+    val BigIntValue gcd = gcd_magnitude(&left_magnitude, &right_magnitude);
+    let BigIntValue numerator = bigint_math.div(&left_magnitude, &gcd);
+    let BigIntValue denominator = bigint_math.div(&right_magnitude, &gcd);
+
+    val BigIntValue one = bigint_math.from_int(1);
+    val BigIntValue two = bigint_math.from_int(2);
+    val BigIntValue five = bigint_math.from_int(5);
+    let int powers_of_two = 0;
+    let int powers_of_five = 0;
+
+    for (let int i = 0; i < 512; i = i + 1) {
+      val BigIntDivRem step = bigint_math.div_rem(&denominator, &two);
+      if step.remainder.signum() != 0; do
+        break;
+      fi
+      denominator = step.quotient;
+      powers_of_two = powers_of_two + 1;
+    }
+    for (let int i = 0; i < 512; i = i + 1) {
+      val BigIntDivRem step = bigint_math.div_rem(&denominator, &five);
+      if step.remainder.signum() != 0; do
+        break;
+      fi
+      denominator = step.quotient;
+      powers_of_five = powers_of_five + 1;
+    }
+
+    if !bigint_math.equal(&denominator, &one); do
+      rt fail("decimal: nonterminating exact division requires context");
+    fi
+
+    let int decimal_places = powers_of_two;
+    if powers_of_five > decimal_places; do
+      decimal_places = powers_of_five;
+    fi
+    let int result_scale = left.scale - right.scale + decimal_places;
+    if result_scale < -256 || result_scale > 256; do
+      rt fail("decimal: exact quotient exceeds bounded signed-scale policy");
+    fi
+
+    if powers_of_two > powers_of_five; do
+      for (let int i = powers_of_five; i < powers_of_two; i = i + 1) {
+        numerator = bigint_math.mul(&numerator, &five);
+      }
+    else
+      for (let int i = powers_of_two; i < powers_of_five; i = i + 1) {
+        numerator = bigint_math.mul(&numerator, &two);
+      }
+    fi
+
+    if numerator.signum() != 0
+        && left.coefficient.signum() != right.coefficient.signum(); do
+      numerator = bigint_math.neg(&numerator);
+    fi
+    return new DecimalValue(numerator, result_scale);
+  }
+
   fnc decimal_digits(&BigIntValue value): int {
     val BigIntValue magnitude = bigint_math.abs(&value);
     if magnitude.signum() == 0; do
