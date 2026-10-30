@@ -3491,6 +3491,33 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
+            if (callee instanceof Named callback
+                    && callback.name().equals("Callback")
+                    && callback.arguments().size() == 1) {
+                Type valueType = callback.arguments().getFirst();
+                List<ExpandedCallArgument> callbackArguments =
+                        expandFixedCallArguments(
+                                call.arguments(), env, generics, self,
+                                "Callback<T> invocation");
+                if (callbackArguments.size() == 1) {
+                    Type actual = expandedCallArgumentType(
+                            callbackArguments.getFirst(),
+                            valueType,
+                            env, generics, self);
+                    requireAssignable(actual, valueType, "Callback<T> value");
+                    return Primitive.VOID;
+                }
+                if (callbackArguments.size() == 2) {
+                    Type actual = expandedCallArgumentType(
+                            callbackArguments.get(1),
+                            valueType,
+                            env, generics, self);
+                    requireAssignable(actual, valueType, "Callback<T> error-first value");
+                    return Primitive.VOID;
+                }
+                throw new IllegalArgumentException(
+                        "Callback<T> expects cb(value) or error-first cb(error, value)");
+            }
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
