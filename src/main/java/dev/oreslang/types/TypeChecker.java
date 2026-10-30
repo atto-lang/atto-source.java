@@ -1148,7 +1148,12 @@ public final class TypeChecker {
             Ast.ClassDecl klass, Ast.ConstructorDecl constructor) {
         Set<String> required = new LinkedHashSet<>();
         Set<String> fixed = new LinkedHashSet<>();
-        for (Ast.FieldDecl field : klass.fields()) {
+        // An explicit child constructor can initialize inherited mutable
+        // slots. Track their definite initialization as well: unlike inherited
+        // fixed slots, they are writable but cannot remain absent at publish.
+        for (ResolvedField effective : effectiveFieldTargets(
+                klass, nominalClassType(klass), new LinkedHashSet<>())) {
+            Ast.FieldDecl field = effective.field();
             if (field.initializer() == null) {
                 // Mutable LET needs definite initialization too, but unlike
                 // fixed VAL/FINAL its slot may subsequently be reassigned.
