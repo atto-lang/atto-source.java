@@ -6,7 +6,9 @@ on:
       - 'stdlib/core.ores'
       - 'stdlib/math.ores'
       - 'stdlib/bigint.ores'
+      - 'stdlib/decimal.ores'
       - 'examples/native-bigint-reference.ores'
+      - 'examples/native-decimal-reference.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DefaultCheckedI64ArithmeticTest.java'
@@ -14,6 +16,7 @@ on:
       - 'src/test/java/dev/oreslang/NumericPrecisionAdmissionTest.java'
       - 'src/test/java/dev/oreslang/MathIntrinsicSemanticsTest.java'
       - 'src/test/java/dev/oreslang/FloatCarrierSemanticsTest.java'
+      - 'src/test/java/dev/oreslang/FloatFieldCarrierSemanticsTest.java'
       - 'stdlib/trace.ores'
       - 'stdlib/testing.ores'
       - 'formal/stdlib/**'
@@ -27,7 +30,9 @@ on:
       - 'stdlib/core.ores'
       - 'stdlib/math.ores'
       - 'stdlib/bigint.ores'
+      - 'stdlib/decimal.ores'
       - 'examples/native-bigint-reference.ores'
+      - 'examples/native-decimal-reference.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DefaultCheckedI64ArithmeticTest.java'
@@ -35,6 +40,7 @@ on:
       - 'src/test/java/dev/oreslang/NumericPrecisionAdmissionTest.java'
       - 'src/test/java/dev/oreslang/MathIntrinsicSemanticsTest.java'
       - 'src/test/java/dev/oreslang/FloatCarrierSemanticsTest.java'
+      - 'src/test/java/dev/oreslang/FloatFieldCarrierSemanticsTest.java'
       - 'stdlib/trace.ores'
       - 'stdlib/testing.ores'
       - 'formal/stdlib/**'
@@ -100,7 +106,7 @@ jobs:
       - name: Verify default checked i64 arithmetic in real Graal guest
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest,BinaryFloatSemanticsTest,NumericPrecisionAdmissionTest,MathIntrinsicSemanticsTest,FloatCarrierSemanticsTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest,BinaryFloatSemanticsTest,NumericPrecisionAdmissionTest,MathIntrinsicSemanticsTest,FloatCarrierSemanticsTest,FloatFieldCarrierSemanticsTest -DfailIfNoTests=true test
       - name: Execute native Oreslang Math refinement and MIN overflow boundary
         run: |
           set -euo pipefail
@@ -119,6 +125,12 @@ jobs:
           mvn -B -ntp -DskipTests compile
           mvn -B -ntp exec:java -Dexec.args="examples/native-bigint-reference.ores" | tee "${RUNNER_TEMP}/bigint-reference.out"
           grep -Fx 'NATIVE-BIGINT-REFERENCE-OK' "${RUNNER_TEMP}/bigint-reference.out"
+      - name: Execute pure-Oreslang exact Decimal reference
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java -Dexec.args="examples/native-decimal-reference.ores" | tee "${RUNNER_TEMP}/decimal-reference.out"
+          grep -Fx 'NATIVE-DECIMAL-REFERENCE-OK' "${RUNNER_TEMP}/decimal-reference.out"
       - name: Run real Oreslang testing.run_suite guest refinement
         run: |
           set -euo pipefail
