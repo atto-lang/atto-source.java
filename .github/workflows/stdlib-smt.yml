@@ -13,6 +13,7 @@ on:
       - 'examples/native-decimal-reference.ores'
       - 'examples/native-decimal-division-rejected.ores'
       - 'examples/native-decimal-resource-rejected.ores'
+      - 'tests/fixtures/numeric-v1/*.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
@@ -43,6 +44,7 @@ on:
       - 'examples/native-decimal-reference.ores'
       - 'examples/native-decimal-division-rejected.ores'
       - 'examples/native-decimal-resource-rejected.ores'
+      - 'tests/fixtures/numeric-v1/*.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
@@ -80,7 +82,12 @@ jobs:
       - name: Record exact inputs and tool versions
         run: |
           git rev-parse HEAD
-          git hash-object stdlib/core.ores stdlib/math.ores stdlib/bigint.ores stdlib/decimal.ores stdlib/trace.ores stdlib/testing.ores
+          git hash-object \
+            stdlib/core.ores stdlib/math.ores stdlib/bigint.ores stdlib/decimal.ores \
+            stdlib/trace.ores stdlib/testing.ores \
+            tests/fixtures/numeric-v1/math-i64-ok.ores \
+            tests/fixtures/numeric-v1/math-i64-abs-min.ores \
+            tests/fixtures/numeric-v1/math-i64-neg-min.ores
           rustc --version
           z3 -version
       - name: Rust gate regression tests
