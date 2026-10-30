@@ -316,6 +316,40 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             ):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_blocking_p0_incidents_edited_old_approval_cannot_override_newer_revocation(self):
+        # A reviewer edited the older approval after publishing a newer
+        # revocation. The latest *created* reviewer comment must win.
+        comments_api = self.incident_comments_api(
+            later_bodies={22: "PRIVATE_CI_INCIDENT_DISPOSITION_REVOKED"}
+        )
+
+        def edited_old_approval(route):
+            comments = comments_api(route)
+            if route.endswith("/issues/22/comments?per_page=100"):
+                comments[0]["updated_at"] = "2026-10-30T04:07:00Z"
+            return comments
+
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(pub, "gh_api_list", side_effect=edited_old_approval),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "absent or revoked"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_whitespace_around_marker(self):
+        marker = pub.INCIDENT_DISPOSITION_MARKER + " issue=#22"
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    body_overrides={22: marker + "\\n"}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "absent or revoked"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
     def test_blocking_p0_incidents_reject_disposition_before_current_closure(self):
         with (
             patch.object(pub, "gh_api", side_effect=self.incident_api()),
