@@ -78,6 +78,25 @@ final class ReusableLongStateRegionTest {
     }
 
     @Test
+    void checkedInPlaceAddIsTransactionalAtBothSignedBounds() {
+        try (var region = new ReusableLongStateRegion(2)) {
+            long upper = region.insert(Long.MAX_VALUE - 1);
+            long lower = region.insert(Long.MIN_VALUE + 1);
+            assertEquals(Long.MAX_VALUE, region.addExact(upper, 1));
+            assertEquals(Long.MIN_VALUE, region.addExact(lower, -1));
+            assertThrows(ArithmeticException.class, () -> region.addExact(upper, 1));
+            assertThrows(ArithmeticException.class, () -> region.addExact(lower, -1));
+            assertEquals(Long.MAX_VALUE, region.read(upper));
+            assertEquals(Long.MIN_VALUE, region.read(lower));
+            assertEquals(Long.MAX_VALUE - 2, region.addExact(upper, -2));
+            region.remove(upper);
+            assertThrows(IllegalStateException.class, () -> region.addExact(upper, 1));
+            region.beginRetire();
+            assertThrows(IllegalStateException.class, () -> region.addExact(lower, 1));
+        }
+    }
+
+    @Test
     void rejectsInvalidCapacity() {
         assertThrows(IllegalArgumentException.class, () -> new ReusableLongStateRegion(0));
         assertThrows(IllegalArgumentException.class, () -> new ReusableLongStateRegion(65_537));
