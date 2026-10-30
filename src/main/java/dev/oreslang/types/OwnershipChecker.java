@@ -1733,6 +1733,21 @@ public final class OwnershipChecker {
                     Ast.TypeRef receiverType = receiverState.type;
                     if ((receiverType.name().equals("Mutex") || receiverType.name().equals("SharedMutex"))
                             && receiverType.arguments().size() == 1) {
+                        // Invariant-level mutual exclusion is only safe to compose when
+                        // nested acquisitions have a statically proven order. Until
+                        // ordered multi-lock capabilities are implemented, reject
+                        // re-acquisition (including try/async forms) while a guard
+                        // or an inline protected-state callback is still active.
+                        // A second handle may alias the first mutex, so merely
+                        // comparing receiver names would be unsound.
+                        boolean acquiringMutex = switch (member.member()) {
+                            case "lock", "try_lock", "lock_async", "with_lock", "recover" -> true;
+                            default -> false;
+                        };
+                        if (acquiringMutex && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
+                            throw error("nested mutex acquisition requires a proven lock order; "
+                                    + "release the current MutexGuard before acquiring another mutex");
+                        }
                         Ast.TypeRef element = receiverType.arguments().getFirst();
                         if (member.member().equals("lock") && call.arguments().isEmpty()) {
                             return new ValueInfo(new Ast.TypeRef("MutexGuard", List.of(element), false), ValueKind.MOVE_ONLY, null);
