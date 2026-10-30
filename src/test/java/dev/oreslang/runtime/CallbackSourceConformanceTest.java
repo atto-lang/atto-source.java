@@ -20,7 +20,7 @@ final class CallbackSourceConformanceTest {
     private static final String ATTACH_RESOURCE =
             "/conformance/execution-context-callbacks/v1/callback_attach_chain.ores";
     private static final String EXPECTED_ATTACH_SOURCE_BLOB =
-            "212b383f1c7acf72c2c03265dd443891b15fb8ac";
+            "80429c782be6a32d5f3699d0f624f15c77ce3623";
 
     @Test
     void exactSyncResolveFixtureCompilesAndExecutesThroughRealSourceRunner()
