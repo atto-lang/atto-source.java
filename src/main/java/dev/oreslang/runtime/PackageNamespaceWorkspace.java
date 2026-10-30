@@ -180,19 +180,38 @@ final class PackageNamespaceWorkspace {
         return parsed;
     }
 
-    private static List<Path> members(Path manifest, TomlParseResult parsed) throws IOException {
-        Path root = manifest.getParent().toRealPath();
+    /**
+     * Resolve a manifest-owned root without following mutable path aliases.
+     * A symlink that happens to point inside this package is still unsafe:
+     * it may be replaced between source admission and pinned-snapshot checks.
+     * Share this resolver across member admission, digests and revalidation.
+     */
+    private static Path checkedProjectRoot(Path manifest, TomlParseResult parsed)
+            throws IOException {
+        Path manifestDirectory = manifest.getParent().toRealPath();
+        Path root = manifestDirectory;
         String relativeRoot = parsed.getString("project.root");
         if (relativeRoot != null && !".".equals(relativeRoot)) {
             Path offset = Path.of(relativeRoot);
             if (offset.isAbsolute() || containsParent(offset)) {
                 throw new IllegalArgumentException("project root escapes package manifest");
             }
-            root = root.resolve(offset).normalize().toRealPath();
-            if (!root.startsWith(manifest.getParent().toRealPath())) {
+            for (Path component : offset) {
+                root = root.resolve(component);
+                if (Files.isSymbolicLink(root)) {
+                    throw new SecurityException("symlinked namespace project root: " + root);
+                }
+            }
+            root = root.normalize().toRealPath();
+            if (!root.startsWith(manifestDirectory)) {
                 throw new IllegalArgumentException("project root escapes manifest directory");
             }
         }
+        return root;
+    }
+
+    private static List<Path> members(Path manifest, TomlParseResult parsed) throws IOException {
+        Path root = checkedProjectRoot(manifest, parsed);
         Object raw = parsed.get("packages");
         if (!(raw instanceof TomlTable packages) || packages.size() == 0
                 || packages.size() > 128) {
@@ -271,11 +290,7 @@ final class PackageNamespaceWorkspace {
             if (!sha256(Files.readAllBytes(manifest)).equals(pinnedManifestHash)) {
                 throw new SecurityException("dependency manifest changed during admission");
             }
-            Path root = manifest.toRealPath().getParent();
-            String relativeRoot = checkedManifest(manifest).getString("project.root");
-            if (relativeRoot != null && !".".equals(relativeRoot)) {
-                root = root.resolve(relativeRoot).normalize().toRealPath();
-            }
+            Path root = checkedProjectRoot(manifest, checkedManifest(manifest));
             List<String> parts = new ArrayList<>();
             for (Path source : members(manifest, checkedManifest(manifest))) {
                 String id = source.toRealPath().toString().replace('\\', '/');
@@ -295,11 +310,7 @@ final class PackageNamespaceWorkspace {
     }
 
     static String sourceDigest(Path manifest, List<Path> sourceFiles) throws IOException {
-        Path root = manifest.toRealPath().getParent();
-        String relativeRoot = checkedManifest(manifest).getString("project.root");
-        if (relativeRoot != null && !".".equals(relativeRoot)) {
-            root = root.resolve(relativeRoot).normalize().toRealPath();
-        }
+        Path root = checkedProjectRoot(manifest, checkedManifest(manifest));
         List<String> parts = new ArrayList<>();
         for (Path source : sourceFiles) {
             parts.add(root.relativize(source.toRealPath()).toString().replace('\\', '/')
