@@ -4159,6 +4159,31 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            String mathIntrinsic = mathIntrinsicName(call, env);
+            if (mathIntrinsic != null) {
+                if (call.typeArgumentsPresent()) {
+                    continuation.accept(task, null, new IllegalArgumentException(
+                            "Math." + mathIntrinsic + " does not accept call-site type arguments"));
+                    return;
+                }
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t, applyMathIntrinsic(mathIntrinsic, values), null);
+                            } catch (RuntimeException | Error invalid) {
+                                continuation.accept(t, null, invalid);
+                            }
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -5780,6 +5805,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            String mathIntrinsic = mathIntrinsicName(call, env);
+            if (mathIntrinsic != null) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "Math." + mathIntrinsic + " does not accept call-site type arguments");
+                }
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                return invokableInvocation(
+                        arguments -> applyMathIntrinsic(mathIntrinsic, arguments),
+                        args);
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -5958,6 +5994,59 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return List.copyOf(values);
+        }
+
+        private String mathIntrinsicName(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.MemberExpr member)
+                    || !(member.receiver() instanceof Ast.NameExpr namespace)
+                    || !namespace.name().equals("Math")
+                    || env.lookup("Math") != Env.MISSING
+                    || namedImports.containsKey("Math")
+                    || namespaceImports.containsKey("Math")
+                    || modules.containsKey("Math")
+                    || findClass("Math") != null
+                    || hostClasses.containsKey("Math")
+                    || hostFunctions.containsKey("Math")) {
+                return null;
+            }
+            return switch (member.member()) {
+                case "abs", "neg" -> member.member();
+                default -> null;
+            };
+        }
+
+        private Object applyMathIntrinsic(String operation, List<Object> values) {
+            if (values.size() != 1) {
+                throw new IllegalArgumentException(
+                        "Math." + operation + " expects exactly one numeric argument");
+            }
+            Object value = values.getFirst();
+            if (value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal) {
+                Number exact = (Number) value;
+                return operation.equals("abs")
+                        ? dev.oreslang.math.ExactScalarMath.abs(exact)
+                        : dev.oreslang.math.ExactScalarMath.neg(exact);
+            }
+            if (value instanceof Double binary64) {
+                return operation.equals("abs") ? Math.abs(binary64) : -binary64;
+            }
+            if (value instanceof Float) {
+                throw new IllegalArgumentException(
+                        "f32 Math operations are disabled until binary32 has distinct rounding semantics");
+            }
+            if (value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long) {
+                long integer = ((Number) value).longValue();
+                return switch (operation) {
+                    case "abs" -> integer < 0 ? Math.negateExact(integer) : integer;
+                    case "neg" -> Math.negateExact(integer);
+                    default -> throw new IllegalArgumentException(
+                            "unknown Math intrinsic: " + operation);
+                };
+            }
+            throw new IllegalArgumentException(
+                    "Math." + operation + " requires int, f64/float, bigint, or decimal");
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
