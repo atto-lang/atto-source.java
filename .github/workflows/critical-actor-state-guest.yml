@@ -33,7 +33,8 @@ jobs:
             src/main/java/dev/oreslang/parser/Parser.java \
             src/main/java/dev/oreslang/types/TypeChecker.java \
             src/main/java/dev/oreslang/nodes/OresEvalRootNode.java \
-            src/test/java/dev/oreslang/ActorCriticalStateModeTest.java; do
+            src/test/java/dev/oreslang/ActorCriticalStateModeTest.java \
+            src/test/java/dev/oreslang/ActorSealedStateAuthorityGateTest.java; do
             git ls-files --error-unmatch -- "$file" >/dev/null
             test "$(git ls-files -s -- "$file" | cut -d ' ' -f 1)" = 100644
             echo "GUEST_SOURCE_BLOB $file $(git hash-object "$file")"
@@ -52,8 +53,9 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorStateLoanTest,ActorSingleStateSchemaTest test
+          mvn -B -ntp -Dtest=ActorSealedStateAuthorityGateTest,ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorStateLoanTest,ActorSingleStateSchemaTest test
           for spec in \
+            ActorSealedStateAuthorityGateTest:1 \
             ActorCriticalStateModeTest:12 \
             ActorCriticalModeConformanceTest:9 \
             ActorStateLoanTest:9 \
@@ -68,4 +70,4 @@ jobs:
             done
             echo "GUEST_SUITE_PASS ${class} tests=${expected}"
           done
-          echo 'NATIVE_GRAAL_CRITICAL_MODES_PASS tests=37'
+          echo 'NATIVE_GRAAL_CRITICAL_MODES_PASS tests=38'
