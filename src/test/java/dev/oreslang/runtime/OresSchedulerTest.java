@@ -615,4 +615,17 @@ final class OresSchedulerTest {
         }
     }
 
+
+    @Test
+    void callbackSettlementDoesNotSwallowErrorClassControlFailure() {
+        AssertionError fatal = new AssertionError("control failure after resolve");
+        AssertionError thrown = assertThrows(AssertionError.class, () ->
+                OresFuture.fromCallback(completion -> {
+                    completion.resolve(41);
+                    throw fatal;
+                }));
+        assertSame(fatal, thrown);
+        assertEquals(0, fatal.getSuppressed().length);
+    }
+
 }
