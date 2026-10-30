@@ -256,6 +256,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** An actor's owned exchange is valid only for the same active mail. */
+    void requireCurrentHttpExchange(NativeHttp.Exchange exchange) {
+        if (currentHttpExchange() != exchange) {
+            throw new SecurityException("HTTP exchange belongs to another logical request");
+        }
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
