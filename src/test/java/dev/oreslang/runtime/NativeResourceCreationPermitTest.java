@@ -214,6 +214,7 @@ final class NativeResourceCreationPermitTest {
         var firstReady = new java.util.concurrent.CountDownLatch(1);
         var checked = new java.util.concurrent.CountDownLatch(1);
         var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var wrongAbort = new java.util.concurrent.atomic.AtomicBoolean();
         var wrongAttach = new java.util.concurrent.atomic.AtomicBoolean();
         var wrongBorrow = new java.util.concurrent.atomic.AtomicBoolean();
         var wrongUnregister = new java.util.concurrent.atomic.AtomicBoolean();
@@ -238,6 +239,11 @@ final class NativeResourceCreationPermitTest {
             var second = runtime.<String>spawnSharedTrusted(policy,
                     ignored -> (message, context) -> {
                         try {
+                            try {
+                                ticket.get().close();
+                            } catch (SecurityException foreign) {
+                                wrongAbort.set(true);
+                            }
                             try {
                                 io.registerCreated(tracked, ticket.get());
                             } catch (SecurityException foreign) {
@@ -267,6 +273,7 @@ final class NativeResourceCreationPermitTest {
             second.send("attempt foreign transfer");
             assertTrue(checked.await(5, java.util.concurrent.TimeUnit.SECONDS));
             assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertTrue(wrongAbort.get(), "foreign actor must not refund ticket");
             assertTrue(wrongAttach.get(), "foreign actor must not attach ticket");
             assertTrue(wrongBorrow.get(), "foreign actor must not borrow owner handle");
             assertTrue(wrongUnregister.get(), "foreign actor must not steal ownership");
