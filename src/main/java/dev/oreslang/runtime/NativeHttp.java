@@ -348,6 +348,8 @@ public final class NativeHttp implements AutoCloseable {
         String ticket;
         final String requestId = UUID.randomUUID().toString();
         final long admittedNanos = System.nanoTime();
+        final HttpRequestLocals requestLocals = new HttpRequestLocals();
+        final HttpRequestContext requestContext;
         final OresFuture<Object> completion = new OresFuture<>(() -> false, () -> { });
         int responseStatus;
         String operationId = "";
@@ -358,6 +360,8 @@ public final class NativeHttp implements AutoCloseable {
         Handler.Worker poolWorker;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
+            this.requestContext = new HttpRequestContext(requestId, admittedNanos,
+                    server.deadlineMillis, raw.getRequestMethod(), raw.getRequestURI().toASCIIString());
         }
         // Linearize cancellation against success header emission. Never
         // hold this monitor while performing blocking socket I/O.
@@ -423,6 +427,9 @@ public final class NativeHttp implements AutoCloseable {
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
+                // Context retirement is tied to the physical exchange, not
+                // the actor's reusable mailbox or an arbitrary carrier thread.
+                requestLocals.close();
                 if (poolWorker != null) poolWorker.requests.remove(this);
                 if (CorePerf.enabled()) {
                     CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
@@ -489,6 +496,23 @@ public final class NativeHttp implements AutoCloseable {
         public long admittedNanos() { synchronized (state) { checkOwner(); return state.admittedNanos; } }
         public OresFuture<Object> completion() { synchronized (state) { checkOwner(); return state.completion; } }
         public String requestId() { synchronized (state) { checkOwner(); return state.requestId; } }
+        /**
+         * Immutable request-bound metadata. Not an exchange capability and
+         * never sufficient for actor, request-local or guest-entry authority.
+         */
+        public HttpRequestContext requestContext() {
+            synchronized (state) { checkOwner(); return state.requestContext; }
+        }
+        /** String-only, bounded request storage. Missing is distinguishable via hasRequestLocal(). */
+        public String requestLocal(String key) {
+            synchronized (state) { checkOwner(); return state.requestLocals.get(key); }
+        }
+        public boolean hasRequestLocal(String key) {
+            synchronized (state) { checkOwner(); return state.requestLocals.contains(key); }
+        }
+        public void setRequestLocal(String key, String value) {
+            synchronized (state) { checkOwner(); state.requestLocals.set(key, value); }
+        }
         public String operationId() { synchronized (state) { checkOwner(); return state.operationId; } }
         public int pipelineId() { synchronized (state) { checkOwner(); return state.pipelineId; } }
         public int contractId() { synchronized (state) { checkOwner(); return state.contractId; } }
