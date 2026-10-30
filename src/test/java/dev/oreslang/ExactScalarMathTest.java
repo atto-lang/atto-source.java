@@ -73,6 +73,40 @@ final class ExactScalarMathTest {
     }
 
     @Test
+    void exactTextAdmissionNeverRoutesThroughBinary64() {
+        assertEquals(new BigInteger("9007199254740993"),
+                ExactScalarMath.parseBigInt("9007199254740993"));
+        assertEquals(BigInteger.ZERO, ExactScalarMath.parseBigInt("-0"));
+        assertEquals("0", ExactScalarMath.formatBigInt(ExactScalarMath.parseBigInt("-0")));
+        for (String invalid : List.of("", "+1", "01", "-01", "1.0", "1e3",
+                "_1", "1_", "1__0")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> ExactScalarMath.parseBigInt(invalid), invalid);
+        }
+
+        BigDecimal tenth = ExactScalarMath.parseDecimal("0.1");
+        assertEquals(new BigDecimal("0.1"), tenth);
+        assertEquals("0.1", ExactScalarMath.formatDecimalPreservingScale(tenth));
+        BigDecimal scaled = ExactScalarMath.parseDecimal("-12.3400");
+        assertEquals("-12.3400", ExactScalarMath.formatDecimalPreservingScale(scaled));
+        assertEquals(4, scaled.scale());
+        assertEquals(new BigDecimal("1E+3"), ExactScalarMath.parseDecimal("1e3"));
+        assertEquals(new BigDecimal("0.001"), ExactScalarMath.parseDecimal("1E-3"));
+        for (String invalid : List.of("", "+1", ".1", "1.", "01.0",
+                "1__0", "nan", "inf", "-inf")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> ExactScalarMath.parseDecimal(invalid), invalid);
+        }
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ExactScalarMath.parseBigInt("9".repeat(4097)));
+        assertThrows(IllegalArgumentException.class,
+                () -> ExactScalarMath.parseDecimal("9".repeat(4097) + ".0"));
+        assertThrows(IllegalArgumentException.class,
+                () -> ExactScalarMath.parseDecimal("1e999999"));
+    }
+
+    @Test
     void namedBigIntDivisionUsesTruncationTowardZeroAndDividendSignedRemainder() {
         for (long[] values : new long[][]{
                 {7, 3, 2, 1},
