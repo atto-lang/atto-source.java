@@ -25,6 +25,8 @@ final class ActorPermissionScope {
     private final long serial;
     /** Guarded by this scope's monitor. Includes all descendant admissions. */
     private int activePhysicalReceipts;
+    /** No drain until an independently proven recovery from quarantined ownership. */
+    private boolean physicalDrainQuarantined;
 
     private ActorPermissionScope(ActorPermissionScope parent, RuntimePermissions restrictions) {
         long next = NEXT_SCOPE_SERIAL.incrementAndGet();
@@ -64,9 +66,25 @@ final class ActorPermissionScope {
      * or native operation has finished its physical retirement callbacks.
      */
     synchronized Optional<DrainReceipt> tryDrainReceipt() {
-        return revoked.get() && activePhysicalReceipts == 0
+        return revoked.get() && activePhysicalReceipts == 0 && !physicalDrainQuarantined
                 ? Optional.of(new DrainReceipt(serial))
                 : Optional.empty();
+    }
+
+    /**
+     * Exceptional ownership escape: a handle created after shutdown starts
+     * is retained for eventual context close, but it did not acquire a new
+     * lease because new admissions were sealed. Invalidate every ancestor's
+     * proof rather than misreport a fully drained delegated subtree.
+     * This is intentionally monotonic until an independently reviewed
+     * reconciliation path exists.
+     */
+    void quarantinePhysicalDrain() {
+        for (ActorPermissionScope node = this; node != null; node = node.parent) {
+            synchronized (node) {
+                node.physicalDrainQuarantined = true;
+            }
+        }
     }
 
     static final class PhysicalLease implements AutoCloseable {
