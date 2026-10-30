@@ -6,12 +6,12 @@ import java.math.MathContext;
 import java.util.Objects;
 
 /**
- * Exact arithmetic boundary for values already represented as Java BigInteger
- * or BigDecimal. This is not yet guest BigInt/Decimal source-level admission.
+ * Exact arithmetic boundary for Oreslang guest BigInt/Decimal carriers on the
+ * Java backend. The carrier classes are backend details, not Java interop
+ * exposed to guest code.
  *
- * <p>The Java guest evaluator must not silently convert arbitrary-precision
- * numbers to Double, even when the current parser cannot construct these types
- * directly. All operations have bounded digit/scale admission and no implicit
+ * <p>The guest evaluator must not silently convert arbitrary-precision
+ * numbers to Double. All operations have bounded digit/scale admission and no implicit
  * mixing with binary floating point. Decimal division without a context only
  * accepts exact terminating quotients.
  */
@@ -20,6 +20,14 @@ public final class ExactScalarMath {
     private static final int MAX_ABSOLUTE_SCALE = 16384;
 
     private ExactScalarMath() { }
+
+    /** Immutable quotient/remainder pair with truncation-toward-zero semantics. */
+    public record IntegerDivision(BigInteger quotient, BigInteger remainder) {
+        public IntegerDivision {
+            Objects.requireNonNull(quotient, "quotient");
+            Objects.requireNonNull(remainder, "remainder");
+        }
+    }
 
     /** Admit an exact integer carrier without silent truncation or unbounded limbs. */
     public static BigInteger admitInteger(Number value) {
@@ -82,6 +90,71 @@ public final class ExactScalarMath {
         };
         validate(result);
         return result;
+    }
+
+    /**
+     * Named BigInt division. Quotient truncates toward zero and remainder has
+     * the dividend sign. The '/' operator remains a separate result-domain decision.
+     */
+    public static IntegerDivision divRem(BigInteger dividend, BigInteger divisor) {
+        validate(Objects.requireNonNull(dividend, "dividend"));
+        validate(Objects.requireNonNull(divisor, "divisor"));
+        if (divisor.signum() == 0) {
+            throw new ArithmeticException("BigInt division by zero");
+        }
+        BigInteger[] result = dividend.divideAndRemainder(divisor);
+        validate(result[0]);
+        validate(result[1]);
+        return new IntegerDivision(result[0], result[1]);
+    }
+
+    public static BigInteger quotient(BigInteger dividend, BigInteger divisor) {
+        return divRem(dividend, divisor).quotient();
+    }
+
+    public static BigInteger remainder(BigInteger dividend, BigInteger divisor) {
+        return divRem(dividend, divisor).remainder();
+    }
+
+    /** Checked narrowing to the signed-64 Oreslang integer domain. */
+    public static long toLongExact(BigInteger value) {
+        validate(Objects.requireNonNull(value, "value"));
+        return value.longValueExact();
+    }
+
+    /**
+     * Explicit exact BigInt -> binary64 conversion. Values that round, even
+     * finitely, are rejected instead of silently losing integer bits.
+     */
+    public static double toDoubleExact(BigInteger value) {
+        validate(Objects.requireNonNull(value, "value"));
+        double converted = value.doubleValue();
+        if (!Double.isFinite(converted)) {
+            throw new ArithmeticException("BigInt does not fit finite binary64");
+        }
+        BigInteger roundTrip;
+        try {
+            roundTrip = new BigDecimal(converted).toBigIntegerExact();
+        } catch (ArithmeticException error) {
+            throw new ArithmeticException("BigInt cannot be represented exactly as binary64");
+        }
+        if (!roundTrip.equals(value)) {
+            throw new ArithmeticException("BigInt cannot be represented exactly as binary64");
+        }
+        return converted;
+    }
+
+    /**
+     * Explicit nearest-even BigInt -> binary64 conversion. This API admits
+     * precision loss by name but still rejects overflow to infinity.
+     */
+    public static double toDoubleNearest(BigInteger value) {
+        validate(Objects.requireNonNull(value, "value"));
+        double converted = value.doubleValue();
+        if (!Double.isFinite(converted)) {
+            throw new ArithmeticException("BigInt does not fit finite binary64");
+        }
+        return converted;
     }
 
     /** Exact arbitrary-precision negation with no binary-float coercion. */
