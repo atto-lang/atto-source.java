@@ -508,6 +508,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final ControlDispatcher controlDispatcher;
     private final PhysicalStopDispatcher physicalStopDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
+    // Opt-in at runtime construction, before any actor is created. Captures
+    // handler CALL boundaries, not the timer due or first guest instruction.
+    private final CglActorMessageTrace cglMessageTrace =
+            Boolean.getBoolean("ores.runtime.cgl.handlerTrace")
+                    ? new CglActorMessageTrace(CglActorMessageTrace.MAX_CAPACITY)
+                    : null;
     /** Physical native I/O operation/loan gate for the actor incarnation. */
     private volatile java.util.function.Predicate<ActorId> nativeIoLoanRetired =
             ignored -> true;
@@ -532,6 +538,11 @@ public final class ActorRuntime implements AutoCloseable {
             new ArrayBlockingQueue<>(1024);
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
+
+    /** Diagnostic only; sample completeness requires explicit post-stop sealing. */
+    public Optional<CglActorMessageTrace> cglHandlerTrace() {
+        return Optional.ofNullable(cglMessageTrace);
+    }
 
     public ActorRuntime() {
         this(IsolatePolicy.developer(), DispatcherConfig.defaults(), TurnExecutor.direct());
@@ -8558,6 +8569,10 @@ public final class ActorRuntime implements AutoCloseable {
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
+                            // Runs after actor lease/cancellation admission, at
+                            // the source/host handler call boundary only.
+                            CglActorMessageTrace trace = ActorRuntime.this.cglMessageTrace;
+                            long handlerEnterNanos = trace == null ? 0L : System.nanoTime();
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -8580,6 +8595,11 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
+                                if (trace != null) {
+                                    trace.record(ref.id().value(), mail.sequence(),
+                                            handlerEnterNanos, System.nanoTime(),
+                                            codeExecutor != null);
+                                }
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
