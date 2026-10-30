@@ -1,0 +1,45 @@
+import class BigIntValue from '../stdlib/bigint';
+import class DecimalValue, DecimalContext from '../stdlib/decimal';
+import fnc from_scaled_int, abs, neg, add, sub, mul, equal, compare from '../stdlib/decimal';
+
+fnc require(bool condition, String message): void {
+  if !condition; do
+    rt fail(message);
+  fi
+  return;
+}
+
+pub routine main(): void {
+  val DecimalValue one_tenth = from_scaled_int(1, 1);
+  val DecimalValue two_tenths = from_scaled_int(2, 1);
+  val DecimalValue three_tenths = from_scaled_int(3, 1);
+  val DecimalValue sum = add(&one_tenth, &two_tenths);
+  require(equal(&sum, &three_tenths), "decimal 0.1 + 0.2 must equal exact 0.3");
+
+  val DecimalValue one = from_scaled_int(1, 0);
+  val DecimalValue one_with_zeros = from_scaled_int(100, 2);
+  require(equal(&one, &one_with_zeros),
+          "decimal numeric equality must ignore trailing-zero scale");
+
+  val DecimalValue one_and_half = from_scaled_int(15, 1);
+  val DecimalValue two = from_scaled_int(2, 0);
+  val DecimalValue three = from_scaled_int(3, 0);
+  val DecimalValue product = mul(&one_and_half, &two);
+  require(equal(&product, &three), "decimal exact multiplication");
+
+  val DecimalValue difference = sub(&three_tenths, &one_tenth);
+  require(equal(&difference, &two_tenths), "decimal exact subtraction");
+
+  val DecimalValue negative = neg(&three_tenths);
+  val DecimalValue restored = abs(&negative);
+  require(equal(&restored, &three_tenths), "decimal abs/neg exactness");
+  require(compare(&negative, &three_tenths) < 0, "decimal signed comparison");
+
+  val DecimalContext context = new DecimalContext(34, "half_even", 64);
+  require(context.precision == 34, "decimal context precision");
+  require(context.rounding == "half_even", "decimal context rounding");
+  require(context.max_scale == 64, "decimal context max scale");
+
+  stdio.stdout.println("NATIVE-DECIMAL-REFERENCE-OK");
+  return;
+}
