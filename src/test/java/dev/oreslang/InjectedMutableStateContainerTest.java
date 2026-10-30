@@ -2,6 +2,10 @@ package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -16,10 +20,12 @@ final class InjectedMutableStateContainerTest {
               pub let int available = 10;
               pub let int reserved = 0;
 
-              pub reserve(mut self InventoryState)(int amount): void {
+              pub try_reserve(mut self InventoryState)(int amount): bool {
+                if amount < 0; then return false; fi
+                if amount > self.available; then return false; fi
                 self.available = self.available - amount;
                 self.reserved = self.reserved + amount;
-                return;
+                return true;
               }
             end
             """;
@@ -29,9 +35,9 @@ final class InjectedMutableStateContainerTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(INVENTORY + """
                 pub async fnc main(): void {
                   let mut InventoryState state = new InventoryState();
-                  state.reserve(2);
+                  state.try_reserve(2);
                   rt cooperate;
-                  state.reserve(3);
+                  state.try_reserve(3);
                   return;
                 }
                 """));
@@ -41,7 +47,7 @@ final class InjectedMutableStateContainerTest {
     void injected_mutable_borrow_can_call_state_operation_without_exposing_ownership() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(INVENTORY + """
                 fnc checkout(borrow mut InventoryState state): void {
-                  state.reserve(2);
+                  state.try_reserve(2);
                   return;
                 }
                 pub fnc main(): void {
@@ -56,7 +62,7 @@ final class InjectedMutableStateContainerTest {
     void injected_readonly_borrow_cannot_call_mutable_state_operation() {
         String source = INVENTORY + """
                 fnc invalid(borrow InventoryState state): void {
-                  state.reserve(2);
+                  state.try_reserve(2);
                   return;
                 }
                 """;
@@ -67,4 +73,27 @@ final class InjectedMutableStateContainerTest {
         assertTrue(error.getMessage().toLowerCase().matches("(?s).*(mutab|borrow|receiver).*"),
                 error::getMessage);
     }
+    @Test
+    void guest_reservation_is_atomic_with_respect_to_its_two_field_invariant() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
+            context.eval(Source.newBuilder("ores", INVENTORY + """
+                    pub routine main(): void {
+                      let mut InventoryState state = new InventoryState();
+                      const bool first = state.try_reserve(3);
+                      const bool invalid = state.try_reserve(20);
+                      stdio.stdout.write(state.available);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(state.reserved);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(first);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(invalid);
+                      return;
+                    }
+                    """, "injected-state-container.ores").build());
+        }
+        assertEquals("7|3|true|false", out.toString(StandardCharsets.UTF_8));
+    }
+
 }
