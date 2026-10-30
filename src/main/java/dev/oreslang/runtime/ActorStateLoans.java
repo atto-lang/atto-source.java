@@ -72,9 +72,28 @@ public final class ActorStateLoans implements AutoCloseable {
             Object handlerIdentity, ExecutionContext executionOwner) {
         synchronized (monitor) {
             if (closed) return OresFuture.failed(new IllegalStateException("actor state loans closed"));
-            if (executionOwner != null && hasExecutionAuthorityLocked(executionOwner)) {
-                return OresFuture.failed(new IllegalStateException(
-                        "logical execution already holds or awaits a state loan"));
+            if (executionOwner == null) {
+                if (authorityMode == AuthorityMode.EXECUTION_BOUND) {
+                    return OresFuture.failed(new IllegalStateException(
+                            "legacy state-loan identity cannot enter an execution-bound arbiter"));
+                }
+                authorityMode = AuthorityMode.LEGACY;
+            } else {
+                if (authorityMode == AuthorityMode.LEGACY) {
+                    return OresFuture.failed(new IllegalStateException(
+                            "execution-bound state authority cannot mix with legacy identity"));
+                }
+                if (boundAllocation == null) {
+                    boundAllocation = executionOwner.allocationDomain();
+                } else if (!boundAllocation.equals(executionOwner.allocationDomain())) {
+                    return OresFuture.failed(new IllegalArgumentException(
+                            "actor state loan belongs to a different actor allocation incarnation"));
+                }
+                authorityMode = AuthorityMode.EXECUTION_BOUND;
+                if (hasExecutionAuthorityLocked(executionOwner)) {
+                    return OresFuture.failed(new IllegalStateException(
+                            "logical execution already holds or awaits a state loan"));
+                }
             }
             if (!owners.add(handlerIdentity)) {
                 return OresFuture.failed(new IllegalStateException(
