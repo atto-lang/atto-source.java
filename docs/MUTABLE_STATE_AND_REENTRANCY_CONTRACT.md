@@ -137,8 +137,11 @@ shared-mode wrapper must protect the entire invariant.
 `InjectedMutableStateContainerTest` now exercises: exclusively owned
 two-field mutation across cooperation without a mutex; borrowed injection
 into a mutating method; rejection of a read-only borrow attempting that
-method, and exact-output Graal guest execution of validated two-field
-reservation including an overdraw refusal. These are admission tests; no actor reentrancy, automatic injection
+method; private-field read/write exclusion; read-only injected scalar
+observation; and exact-output Graal guest executions of both inline
+validated reservation and the checked-in native source
+`examples/state-container-injection.ores`. Overdraw and zero/negative requests
+must leave the joint invariant intact. These are admission tests; no actor reentrancy, automatic injection
 framework, partition optimizer, or shared-state synchronization is implied.
 
 A next-step shared container should be an opaque owning handle with distinct
@@ -147,9 +150,30 @@ effects. It must not copy mutable fields out or expose escaping internal
 references. Preserve the cheap owned-class path when the region never
 escapes its task/actor.
 
+## Source-first implementation milestone
+
+`examples/state-container-injection.ores` is the first canonical native
+Oreslang implementation of the encapsulated-container pattern. Its two
+mutable fields are private; public operations expose immutable scalar
+observations and a `mut self` reservation operation that validates
+before writing related fields. A checkout function receives a
+`borrow mut` handle and a reporting function receives a read-only
+`borrow`. Neither function receives ownership of the container.
+
+This adds no mandatory proxy object, Java collection, per-operation heap
+guard, GC wrapper, reflection, or runtime DI registry. A compiler may keep
+exclusively owned scalar state in SSA/stack storage, and a region-owned
+aggregate may be allocated in an explicit arena if it escapes.
+That optimization and real codegen require separate proof and metrics.
+
+The example is intentionally not yet a synchronized shared state region:
+reusing one instance across worker threads/actors requires separately checked
+`Send`/`Sync` capabilities and invariant-wide protection. No implicit
+actor reentrancy has been enabled.
+
 ## Java baseline regression scope
 
-LocalMutableStateBoundaryTest has 13 tests, plus five MutexLockOrderAdmissionTest cases and four InjectedMutableStateContainerTest cases: local scalar and exclusive heap
+LocalMutableStateBoundaryTest has 13 tests, plus five MutexLockOrderAdmissionTest cases and eight InjectedMutableStateContainerTest cases: local scalar and exclusive heap
 mutation, lexical loan retirement, synchronous exclusive parameter access,
 conflicting local loans, local-reference return/capture, cooperation with a
 live read/write loan, live/released guard admission, and one exact-output
