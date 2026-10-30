@@ -47,13 +47,14 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                         .allocatePrivateBytes(Long.BYTES);
                     firstMemory.set(block);
                     block.writeLong(0, 1);
+                    ActorPersistenceBridge.Activation binding =
+                        ActorPersistenceBridge.bindTrustedCurrentActor(context, key, 1);
                     return (delta, turn) -> {
                         long next = Math.addExact(block.readLong(0), delta);
                         block.writeLong(0, next);
-                        Write write = new Write(key, "first-deposit", 1, 0, 1,
-                            Kind.SNAPSHOT, encode(next));
-                        ActorPersistenceBridge.onCompletionInCurrentActor(
-                            turn.runtime(), sidecar, write, (receipt, failure) -> {
+                        ActorPersistenceBridge.onSnapshotCompletionInCurrentActor(
+                            binding, sidecar, "first-deposit", 0, 1, encode(next),
+                            (receipt, failure) -> {
                                 // This callback runs under the actor-wide execution
                                 // lease, never on the blocking SQLite worker.
                                 try {
