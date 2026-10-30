@@ -41,6 +41,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.incident_guard = patch.object(pub, "require_resolved_blocking_incidents")
         self.incident_mock = self.incident_guard.start()
         self.addCleanup(self.incident_guard.stop)
+        self.incident_comments_guard = patch.object(
+            pub, "gh_api_list", side_effect=self.incident_comments_api()
+        )
+        self.incident_comments_guard.start()
+        self.addCleanup(self.incident_comments_guard.stop)
         # Existing isolated transfer/FS tests model the downstream publisher;
         # protected-source provenance gets independent real-guard tests below.
         self.origin_guard = patch.object(pub, "verify_protected_origin")
@@ -55,11 +60,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def incident_api(self, states=None, repository_id=None, issue_ids=None):
         states = states or {
-            22: ("closed", "completed"),
-            77: ("closed", "completed"),
-            127: ("closed", "completed"),
-            171: ("closed", "completed"),
-            172: ("closed", "completed"),
+            number: ("closed", "completed")
+            for number in pub.BLOCKING_INCIDENTS
         }
         repository_id = (
             pub.BLOCKING_INCIDENT_REPOSITORY_ID
@@ -100,6 +102,50 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "state_reason": reason,
                 }
             raise AssertionError((method, route))
+        return api
+
+    def incident_comments_api(
+            self, reviewer_id=None, reviewer_login=None,
+            missing=None, body_overrides=None, full_page=None):
+        reviewer_id = (
+            pub.INCIDENT_DISPOSITION_REVIEWER_ID
+            if reviewer_id is None else reviewer_id
+        )
+        reviewer_login = (
+            pub.INCIDENT_DISPOSITION_REVIEWER
+            if reviewer_login is None else reviewer_login
+        )
+        missing = set() if missing is None else set(missing)
+        body_overrides = {} if body_overrides is None else dict(body_overrides)
+        full_page = set() if full_page is None else set(full_page)
+
+        def api(route):
+            prefix = (
+                "repos/" + pub.BLOCKING_INCIDENT_REPO + "/issues/"
+            )
+            suffix = "/comments?per_page=100"
+            if not route.startswith(prefix) or not route.endswith(suffix):
+                raise AssertionError(route)
+            number = int(route[len(prefix):-len(suffix)])
+            if number in missing:
+                return []
+            marker = (
+                pub.INCIDENT_DISPOSITION_MARKER
+                + " issue=#" + str(number)
+            )
+            body = body_overrides.get(number, marker)
+            comment = {
+                "id": number * 1000 + 1,
+                "user": {
+                    "id": reviewer_id,
+                    "login": reviewer_login,
+                },
+                "body": body,
+            }
+            if number in full_page:
+                return [dict(comment, id=number * 1000 + index)
+                        for index in range(100)]
+            return [comment]
         return api
 
     def test_blocking_p0_incidents_accept_only_completed_closure(self):
@@ -162,6 +208,65 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_author_marker_without_independent_reviewer(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    reviewer_id=2148448,
+                    reviewer_login="the1mills",
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "lacks independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_missing_exact_disposition_marker(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    body_overrides={22: "review complete but no marker"}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "#22 lacks independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_reviewer_identity_drift(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    reviewer_id=pub.INCIDENT_DISPOSITION_REVIEWER_ID + 1
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "lacks independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_fail_closed_on_full_comment_page(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(full_page={22}),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "comments exceed single-page audit bound"
+            ):
                 ORIGINAL_REQUIRE_RESOLVED()
 
     def test_quarantined_repository_id_rejected_even_after_slug_rename(self):
