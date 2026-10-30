@@ -172,6 +172,47 @@ final class ActorStateRwLoansTest {
     }
 
     @Test
+    void logicalRetirementFencesStateButDoesNotReleasePhysicalSuspensionBarrier() {
+        var loans = new ActorStateRwLoans(2);
+        var execution = actor(7101, 111, 5);
+        var active = loans.acquireWriteAsync(execution).join();
+
+        assertFalse(active.readyToSuspend(execution));
+        loans.close();
+        assertFalse(active.heldBy(execution),
+                "logical close must immediately revoke state access");
+        assertFalse(active.readyToSuspend(execution),
+                "logical retirement cannot permit suspension while the physical loan is live");
+        assertFalse(loans.physicallyRetired(),
+                "actor arena cannot retire while the physical state loan remains held");
+
+        active.close();
+        assertTrue(active.readyToSuspend(execution));
+        assertTrue(loans.physicallyRetired());
+    }
+
+    @Test
+    void foreignAndStaleExecutionsCannotBypassLoanSuspensionBarrier() {
+        try (var loans = new ActorStateRwLoans(2)) {
+            var owner = actor(7201, 121, 9);
+            var sameExecutionOnAnotherCarrier = actor(7201, 121, 9);
+            var staleSlot = actor(7201, 121, 8);
+            var foreign = actor(7202, 122, 9);
+            var active = loans.acquireReadAsync(owner).join();
+
+            assertFalse(active.readyToSuspend(sameExecutionOnAnotherCarrier));
+            assertFalse(active.readyToSuspend(staleSlot));
+            assertFalse(active.readyToSuspend(foreign));
+            active.close();
+
+            assertTrue(active.readyToSuspend(sameExecutionOnAnotherCarrier));
+            assertFalse(active.readyToSuspend(staleSlot),
+                    "stale generation cannot certify safe suspension after physical release");
+            assertFalse(active.readyToSuspend(foreign));
+        }
+    }
+
+    @Test
     void closeFailsPendingAndFencesActiveAuthority() {
         var loans = new ActorStateRwLoans(2);
         var activeContext = actor(7001, 101, 1);
