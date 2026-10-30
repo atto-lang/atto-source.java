@@ -7267,13 +7267,6 @@ public final class OresEvalRootNode extends RootNode {
                         : bits ^ Long.MIN_VALUE;
                 return Double.longBitsToDouble(bits);
             }
-            if (value instanceof Float raw) {
-                int bits = Float.floatToRawIntBits(raw);
-                bits = operation.equals("abs")
-                        ? bits & Integer.MAX_VALUE
-                        : bits ^ Integer.MIN_VALUE;
-                return Float.intBitsToFloat(bits);
-            }
             throw new IllegalArgumentException("Math." + operation
                     + " currently supports int/i64 and float/f64; bigint, decimal and f32 "
                     + "remain fail-closed until distinct runtime lowering exists");
