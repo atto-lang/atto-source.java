@@ -37,6 +37,15 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
         void grantEpoch(String tenant, String actor, long epoch);
         /** Commit results atomically with state, dedup and epoch validation. */
         List<Result> commit(List<Write> batch) throws Exception;
+        /**
+         * Trusted host provider proof, not a caller-supplied receipt.
+         * Must read the durable operation ledger and compare tenant, actor,
+         * slot, op ID, epoch, expected version, schema, kind and payload bytes.
+         * Fail closed for providers without such a ledger (e.g. MemoryStore).
+         */
+        default boolean verifyDurableCommit(Write write, Result receipt) throws Exception {
+            return false;
+        }
     }
     /** Must enqueue a continuation under the existing actor-wide execution lease. */
     public interface ActorMailbox { void post(Runnable continuation); }
@@ -146,8 +155,16 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
             if (results == null || results.size() != batch.size()) throw new IllegalStateException("bad store receipts");
             for (int i = 0; i < batch.size(); i++) {
                 Result receipt = results.get(i);
-                if (receipt == null || !receipt.operationId().equals(batch.get(i).write().operationId()))
+                Write expected = batch.get(i).write();
+                if (receipt == null || !receipt.operationId().equals(expected.operationId()))
                     throw new IllegalStateException("unmatched store receipt");
+                if (receipt.status() == Status.COMMITTED || receipt.status() == Status.DUPLICATE) {
+                    if (expected.expectedVersion() == Long.MAX_VALUE
+                            || receipt.version() != expected.expectedVersion() + 1L)
+                        throw new IllegalStateException("invalid commit version");
+                    if (receipt.durable() && !store.verifyDurableCommit(expected, receipt))
+                        throw new IllegalStateException("unverified durable commit");
+                }
             }
             for (int i = 0; i < batch.size(); i++) batch.get(i).answer().complete(results.get(i));
         } catch (Exception failure) {
