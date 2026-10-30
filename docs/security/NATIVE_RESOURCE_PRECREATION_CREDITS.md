@@ -121,3 +121,38 @@ The actor-side close check covers the native TCP `Socket` path, not
 arbitrary actor-created `AutoCloseable` resource types. Those still require
 trusted adapter-specific, non-forgeable physical close receipts. Explicit
 host-initiated ownership transfers remain a separate trusted operation.
+
+## Generic actor-owned resource close receipts — follow-up hardening
+
+- Direct actor-origin `unregister(generic AutoCloseable)` now fails closed
+  without a successful, trusted adapter close receipt. This prevents a generic
+  native resource from refunding its ancestor handle/byte quota merely because
+  guest-adjacent code drops its registration.
+- Trusted host adapters may use `closeAndUnregister(resource)`: it refuses
+  outstanding physical loans, blocks new loans while close runs, executes
+  `resource.close()` **outside** the native-I/O monitor, then retires the
+  original resource receipt without releasing or reallocating an intervening
+  quota. A failed close keeps the handle strongly reachable and charged, fences
+  further loans, and allows explicit retry. This callback is trusted-host
+  evidence, not independent OS-level proof: native buffers/FFI handles need
+  adapter-specific unforgeable physical-retirement evidence.
+- Context shutdown joins any active trusted close callback before sweeping
+  registered resources. A late race between join and sweep cannot issue a
+  concurrent second close; retryable close failures are quarantined. Both
+  `Exception` and `Error` from the native close callback retain the resource
+  for a subsequent explicit trusted retry.
+- Native resource accounting now falls back to the captured exact
+  `NativeIoAuthority` actor ID when the worker's operation ThreadLocal is
+  absent. Conflicting operation, actor-turn, and native-authority IDs are
+  rejected instead of accidentally treating a retained native worker as
+  privileged host code.
+- The `ActorRegisteredResourceQuotaTest` tests exercise generic actor
+  unregister denial, close failure/retry without credit refund, shutdown
+  racing a blocked close callback, a fatal Error and retry, and authority-only
+  native worker attribution. The pre-creation tests remain in
+  `NativeResourceCreationPermitTest`. **None of these new JUnit test cases
+  have executed on an authorized JDK25/GraalVM CI runner.**
+
+Even with these restrictions, trusted host transfers of native resources are
+explicitly allowed and the receiving host must maintain independent ownership
+accounting. This is not an OS sandbox, nor proof of zero-GC or hard real-time.
