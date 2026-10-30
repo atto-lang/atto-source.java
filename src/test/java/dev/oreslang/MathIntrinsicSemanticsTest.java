@@ -6,8 +6,12 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Primitive Math dispatch is compiler-owned but remains shadowable by source namespaces. */
 final class MathIntrinsicSemanticsTest {
@@ -55,6 +59,39 @@ final class MathIntrinsicSemanticsTest {
                   return;
                 }
                 """));
+    }
+
+    private static String sharedFixture(String name) throws Exception {
+        return Files.readString(Path.of("tests", "fixtures", "numeric-v1", name),
+                StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void executesByteIdenticalPortableMathFixture() throws Exception {
+        String guest = sharedFixture("math-i64-ok.ores");
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(84L, context.eval(OresLanguage.ID, guest).asLong());
+        }
+    }
+
+    @Test
+    void portableMinFixturesTakeCheckedOverflowPath() throws Exception {
+        for (String name : new String[] {
+                "math-i64-abs-min.ores",
+                "math-i64-neg-min.ores"
+        }) {
+            String guest = sharedFixture(name);
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                var failure = assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                        () -> context.eval(OresLanguage.ID, guest), name);
+                assertTrue(failure.getMessage() != null
+                                && failure.getMessage().contains("ORES_I64_OVERFLOW"),
+                        () -> "portable fixture did not use checked overflow path: "
+                                + name + ": " + failure.getMessage());
+            }
+        }
     }
 
     @Test
