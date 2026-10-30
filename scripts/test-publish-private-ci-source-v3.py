@@ -262,6 +262,8 @@ class PrivateCiV3Test(unittest.TestCase):
             "run_attempt": 2,
             "runner_id": 1000001714,
             "runner_name": "GitHub Actions 1000001714",
+            "runner_group_name": "GitHub Actions",
+            "labels": ["ubuntu-latest"],
             "status": "completed",
             "conclusion": "success",
             "steps": [
@@ -291,6 +293,8 @@ class PrivateCiV3Test(unittest.TestCase):
         bad_jobs = [
             dict(job, runner_id=0),
             dict(job, runner_name="  "),
+            dict(job, runner_group_name="Self-hosted"),
+            dict(job, labels=["self-hosted", "linux"]),
             dict(job, steps=[]),
             dict(
                 job,
@@ -330,6 +334,13 @@ class PrivateCiV3Test(unittest.TestCase):
                     "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
                 )
 
+        future_update = dict(run, updated_at="2026-10-30T22:41:00Z")
+        with patch.object(v3.legacy, "gh_api", return_value=future_update):
+            with self.assertRaisesRegex(v3.Denied, "temporally"):
+                v3.verify_carrier_capacity(
+                    "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
+                )
+
     def test_carrier_capacity_rejects_unobserved_duplicate_and_unbounded_jobs(self):
         now = dt.datetime(2026, 10, 30, 22, 40, tzinfo=dt.timezone.utc)
         carrier = contract()
@@ -357,6 +368,8 @@ class PrivateCiV3Test(unittest.TestCase):
             "run_attempt": 1,
             "runner_id": 1000001714,
             "runner_name": "GitHub Actions 1000001714",
+            "runner_group_name": "GitHub Actions",
+            "labels": ["ubuntu-latest"],
             "status": "completed",
             "conclusion": "success",
             "steps": [step],
