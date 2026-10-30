@@ -10,7 +10,7 @@ public final class CglActorMessageTraceSmoke {
         require(trace.record(actor, 1, 10, 13, true));
         require(trace.record(actor, 2, 20, 23, false));
         require(!trace.record(actor, 3, 30, 33, true));
-        require(!trace.record(actor, 0, 40, 50, true));
+        require(!trace.record(actor, -1, 40, 50, true));
         require(!trace.snapshot().hasCompleteCapture());
         trace.sealAfterActorsStopped();
         var snapshot = trace.snapshot();
@@ -20,7 +20,7 @@ public final class CglActorMessageTraceSmoke {
         require(snapshot.dropped() == 1 && snapshot.invalid() == 1);
         require(!snapshot.hasCompleteCapture());
         var clean = new CglActorMessageTrace(1);
-        require(clean.record(actor, 1, -10, -9, true));
+        require(clean.record(actor, 0, -10, -9, true));
         clean.sealAfterActorsStopped();
         require(clean.snapshot().hasCompleteCapture());
         require(!clean.record(actor, 2, 1, 2, true));
