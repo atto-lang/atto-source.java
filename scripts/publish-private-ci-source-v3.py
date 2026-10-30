@@ -736,7 +736,11 @@ def verify_carrier_capacity(repository, contract, run_id, now=None):
                     and isinstance(runner_name, str) and runner_name.strip()
                     and runner_group == "GitHub Actions"
                     and isinstance(labels, list)
-                    and "self-hosted" not in labels
+                    and bool(labels)
+                    and all(isinstance(label, str) and label.strip()
+                            for label in labels)
+                    and all(label.strip().casefold() != "self-hosted"
+                            for label in labels)
                     and job.get("status") == "completed"
                     and job.get("conclusion") == "success"
                     and isinstance(steps, list)
