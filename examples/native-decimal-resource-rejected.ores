@@ -1,0 +1,13 @@
+import class BigIntValue from '../stdlib/bigint';
+import class DecimalValue from '../stdlib/decimal';
+
+pub routine main(): void {
+  let List<int> limbs = new List<int>();
+  for (let int i = 0; i < 257; i = i + 1) {
+    limbs.add(1);
+  }
+  val BigIntValue oversized = new BigIntValue(1, 257, limbs);
+  val DecimalValue impossible = new DecimalValue(oversized, 0);
+  stdio.stdout.write(impossible.scale);
+  rt fail("decimal resource policy unexpectedly admitted oversized coefficient");
+}
