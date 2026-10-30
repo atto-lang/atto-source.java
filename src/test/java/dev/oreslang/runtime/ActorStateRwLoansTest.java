@@ -104,6 +104,27 @@ final class ActorStateRwLoansTest {
     }
 
     @Test
+    void foreignOrStaleActorIncarnationCannotEnterBoundRwArbiter() {
+        try (var loans = new ActorStateRwLoans(4)) {
+            var current = actor(3501, 66, 1);
+            var loan = loans.acquireReadAsync(current).join();
+
+            var foreignActor = ExecutionContext.actorBound(
+                    7, 3502, 67, 1,
+                    9, 4, 11,
+                    0, 0);
+            var staleActor = ExecutionContext.actorBound(
+                    7, 3503, 68, 1,
+                    9, 3, 10,
+                    0, 0);
+            assertTrue(loans.acquireReadAsync(foreignActor).isCompletedExceptionally());
+            assertTrue(loans.acquireWriteAsync(staleActor).isCompletedExceptionally());
+            assertEquals(1, loans.activeReaderCount());
+            loan.close();
+        }
+    }
+
+    @Test
     void sameLogicalExecutionCannotRecursivelyAcquireOrChangeMode() {
         try (var loans = new ActorStateRwLoans(4)) {
             var context = actor(4001, 71, 1);
