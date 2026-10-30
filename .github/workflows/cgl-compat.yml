@@ -8,6 +8,7 @@ on:
       - 'stdlib/**'
       - 'examples/together.ores'
       - 'docs/CGL_DEPLOYMENT.md'
+      - 'docs/CGL_DISPATCH_EVIDENCE_V1.md'
       - '.github/workflows/cgl-compat.yml'
   workflow_dispatch:
 permissions:
