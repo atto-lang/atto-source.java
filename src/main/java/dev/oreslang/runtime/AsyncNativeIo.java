@@ -565,15 +565,23 @@ public final class AsyncNativeIo implements AutoCloseable {
                     "native registered resource handle/byte admission capacity exhausted");
         }
         ActorRuntime.NativeIoAuthority authority = ActorRuntime.captureNativeIoAuthority();
-        ActorPermissionScope.ResourceReservation quota = authority == null
-                ? null : authority.reserveResource(accountedBytes, "register native resource");
-        ActorRuntime.ActorId owner = currentOwnerActor();
-        resources.add(resource);
-        resourceLoans.put(resource, new ResourceLeaseState(
-                nextResourceGeneration.incrementAndGet(), resource,
-                owner, quota, accountedBytes));
-        registeredAccountedBytes += accountedBytes;
-        incrementActorOperationLocked(owner);
+        Runnable publish = () -> {
+            // Only trusted, allocation-free ownership bookkeeping may run
+            // inside the actor lifecycle monitor. STOP cannot see zero loans
+            // between admission and publication of this registered handle.
+            ActorPermissionScope.ResourceReservation quota = authority == null
+                    ? null : authority.reserveResource(
+                            accountedBytes, "register native resource");
+            ActorRuntime.ActorId owner = currentOwnerActor();
+            resources.add(resource);
+            resourceLoans.put(resource, new ResourceLeaseState(
+                    nextResourceGeneration.incrementAndGet(), resource,
+                    owner, quota, accountedBytes));
+            registeredAccountedBytes += accountedBytes;
+            incrementActorOperationLocked(owner);
+        };
+        if (authority == null) publish.run();
+        else authority.withLiveIncarnation("register native resource", publish);
     }
 
     /**
