@@ -63,7 +63,7 @@ define module bigint_math as
     }
   end
 
-  fnc trimmed_used(List<int> limbs): int {
+  fnc trimmed_used(&List<int> limbs): int {
     let int used = limbs.size;
     for (let int i = used - 1; i >= 0; i = i - 1) {
       if limbs.get(i) != 0; do
@@ -279,7 +279,7 @@ define module bigint_math as
     if borrow != 0; do
       rt fail("bigint: internal subtraction borrow escaped magnitude");
     fi
-    let int used = trimmed_used(out);
+    let int used = trimmed_used(&out);
     if used == 0; do
       return zero();
     fi
@@ -325,7 +325,7 @@ define module bigint_math as
       out.set(i + right.limb_count(), carry);
     }
 
-    let int used = trimmed_used(out);
+    let int used = trimmed_used(&out);
     let int sign = 1;
     if left.signum() != right.signum(); do
       sign = -1;
