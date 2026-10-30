@@ -1865,6 +1865,45 @@ public final class OwnershipChecker {
                 throw error("nested mutex acquisition requires a proven lock order; "
                         + "release the current MutexGuard before acquiring another mutex");
             }
+            // Non-name receivers (e.g. Mutex.new(3).with_lock(...)) must
+            // receive the same lexical protected-state treatment as named
+            // mutex locals. Otherwise their callbacks run through the
+            // generic call fallback without a critical-section admission fence.
+            if (concreteReceiver != null
+                    && (concreteReceiver.name().equals("Mutex")
+                            || concreteReceiver.name().equals("SharedMutex"))
+                    && concreteReceiver.arguments().size() == 1
+                    && (member.member().equals("with_lock")
+                            || member.member().equals("recover"))
+                    && call.arguments().size() == 1) {
+                if (member.member().equals("recover")
+                        && !concreteReceiver.name().equals("SharedMutex")) {
+                    throw error("recover is only available on SharedMutex<T>");
+                }
+                if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                    throw error(member.member()
+                            + " requires an inline lambda so protected mutex state remains lexical");
+                }
+                if (lambda.parameters().size() != 1) {
+                    throw error(member.member()
+                            + " callback must accept exactly one protected-value parameter");
+                }
+                Ast.Param original = lambda.parameters().getFirst();
+                Ast.Param protectedParam = new Ast.Param(
+                        Ast.TypeRef.borrowed(concreteReceiver.arguments().getFirst(), true),
+                        original.name(),
+                        original.structural(),
+                        false);
+                Ast.LambdaExpr protectedLambda = new Ast.LambdaExpr(
+                        List.of(protectedParam), lambda.expressionBody(), lambda.blockBody());
+                mutexCriticalSectionDepth++;
+                try {
+                    checkLambda(protectedLambda, scope, null);
+                } finally {
+                    mutexCriticalSectionDepth--;
+                }
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());

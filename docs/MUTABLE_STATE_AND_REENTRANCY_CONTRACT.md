@@ -91,7 +91,7 @@ It leaves non-nested sequential acquisitions legal. A future ordered
 multi-lock primitive must validate resource identity, total ordering,
 cancellation, and exception safety before lifting this restriction.
 
-Seven added `MutexLockOrderAdmissionTest` cases cover overlapping distinct
+Ten added `MutexLockOrderAdmissionTest` cases cover overlapping distinct
 and identical handles, `try_lock`, `lock_async`, and positive sequential
 release/acquire. Source parsing is required before negative ownership checks;
 the new cases are authored but not yet JDK/Maven-executed.
@@ -179,7 +179,7 @@ actor reentrancy has been enabled.
 
 ## Java baseline regression scope
 
-LocalMutableStateBoundaryTest has 13 tests, plus seven MutexLockOrderAdmissionTest cases and eight InjectedMutableStateContainerTest cases: local scalar and exclusive heap
+LocalMutableStateBoundaryTest has 13 tests, plus ten MutexLockOrderAdmissionTest cases and eight InjectedMutableStateContainerTest cases: local scalar and exclusive heap
 mutation, lexical loan retirement, synchronous exclusive parameter access,
 conflicting local loans, local-reference return/capture, cooperation with a
 live read/write loan, live/released guard admission, and one exact-output

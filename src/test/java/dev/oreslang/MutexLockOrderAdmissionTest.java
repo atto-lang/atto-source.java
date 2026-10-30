@@ -84,6 +84,39 @@ final class MutexLockOrderAdmissionTest {
     }
 
     @Test
+    void inline_mutex_with_lock_must_validate_the_lexical_critical_callback() {
+        rejects("""
+                  Mutex.new(3).with_lock(|value| -> {
+                    const second = Mutex.new(4).lock();
+                    second.release();
+                    return;
+                  });
+                """);
+    }
+
+    @Test
+    void inline_shared_mutex_recover_must_validate_the_lexical_critical_callback() {
+        rejects("""
+                  SharedMutex.new(3).recover(|value| -> {
+                    const second = Mutex.new(4).lock();
+                    second.release();
+                    return;
+                  });
+                """);
+    }
+
+    @Test
+    void inline_mutex_callback_without_nested_acquisition_remains_admissible() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(TWO_MUTEXES + """
+                  Mutex.new(3).with_lock(|value| -> {
+                    return;
+                  });
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void guards_released_between_acquisitions_remain_valid() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(TWO_MUTEXES + """
                   const first = left.lock();
