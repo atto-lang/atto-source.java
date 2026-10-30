@@ -1233,7 +1233,7 @@ public final class TypeChecker {
             checkConstructorNoEscape(owner, result.value(), initialized, required, fixed);
             if (!initialized.containsAll(required)) {
                 throw new IllegalArgumentException("constructor for " + owner
-                        + " returns before every fixed field is initialized");
+                        + " returns before every required field is initialized");
             }
             return Set.of(); // explicit return: no successor to this statement
         }
