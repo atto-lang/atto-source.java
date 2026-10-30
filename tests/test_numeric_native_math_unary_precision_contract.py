@@ -139,9 +139,7 @@ class DecimalPrecisionContractTest(unittest.TestCase):
                     continue
                 # Exact terminating decimal iff the reduced denominator has no
                 # prime factors other than 2 and 5.
-                from fractions import Fraction
-                frac = Fraction(int(a.scaleb(-a.as_tuple().exponent)),
-                                int(b.scaleb(-b.as_tuple().exponent)))
+                frac = Fraction(a) / Fraction(b)
                 denom = frac.denominator
                 while denom % 2 == 0: denom //= 2
                 while denom % 5 == 0: denom //= 5
