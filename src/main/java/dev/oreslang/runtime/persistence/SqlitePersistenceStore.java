@@ -195,9 +195,9 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         }
     }
     /**
-     * Activation-scoped restore. Fence lookup and all recovered data reads
-     * share one SQLite read snapshot, so another connection cannot change the
-     * epoch between the authorization check and subsequent state queries.
+     * Activation-scoped restore. A short SQLite IMMEDIATE transaction serializes
+     * fence validation and recovered state reads against competing writers;
+     * no external connection can rotate epoch between the check and reads.
      * A trusted host may still call load() for migration or inspection;
      * actor reactivation must use this fenced entry point instead.
      */
@@ -205,7 +205,10 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         checkOpen();
         Objects.requireNonNull(id);
         if (trustedEpoch <= 0) throw new IllegalArgumentException("invalid restore epoch");
-        execute("BEGIN");
+        // Serialize with competing epoch grants/commits across JDBC connections.
+        // This short write reservation runs only on the trusted blocking
+        // storage worker, never on an actor execution carrier.
+        begin();
         try {
             if (epoch(id) != trustedEpoch) throw new SecurityException("STALE_EPOCH");
             Recovery restored = readRestoreWithinCurrentTransaction(id);
