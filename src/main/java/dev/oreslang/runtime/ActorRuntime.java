@@ -233,6 +233,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || currentActor.get() != owner
                     || currentMutexExecutionSegment() != physicalTurn
                     || owner.stopped.get()
+                    || currentStatePermit.get() != this
                     || !loan.heldBy(execution)
                     || (write && loan.access() != ActorStateRwLoans.Access.WRITE)) {
                 throw new SecurityException(
@@ -240,7 +241,19 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        @Override public void close() { loan.close(); }
+        @Override public void close() {
+            if (currentActorRuntime() != ActorRuntime.this
+                    || currentActor.get() != owner
+                    || currentMutexExecutionSegment() != physicalTurn
+                    || currentStatePermit.get() != this) {
+                throw new SecurityException("foreign carrier cannot release an actor state loan");
+            }
+            try {
+                loan.close();
+            } finally {
+                currentStatePermit.remove();
+            }
+        }
     }
 
     /**
@@ -256,6 +269,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.stopped.get() || cell.finalized
                 || cell.codeExecutor == null || !currentThreadOwnsActorExecutionLease()) {
             throw new SecurityException("state loan requires authenticated live source actor");
+        }
+        if (currentStatePermit.get() != null) {
+            throw new IllegalStateException("nested actor critical state loan is forbidden");
         }
         long ticket = nextStateExecutionTicket.incrementAndGet();
         if (ticket <= 0 || stateRuntimeDomain <= 0 || cell.ref.generation() <= 0) {
@@ -277,6 +293,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorStateRwLoans.StateLoan loan = future.join();
         StatePermit permit = new StatePermit(cell, execution, loan,
                 currentMutexExecutionSegment());
+        currentStatePermit.set(permit);
         try {
             permit.requireHeld(write);
             return permit;
@@ -561,6 +578,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final long stateRuntimeDomain = NEXT_STATE_RUNTIME_DOMAIN.getAndIncrement();
     /** Unique across all actors and all loans in this runtime. */
     private final AtomicLong nextStateExecutionTicket = new AtomicLong();
+    /** Lexical critical ownership never nests on one carrier, even via untyped host calls. */
+    private final ThreadLocal<StatePermit> currentStatePermit = new ThreadLocal<>();
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
