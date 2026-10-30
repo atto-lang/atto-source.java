@@ -47,7 +47,7 @@ public final class CglActorMessageTrace {
     /** Caller must pass timestamps measured around the actual handler invocation. */
     public synchronized boolean record(UUID actor, long sequence, long enter,
                                        long exit, boolean sourceActor) {
-        if (sealed || actor == null || sequence < 0 || exit - enter < 0) {
+        if (sealed || actor == null || sequence < 0 || exit < enter) {
             if (invalid != Long.MAX_VALUE) invalid++;
             return false;
         }
