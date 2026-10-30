@@ -85,6 +85,41 @@ final class ActorStateExecutionAuthorityTest {
     }
 
     @Test
+    void arbiterIsBoundToOneActorAllocationIncarnation() {
+        try (var loans = new ActorStateLoans(4)) {
+            var current = actor(1001, 41, 6, 11);
+            var loan = loans.acquireAsync(current).join();
+
+            var foreignActor = ExecutionContext.actorBound(
+                    7, 1002, 42, 1,
+                    9, 4, 11,
+                    0, 0);
+            var staleActor = actor(1003, 43, 1, 10);
+            assertTrue(loans.acquireAsync(foreignActor).isCompletedExceptionally());
+            assertTrue(loans.acquireAsync(staleActor).isCompletedExceptionally());
+            loan.close();
+        }
+    }
+
+    @Test
+    void legacyAndExecutionBoundAuthorityModesCannotMix() {
+        try (var legacy = new ActorStateLoans(2)) {
+            Object oldIdentity = new Object();
+            var oldLoan = legacy.acquireAsync(oldIdentity).join();
+            assertTrue(legacy.acquireAsync(actor(2001, 51, 1, 11))
+                    .isCompletedExceptionally());
+            oldLoan.close();
+        }
+
+        try (var bound = new ActorStateLoans(2)) {
+            var current = actor(2002, 52, 1, 11);
+            var loan = bound.acquireAsync(current).join();
+            assertTrue(bound.acquireAsync(new Object()).isCompletedExceptionally());
+            loan.close();
+        }
+    }
+
+    @Test
     void distinctExecutionsRemainFifoAndExclusive() {
         try (var loans = new ActorStateLoans(2)) {
             var firstExecution = actor(1001, 41, 6, 11);
