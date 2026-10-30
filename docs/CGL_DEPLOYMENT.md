@@ -12,12 +12,14 @@ Status: **draft Linux compatibility pilot**, NOT a CGL-qualified or hard-real-ti
 
 ## Local steps
 
-    python3 -m unittest discover -s tests -p test_cgl_preflight.py -v
-    python3 scripts/cgl-preflight.py
-    mvn -B -ntp -DskipTests package
+    rustc --edition=2021 -D warnings --test scripts/cgl_preflight.rs -o /tmp/cgl-tests
+    /tmp/cgl-tests --test-threads=1
+    rustc --edition=2021 -D warnings -O scripts/cgl_preflight.rs -o /tmp/cgl-preflight
+    /tmp/cgl-preflight
+    mvn -B -ntp verify
     mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
     mvn -B -ntp -Pnative-aot -DskipTests package
-    python3 scripts/cgl-preflight.py --binary target/ores-aot
+    /tmp/cgl-preflight --binary target/ores-aot
     ./target/ores-aot --mode=aot --platform=linux examples/together.ores
 
 Run these on an actual CGL target image before claiming compatibility. For a PREEMPT_RT-specific host, run with --require-preempt-rt and preserve the JSON report. Check libc/interpreter and dynamic dependency compatibility separately; the ELF header is not sufficient.
@@ -47,9 +49,8 @@ That setting is not proof of deadline latency, privileged scheduling
 admission, CPU exclusivity, or carrier-grade certification.
 
 The negative test matrix covers foreign ELF architecture, malformed headers,
-program-header bounds, missing load segments and loader, wrong permissions,
-symlinked executables, 128 reproducible malformed payloads, missing binaries
-and unknown PREEMPT_RT state. The LLVM native C++ admission test also avoids
+program-header bounds, missing executable segments and loader, bad mapping
+permissions, symlinked executables, and unknown PREEMPT_RT state. The LLVM native C++ admission test also avoids
 assert-dependent side effects, allowing it to fail even with NDEBUG enabled.
 
 Private source must not be mirrored just because another organization has
@@ -98,6 +99,16 @@ All jobs bind checkout to the PR's immutable head SHA and report the Git tree.
 
 The new checks were exercised with focused local synthetic ELF admission
 cases and native GCC/Clang C executables. This does **not** mean the committed
-full unittest matrix, Maven/GraalVM, LLVM compiler AOT, or carrier-grade
+full compiled Rust suite, Maven/GraalVM, LLVM compiler AOT, or carrier-grade
 runtime test suites have executed. Zero-step GitHub Actions failures are
 infrastructure/admission evidence only, not test failure evidence.
+
+## Rust-only CGL admission tooling
+
+The source-local host/ELF preflight and its adversarial regression suite are
+implemented in `scripts/cgl_preflight.rs` using the Rust standard library.
+Both CI jobs compile the command and run its native test harness; no additional
+package manager or third-party dependencies are required for the preflight.
+The output retains the `oreslang.cgl.compat.v1` JSON schema and exit code 2 for
+admission failure. A successful Linux/ELF preflight is *not* realtime or vendor
+CGL certification. Tests must execute with nonzero steps at the exact PR tree.
