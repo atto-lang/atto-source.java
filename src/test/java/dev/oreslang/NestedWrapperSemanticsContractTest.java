@@ -95,6 +95,7 @@ final class NestedWrapperSemanticsContractTest {
                         return twice(n);
                     });
                     return;
+                }
                 """));
         assertTrue(mismatch.getMessage().contains("initializer for implicitlyFlattened has type"), mismatch.getMessage());
         assertTrue(mismatch.getMessage().contains("Future"), mismatch.getMessage());
@@ -122,6 +123,7 @@ final class NestedWrapperSemanticsContractTest {
                         return n + 2;
                     });
                     return;
+                }
                 """));
         assertTrue(badCallback.getMessage().contains("Future.flatMap callback must return Future<T>"),
                 badCallback.getMessage());
