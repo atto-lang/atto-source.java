@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -Dtest=ActorNativeStorageStandaloneTest test | tee "$RUNNER_TEMP/native-arena-junit.log"
+          mvn -B -DfailIfNoTests=true -Dtest=ActorNativeStorageStandaloneTest test | tee "$RUNNER_TEMP/native-arena-junit.log"
           echo 'PASS isolated native arena storage tests (not ActorRuntime or guest parity)'
 
       - name: Record verified source, JUnit and binary evidence
@@ -117,7 +117,7 @@ jobs:
           suite = ET.parse(xml).getroot()
           counts = {key: int(suite.attrib.get(key, "-1"))
                     for key in ("tests", "failures", "errors", "skipped")}
-          if counts != {"tests": 11, "failures": 0, "errors": 0, "skipped": 0}:
+          if counts != {"tests": 13, "failures": 0, "errors": 0, "skipped": 0}:
               raise SystemExit(f"standalone JUnit tests not fully executed: {counts}")
           def sha256(file):
               return hashlib.sha256(file.read_bytes()).hexdigest()
