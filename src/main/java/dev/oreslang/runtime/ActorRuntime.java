@@ -155,6 +155,20 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Trusted native registration must publish physical ownership while
+         * holding the same lifecycle lock that linearizes actor STOP. Never
+         * execute guest/foreign callbacks inside this critical boundary.
+         */
+        void withLiveIncarnation(String operation, Runnable admission) {
+            Objects.requireNonNull(admission, "admission");
+            synchronized (ownerCell.lifecycleLock) {
+                requireLiveIncarnationLocked(operation);
+                scope.requireActive(operation);
+                admission.run();
+            }
+        }
+
         void requireActive(String operation) {
             synchronized (ownerCell.lifecycleLock) {
                 requireLiveIncarnationLocked(operation);
