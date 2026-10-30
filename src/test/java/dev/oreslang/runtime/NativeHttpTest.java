@@ -21,7 +21,14 @@ class NativeHttpTest {
             define actor Worker as
               val String actor_identity = process.unique_id();
               receive(ActorMail<String> mail): void {
+                let bool unbound_denied = false;
+                try { val before = http.current_request_id; }
+                catch (err) { unbound_denied = true; }
                 val request = http.claim(mail.value);
+                if !unbound_denied; then
+                  await request.respond(500, "text/plain", "ambient request inherited across actor receives");
+                  return;
+                fi
                 if request.has_request_local("trace_id"); then
                   await request.respond(500, "text/plain", "leaked from previous request");
                   return;
