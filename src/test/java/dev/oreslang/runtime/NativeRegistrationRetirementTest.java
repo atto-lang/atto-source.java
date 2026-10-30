@@ -94,6 +94,96 @@ final class NativeRegistrationRetirementTest {
     }
 
     @Test
+    void failedConnectCleanupClosesSocketBeforeRegistrationRetirement() throws Exception {
+        try (var io = new AsyncNativeIo(1);
+             var runtime = new ActorRuntime()) {
+            runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+            io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+            var ownerId = new AtomicReference<ActorRuntime.ActorId>();
+            var countAtPhysicalClose = new AtomicInteger(-1);
+            var socket = new Socket() {
+                @Override public synchronized void close() throws java.io.IOException {
+                    countAtPhysicalClose.set(io.outstandingActorOperations(ownerId.get()));
+                    super.close();
+                }
+            };
+            CountDownLatch registered = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                try {
+                    io.register(socket);
+                } catch (Exception failure) {
+                    throw new AssertionError("actor socket registration failed", failure);
+                } finally {
+                    registered.countDown();
+                }
+            });
+            ownerId.set(actor.id());
+            actor.send("register");
+            assertTrue(registered.await(3, TimeUnit.SECONDS));
+            assertEquals(1, io.outstandingActorOperations(actor.id()));
+            actor.cancel();
+            assertFalse(actor.done().isDone());
+            var connectFailure = new java.io.IOException("injected failed connect");
+            NativeIo.retireFailedConnect(io, socket, connectFailure);
+            assertEquals(1, countAtPhysicalClose.get(),
+                    "actor must still own its registration when physical close begins");
+            assertTrue(socket.isClosed());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, io.outstandingActorOperations(actor.id()));
+            assertEquals(0, connectFailure.getSuppressed().length);
+        }
+    }
+
+    @Test
+    void failedPhysicalSocketCloseNeverForgesActorDone() throws Exception {
+        var io = new AsyncNativeIo(1);
+        var runtime = new ActorRuntime();
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        var failedOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var socket = new Socket() {
+            @Override public synchronized void close() throws java.io.IOException {
+                if (failedOnce.getAndSet(false)) {
+                    throw new java.io.IOException("injected physical close failure");
+                }
+                super.close();
+            }
+        };
+        CountDownLatch registered = new CountDownLatch(1);
+        try {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                try {
+                    io.register(socket);
+                } catch (Exception failure) {
+                    throw new AssertionError("actor registration failed", failure);
+                } finally {
+                    registered.countDown();
+                }
+            });
+            actor.send("register");
+            assertTrue(registered.await(3, TimeUnit.SECONDS));
+            actor.cancel();
+            assertFalse(actor.done().isDone());
+            var connectFailure = new java.io.IOException("connect rejected");
+            NativeIo.retireFailedConnect(io, socket, connectFailure);
+            assertFalse(socket.isClosed());
+            assertEquals(1, connectFailure.getSuppressed().length);
+            assertEquals(1, io.outstandingActorOperations(actor.id()));
+            assertFalse(actor.done().isDone(),
+                    "failed close must not retire the physical registration");
+            // Context-owned shutdown retries the physical close and only then
+            // supplies the actor registration retirement notification.
+            io.close();
+            assertTrue(socket.isClosed());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, io.outstandingActorOperations(actor.id()));
+        } finally {
+            io.close();
+            runtime.close();
+        }
+    }
+
+    @Test
     void actorOwnedGenericCloseableCannotTransferWithoutPhysicalWitness() throws Exception {
         var io = new AsyncNativeIo(1);
         var runtime = new ActorRuntime();
