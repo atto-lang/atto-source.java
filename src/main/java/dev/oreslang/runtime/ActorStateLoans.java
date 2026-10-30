@@ -122,7 +122,7 @@ public final class ActorStateLoans implements AutoCloseable {
         if (nextEpoch == Long.MAX_VALUE) {
             throw new IllegalStateException("actor state loan epochs exhausted");
         }
-        ExclusiveLoan loan = new ExclusiveLoan(owner, ++nextEpoch);
+        ExclusiveLoan loan = new ExclusiveLoan(owner, executionOwner, ++nextEpoch);
         active = loan;
         return loan;
     }
