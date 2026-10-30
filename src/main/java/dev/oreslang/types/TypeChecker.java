@@ -5987,7 +5987,7 @@ public final class TypeChecker {
                         // initialized in its declaration is NEVER writable
                         // through that exception (including new 'final' fields).
                         boolean initializingInConstructor =
-                                currentConstructorOwner == klass
+                                currentConstructorOwner == field.owner()
                                 && field.field().initializer() == null
                                 && member.receiver() instanceof Ast.NameExpr root
                                 && root.name().equals("self");
