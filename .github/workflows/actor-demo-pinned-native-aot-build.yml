@@ -97,9 +97,20 @@ jobs:
           # jq's ordinary parser retains only the last duplicate JSON key.
           # Stream the original key/value tokens so an escaped Unicode alias
           # or a repeated protected key cannot override compiler admission.
-          jq --stream -s -e '
-            [.[] | select(length == 2 and (.[0] | length) == 1) | .[0][0]] as $keys
-            | ($keys | length) == ($keys | unique | length)
+          # --stream -s can emit both false and trailing true, with the
+          # final true masking duplicate keys under jq -e. Reduce *all*
+          # streamed tokens to ONE final boolean; fail on decoded aliases.
+          jq -n --stream -e '
+            reduce inputs as $event
+              ({seen: [], duplicate: false};
+               if ($event | length) == 2 and ($event[0] | length) == 1 then
+                 if (.seen | index($event[0][0])) != null then
+                   .duplicate = true
+                 else
+                   .seen += [$event[0][0]]
+                 end
+               else . end)
+            | (.duplicate | not)
           ' target/ores-aot.build-info.json >/dev/null
           invalid="$(mktemp --suffix=.ores)"
           trap 'rm -f "$invalid"' EXIT
