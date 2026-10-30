@@ -70,6 +70,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    /** A scoped dispatch marker, never persistent request authority. */
+    private static final ThreadLocal<Long> CURRENT_HTTP_MAIL_SEQUENCE = new ThreadLocal<>();
     /** Current actor-owned source task's logical quota, never a carrier's quota. */
     private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
             new ThreadLocal<>();
@@ -228,8 +230,10 @@ public final class ActorRuntime implements AutoCloseable {
         // volatile publication, not lifecycleLock: NativeHttp.checkOwner()
         // commonly holds the exchange state monitor and the inverse order
         // would deadlock against actor cancellation or teardown.
-        if (cell.stopped.get() || cell.activeMail == null) {
-            throw new SecurityException("HTTP request binding requires an active user mail");
+        Long admittedMessage = CURRENT_HTTP_MAIL_SEQUENCE.get();
+        if (cell.stopped.get() || cell.activeMail == null || admittedMessage == null
+                || cell.activeMail.sequence() != admittedMessage.longValue()) {
+            throw new SecurityException("HTTP request binding requires the admitted user mail");
         }
         if (cell.activeHttpExchange != null && cell.activeHttpExchange != exchange) {
             throw new SecurityException("one mailbox receive cannot bind multiple HTTP requests");
@@ -249,8 +253,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<?> cell = currentActor.get();
         if (cell == null) throw new SecurityException("request context has no active mailbox");
-        if (cell.stopped.get() || cell.activeMail == null) {
-            throw new SecurityException("no active request is bound to this mailbox receive");
+        Long admittedMessage = CURRENT_HTTP_MAIL_SEQUENCE.get();
+        if (cell.stopped.get() || cell.activeMail == null || admittedMessage == null
+                || cell.activeMail.sequence() != admittedMessage.longValue()) {
+            throw new SecurityException("no authenticated request-bound continuation is active");
         }
         NativeHttp.Exchange exchange = cell.activeHttpExchange;
         if (exchange == null) {
@@ -1500,12 +1506,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
+            return continuation(continuation, -1L);
+        }
+
+        /** The sequence was captured by the scheduler at registration time. */
+        private static MessageEnvelope continuation(Runnable continuation, long mailSequence) {
             return new MessageEnvelope(
                     null,
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    mailSequence);
         }
 
         private boolean isContinuation() {
@@ -1889,9 +1900,11 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ContinuationTarget {
         private final ActorId actorId;
+        private final long sourceMailSequence;
 
-        private ContinuationTarget(ActorId actorId) {
+        private ContinuationTarget(ActorId actorId, long sourceMailSequence) {
             this.actorId = Objects.requireNonNull(actorId, "actorId");
+            this.sourceMailSequence = sourceMailSequence;
         }
 
         public ActorId actorId() {
@@ -1899,7 +1912,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean enqueue(Runnable continuation) {
-            return enqueueContinuation(actorId, continuation);
+            return enqueueContinuation(actorId, continuation, sourceMailSequence);
         }
     }
 
@@ -1924,7 +1937,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "deferred actor continuation requires an executing actor turn");
         }
-        return new ContinuationTarget(cell.ref.id());
+        Long admittedMessage = CURRENT_HTTP_MAIL_SEQUENCE.get();
+        long sequence = admittedMessage != null && cell.activeMail != null
+                && cell.activeMail.sequence() == admittedMessage.longValue()
+                ? admittedMessage.longValue() : -1L;
+        return new ContinuationTarget(cell.ref.id(), sequence);
     }
 
     /**
@@ -2374,6 +2391,11 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
+        return enqueueContinuation(actorId, continuation, -1L);
+    }
+
+    private boolean enqueueContinuation(
+            ActorId actorId, Runnable continuation, long sourceMailSequence) {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
@@ -2389,7 +2411,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
                 if (!cell.continuationMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
+                        MessageEnvelope.continuation(continuation, sourceMailSequence))) {
                     throw new IllegalStateException(
                             "actor continuation mailbox capacity invariant violated for " + actorId);
                 }
@@ -2439,6 +2461,7 @@ public final class ActorRuntime implements AutoCloseable {
             cell.sourceReceiveSuspended = true;
         }
 
+        final long sourceMailSequence = cell.activeMail.sequence();
         future.whenCompleteRuntime((ignored, failure) -> {
             if (!enqueueContinuation(cell.ref.id(), () -> {
                 long completedSequence;
@@ -2464,7 +2487,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException("source receive lost pending mail sequence");
                 }
                 cell.markMessageProcessed(completedSequence);
-            })) {
+            }, sourceMailSequence)) {
                 boolean failActor = false;
                 synchronized (cell.lifecycleLock) {
                     if (!cell.stopped.get() && !cell.finalized) {
