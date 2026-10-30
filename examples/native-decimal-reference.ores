@@ -93,28 +93,42 @@ pub routine main(): void {
   val DecimalValue half_even_35 = round(&three_point_five, &p1_half_even);
   require(equal(&half_even_25, &integer_two), "decimal HALF_EVEN 2.5 -> 2");
   require(equal(&half_even_35, &integer_four), "decimal HALF_EVEN 3.5 -> 4");
-  require(equal(&round(&two_point_five, &p1_half_up), &integer_three),
+  val DecimalValue half_up_25 = round(&two_point_five, &p1_half_up);
+  val DecimalValue half_down_25 = round(&two_point_five, &p1_half_down);
+  require(equal(&half_up_25, &integer_three),
           "decimal HALF_UP tie away from zero");
-  require(equal(&round(&two_point_five, &p1_half_down), &integer_two),
+  require(equal(&half_down_25, &integer_two),
           "decimal HALF_DOWN tie toward zero");
 
-  require(equal(&round(&two_point_one, &p1_up), &integer_three),
+  val DecimalValue up_positive = round(&two_point_one, &p1_up);
+  val DecimalValue down_positive = round(&two_point_one, &p1_down);
+  val DecimalValue ceiling_positive = round(&two_point_one, &p1_ceiling);
+  val DecimalValue floor_positive = round(&two_point_one, &p1_floor);
+  val DecimalValue ceiling_negative =
+    round(&negative_two_point_one, &p1_ceiling);
+  val DecimalValue floor_negative =
+    round(&negative_two_point_one, &p1_floor);
+  val DecimalValue up_negative = round(&negative_two_point_one, &p1_up);
+  val DecimalValue down_negative = round(&negative_two_point_one, &p1_down);
+  val DecimalValue unnecessary_exact = round(&integer_two, &p1_unnecessary);
+
+  require(equal(&up_positive, &integer_three),
           "decimal UP positive away from zero");
-  require(equal(&round(&two_point_one, &p1_down), &integer_two),
+  require(equal(&down_positive, &integer_two),
           "decimal DOWN positive toward zero");
-  require(equal(&round(&two_point_one, &p1_ceiling), &integer_three),
+  require(equal(&ceiling_positive, &integer_three),
           "decimal CEILING positive");
-  require(equal(&round(&two_point_one, &p1_floor), &integer_two),
+  require(equal(&floor_positive, &integer_two),
           "decimal FLOOR positive");
-  require(equal(&round(&negative_two_point_one, &p1_ceiling), &negative_two),
+  require(equal(&ceiling_negative, &negative_two),
           "decimal CEILING negative toward +infinity");
-  require(equal(&round(&negative_two_point_one, &p1_floor), &negative_three),
+  require(equal(&floor_negative, &negative_three),
           "decimal FLOOR negative toward -infinity");
-  require(equal(&round(&negative_two_point_one, &p1_up), &negative_three),
+  require(equal(&up_negative, &negative_three),
           "decimal UP negative away from zero");
-  require(equal(&round(&negative_two_point_one, &p1_down), &negative_two),
+  require(equal(&down_negative, &negative_two),
           "decimal DOWN negative toward zero");
-  require(equal(&round(&integer_two, &p1_unnecessary), &integer_two),
+  require(equal(&unnecessary_exact, &integer_two),
           "decimal UNNECESSARY exact value");
 
   stdio.stdout.println("NATIVE-DECIMAL-REFERENCE-OK");
