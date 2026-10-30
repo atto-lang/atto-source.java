@@ -3,12 +3,16 @@ package dev.oreslang.types;
 import java.util.Objects;
 
 /**
- * Compiler-side provenance for a shared/actor state-region loan.
+ * Concrete runtime/materialized provenance for a shared/actor state-region loan.
  *
- * <p>This is analysis metadata, not a guest-visible runtime guard. Backends may
- * erase it after verified lowering. The runtime fast path must use its native
- * scheduler/execution identity rather than allocate one of these records per
- * mutation.</p>
+ * <p>The compiler must never fabricate these execution IDs or generations.
+ * Source/HIR carries {@link StateRegionLoanRequirement}; trusted runtime
+ * lowering materializes this record from the authenticated current logical
+ * execution and live region incarnation. It is conformance/receipt metadata,
+ * not a guest-mintable capability.</p>
+ *
+ * <p>The runtime fast path should value-lower or erase this information rather
+ * than allocate one managed record per mutation.</p>
  */
 public record StateRegionLoanProvenance(
         long regionId,
