@@ -70,11 +70,11 @@ final class ActorLinearArenaTest {
     @Test
     void ownershipMarksAutoDropWithoutPerScopeJavaObjects() {
         try (var arena = new ActorLinearArena(256, 8)) {
-            int outer = arena.cleanupMark();
+            long outer = arena.cleanupMark();
             long first = arena.allocateOwned(16, 8);
             assertNotEquals(ActorLinearArena.INVALID_HANDLE, first);
 
-            int inner = arena.cleanupMark();
+            long inner = arena.cleanupMark();
             long transferred = arena.allocateOwned(16, 8);
             long temporary = arena.allocateOwned(16, 8);
             assertNotEquals(0, transferred);
@@ -102,7 +102,7 @@ final class ActorLinearArenaTest {
     @Test
     void staleTrackedOwnerDoesNotSuppressLaterCleanup() {
         try (var arena = new ActorLinearArena(128, 4)) {
-            int mark = arena.cleanupMark();
+            long mark = arena.cleanupMark();
             long stale = arena.allocateOwned(16);
             long survivor = arena.allocateOwned(16);
             assertTrue(arena.remove(stale), "out-of-band removal fixture");
@@ -117,9 +117,9 @@ final class ActorLinearArenaTest {
     @Test
     void lexicalMarkSurvivesMoveOfAnOlderOwner() {
         try (var arena = new ActorLinearArena(256, 8)) {
-            int outer = arena.cleanupMark();
+            long outer = arena.cleanupMark();
             long persistent = arena.allocateOwned(16);
-            int inner = arena.cleanupMark();
+            long inner = arena.cleanupMark();
             long temporaryA = arena.allocateOwned(16);
             long temporaryB = arena.allocateOwned(16);
 
@@ -139,7 +139,7 @@ final class ActorLinearArenaTest {
         try (var arena = new ActorLinearArena(256, 8)) {
             long first = arena.allocateOwned(16);
             long second = arena.allocateOwned(16);
-            int inner = arena.cleanupMark();
+            long inner = arena.cleanupMark();
             assertTrue(arena.dropOwned(first));
             assertTrue(arena.releaseOwned(second));
             long child = arena.allocateOwned(16);
@@ -154,9 +154,9 @@ final class ActorLinearArenaTest {
     @Test
     void movedOwnershipDoesNotEvadeOuterCleanup() {
         try (var arena = new ActorLinearArena(256, 8)) {
-            int outer = arena.cleanupMark();
+            long outer = arena.cleanupMark();
             long moved = arena.allocateOwned(16);
-            int inner = arena.cleanupMark();
+            long inner = arena.cleanupMark();
             assertTrue(arena.releaseOwned(moved));
             assertTrue(arena.adoptOwned(moved));
             assertTrue(arena.cleanupTo(inner),
@@ -170,13 +170,13 @@ final class ActorLinearArenaTest {
     @Test
     void ownershipTrackingCanReleaseOutOfOrderWithoutMovingOtherCheckpoints() {
         try (var arena = new ActorLinearArena(2048, 64)) {
-            int mark = arena.cleanupMark();
+            long mark = arena.cleanupMark();
             long[] owners = new long[63];
             for (int i = 0; i < owners.length; i++) {
                 owners[i] = arena.allocateOwned(16);
                 assertNotEquals(0L, owners[i]);
             }
-            int nested = arena.cleanupMark();
+            long nested = arena.cleanupMark();
             for (int i = 0; i < owners.length; i += 2)
                 assertTrue(arena.releaseOwned(owners[i]));
             long child = arena.allocateOwned(16);
@@ -195,7 +195,7 @@ final class ActorLinearArenaTest {
     @Test
     void staleTrackedSlotReuseCannotHideAnOutOfBandRemoval() {
         try (var arena = new ActorLinearArena(128, 3)) {
-            int mark = arena.cleanupMark();
+            long mark = arena.cleanupMark();
             long stale = arena.allocateOwned(16);
             assertTrue(arena.remove(stale));
             long replacement = arena.allocateOwned(16);
@@ -213,7 +213,7 @@ final class ActorLinearArenaTest {
     void releasedOwnerNodesAreReusedWithoutGrowingMetadata() {
         try (var arena = new ActorLinearArena(64, 2)) {
             for (int round = 0; round < 20_000; round++) {
-                int mark = arena.cleanupMark();
+                long mark = arena.cleanupMark();
                 long value = arena.allocateOwned(16);
                 assertNotEquals(0L, value);
                 if ((round & 1) == 0) assertTrue(arena.dropOwned(value));
@@ -233,7 +233,7 @@ final class ActorLinearArenaTest {
             int baseline = arena.usedBytes();
 
             for (int i = 0; i < 20_000; i++) {
-                int mark = arena.cleanupMark();
+                long mark = arena.cleanupMark();
                 long scratch = arena.allocateOwned(16, 8);
                 assertNotEquals(0L, scratch, "turn scratch must recycle despite a live actor field");
                 assertTrue(arena.putLong(scratch, 0, i));
@@ -266,6 +266,42 @@ final class ActorLinearArenaTest {
             assertEquals(0L, arena.getLong(persistent, 0));
             assertTrue(arena.remove(persistent));
             assertEquals(0, arena.usedBytes());
+        }
+    }
+
+    @Test
+    void checkpointCounterCrossesIntegerBoundaryWithoutAliasing() throws Exception {
+        try (var arena = new ActorLinearArena(128, 4)) {
+            var serial = ActorLinearArena.class.getDeclaredField("lastCleanupSerial");
+            serial.setAccessible(true);
+            serial.setLong(arena, (long) Integer.MAX_VALUE - 1L);
+            long parent = arena.cleanupMark();
+            long first = arena.allocateOwned(16);
+            long child = arena.cleanupMark();
+            long second = arena.allocateOwned(16);
+            assertEquals((long) Integer.MAX_VALUE, child);
+            assertNotEquals(0L, second);
+            assertEquals((long) Integer.MAX_VALUE + 1L, arena.cleanupMark());
+            assertTrue(arena.cleanupTo(child));
+            assertThrows(IllegalStateException.class, () -> arena.getLong(second, 0));
+            assertEquals(1, arena.liveAllocations());
+            assertTrue(arena.cleanupTo(parent));
+            assertThrows(IllegalStateException.class, () -> arena.getLong(first, 0));
+        }
+    }
+
+    @Test
+    void ownershipSequenceExhaustionFailsClosed() throws Exception {
+        try (var arena = new ActorLinearArena(64, 2)) {
+            var serial = ActorLinearArena.class.getDeclaredField("lastCleanupSerial");
+            serial.setAccessible(true);
+            serial.setLong(arena, Long.MAX_VALUE);
+            assertEquals(ActorLinearArena.INVALID_HANDLE, arena.allocateOwned(16));
+            long raw = arena.allocate(16);
+            assertNotEquals(0L, raw);
+            assertFalse(arena.adoptOwned(raw));
+            assertTrue(arena.remove(raw));
+            assertEquals(0, arena.liveAllocations());
         }
     }
 
