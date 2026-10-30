@@ -664,6 +664,36 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void rootManifestChangeAfterDiscoveryMustFailBeforeLinking() throws Exception {
+        Path project = temp.resolve("root-reassignment");
+        Path main = source(project, "src/main.ores", "app", """
+                pub fnc main(): void { return; }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.app]
+                files = ["src/main.ores"]
+                """);
+        PackageNamespaceWorkspace.Workspace admitted =
+                PackageNamespaceWorkspace.discover(main);
+        assertTrue(admitted != null);
+        PackageNamespaceWorkspace.verifyRootManifestSnapshot(admitted);
+
+        // Membership and source bytes remain identical; only ownership
+        // changes after package admission. Do not trust the second manifest.
+        Files.writeString(manifest, Files.readString(manifest)
+                .replace("[packages.app]", "[packages.foreign]"));
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyRootManifestSnapshot(admitted));
+        assertTrue(denied.getMessage().contains("root namespace manifest changed"));
+        assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyPinnedSnapshot(admitted, Map.of()));
+    }
+
+    @Test
     void pinnedManifestMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
         Path providerManifest = billing(provider);
