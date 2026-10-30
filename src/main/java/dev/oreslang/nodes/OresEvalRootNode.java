@@ -9876,13 +9876,27 @@ public final class OresEvalRootNode extends RootNode {
                 return structuralRecordMatches(value, target);
             }
             String name = target.name();
-            if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
-                    || name.equals("i64") || name.equals("u8") || name.equals("u16")
-                    || name.equals("u32") || name.equals("u64") || name.equals("uint")
-                    || name.equals("bigint")) return value instanceof Byte || value instanceof Short
-                            || value instanceof Integer || value instanceof Long;
-            if (name.equals("float") || name.equals("f32") || name.equals("f64")
-                    || name.equals("decimal")) return value instanceof Float || value instanceof Double;
+            if (name.equals("int") || name.equals("i64"))
+                return value instanceof Byte || value instanceof Short
+                        || value instanceof Integer || value instanceof Long;
+            if (java.util.Set.of("i8","i16","i32","u8","u16","u32","u64","uint")
+                    .contains(name)) {
+                throw new IllegalArgumentException(
+                        name + " runtime identity is disabled until its distinct integer-width lowering exists");
+            }
+            if (name.equals("bigint")) {
+                throw new IllegalArgumentException(
+                        "bigint runtime identity is disabled until arbitrary-precision guest lowering exists");
+            }
+            if (name.equals("decimal")) {
+                throw new IllegalArgumentException(
+                        "decimal runtime identity is disabled until exact base-10 guest lowering exists");
+            }
+            if (name.equals("f32")) {
+                throw new IllegalArgumentException(
+                        "f32 runtime identity is disabled until binary32 storage/rounding exists");
+            }
+            if (name.equals("float") || name.equals("f64")) return value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
             if (name.equals("Symbol") && findClass("Symbol") == null)
@@ -10385,13 +10399,27 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(value instanceof String)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
-            if (java.util.Set.of("i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint").contains(declared.name())) {
-                if (!(value instanceof Number number) || !isIntegral(number)) throw returnTypeMismatch(callable, declared, value);
-                return value;
+            if (declared.name().equals("int") || declared.name().equals("i64")) {
+                if (!(value instanceof Number number) || !isIntegral(number))
+                    throw returnTypeMismatch(callable, declared, value);
+                return number.longValue();
             }
-            if (java.util.Set.of("f32","f64","float","decimal").contains(declared.name())) {
-                if (!(value instanceof Number)) throw returnTypeMismatch(callable, declared, value);
-                return value;
+            if (java.util.Set.of("i8","i16","i32","u8","u16","u32","u64","uint")
+                    .contains(declared.name())) {
+                throw new IllegalArgumentException(callable + " uses unsupported numeric return type "
+                        + declared.name() + "; distinct width/unsigned lowering is required");
+            }
+            if (declared.name().equals("bigint") || declared.name().equals("decimal")
+                    || declared.name().equals("f32")) {
+                throw new IllegalArgumentException(callable + " uses unsupported numeric return type "
+                        + declared.name() + "; refusing a fake carrier alias");
+            }
+            if (declared.name().equals("f64") || declared.name().equals("float")) {
+                if (!(value instanceof Number number)
+                        || value instanceof java.math.BigInteger
+                        || value instanceof java.math.BigDecimal)
+                    throw returnTypeMismatch(callable, declared, value);
+                return number.doubleValue();
             }
             if (java.util.Set.of("complex64","complex128","complex").contains(declared.name())) {
                 if (!(value instanceof Number) && !(value instanceof Complex)) throw returnTypeMismatch(callable, declared, value);
