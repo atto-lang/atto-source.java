@@ -290,8 +290,8 @@ final class ImplicitValInitializeSyntaxTest {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
-        assertTrue(error.getMessage().contains("immutable/final"),
-                "inherited fixed fields cannot gain constructor-write privileges: " + error);
+        assertTrue(error.getMessage().contains("inherits uninitialized fixed field"),
+                "inherited fixed fields must be rejected before their child constructor can write them: " + error);
     }
 
     @Test
