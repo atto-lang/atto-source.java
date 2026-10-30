@@ -9973,7 +9973,10 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("string") || name.equals("String")) return value instanceof String;
             if (name.equals("Symbol") && findClass("Symbol") == null)
                 return value instanceof dev.oreslang.runtime.OresSymbol;
-            if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
+            if (name.equals("complex64"))
+                throw new IllegalArgumentException(
+                        "complex64 runtime identity is disabled until binary32-component complex lowering exists");
+            if (name.equals("complex") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
@@ -10493,7 +10496,11 @@ public final class OresEvalRootNode extends RootNode {
                     throw returnTypeMismatch(callable, declared, value);
                 return number.doubleValue();
             }
-            if (java.util.Set.of("complex64","complex128","complex").contains(declared.name())) {
+            if (declared.name().equals("complex64")) {
+                throw new IllegalArgumentException(callable
+                        + " uses unsupported numeric return type complex64; distinct binary32-component lowering is required");
+            }
+            if (java.util.Set.of("complex128","complex").contains(declared.name())) {
                 if (!(value instanceof Number) && !(value instanceof Complex)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
