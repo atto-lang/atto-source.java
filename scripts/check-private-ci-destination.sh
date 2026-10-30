@@ -60,11 +60,20 @@ for quarantined_id in "${quarantined_ids[@]}"; do
 done
 
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
-metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring)] | @tsv' 2>/dev/null)" ||
+metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring), (.archived|tostring), (.disabled|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* && "$metadata" != *$'\r'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=$'\t' read -r actual_name visibility private_flag actual_id <<< "$metadata"
+IFS=
+[[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
+[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
+# Reject GitHub's null / missing values too; private but inactive is not safe.
+[[ "$archived" == false && "$disabled" == false ]] ||
+  fail 'destination archived/disabled status is unsafe or unknown'
+[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
+  fail 'GitHub numeric repository ID differs from independently reviewed approval'
+printf 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY: %s (private id=%s)\n' "$target" "$approved_id"
+\t' read -r actual_name visibility private_flag actual_id archived disabled <<< "$metadata"
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
 [[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
