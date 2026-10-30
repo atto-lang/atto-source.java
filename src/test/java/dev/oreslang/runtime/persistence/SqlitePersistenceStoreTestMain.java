@@ -86,6 +86,28 @@ public final class SqlitePersistenceStoreTestMain {
                 var mixed=store.commit(List.of(write("a","conflict",1,0,Kind.SNAPSHOT,1),write("b","first",1,0,Kind.SNAPSHOT,9)));
                 check(mixed.get(0).status()==Status.VERSION_CONFLICT && mixed.get(1).durable(),"cross-actor isolation failure");
             }
+            // Corrupt the journal deliberately: never silently restore a
+            // partial committed event stream as if it were complete state.
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","tampered",1);
+                check(store.commit(List.of(write("tampered","evt1",1,0,Kind.EVENT,70),
+                    write("tampered","evt2",1,1,Kind.EVENT,71))).stream()
+                    .allMatch(Result::durable),"tamper fixture did not commit");
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate(
+                    "DELETE FROM events WHERE tenant='tenant-a' AND actor='tampered' AND version=1")==1,
+                    "tamper setup failed");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                boolean rejected=false;
+                try { store.loadFenced(new Identity("tenant-a","tampered","main"),1); }
+                catch (java.sql.SQLException expected) {
+                    rejected=expected.getMessage().contains("INCOMPLETE_ACTOR_JOURNAL");
+                }
+                check(rejected,"missing committed event did not block actor restoration");
+            }
             Process child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),
                 "-cp",System.getProperty("java.class.path"),SqlitePersistenceStoreTestMain.class.getName(),"child",file.toString())
                 .redirectErrorStream(true).start();
