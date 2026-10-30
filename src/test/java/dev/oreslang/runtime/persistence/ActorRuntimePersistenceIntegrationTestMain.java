@@ -52,8 +52,8 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                         ActorPersistenceBridge.bindTrustedCurrentActor(context, key, 1);
                     oldGrant.set(binding);
                     return (delta, turn) -> {
-                        long next = Math.addExact(block.readLong(0), delta);
-                        block.writeLong(0, next);
+                        long previous = block.readLong(0);
+                        long next = Math.addExact(previous, delta);
                         ActorPersistenceBridge.onSnapshotCompletionInCurrentActor(
                             binding, sidecar, "first-deposit", 0, 1, encode(next),
                             (receipt, failure) -> {
@@ -67,8 +67,9 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                                     check(receipt.durable() &&
                                         receipt.status() == Status.COMMITTED &&
                                         receipt.version() == 1, "commit receipt not durable");
-                                    check(block.readLong(0) == next,
-                                        "actor-local state modified off actor carrier");
+                                    check(block.readLong(0) == previous,
+                                        "staged state changed before durable confirmation");
+                                    block.writeLong(0, next);
                                     persisted.complete(receipt);
                                 } catch (Throwable problem) {
                                     persisted.completeExceptionally(problem);
