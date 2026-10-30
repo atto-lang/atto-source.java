@@ -3972,6 +3972,7 @@ public final class Parser {
     /** Lexer-level work bound before parsing scalar-only cpu { ... }. */
     private void preflightScalarCpuTokens() {
         int parens = 0;
+        int consecutiveOperators = 0;
         for (int i = current; i < tokens.size(); i++) {
             Token token = tokens.get(i);
             // Count the closing delimiter too: this is a strict 1,024-
@@ -3982,6 +3983,18 @@ public final class Parser {
             if (token.type() == LBRACE) {
                 throw error(token,
                         "nested blocks are not admitted inside scalar cpu region");
+            }
+            // parseUnary() is recursive. Do not construct a potentially
+            // thousand-frame unary chain before the AST depth gate runs.
+            // Counting every adjacent operator token is conservative:
+            // the closed scalar region needs no other operator sequences.
+            if (token.type() == PLUS || token.type() == MINUS
+                    || token.type() == BANG || token.type() == TILDE) {
+                if (++consecutiveOperators > 64) {
+                    throw error(token, "scalar cpu region exceeds unary operator depth budget");
+                }
+            } else {
+                consecutiveOperators = 0;
             }
             if (token.type() == LPAREN && ++parens > 64) {
                 throw error(token, "scalar cpu region exceeds parenthesis depth budget");
