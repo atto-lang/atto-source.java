@@ -198,6 +198,43 @@ public final class ExactScalarMath {
     }
 
     /**
+     * Explicit decimal rounding. Precision zero is intentionally rejected here:
+     * callers that want no rounding should keep the exact value rather than
+     * selecting a context that looks like an active rounding policy.
+     */
+    public static BigDecimal round(BigDecimal value, MathContext context) {
+        validate(Objects.requireNonNull(value, "value"));
+        validateRoundingContext(Objects.requireNonNull(context, "context"));
+        return checked(value.round(context));
+    }
+
+    /** Exact Decimal -> finite binary64 conversion; any rounding is rejected. */
+    public static double toDoubleExact(BigDecimal value) {
+        validate(Objects.requireNonNull(value, "value"));
+        double converted = value.doubleValue();
+        if (!Double.isFinite(converted)) {
+            throw new ArithmeticException("Decimal does not fit finite binary64");
+        }
+        if (new BigDecimal(converted).compareTo(value) != 0) {
+            throw new ArithmeticException("Decimal cannot be represented exactly as binary64");
+        }
+        return converted;
+    }
+
+    /**
+     * Explicit nearest-even Decimal -> finite binary64 conversion. Precision
+     * loss is admitted by the API name; overflow to infinity is still rejected.
+     */
+    public static double toDoubleNearest(BigDecimal value) {
+        validate(Objects.requireNonNull(value, "value"));
+        double converted = value.doubleValue();
+        if (!Double.isFinite(converted)) {
+            throw new ArithmeticException("Decimal does not fit finite binary64");
+        }
+        return converted;
+    }
+
+    /**
      * Explicit caller-selected rounding context for nonterminating division.
      * No mutable process-global precision or rounding state is used.
      */
@@ -206,9 +243,7 @@ public final class ExactScalarMath {
         Objects.requireNonNull(context, "context");
         validate(Objects.requireNonNull(numerator, "numerator"));
         validate(Objects.requireNonNull(denominator, "denominator"));
-        if (context.getPrecision() <= 0 || context.getPrecision() > MAX_DIGITS) {
-            throw new IllegalArgumentException("decimal division context precision out of budget");
-        }
+        validateRoundingContext(context);
         preflightDecimal(numerator, denominator, '/');
         // RoundingMode.UNNECESSARY already rejects any inexact quotient
         // with ArithmeticException; no special global rounding state.
@@ -291,6 +326,12 @@ public final class ExactScalarMath {
         BigInteger value = toBigInteger(number);
         validate(value); // reject enormous host integers before decimal conversion
         return new BigDecimal(value);
+    }
+
+    private static void validateRoundingContext(MathContext context) {
+        if (context.getPrecision() <= 0 || context.getPrecision() > MAX_DIGITS) {
+            throw new IllegalArgumentException("decimal context precision out of budget");
+        }
     }
 
     private static BigDecimal checked(BigDecimal result) {
