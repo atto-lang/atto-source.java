@@ -566,8 +566,10 @@ public final class AsyncNativeIo implements AutoCloseable {
         }
         ActorRuntime.NativeIoAuthority authority = ActorRuntime.captureNativeIoAuthority();
         Runnable publish = () -> {
-            // Only trusted, allocation-free ownership bookkeeping may run
-            // inside the actor lifecycle monitor. STOP cannot see zero loans
+            // Only trusted ownership bookkeeping (no guest/FFI callbacks)
+            // may run inside the actor lifecycle monitor. The identity maps
+            // can still allocate; this is not a hard-real-time allocation-free path.
+            // STOP cannot see zero loans
             // between admission and publication of this registered handle.
             ActorPermissionScope.ResourceReservation quota = authority == null
                     ? null : authority.reserveResource(
