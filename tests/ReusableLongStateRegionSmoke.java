@@ -63,9 +63,39 @@ public final class ReusableLongStateRegionSmoke {
                 for (int i = 0; i < 100_000; i++) region.write(handle, i);
             }
             check(region.read(handle) == 99_999, "measured writes incorrect");
+            // The new checked arithmetic path has no callback object. As with
+            // write(), allocations are measured only on an already-warm path.
+            for (int i = 0; i < 100_000; i++) region.addExact(handle, 1);
+            long addBytes = -1;
+            if (mx != null && mx.isThreadAllocatedMemorySupported()) {
+                long tid = Thread.currentThread().getId();
+                long before = mx.getThreadAllocatedBytes(tid);
+                for (int i = 0; i < 100_000; i++) region.addExact(handle, 1);
+                addBytes = mx.getThreadAllocatedBytes(tid) - before;
+            } else {
+                for (int i = 0; i < 100_000; i++) region.addExact(handle, 1);
+            }
+            check(region.read(handle) == 299_999, "measured checked addition incorrect");
             System.out.println("java_region_smoke=PASS writes=100000 java_allocated_bytes="
                     + (bytes < 0 ? "unsupported" : Long.toString(bytes))
-                    + " measurement_scope=primitive_write_only");
+                    + " checked_adds=100000 checked_add_allocated_bytes="
+                    + (addBytes < 0 ? "unsupported" : Long.toString(addBytes))
+                    + " measurement_scope=primitive_write_and_checked_add_only");
+        }
+        try (var boundaries = new ReusableLongStateRegion(2)) {
+            long positive = boundaries.insert(Long.MAX_VALUE);
+            long negative = boundaries.insert(Long.MIN_VALUE);
+            try {
+                boundaries.addExact(positive, 1);
+                throw new AssertionError("signed positive overflow was admitted");
+            } catch (ArithmeticException expected) { }
+            try {
+                boundaries.addExact(negative, -1);
+                throw new AssertionError("signed negative overflow was admitted");
+            } catch (ArithmeticException expected) { }
+            check(boundaries.read(positive) == Long.MAX_VALUE
+                    && boundaries.read(negative) == Long.MIN_VALUE,
+                    "overflow must not commit a partial mutation");
         }
     }
 }
