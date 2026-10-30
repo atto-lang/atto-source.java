@@ -138,6 +138,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         Objects.requireNonNull(registrar, "registrar");
         OresFuture<T> future = new OresFuture<>();
         AtomicBoolean callbackClaimed = new AtomicBoolean();
+        OresAsyncTrace.CallbackSnapshot callbackTrace =
+                OresAsyncTrace.captureCallback(OresAsyncTrace.BoundaryKind.CALLBACK_ADAPTER);
 
         Callback<T> completion = new Callback<>() {
             private void claim(String operation) {
@@ -160,6 +162,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             public void reject(Throwable failure) {
                 Objects.requireNonNull(failure, "failure");
                 claim("reject");
+                OresAsyncTrace.attach(failure, callbackTrace);
                 if (!future.failFromRuntime(failure)) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before reject");
@@ -219,11 +222,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 ? () -> cancellable.cancel(true)
                 : () -> { };
         OresFuture<T> result = new OresFuture<>(cancelHook);
+        OresAsyncTrace.CallbackSnapshot callbackTrace =
+                OresAsyncTrace.captureCallback(OresAsyncTrace.BoundaryKind.CALLBACK_ADAPTER);
         stage.whenComplete((value, failure) -> {
             if (failure == null) {
                 result.completeFromRuntime(value);
             } else {
-                result.failFromRuntime(unwrap(failure));
+                Throwable terminalFailure = unwrap(failure);
+                OresAsyncTrace.attach(terminalFailure, callbackTrace);
+                result.failFromRuntime(terminalFailure);
             }
         });
         return result;
