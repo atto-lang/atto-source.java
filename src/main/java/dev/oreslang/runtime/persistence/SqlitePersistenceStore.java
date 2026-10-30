@@ -1,6 +1,7 @@
 package dev.oreslang.runtime.persistence;
 
 import java.nio.file.Path;
+import java.text.Normalizer;
 import java.sql.*;
 import java.util.*;
 import dev.oreslang.runtime.persistence.BatchPersistenceSidecar.*;
@@ -45,8 +46,12 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
     private void rollback() { try { execute("ROLLBACK"); } catch (SQLException ignored) { /* outcome unknown */ } }
     private void checkOpen() { if (closed) throw new IllegalStateException("store closed"); }
     private static void checkId(String s) {
-        if (s==null || s.isBlank() || s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>128 ||
-            s.chars().anyMatch(Character::isISOControl)) throw new IllegalArgumentException("invalid id");
+        if (s == null || s.isBlank()
+                || s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 128
+                || !Normalizer.isNormalized(s, Normalizer.Form.NFC)
+                || s.codePoints().anyMatch(cp -> Character.isISOControl(cp)
+                        || (cp >= 0xD800 && cp <= 0xDFFF)))
+            throw new IllegalArgumentException("invalid id");
     }
     private static void bindKey(PreparedStatement q, Identity id) throws SQLException {
         q.setString(1,id.tenant());q.setString(2,id.actor());q.setString(3,id.state());
