@@ -19,6 +19,12 @@ public final class CglActorMessageTraceSmoke {
         require(!snapshot.samples().get(1).sourceActor());
         require(snapshot.dropped() == 1 && snapshot.invalid() == 1);
         require(!snapshot.hasCompleteCapture(2));
+        // Guard against signed nanosecond subtraction wraparound.
+        var edge = new CglActorMessageTrace(2);
+        require(!edge.record(actor, 0, Long.MAX_VALUE, Long.MIN_VALUE, true));
+        require(edge.record(actor, 0, Long.MIN_VALUE, Long.MAX_VALUE, true));
+        require(edge.snapshot().invalid() == 1);
+        require(!edge.snapshot().hasCompleteCapture(1));
         var clean = new CglActorMessageTrace(1);
         require(clean.record(actor, 0, -10, -9, true));
         clean.sealAfterActorsStopped();
