@@ -25,7 +25,8 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
         CLOSED("closed"),
         STALE_TICKET("stale_ticket"),
         TICKET_USED("ticket_used"),
-        RESOURCE_LIMIT("resource_limit");
+        RESOURCE_LIMIT("resource_limit"),
+        WRONG_QUEUE("wrong_queue");
 
         private final OresSymbol symbol;
 
@@ -511,7 +512,9 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
     }
 
     private PushStatus preflight(Ticket ticket) {
-        requireOwner(ticket);
+        if (ticket.queueId != queueId) {
+            return PushStatus.WRONG_QUEUE;
+        }
 
         if (ticket.generation != generation) {
             ticket.settleWithoutClaim();
