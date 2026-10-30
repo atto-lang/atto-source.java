@@ -26,10 +26,49 @@ public final class ActorStateLoans implements AutoCloseable {
     private long nextEpoch;
     private boolean closed;
     private boolean publishing;
+    private AuthorityMode authorityMode = AuthorityMode.UNSET;
+    private ExecutionContext.AllocationDomain boundAllocation;
+    private final Runnable retirementWakeup;
+    private boolean retirementWakeupDelivered;
+
+    private enum AuthorityMode { UNSET, LEGACY, EXECUTION_BOUND }
 
     public ActorStateLoans(int maxPending) {
+        this(maxPending, () -> { });
+    }
+
+    /**
+     * Host/runtime constructor. The wakeup is invoked only after close() has
+     * sealed new admission and the final physical loan/completion has retired.
+     */
+    public ActorStateLoans(int maxPending, Runnable retirementWakeup) {
         if (maxPending < 0) throw new IllegalArgumentException("negative loan queue capacity");
         this.maxPending = maxPending;
+        this.retirementWakeup = Objects.requireNonNull(
+                retirementWakeup, "retirementWakeup");
+    }
+
+    /** Nonblocking physical-retirement receipt for ActorRuntime finalization. */
+    public boolean physicallyRetired() {
+        synchronized (monitor) {
+            return physicallyRetiredLocked();
+        }
+    }
+
+    private boolean physicallyRetiredLocked() {
+        return closed && active == null && pending.isEmpty()
+                && completions.isEmpty() && !publishing;
+    }
+
+    private void maybeWakeRetirement() {
+        boolean wake = false;
+        synchronized (monitor) {
+            if (physicallyRetiredLocked() && !retirementWakeupDelivered) {
+                retirementWakeupDelivered = true;
+                wake = true;
+            }
+        }
+        if (wake) retirementWakeup.run();
     }
 
     public int pendingCount() {
@@ -261,6 +300,7 @@ public final class ActorStateLoans implements AutoCloseable {
                 promoteLocked();
             }
             publish();
+            maybeWakeRetirement();
         }
     }
 
@@ -276,7 +316,8 @@ public final class ActorStateLoans implements AutoCloseable {
         for (Pending waiter : abandoned) {
             waiter.future.failFromRuntime(new IllegalStateException("actor state loans closed"));
         }
-        // The active loan stays held until its handler's finally/cleanup closes
-        // it. Closing the arbiter fences access immediately via heldBy().
+        // The active loan stays physically held until its handler's
+        // finally/cleanup closes it. Closing only fences further state access.
+        maybeWakeRetirement();
     }
 }
