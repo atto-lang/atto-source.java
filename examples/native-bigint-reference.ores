@@ -52,6 +52,16 @@ pub routine main(): void {
   require(doubled_max.limb_at(2) == 65535, "bigint multiplication limb 2");
   require(doubled_max.limb_at(3) == 65535, "bigint multiplication high limb");
 
+  // Common-contract wide multiplication vector: 2^64 * 2^64 = 2^128.
+  val BigIntValue two_power_64 = mul(&beyond_i64, &two);
+  val BigIntValue two_power_128 = mul(&two_power_64, &two_power_64);
+  require(two_power_128.signum() == 1, "bigint 2^128 sign");
+  require(two_power_128.limb_count() == 9, "bigint 2^128 limb count");
+  for (let int limb = 0; limb < 8; limb = limb + 1) {
+    require(two_power_128.limb_at(limb) == 0, "bigint 2^128 low limbs");
+  }
+  require(two_power_128.limb_at(8) == 1, "bigint 2^128 high limb");
+
   val BigIntValue abs_minimum = abs(&minimum);
   val BigIntValue neg_minimum = neg(&minimum);
   require(equal(&abs_minimum, &neg_minimum), "bigint abs/neg minimum parity");
@@ -66,17 +76,39 @@ pub routine main(): void {
   val BigIntValue positive_two = from_int(2);
   val BigIntValue negative_one = from_int(-1);
 
+  val BigIntDivRem pos_pos = div_rem(&seven, &three);
+  require(equal(&pos_pos.quotient, &positive_two), "bigint 7 / 3 quotient");
+  require(equal(&pos_pos.remainder, &one), "bigint 7 % 3 remainder");
+  val BigIntValue pos_pos_identity =
+    add(&mul(&pos_pos.quotient, &three), &pos_pos.remainder);
+  require(equal(&pos_pos_identity, &seven), "bigint 7/3 division identity");
+  require(compare(&abs(&pos_pos.remainder), &abs(&three)) < 0,
+          "bigint positive remainder magnitude bound");
+
   val BigIntDivRem neg_pos = div_rem(&negative_seven, &three);
   require(equal(&neg_pos.quotient, &negative_two), "bigint -7 / 3 quotient");
   require(equal(&neg_pos.remainder, &negative_one), "bigint -7 % 3 remainder");
+  val BigIntValue neg_pos_identity =
+    add(&mul(&neg_pos.quotient, &three), &neg_pos.remainder);
+  require(equal(&neg_pos_identity, &negative_seven), "bigint -7/3 division identity");
+  require(compare(&abs(&neg_pos.remainder), &abs(&three)) < 0,
+          "bigint negative remainder magnitude bound");
 
   val BigIntDivRem pos_neg = div_rem(&seven, &negative_three);
   require(equal(&pos_neg.quotient, &negative_two), "bigint 7 / -3 quotient");
   require(equal(&pos_neg.remainder, &one), "bigint 7 % -3 remainder");
 
+  val BigIntValue pos_neg_identity =
+    add(&mul(&pos_neg.quotient, &negative_three), &pos_neg.remainder);
+  require(equal(&pos_neg_identity, &seven), "bigint 7/-3 division identity");
+
   val BigIntDivRem neg_neg = div_rem(&negative_seven, &negative_three);
   require(equal(&neg_neg.quotient, &positive_two), "bigint -7 / -3 quotient");
   require(equal(&neg_neg.remainder, &negative_one), "bigint -7 % -3 remainder");
+
+  val BigIntValue neg_neg_identity =
+    add(&mul(&neg_neg.quotient, &negative_three), &neg_neg.remainder);
+  require(equal(&neg_neg_identity, &negative_seven), "bigint -7/-3 division identity");
 
   val BigIntValue two_power_62 = from_int(4611686018427387904);
   val BigIntDivRem beyond_div_two = div_rem(&beyond_i64, &two);
