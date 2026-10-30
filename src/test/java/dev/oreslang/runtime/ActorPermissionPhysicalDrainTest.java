@@ -80,6 +80,26 @@ final class ActorPermissionPhysicalDrainTest {
     }
 
     @Test
+    void lateNativeOwnershipQuarantineInvalidatesAncestorDrainProof() {
+        var root = ActorPermissionScope.root(empty());
+        var parent = root.attenuate(empty());
+        var child = parent.attenuate(empty());
+        var sibling = root.attenuate(empty());
+        var held = child.acquirePhysicalLease("already admitted worker");
+        child.quarantinePhysicalDrain();
+        assertTrue(parent.revoke());
+        assertTrue(child.revoke());
+        held.close();
+        assertTrue(parent.tryDrainReceipt().isEmpty(),
+                "quarantined child must prevent ancestor from claiming drain");
+        assertTrue(child.tryDrainReceipt().isEmpty(),
+                "late native owner lacks independent physical retirement witness");
+        assertTrue(sibling.revoke());
+        assertTrue(sibling.tryDrainReceipt().isPresent(),
+                "quarantine of one delegation must not erase sibling evidence");
+    }
+
+    @Test
     void workerStartAndRevocationRaceCannotIssuePrematureDrain() throws Exception {
         var scope = ActorPermissionScope.root(empty()).attenuate(empty());
         var ready = new CountDownLatch(1);
