@@ -9990,8 +9990,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
-                case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
-                case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
+                case "<", "<=", ">", ">=" -> orderedComparison(op, left, right);
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
@@ -10033,15 +10032,9 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
-            if (left == null || right == null) return false;
-
-            if (left instanceof dev.oreslang.runtime.OresSymbol
-                    || right instanceof dev.oreslang.runtime.OresSymbol) {
-                return left instanceof dev.oreslang.runtime.OresSymbol
-                        && right instanceof dev.oreslang.runtime.OresSymbol
-                        && left.equals(right);
-            }
+            // Numeric semantics precede host reference identity: IEEE NaN is
+            // unequal to itself even if both guest operands reference the same
+            // boxed value.
             if (left instanceof Number a && right instanceof Number b) {
                 return numericValueEquals(a, b);
             }
@@ -10053,6 +10046,15 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (IllegalArgumentException ignored) {
                     return false;
                 }
+            }
+            if (left == right) return true;
+            if (left == null || right == null) return false;
+
+            if (left instanceof dev.oreslang.runtime.OresSymbol
+                    || right instanceof dev.oreslang.runtime.OresSymbol) {
+                return left instanceof dev.oreslang.runtime.OresSymbol
+                        && right instanceof dev.oreslang.runtime.OresSymbol
+                        && left.equals(right);
             }
 
             // Class/actor instances have identity equality by default.
@@ -10126,28 +10128,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean numericValueEquals(Number left, Number right) {
-            if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
-                    || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(left.toString())
-                            .compareTo(new java.math.BigDecimal(right.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return left.doubleValue() == right.doubleValue();
-                }
-            }
+            if (isNaN(left) || isNaN(right)) return false;
             boolean integralLeft = isIntegral(left);
             boolean integralRight = isIntegral(right);
             if (integralLeft && integralRight) return left.longValue() == right.longValue();
-            if (integralLeft != integralRight) {
-                // Converting a long above 2^53 to double silently merges
-                // distinct numeric values. Compare exact finite decimal
-                // representations instead, matching static subsumption.
-                Number integer = integralLeft ? left : right;
-                Number floating = integralLeft ? right : left;
-                if (!Double.isFinite(floating.doubleValue())) return false;
-                return java.math.BigDecimal.valueOf(integer.longValue())
-                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            if (integralLeft != integralRight
+                    || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger
+                    || left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal) {
+                if (isInfiniteFloat(left) || isInfiniteFloat(right)) return false;
+                return exactFiniteDecimal(left).compareTo(exactFiniteDecimal(right)) == 0;
             }
+            // IEEE numeric equality: signed zeros compare equal; NaN was
+            // rejected above.
             return left.doubleValue() == right.doubleValue();
         }
 
@@ -10252,12 +10244,63 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unary - requires a number");
         }
 
+        private boolean orderedComparison(String operator, Object left, Object right) {
+            if (left instanceof Number a && right instanceof Number b
+                    && (isNaN(a) || isNaN(b))) return false;
+            int result = compare(left, right);
+            return switch (operator) {
+                case "<" -> result < 0;
+                case "<=" -> result <= 0;
+                case ">" -> result > 0;
+                case ">=" -> result >= 0;
+                default -> throw new IllegalArgumentException(
+                        "invalid ordered operator " + operator);
+            };
+        }
+
+        private boolean isNaN(Number value) {
+            return (value instanceof Float || value instanceof Double)
+                    && Double.isNaN(value.doubleValue());
+        }
+
+        private boolean isInfiniteFloat(Number value) {
+            return (value instanceof Float || value instanceof Double)
+                    && Double.isInfinite(value.doubleValue());
+        }
+
+        private java.math.BigDecimal exactFiniteDecimal(Number value) {
+            if (value instanceof java.math.BigDecimal decimal) return decimal;
+            if (value instanceof java.math.BigInteger integer)
+                return new java.math.BigDecimal(integer);
+            if (isIntegral(value))
+                return java.math.BigDecimal.valueOf(value.longValue());
+            // Capture the exact finite binary floating value; valueOf(double)
+            // would compare only its shortest decimal rendering.
+            return new java.math.BigDecimal(value.doubleValue());
+        }
+
         private int compare(Object left, Object right) {
             if (left instanceof Number a && right instanceof Number b) {
+                if (isNaN(a) || isNaN(b)) {
+                    throw new IllegalArgumentException("NaN is unordered");
+                }
                 if (isIntegral(a) && isIntegral(b)) {
                     return Long.compare(a.longValue(), b.longValue());
                 }
-                return Double.compare(a.doubleValue(), b.doubleValue());
+                if (isInfiniteFloat(a)) {
+                    return isInfiniteFloat(b)
+                            ? Double.compare(a.doubleValue(), b.doubleValue())
+                            : (a.doubleValue() > 0 ? 1 : -1);
+                }
+                if (isInfiniteFloat(b)) return b.doubleValue() > 0 ? -1 : 1;
+                if (isIntegral(a) != isIntegral(b)
+                        || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger
+                        || a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal) {
+                    return exactFiniteDecimal(a).compareTo(exactFiniteDecimal(b));
+                }
+                double x = a.doubleValue(), y = b.doubleValue();
+                // IEEE ordered comparison treats -0.0 and +0.0 as equal.
+                return x < y ? -1 : x > y ? 1 : 0;
             }
             if (left instanceof String a && right instanceof String b) return a.compareTo(b);
             throw new IllegalArgumentException("values are not comparable");
