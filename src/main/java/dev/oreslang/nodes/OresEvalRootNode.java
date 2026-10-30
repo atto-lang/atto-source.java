@@ -5057,6 +5057,30 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            String mathOperation = mathIntrinsicName(call, env);
+            if (mathOperation != null) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    continuation.accept(task, null, new IllegalArgumentException(
+                            "Math." + mathOperation + " expects exactly one numeric argument"));
+                    return;
+                }
+                evalSuspendableExpr(
+                        task,
+                        call.arguments().getFirst(),
+                        env,
+                        (t, value, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(t, applyMathIntrinsic(mathOperation, value), null);
+                            } catch (RuntimeException | Error mathFailure) {
+                                continuation.accept(t, null, mathFailure);
+                            }
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -6863,6 +6887,9 @@ public final class OresEvalRootNode extends RootNode {
                     if (isBooleanIntrinsicCall(call, env)) {
                         throw new ReturnSignal(evalBooleanIntrinsic(call, env));
                     }
+                    if (isMathIntrinsicCall(call, env)) {
+                        throw new ReturnSignal(evalMathIntrinsic(call, env));
+                    }
                     Invocation invocation = prepareInvocation(call, env);
                     boolean localTailTarget = invocation.kind() == InvocationKind.INVOKABLE
                             ? invocation.target() instanceof TailCallable callable
@@ -7123,6 +7150,76 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return List.copyOf(values);
+        }
+
+        private boolean isMathIntrinsicCall(Ast.CallExpr call, Env env) {
+            return mathIntrinsicName(call, env) != null;
+        }
+
+        private String mathIntrinsicName(Ast.CallExpr call, Env env) {
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("Math")
+                    && (member.member().equals("abs") || member.member().equals("neg"))
+                    && env.lookup("Math") == Env.MISSING
+                    && !modules.containsKey("Math")
+                    && findClass("Math") == null
+                    && !namespaceImports.containsKey("Math")
+                    && !namedImports.containsKey("Math")
+                    && !hostClasses.containsKey("Math")
+                    && !hostSymbols.containsKey("Math")) {
+                return member.member();
+            }
+            return null;
+        }
+
+        private Object evalMathIntrinsic(Ast.CallExpr call, Env env) {
+            String operation = mathIntrinsicName(call, env);
+            if (operation == null) throw new IllegalStateException("not a Math intrinsic call");
+            if (call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException("Math." + operation
+                        + " does not accept call-site type arguments");
+            }
+            if (call.arguments().size() != 1) {
+                throw new IllegalArgumentException("Math." + operation
+                        + " expects exactly one numeric argument");
+            }
+            return applyMathIntrinsic(operation, eval(call.arguments().getFirst(), env));
+        }
+
+        private Object applyMathIntrinsic(String operation, Object value) {
+            if (value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long) {
+                long raw = ((Number) value).longValue();
+                try {
+                    return switch (operation) {
+                        case "abs" -> raw < 0 ? Math.negateExact(raw) : raw;
+                        case "neg" -> Math.negateExact(raw);
+                        default -> throw new IllegalStateException(
+                                "unknown Math intrinsic " + operation);
+                    };
+                } catch (ArithmeticException overflow) {
+                    throw new ArithmeticException(
+                            "ORES_I64_OVERFLOW: checked signed 64-bit Math." + operation);
+                }
+            }
+            if (value instanceof Double raw) {
+                long bits = Double.doubleToRawLongBits(raw);
+                bits = operation.equals("abs")
+                        ? bits & Long.MAX_VALUE
+                        : bits ^ Long.MIN_VALUE;
+                return Double.longBitsToDouble(bits);
+            }
+            if (value instanceof Float raw) {
+                int bits = Float.floatToRawIntBits(raw);
+                bits = operation.equals("abs")
+                        ? bits & Integer.MAX_VALUE
+                        : bits ^ Integer.MIN_VALUE;
+                return Float.intBitsToFloat(bits);
+            }
+            throw new IllegalArgumentException("Math." + operation
+                    + " currently supports int/i64 and float/f64; bigint, decimal and f32 "
+                    + "remain fail-closed until distinct runtime lowering exists");
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
@@ -7538,6 +7635,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.CallExpr call) {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
+                if (isMathIntrinsicCall(call, env)) return evalMathIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
