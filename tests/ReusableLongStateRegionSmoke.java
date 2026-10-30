@@ -82,6 +82,24 @@ public final class ReusableLongStateRegionSmoke {
                     + (addBytes < 0 ? "unsupported" : Long.toString(addBytes))
                     + " measurement_scope=primitive_write_and_checked_add_only");
         }
+        // STOP fences future admission, but physical reclamation must wait
+        // until already admitted async/FFI lifetime tickets have completed.
+        try (var pinned = new ReusableLongStateRegion(1);
+             var foreign = new ReusableLongStateRegion(1)) {
+            long h = pinned.insert(21);
+            long ticket = pinned.pin();
+            check(pinned.activePins() == 1, "lifetime pin admission");
+            rejected(() -> foreign.releasePin(ticket));
+            rejected(() -> pinned.releasePin(h));
+            pinned.beginRetire();
+            rejected(pinned::pin);
+            check(!pinned.tryClose() && !pinned.isClosed(),
+                    "cancellation request incorrectly reclaimed a pinned region");
+            pinned.releasePin(ticket);
+            rejected(() -> pinned.releasePin(ticket));
+            check(pinned.tryClose() && pinned.isClosed(),
+                    "region not reclaimed after explicit completion");
+        }
         try (var boundaries = new ReusableLongStateRegion(2)) {
             long positive = boundaries.insert(Long.MAX_VALUE);
             long negative = boundaries.insert(Long.MIN_VALUE);
