@@ -267,7 +267,7 @@ def gh_api_list(route):
 def github_timestamp(value, label):
     """Parse GitHub's canonical UTC second-resolution timestamp."""
     if (not isinstance(value, str)
-            or not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z", value)):
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value)):
         raise Denied(label)
     try:
         parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
