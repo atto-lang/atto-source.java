@@ -60,11 +60,27 @@ printf 'trusted/ci 246810\r\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
-printf 'trusted/ci 1323575966\n' > "$policy"
-export MOCK_REPOSITORY_ID=1323575966
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
+for quarantined_id in 1323575966 1323598260 1412142815 1370782550 1324139596 1350751074; do
+  printf 'trusted/ci %s\n' "$quarantined_id" > "$policy"
+  export MOCK_REPOSITORY_ID="$quarantined_id"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+done
 unset MOCK_REPOSITORY_ID
+
+for quarantined_slug in \
+  zed-pkg-test/java-app \
+  scintilla-run-test/gleam-runner-conformance \
+  ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra \
+  agent-pontifex-test/agent-pontifex-e2e-tests \
+  led-dynamo/leddy-e2e \
+  ClaimGraph-test/claimgraph-e2e \
+  CLAIMGRAPH-TEST/CLAIMGRAPH-E2E; do
+  printf '%s 246810\n' "$quarantined_slug" > "$policy"
+  expect_fail "$quarantined_slug"
+  expect_wrapper_reject "$quarantined_slug"
+done
+
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
 for visibility in public internal null; do
