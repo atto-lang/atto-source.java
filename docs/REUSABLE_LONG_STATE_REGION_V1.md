@@ -1,0 +1,84 @@
+# Reusable long state region — bounded JVM host substrate
+
+Status: **prototype in draft PR #2305, not Oreslang guest compiler lowering**.
+
+## Storage/ownership
+
+`ReusableLongStateRegion` owns preallocated primitive `long[]` data and
+parallel bounded slot metadata. All storage and pin ledger arrays are created
+once per region. Ordinary `read`, `write`, `addExact` and lifetime
+`pin`/`releasePin` calls do not mandate managed object allocation.
+A caller-supplied `LongUnaryOperator` or synchronization contention may
+still allocate or block. Java arrays and their host reachability **remain
+subject to JVM garbage collection** on both HotSpot and Graal Native Image.
+
+Object handles are 64-bit primitive values encoding a nonreused 23-bit
+domain, 24-bit generation and 16-bit slot. An unsigned top tag bit is
+reserved for lifetime-pin tickets. Exhaustion is an error, not silent handle
+reuse. Numeric handles are not cryptographic or guest-issued capabilities.
+
+## Mutate in place
+
+`write(handle, value)` writes the preallocated scalar slot.
+`addExact(handle, delta)` computes checked signed addition and commits
+only after the overflow check succeeds; signed overflow leaves the previous
+value unchanged. Neither operation creates mandatory copy-on-write buffers,
+snapshots, boxed numbers or callback guards. These are **host primitives**;
+no compiler analysis presently maps guest Oreslang expressions onto them.
+
+The optional callback-based `update` holds a synchronized exclusive
+mutation gate. Nested access/retirement reentry cannot free backing storage
+until the callback returns, and the gate is reset even on throw. The
+callback must not export interior references; source-level lifetime checking
+and restrictions on arbitrary guest callbacks are not yet integrated.
+
+## Lifetime pins and cancellation
+
+`pin()` reserves one of 64 preallocated pin slots, returning a generation-
+tagged primitive ticket. `releasePin(ticket)` validates the type tag,
+owner domain, live slot and exact generation before releasing one pin. A
+slot is never reused at exhausted generation. A pin is **not** mutable-state
+authority; it is an explicit lifetime hold that trusted scheduling / FFI
+adapters must retain through physical completion.
+
+`beginRetire()` monotonically denies new access and pin admission.
+`tryClose()` refuses to reclaim state while a callback is active or the
+pin count is nonzero. Cancellation requests alone do not release pins.
+A trusted task/IO/FFI adapter must fence new producers, await physical
+termination/completion acknowledgements, and only then release each ticket.
+The host primitive cannot independently authenticate those acknowledgements,
+prevent malicious native pointers from escaping or prove arbitrary Java
+object lifetimes.
+
+This region does **not** provide concurrent read leases or general actor
+state access semantics. Synchronized scalar access is correct for the tested
+host API but is not a hard-real-time or non-parking guarantee.
+
+## Evidence/limits
+
+- Local JDK 21, exact Git-blob-equivalent `ReusableLongStateRegion.java`
+  and exact smoke bytes, both compiled and executed successfully.
+- 100000 measured `write` calls: 0–208 thread-allocated bytes observed
+  across separate local executions; 100000 measured `addExact` calls:
+  0 thread-allocated bytes observed. These readings apply only to warmed-up
+  primitive-call loops; no full-VM GC or p99.9 proof follows.
+- Additional local host harness: 27 assertions, four threads performing
+  80000 checked additions; independent pin audit: 18 assertions including
+  pin budget, stale/foreign/duplicate release, and concurrent drain.
+- The repository's full Maven/JUnit suite, Graal Native Image, compiled guest
+  execution and source-level borrow/suspension analysis remain unverified.
+  Source-org Actions fail with zero steps; that means NOT_EXECUTED, not a
+  test failure.
+- A temporary private carrier that previously ran diagnostic checks lacked
+  authenticated source-export policy approval. It is **not an approved CI
+  evidence route** (security issue #2307). All subsequent private-source
+  copying to alternate organizations is blocked pending source security gates.
+  Source-free canaries may establish runner capacity but not guest parity.
+
+## Promotion requirements
+
+Compiler-generated ownership/drop/loan proofs; real scheduler task and
+native FFI completion integration; exact-head Maven/JDK25 and Native Image
+execution, after source-org or an approved private-carrier security review;
+quantitative JFR/ThreadMXBean allocation metrics; contention latency;
+source-level negative tests; and five-backend conformance receipts.
