@@ -152,4 +152,54 @@ final class NativeResourceCreationPermitTest {
             io.close();
         }
     }
+    @Test
+    void actorStopBetweenCreationCreditAndAttachQuarantinesNativeHandle()
+            throws Exception {
+        var ceiling = RuntimePermissions.denyAll();
+        var policy = IsolatePolicy.developer();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var actualHandle = new Tracked();
+        var completed = new java.util.concurrent.CountDownLatch(1);
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var actorRef = new java.util.concurrent.atomic.AtomicReference<
+                ActorRuntime.ActorRef<String>>();
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        try (var permit = io.reserveResourceCreation(7)) {
+                            turn.runtime().stop(actorRef.get());
+                            assertThrows(SecurityException.class, () ->
+                                    io.registerCreated(actualHandle, permit));
+                            assertTrue(permit.quarantined());
+                            assertEquals(1, io.registeredResourceCount());
+                            assertEquals(7, io.registeredAccountedBytes());
+                        } catch (Throwable unexpected) {
+                            failure.compareAndSet(null, unexpected);
+                        } finally {
+                            completed.countDown();
+                        }
+                    });
+            actorRef.set(actor);
+            actor.send("stop after precreation");
+            assertTrue(completed.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertFalse(actor.awaitTermination(50,
+                    java.util.concurrent.TimeUnit.MILLISECONDS),
+                    "STOP cannot free the arena while quarantined handle lives");
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(actor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(1, actualHandle.closes.get());
+            assertEquals(0, io.registeredResourceCount());
+        } finally {
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
 }
