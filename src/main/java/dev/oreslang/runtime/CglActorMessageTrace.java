@@ -16,8 +16,10 @@ public final class CglActorMessageTrace {
                          long exitNanos, boolean sourceActor) { }
     public record Snapshot(List<Sample> samples, long dropped, long invalid,
                            boolean sealed) {
-        public boolean hasCompleteCapture() {
-            return sealed && dropped == 0 && invalid == 0;
+        /** An expected admitted handler count is required for coverage. */
+        public boolean hasCompleteCapture(long expectedHandlers) {
+            return expectedHandlers > 0 && sealed && dropped == 0 && invalid == 0
+                    && samples.size() == expectedHandlers;
         }
     }
 
