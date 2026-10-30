@@ -213,6 +213,39 @@ final class NamespaceRuntimeIntegrationTest {
         assertTrue(extracted.getMessage().contains("requires direct statically checked invocation"));
     }
 
+
+    @Test
+    void reachableNamespaceProviderInitializesBeforeMainExactlyOnce() throws Exception {
+        Path project = temp.resolve("checkout");
+        billing(project);
+        Files.writeString(project.resolve("src/billing/refund.ores"), """
+                namespace billing;
+                pub fnc init(): void {
+                  stdio.println("PROVIDER_INIT");
+                  return;
+                }
+                pub fnc refund(): int { return 2; }
+                """);
+        Path main = source(project, "src/main.ores", "client", """
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  stdio.println(payments.refund());
+                  stdio.println(payments.refund());
+                  return;
+                }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, Files.readString(manifest).replace(
+                "  \"src/billing/invoice.ores\",",
+                "  \"src/billing/invoice.ores\",\n  \"src/main.ores\","));
+
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        var result = run(main, stdout);
+        assertEquals(5, result.units().size());
+        assertEquals("PROVIDER_INIT\n2\n2\n",
+                stdout.toString(StandardCharsets.UTF_8));
+    }
+
     @Test
     void unrelatedManifestNamespaceDoesNotInitialize() throws Exception {
         Path project = temp.resolve("checkout");
