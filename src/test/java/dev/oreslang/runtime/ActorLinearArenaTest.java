@@ -167,4 +167,61 @@ final class ActorLinearArenaTest {
         }
     }
 
+    @Test
+    void ownershipTrackingCanReleaseOutOfOrderWithoutMovingOtherCheckpoints() {
+        try (var arena = new ActorLinearArena(2048, 64)) {
+            int mark = arena.cleanupMark();
+            long[] owners = new long[64];
+            for (int i = 0; i < owners.length; i++) {
+                owners[i] = arena.allocateOwned(16);
+                assertNotEquals(0L, owners[i]);
+            }
+            int nested = arena.cleanupMark();
+            for (int i = 0; i < owners.length; i += 2)
+                assertTrue(arena.releaseOwned(owners[i]));
+            long child = arena.allocateOwned(16);
+            assertNotEquals(0L, child);
+            assertTrue(arena.cleanupTo(nested));
+            assertThrows(IllegalStateException.class, () -> arena.getLong(child, 0));
+            assertEquals(64, arena.liveAllocations());
+            assertTrue(arena.cleanupTo(mark));
+            assertEquals(32, arena.liveAllocations());
+            for (int i = 0; i < owners.length; i += 2)
+                assertTrue(arena.remove(owners[i]));
+            assertEquals(0, arena.liveAllocations());
+        }
+    }
+
+    @Test
+    void staleTrackedSlotReuseCannotHideAnOutOfBandRemoval() {
+        try (var arena = new ActorLinearArena(128, 3)) {
+            int mark = arena.cleanupMark();
+            long stale = arena.allocateOwned(16);
+            assertTrue(arena.remove(stale));
+            long replacement = arena.allocateOwned(16);
+            assertNotEquals(0L, replacement);
+            assertNotEquals(stale, replacement);
+            assertFalse(arena.releaseOwned(stale));
+            assertFalse(arena.cleanupTo(mark),
+                    "invalidated older owner must be reported even after slot reuse");
+            assertEquals(0, arena.liveAllocations());
+            assertThrows(IllegalStateException.class, () -> arena.getLong(replacement, 0));
+        }
+    }
+
+    @Test
+    void releasedOwnerNodesAreReusedWithoutGrowingMetadata() {
+        try (var arena = new ActorLinearArena(64, 2)) {
+            for (int round = 0; round < 20_000; round++) {
+                int mark = arena.cleanupMark();
+                long value = arena.allocateOwned(16);
+                assertNotEquals(0L, value);
+                if ((round & 1) == 0) assertTrue(arena.dropOwned(value));
+                else assertTrue(arena.cleanupTo(mark));
+                assertEquals(0, arena.liveAllocations());
+                assertEquals(0, arena.usedBytes());
+            }
+        }
+    }
+
 }
