@@ -320,6 +320,17 @@ public final class AsyncNativeIo implements AutoCloseable {
             this.ioAuthority = ioAuthority;
         }
 
+        /** Failed quota receipts quarantine the I/O context, never silently free credits. */
+        private void retireIoBudget() {
+            if (ioReservation == null) return;
+            try {
+                ioReservation.close();
+            } catch (RuntimeException invalidReceipt) {
+                recordIncomplete(invalidReceipt);
+                throw invalidReceipt;
+            }
+        }
+
         @Override public void run() {
             if (!state.compareAndSet(OperationState.ADMITTED, OperationState.RUNNING)) return;
             executingWorker.set(true);
@@ -366,7 +377,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                     synchronized (AsyncNativeIo.this) {
                         owner.remove(this);
                         // Release only after work and terminal callbacks have retired.
-                        if (ioReservation != null) ioReservation.close();
+                        retireIoBudget();
                         retireActor = decrementActorOperationLocked(admittedActor);
                         retireDeferredUnregisterLocked();
                         AsyncNativeIo.this.notifyAll();
@@ -410,7 +421,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                             synchronized (AsyncNativeIo.this) {
                                 owner.remove(this);
                                 // Release only after work and terminal callbacks have retired.
-                                if (ioReservation != null) ioReservation.close();
+                                retireIoBudget();
                                 retireActor = decrementActorOperationLocked(admittedActor);
                                 retireDeferredUnregisterLocked();
                                 AsyncNativeIo.this.notifyAll();
