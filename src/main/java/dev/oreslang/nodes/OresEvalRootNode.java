@@ -5058,10 +5058,13 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             String integerIntrinsic = integerIntrinsicName(call, env);
-            if (integerIntrinsic != null) {
+            String mathIntrinsic = integerIntrinsic == null ? mathIntrinsicName(call, env) : null;
+            String numericIntrinsic = integerIntrinsic != null ? integerIntrinsic : mathIntrinsic;
+            String numericOwner = integerIntrinsic != null ? "Integer" : "Math";
+            if (numericIntrinsic != null) {
                 if (call.typeArgumentsPresent()) {
                     continuation.accept(task, null, new IllegalArgumentException(
-                            "Integer." + integerIntrinsic + " does not accept type arguments"));
+                            numericOwner + "." + numericIntrinsic + " does not accept type arguments"));
                     return;
                 }
                 evalSuspendableArguments(task, call.arguments(), env,
@@ -5072,7 +5075,7 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             try {
                                 continuation.accept(t,
-                                        applyIntegerIntrinsic(integerIntrinsic, arguments), null);
+                                        applyIntegerIntrinsic(numericOwner, numericIntrinsic, arguments), null);
                             } catch (RuntimeException | Error invalid) {
                                 continuation.accept(t, null, invalid);
                             }
@@ -6958,14 +6961,17 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             String integerIntrinsic = integerIntrinsicName(call, env);
-            if (integerIntrinsic != null) {
+            String mathIntrinsic = integerIntrinsic == null ? mathIntrinsicName(call, env) : null;
+            String numericIntrinsic = integerIntrinsic != null ? integerIntrinsic : mathIntrinsic;
+            String numericOwner = integerIntrinsic != null ? "Integer" : "Math";
+            if (numericIntrinsic != null) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
-                            "Integer." + integerIntrinsic + " does not accept type arguments");
+                            numericOwner + "." + numericIntrinsic + " does not accept type arguments");
                 }
                 List<Object> values = evaluateArguments(call.arguments(), env);
                 return invokableInvocation(
-                        arguments -> applyIntegerIntrinsic(integerIntrinsic, arguments),
+                        arguments -> applyIntegerIntrinsic(numericOwner, numericIntrinsic, arguments),
                         values);
             }
             if (call.callee() instanceof Ast.NameExpr directName
@@ -7171,23 +7177,50 @@ public final class OresEvalRootNode extends RootNode {
                     || hostClasses.containsKey("Integer")
                     || hostFunctions.containsKey("Integer")) return null;
             return switch (member.member()) {
-                case "rem", "mod", "pow", "bitXor", "toFloatExact" -> member.member();
+                case "rem", "mod", "pow", "bitXor", "toFloatExact", "abs", "neg" -> member.member();
                 default -> null;
             };
         }
 
-        private Object applyIntegerIntrinsic(String operation, List<Object> values) {
-            if (operation.equals("toFloatExact")) {
+        /** Sealed Math unary namespace; any lexical/imported/user Math shadows it. */
+        private String mathIntrinsicName(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.MemberExpr member)
+                    || !(member.receiver() instanceof Ast.NameExpr owner)
+                    || !owner.name().equals("Math")
+                    || env.lookup("Math") != Env.MISSING
+                    || namedImports.containsKey("Math")
+                    || namespaceImports.containsKey("Math")
+                    || modules.containsKey("Math")
+                    || findClass("Math") != null
+                    || hostClasses.containsKey("Math")
+                    || hostFunctions.containsKey("Math")) return null;
+            return switch (member.member()) {
+                case "abs", "neg" -> member.member();
+                default -> null;
+            };
+        }
+
+        private Object applyIntegerIntrinsic(
+                String owner, String operation, List<Object> values) {
+            if (operation.equals("toFloatExact")
+                    || operation.equals("abs")
+                    || operation.equals("neg")) {
                 if (values.size() != 1) {
                     throw new IllegalArgumentException(
-                            "Integer.toFloatExact expects exactly one int argument");
+                            owner + "." + operation + " expects exactly one int argument");
                 }
-                return dev.oreslang.runtime.StrictIntegerArithmetic.toFloatExact(
-                        integralLong(values.getFirst()));
+                long value = integralLong(values.getFirst());
+                return switch (operation) {
+                    case "toFloatExact" ->
+                            dev.oreslang.runtime.StrictIntegerArithmetic.toFloatExact(value);
+                    case "abs" -> dev.oreslang.runtime.StrictIntegerArithmetic.abs(value);
+                    case "neg" -> dev.oreslang.runtime.StrictIntegerArithmetic.neg(value);
+                    default -> throw new IllegalStateException("unreachable numeric intrinsic");
+                };
             }
             if (values.size() != 2) {
                 throw new IllegalArgumentException(
-                        "Integer." + operation + " expects exactly two int arguments");
+                        owner + "." + operation + " expects exactly two int arguments");
             }
             long left = integralLong(values.get(0));
             long right = integralLong(values.get(1));
@@ -7197,7 +7230,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "pow" -> dev.oreslang.runtime.StrictIntegerArithmetic.pow(left, right);
                 case "bitXor" -> dev.oreslang.runtime.StrictIntegerArithmetic.bitXor(left, right);
                 default -> throw new IllegalArgumentException(
-                        "unknown Integer intrinsic: " + operation);
+                        "unknown " + owner + " intrinsic: " + operation);
             };
         }
 
