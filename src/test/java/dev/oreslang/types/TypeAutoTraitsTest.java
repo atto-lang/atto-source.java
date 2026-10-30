@@ -124,6 +124,38 @@ final class TypeAutoTraitsTest {
     }
 
     @Test
+    void writableBackingViewedReadonlyCannotMintCrossThreadSharing() {
+        // A writable record may be viewed through a narrower readonly type.
+        // That conversion neither freezes the allocation nor revokes the
+        // original writer. Check this *variance boundary*, not just a
+        // standalone readonly record literal.
+        var writable = new Types.Record(Map.of("value", Types.Primitive.INT), false);
+        var view = new Types.Record(Map.of("value", Types.Primitive.INT), true);
+        assertTrue(Types.isAssignable(writable, view));
+        assertFalse(Types.isAssignable(view, writable));
+        var capabilities = TypeAutoTraits.inferClosed(view);
+        assertTrue(capabilities.send(), "an exclusively owned view may still move");
+        assertFalse(capabilities.sync(), "readonly assignment is not a freeze");
+        assertFalse(capabilities.share(), "readonly assignment is not shared storage");
+
+        for (Types.Type wrapped : List.of(
+                new Types.Tuple(List.of(view)),
+                new Types.Named("Option", List.of(view)),
+                new Types.Named("Result", List.of(Types.Primitive.INT, view)),
+                new Types.Named("Arc", List.of(view)),
+                new Types.Named("Weak", List.of(view)))) {
+            var nested = TypeAutoTraits.inferClosed(wrapped);
+            assertFalse(nested.sync(), () -> "wrapper minted Sync: " + wrapped);
+            assertFalse(nested.share(), () -> "wrapper minted Share: " + wrapped);
+        }
+        assertFalse(ThreadSafetyTraits.has(
+                new Types.Borrow(view, false),
+                ThreadSafetyTraits.Trait.SEND,
+                (named, trait) -> false),
+                "a borrowed readonly alias must not be Send across threads");
+    }
+
+    @Test
     void actorRefIsAnExplicitShareableCapability() {
         var ref = TypeAutoTraits.inferClosed(
                 new Types.Named(
