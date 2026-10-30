@@ -100,7 +100,7 @@ public final class BatchPersistenceSidecarTestMain {
         });
         test("empty write admission consumes quota", () -> {
             MemoryStore store = new MemoryStore();store.grantEpoch("tenant-1","a",1);
-            try (var sidecar = new BatchPersistenceSidecar("tenant-1",store,2,256,4,10,100,5000)) {
+            try (var sidecar = new BatchPersistenceSidecar("tenant-1",store,2,512,4,10,100,5000)) {
                 sidecar.submit(new Write(new Identity("tenant-1","a","main"),"op1",1,0,1,Kind.EVENT,new byte[0]));
                 sidecar.submit(new Write(new Identity("tenant-1","a","main"),"op2",1,0,1,Kind.EVENT,new byte[0]));
                 boolean rejected=false;
@@ -108,6 +108,38 @@ public final class BatchPersistenceSidecarTestMain {
                 catch (AdmissionException e) { rejected=e.code.equals("BACKPRESSURE"); }
                 check(rejected,"zero-byte flood bypassed quota");
             }
+        });
+        test("UTF-8 identifiers consume bounded admission credits", () -> {
+            MemoryStore store = new MemoryStore();
+            String actor = "a".repeat(80), op = "o".repeat(80);
+            store.grantEpoch("tenant-1", actor, 1);
+            store.grantEpoch("tenant-1", "a", 1);
+            try (var sidecar = new BatchPersistenceSidecar("tenant-1",store,3,170,16,3,16,5000)) {
+                boolean rejected = false;
+                try {
+                    sidecar.submit(new Write(new Identity("tenant-1", actor, "main"),
+                            op, 1, 0, 1, Kind.SNAPSHOT, new byte[0]));
+                } catch (AdmissionException e) { rejected = e.code.equals("BACKPRESSURE"); }
+                check(rejected, "long actor/op keys evaded the byte admission budget");
+                var small = sidecar.submit(new Write(new Identity("tenant-1", "a", "main"),
+                        "o", 1, 0, 1, Kind.SNAPSHOT, new byte[0]));
+                sidecar.drain().toCompletableFuture().join();
+                check(get(small).status() == Status.COMMITTED, "small identity unexpectedly rejected");
+            }
+        });
+        test("identities reject non-NFC and malformed Unicode but permit valid supplementary scalars", () -> {
+            for (String invalid : new String[] {
+                    "e" + (char)0x0301,
+                    new String(new char[]{(char)0xD800}),
+                    new String(new char[]{(char)0xDC00})
+            }) {
+                boolean rejected = false;
+                try { new Identity("tenant-1", invalid, "main"); }
+                catch (IllegalArgumentException expected) { rejected = true; }
+                check(rejected, "noncanonical or malformed actor identity admitted");
+            }
+            String valid = new String(Character.toChars(0x1F642));
+            new Identity("tenant-1", valid, "main");
         });
         test("provider failure reports unknown not guaranteed abort", () -> {
             Store faulty=new Store() {
