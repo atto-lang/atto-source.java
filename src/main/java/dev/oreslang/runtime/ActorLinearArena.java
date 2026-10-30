@@ -185,7 +185,9 @@ public final class ActorLinearArena implements AutoCloseable {
         if (slot < 0) return false;
         int reservationStart = reservationStarts[slot];
         int reservationEnd = offsets[slot] + lengths[slot];
-        zero(offsets[slot], lengths[slot]);
+        // Scrub the complete reservation, including alignment padding,
+        // before any future allocation may reuse these bytes.
+        zero(reservationStart, reservationEnd - reservationStart);
         live[slot] = false;
         tokens[slot] = 0L;
         offsets[slot] = 0;
