@@ -295,6 +295,10 @@ class PrivateCiV3Test(unittest.TestCase):
             dict(job, runner_name="  "),
             dict(job, runner_group_name="Self-hosted"),
             dict(job, labels=["self-hosted", "linux"]),
+            dict(job, labels=["Self-Hosted", "linux"]),
+            dict(job, labels=[]),
+            dict(job, labels=["ubuntu-latest", 7]),
+            dict(job, labels=["   "]),
             dict(job, steps=[]),
             dict(
                 job,
