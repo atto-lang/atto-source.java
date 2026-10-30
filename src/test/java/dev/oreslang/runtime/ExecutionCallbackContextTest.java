@@ -21,6 +21,7 @@ final class ExecutionCallbackContextTest {
             AtomicLong originDispatch = new AtomicLong();
             AtomicReference<ExecutionCallbackContext> observedCallback = new AtomicReference<>();
             AtomicReference<ExecutionContext> observedActiveExecution = new AtomicReference<>();
+            CountDownLatch registered = new CountDownLatch(1);
             CountDownLatch notification = new CountDownLatch(1);
             AtomicInteger pc = new AtomicInteger();
 
@@ -34,6 +35,7 @@ final class ExecutionCallbackContextTest {
                         observedActiveExecution.set(OresScheduler.currentExecutionContext());
                         notification.countDown();
                     });
+                    registered.countDown();
                     return OresScheduler.await(source);
                 }
 
@@ -46,6 +48,12 @@ final class ExecutionCallbackContextTest {
             });
 
             Thread producer = Thread.ofPlatform().start(() -> {
+                try {
+                    assertTrue(registered.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
                 assertNull(OresScheduler.currentExecutionContext());
                 assertNull(ExecutionCallbackContext.current());
                 callback.get().resolve(41);
@@ -73,6 +81,7 @@ final class ExecutionCallbackContextTest {
             CompletableFuture<Integer> host = new CompletableFuture<>();
             AtomicReference<ExecutionContext.ExecutionId> origin = new AtomicReference<>();
             AtomicReference<ExecutionCallbackContext> observed = new AtomicReference<>();
+            CountDownLatch registered = new CountDownLatch(1);
             CountDownLatch notification = new CountDownLatch(1);
             AtomicInteger pc = new AtomicInteger();
 
@@ -85,12 +94,21 @@ final class ExecutionCallbackContextTest {
                         assertNull(OresScheduler.currentExecutionContext());
                         notification.countDown();
                     });
+                    registered.countDown();
                     return OresScheduler.await(source);
                 }
                 return OresScheduler.done((Integer) resume.value() + 1);
             });
 
-            Thread.ofPlatform().start(() -> host.complete(41)).join();
+            Thread.ofPlatform().start(() -> {
+                try {
+                    assertTrue(registered.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+                host.complete(41);
+            }).join();
             assertTrue(notification.await(5, TimeUnit.SECONDS));
             assertEquals(42, result.get(5, TimeUnit.SECONDS));
             assertNotNull(observed.get());
