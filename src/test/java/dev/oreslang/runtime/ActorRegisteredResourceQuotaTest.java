@@ -239,6 +239,77 @@ final class ActorRegisteredResourceQuotaTest {
         }
     }
 
+    @Test
+    void nativeContextShutdownMustWaitForActiveTrustedCloseCallback()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var physicalCloseStarted = new CountDownLatch(1);
+        var releaseClose = new CountDownLatch(1);
+        var actorCompleted = new CountDownLatch(1);
+        var closeCount = new AtomicInteger();
+        var failure = new AtomicReference<Throwable>();
+        var contextCloseFailure = new AtomicReference<Throwable>();
+        AutoCloseable physical = () -> {
+            physicalCloseStarted.countDown();
+            if (!releaseClose.await(5, TimeUnit.SECONDS))
+                throw new IllegalStateException("trusted close gate timed out");
+            closeCount.incrementAndGet();
+        };
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        try {
+                            io.register(physical, 7);
+                            io.closeAndUnregister(physical);
+                        } catch (Throwable e) {
+                            failure.compareAndSet(null, e);
+                        } finally {
+                            actorCompleted.countDown();
+                        }
+                    });
+            actor.send("close slowly");
+            assertTrue(physicalCloseStarted.await(5, TimeUnit.SECONDS));
+            var joiner = Thread.ofVirtual().start(() -> {
+                try {
+                    io.close();
+                } catch (Throwable e) {
+                    contextCloseFailure.compareAndSet(null, e);
+                }
+            });
+            try {
+                Thread.sleep(50);
+                assertTrue(joiner.isAlive(),
+                        "context may not finish while physical close callback is active");
+                assertEquals(0, closeCount.get());
+                assertEquals(1, io.registeredResourceCount());
+            } finally {
+                releaseClose.countDown();
+            }
+            joiner.join(5000);
+            assertFalse(joiner.isAlive(), "native context join must complete after close");
+            assertTrue(actorCompleted.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertNull(contextCloseFailure.get(),
+                    () -> String.valueOf(contextCloseFailure.get()));
+            assertEquals(1, closeCount.get(), "native close callback must be exactly once");
+            assertEquals(0, io.registeredResourceCount());
+            runtime.close();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            releaseClose.countDown();
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
     private static final AtomicReference<Probe> ACTIVE = new AtomicReference<>();
 
     private static final class Probe {
