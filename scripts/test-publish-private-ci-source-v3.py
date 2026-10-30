@@ -663,56 +663,14 @@ class PrivateCiV3Test(unittest.TestCase):
         }]
         return carrier, api, reviews
 
-    def test_unprotected_carrier_accepts_exact_tree_independent_review(self):
+    def test_unprotected_carrier_is_rejected_even_with_review_attestation(self):
         carrier, api, reviews = self.carrier_review_fixture()
         with (
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(v3, "gh_api_list", return_value=reviews),
         ):
-            self.assertEqual(
-                v3.checked_carrier_main("trusted/ci", carrier), BASE
-            )
-
-    def test_unprotected_carrier_requires_review_pr_and_exact_reviewed_tree(self):
-        carrier = contract()
-
-        def branch_only(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/branches/main":
-                return {
-                    "name": "main",
-                    "protected": False,
-                    "commit": {"sha": BASE},
-                }
-            raise AssertionError(route)
-
-        with patch.object(v3.legacy, "gh_api", side_effect=branch_only):
-            with self.assertRaisesRegex(v3.Denied, "requires reviewed carrier PR"):
+            with self.assertRaisesRegex(v3.Denied, "carrier main is not protected"):
                 v3.checked_carrier_main("trusted/ci", carrier)
-
-        carrier, api, reviews = self.carrier_review_fixture(main_tree="8" * 40)
-        with (
-            patch.object(v3.legacy, "gh_api", side_effect=api),
-            patch.object(v3, "gh_api_list", return_value=reviews),
-        ):
-            with self.assertRaisesRegex(v3.Denied, "tree differs"):
-                v3.checked_carrier_main("trusted/ci", carrier)
-
-    def test_unprotected_carrier_rejects_stale_review_or_reviewer_as_author(self):
-        carrier, api, reviews = self.carrier_review_fixture(state="CHANGES_REQUESTED")
-        with (
-            patch.object(v3.legacy, "gh_api", side_effect=api),
-            patch.object(v3, "gh_api_list", return_value=reviews),
-        ):
-            with self.assertRaisesRegex(v3.Denied, "stale, late, or not approved"):
-                v3.checked_carrier_main("trusted/ci", carrier)
-
-        for author_id in (v3.CARRIER_REVIEW_USER_ID, 0):
-            carrier, api, reviews = self.carrier_review_fixture(
-                author_id=author_id
-            )
-            with patch.object(v3.legacy, "gh_api", side_effect=api):
-                with self.assertRaisesRegex(v3.Denied, "independent merged"):
-                    v3.checked_carrier_main("trusted/ci", carrier)
 
     def test_protected_carrier_still_requires_codeowner_admin_and_no_bypass(self):
         carrier = contract()
