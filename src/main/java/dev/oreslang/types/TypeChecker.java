@@ -9541,9 +9541,14 @@ public final class TypeChecker {
         }
 
         return switch (ref.name()) {
-            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
-            case "f32", "f64", "float" -> Primitive.FLOAT;
-            case "decimal" -> Primitive.DECIMAL;
+            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint" -> Primitive.INT;
+            case "f64", "float" -> Primitive.FLOAT;
+            case "f32" -> throw new IllegalArgumentException(
+                    "f32 is reserved but binary32 runtime/lowering is not implemented; use float/f64 for binary64");
+            case "bigint" -> throw new IllegalArgumentException(
+                    "bigint is reserved but arbitrary-precision runtime/lowering is not implemented; refusing to alias it to int");
+            case "decimal" -> throw new IllegalArgumentException(
+                    "decimal is reserved but exact base-10 runtime/lowering is not implemented; refusing to alias it to float/int");
             case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
             case "bool", "Bool" -> {
                 if (!ref.arguments().isEmpty() || ref.inferArguments()) {
