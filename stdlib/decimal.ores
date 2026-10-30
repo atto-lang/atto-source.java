@@ -1,4 +1,5 @@
 import module bigint_math from './bigint';
+import class BigIntValue from './bigint';
 
 // Pure-Oreslang exact decimal reference foundation.
 //
@@ -33,10 +34,10 @@ define module decimal_math as
   end
 
   pub define class DecimalValue as
-    pub val bigint_math.BigIntValue coefficient;
+    pub val BigIntValue coefficient;
     pub val int scale;
 
-    pub constructor(bigint_math.BigIntValue coefficient, int scale) {
+    pub constructor(BigIntValue coefficient, int scale) {
       if scale < 0 || scale > 256; do
         rt fail("decimal: scale outside bounded domain");
       fi
@@ -45,12 +46,12 @@ define module decimal_math as
     }
   end
 
-  fnc ten_power(int exponent): bigint_math.BigIntValue {
+  fnc ten_power(int exponent): BigIntValue {
     if exponent < 0 || exponent > 256; do
       rt fail("decimal: power-of-ten exponent outside bounded domain");
     fi
-    let bigint_math.BigIntValue value = bigint_math.from_int(1);
-    val bigint_math.BigIntValue ten = bigint_math.from_int(10);
+    let BigIntValue value = bigint_math.from_int(1);
+    val BigIntValue ten = bigint_math.from_int(10);
     for (let int i = 0; i < exponent; i = i + 1) {
       value = bigint_math.mul(&value, &ten);
     }
@@ -60,15 +61,16 @@ define module decimal_math as
   fnc coefficient_at_scale(
     &DecimalValue value,
     int target_scale
-  ): bigint_math.BigIntValue {
+  ): BigIntValue {
     if target_scale < value.scale; do
       rt fail("decimal: target scale cannot discard precision");
     fi
     if target_scale == value.scale; do
-      return bigint_math.add(&value.coefficient, &bigint_math.from_int(0));
+      val BigIntValue zero = bigint_math.from_int(0);
+      return bigint_math.add(&value.coefficient, &zero);
     fi
 
-    val bigint_math.BigIntValue factor = ten_power(target_scale - value.scale);
+    val BigIntValue factor = ten_power(target_scale - value.scale);
     return bigint_math.mul(&value.coefficient, &factor);
   }
 
@@ -96,9 +98,9 @@ define module decimal_math as
       target_scale = right.scale;
     fi
 
-    val bigint_math.BigIntValue left_coefficient =
+    val BigIntValue left_coefficient =
       coefficient_at_scale(&left, target_scale);
-    val bigint_math.BigIntValue right_coefficient =
+    val BigIntValue right_coefficient =
       coefficient_at_scale(&right, target_scale);
     return new DecimalValue(
       bigint_math.add(&left_coefficient, &right_coefficient),
@@ -112,9 +114,9 @@ define module decimal_math as
       target_scale = right.scale;
     fi
 
-    val bigint_math.BigIntValue left_coefficient =
+    val BigIntValue left_coefficient =
       coefficient_at_scale(&left, target_scale);
-    val bigint_math.BigIntValue right_coefficient =
+    val BigIntValue right_coefficient =
       coefficient_at_scale(&right, target_scale);
     return new DecimalValue(
       bigint_math.sub(&left_coefficient, &right_coefficient),
@@ -139,9 +141,9 @@ define module decimal_math as
       target_scale = right.scale;
     fi
 
-    val bigint_math.BigIntValue left_coefficient =
+    val BigIntValue left_coefficient =
       coefficient_at_scale(&left, target_scale);
-    val bigint_math.BigIntValue right_coefficient =
+    val BigIntValue right_coefficient =
       coefficient_at_scale(&right, target_scale);
     return bigint_math.equal(&left_coefficient, &right_coefficient);
   }
@@ -152,9 +154,9 @@ define module decimal_math as
       target_scale = right.scale;
     fi
 
-    val bigint_math.BigIntValue left_coefficient =
+    val BigIntValue left_coefficient =
       coefficient_at_scale(&left, target_scale);
-    val bigint_math.BigIntValue right_coefficient =
+    val BigIntValue right_coefficient =
       coefficient_at_scale(&right, target_scale);
     return bigint_math.compare(&left_coefficient, &right_coefficient);
   }
