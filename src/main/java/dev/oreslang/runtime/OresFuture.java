@@ -191,11 +191,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // only if the callback has not already won the single-shot race.
             if (callbackClaimed.compareAndSet(false, true)) {
                 future.failFromRuntime(failure);
-            } else if (failure instanceof VirtualMachineError fatal) {
-                throw fatal;
-            } else if (failure instanceof ThreadDeath fatal) {
-                throw fatal;
-            } else if (failure instanceof LinkageError fatal) {
+            } else if (failure instanceof Error fatal) {
+                // Error-class failures are non-trappable runtime/control failures.
+                // A callback that already settled a value must not make them disappear.
                 throw fatal;
             }
         }
