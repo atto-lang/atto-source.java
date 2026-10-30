@@ -82,7 +82,7 @@ jobs:
       - name: Verify default checked i64 arithmetic in real Graal guest
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest,BinaryFloatSemanticsTest,NumericPrecisionAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest,BinaryFloatSemanticsTest,NumericPrecisionAdmissionTest,MathIntrinsicSemanticsTest -DfailIfNoTests=true test
       - name: Execute native Oreslang Math refinement and MIN overflow boundary
         run: |
           set -euo pipefail
