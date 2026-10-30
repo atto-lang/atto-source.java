@@ -28,8 +28,24 @@ class NativeHttpTest {
                 fi
                 request.set_header("X-Actor-Identity", self.actor_identity);
                 val original = request.request_id;
+                if http.current_request_id != original; then
+                  await request.respond(500, "text/plain", "missing admitted request binding");
+                  return;
+                fi
                 request.set_request_local("trace_id", original);
                 val text = await request.body_text();
+                if http.current_request_id != original; then
+                  await request.respond(500, "text/plain", "request binding lost across await");
+                  return;
+                fi
+                if !http.has_current_request_local("trace_id"); then
+                  await request.respond(500, "text/plain", "current request local missing");
+                  return;
+                fi
+                if http.current_request_local("trace_id") != original; then
+                  await request.respond(500, "text/plain", "wrong logical request context");
+                  return;
+                fi
                 if request.request_local("trace_id") != original; then
                   await request.respond(500, "text/plain", "context changed across await");
                   return;
