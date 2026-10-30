@@ -16,6 +16,12 @@ import java.util.concurrent.RejectedExecutionException;
 final class ActorPermissionScope {
     private static final int MAX_RESTRICTION_LAYERS = 128;
     private static final int MAX_SUBTREE_IO = 65_536;
+    private static final int MAX_SUBTREE_HANDLES = 65_536;
+    private static final long MAX_ACCOUNTED_BYTES = 64L * 1024 * 1024;
+    private final int maxSubtreeHandles;
+    private final long maxSubtreeAccountedBytes;
+    private int registeredSubtreeHandles;
+    private long registeredSubtreeBytes;
     private final Object ioQuotaLock;
     private final int maxSubtreeIo;
     private int activeSubtreeIo;
@@ -26,11 +32,20 @@ final class ActorPermissionScope {
     private final AtomicBoolean revoked = new AtomicBoolean();
 
     private ActorPermissionScope(ActorPermissionScope parent, RuntimePermissions restrictions) {
-        this(parent, restrictions, parent == null ? MAX_SUBTREE_IO : parent.maxSubtreeIo);
+        this(parent, restrictions, parent == null ? MAX_SUBTREE_IO : parent.maxSubtreeIo,
+                parent == null ? MAX_SUBTREE_HANDLES : parent.maxSubtreeHandles,
+                parent == null ? MAX_ACCOUNTED_BYTES : parent.maxSubtreeAccountedBytes);
     }
 
     private ActorPermissionScope(ActorPermissionScope parent,
             RuntimePermissions restrictions, int maxIo) {
+        this(parent, restrictions, maxIo,
+                parent == null ? MAX_SUBTREE_HANDLES : parent.maxSubtreeHandles,
+                parent == null ? MAX_ACCOUNTED_BYTES : parent.maxSubtreeAccountedBytes);
+    }
+
+    private ActorPermissionScope(ActorPermissionScope parent,
+            RuntimePermissions restrictions, int maxIo, int maxHandles, long maxBytes) {
         this.parent = parent;
         this.restrictions = Objects.requireNonNull(restrictions, "restrictions");
         this.depth = parent == null ? 1 : parent.depth + 1;
@@ -41,7 +56,16 @@ final class ActorPermissionScope {
                 || (parent != null && maxIo > parent.maxSubtreeIo)) {
             throw new IllegalArgumentException("child actor cannot widen subtree I/O quota");
         }
+        if (maxHandles < 1 || maxHandles > MAX_SUBTREE_HANDLES
+                || (parent != null && maxHandles > parent.maxSubtreeHandles)
+                || maxBytes < 0 || maxBytes > MAX_ACCOUNTED_BYTES
+                || (parent != null && maxBytes > parent.maxSubtreeAccountedBytes)) {
+            throw new IllegalArgumentException(
+                    "child actor cannot widen registered resource handle/byte budget");
+        }
         this.maxSubtreeIo = maxIo;
+        this.maxSubtreeHandles = maxHandles;
+        this.maxSubtreeAccountedBytes = maxBytes;
         this.ioQuotaLock = parent == null ? new Object() : parent.ioQuotaLock;
     }
 
@@ -54,9 +78,14 @@ final class ActorPermissionScope {
     }
 
     ActorPermissionScope attenuate(RuntimePermissions requested, int maxIo) {
+        return attenuate(requested, maxIo, maxSubtreeHandles, maxSubtreeAccountedBytes);
+    }
+
+    ActorPermissionScope attenuate(RuntimePermissions requested, int maxIo,
+            int maxHandles, long maxBytes) {
         synchronized (ioQuotaLock) {
-            requireActive("delegate actor I/O quota");
-            return new ActorPermissionScope(this, requested, maxIo);
+            requireActive("delegate actor resource quotas");
+            return new ActorPermissionScope(this, requested, maxIo, maxHandles, maxBytes);
         }
     }
 
@@ -103,6 +132,66 @@ final class ActorPermissionScope {
 
     int subtreeIoInFlight() {
         synchronized (ioQuotaLock) { return activeSubtreeIo; }
+    }
+
+    /**
+     * Reservation for a trusted, registered native resource. Never attach this
+     * to a guest object: callbacks must not forge a physical retirement receipt.
+     */
+    static final class ResourceReservation implements AutoCloseable {
+        private final ActorPermissionScope leaf;
+        private final long accountedBytes;
+        private boolean retired;
+
+        private ResourceReservation(ActorPermissionScope leaf, long accountedBytes) {
+            this.leaf = leaf;
+            this.accountedBytes = accountedBytes;
+        }
+
+        @Override public void close() {
+            synchronized (leaf.ioQuotaLock) {
+                if (retired)
+                    throw new IllegalStateException("duplicate resource quota retirement");
+                for (ActorPermissionScope p = leaf; p != null; p = p.parent) {
+                    if (p.registeredSubtreeHandles <= 0
+                            || p.registeredSubtreeBytes < accountedBytes)
+                        throw new IllegalStateException("resource quota receipt underflow");
+                }
+                retired = true;
+                for (ActorPermissionScope p = leaf; p != null; p = p.parent) {
+                    p.registeredSubtreeHandles--;
+                    p.registeredSubtreeBytes -= accountedBytes;
+                }
+            }
+        }
+    }
+
+    ResourceReservation reserveResource(long accountedBytes, String operation) {
+        if (accountedBytes < 0)
+            throw new IllegalArgumentException("negative native resource byte accounting");
+        synchronized (ioQuotaLock) {
+            for (ActorPermissionScope p = this; p != null; p = p.parent) {
+                if (p.revoked.get())
+                    throw new SecurityException("revoked actor permission for " + operation);
+                if (p.registeredSubtreeHandles >= p.maxSubtreeHandles
+                        || accountedBytes > p.maxSubtreeAccountedBytes - p.registeredSubtreeBytes)
+                    throw new RejectedExecutionException(
+                            "actor registered resource handle/byte quota exhausted");
+            }
+            for (ActorPermissionScope p = this; p != null; p = p.parent) {
+                p.registeredSubtreeHandles++;
+                p.registeredSubtreeBytes += accountedBytes;
+            }
+            return new ResourceReservation(this, accountedBytes);
+        }
+    }
+
+    int registeredResourceCount() {
+        synchronized (ioQuotaLock) { return registeredSubtreeHandles; }
+    }
+
+    long registeredResourceBytes() {
+        synchronized (ioQuotaLock) { return registeredSubtreeBytes; }
     }
 
     void requireActive(String operation) {
