@@ -27,6 +27,17 @@ public final class SqlitePersistenceStoreTestMain {
         try {
             try(var store=new SqlitePersistenceStore(file);
                 var sidecar=new BatchPersistenceSidecar("tenant-a",store,2000,1<<20,1024,256,1<<16,5000)){
+                // Direct trusted-host epoch calls must not bypass the same
+                // actor-key Unicode/canonicalization checks as Write admission.
+                for (String invalid : new String[] {
+                        "e" + (char)0x0301,
+                        new String(new char[]{(char)0xD800}),
+                        new String(new char[]{(char)0xDC00}) }) {
+                    boolean rejected = false;
+                    try { store.grantEpoch("tenant-a", invalid, 1); }
+                    catch (IllegalArgumentException expected) { rejected = true; }
+                    check(rejected, "direct SQLite epoch gate accepted noncanonical identity");
+                }
                 List<CompletionStage<Result>> results=new ArrayList<>();
                 for(int i=0;i<1000;i++){
                     String actor="a"+i;
