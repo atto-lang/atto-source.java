@@ -208,7 +208,7 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         execute("BEGIN");
         try {
             if (epoch(id) != trustedEpoch) throw new SecurityException("STALE_EPOCH");
-            Recovery restored = load(id);
+            Recovery restored = readRestoreWithinCurrentTransaction(id);
             commitTransaction();
             return restored;
         } catch (Exception failure) {
@@ -218,9 +218,22 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             throw new SQLException("restore outcome unknown", failure);
         }
     }
+    /** Privileged host inspection; read state/head and events from ONE snapshot. */
     public synchronized Recovery load(Identity id) throws SQLException {
         checkOpen();Objects.requireNonNull(id);
         checkId(id.tenant());checkId(id.actor());checkId(id.state());
+        execute("BEGIN");
+        try {
+            Recovery restored = readRestoreWithinCurrentTransaction(id);
+            commitTransaction();
+            return restored;
+        } catch (SQLException | RuntimeException failure) {
+            rollback(); throw failure;
+        }
+    }
+
+    /** Called only while the owning Connection is inside an explicit read transaction. */
+    private Recovery readRestoreWithinCurrentTransaction(Identity id) throws SQLException {
         long version=0, snapshotVersion=0;int snapshotSchema=0;byte[] snapshot=new byte[0];
         try(PreparedStatement q=db.prepareStatement("SELECT version,snapshot_version,snapshot_schema,snapshot FROM state WHERE tenant=? AND actor=? AND slot=?")) {
             bindKey(q,id);
@@ -232,8 +245,25 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         List<Event> events=new ArrayList<>();
         try(PreparedStatement q=db.prepareStatement("SELECT version,schema,payload FROM events WHERE tenant=? AND actor=? AND slot=? AND version>? ORDER BY version ASC")){
             bindKey(q,id);q.setLong(4,snapshotVersion);
-            try(ResultSet r=q.executeQuery()){while(r.next())events.add(new Event(r.getLong(1),r.getInt(2),r.getBytes(3)));}
+            try(ResultSet r=q.executeQuery()){
+                long expected=snapshotVersion;
+                while(r.next()){
+                    long next=r.getLong(1);
+                    int eventSchema=r.getInt(2);
+                    if(expected==Long.MAX_VALUE || next!=expected+1 || eventSchema<=0)
+                        throw new SQLException("INCOMPLETE_ACTOR_JOURNAL");
+                    byte[] payload=r.getBytes(3);
+                    if(payload==null)throw new SQLException("NULL_ACTOR_EVENT");
+                    events.add(new Event(next,eventSchema,payload));
+                    if(events.size()>10000)throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
+                    expected=next;
+                }
+            }
         }
+        if(version<0 || snapshotVersion<0 || snapshotVersion>version ||
+           (snapshotVersion>0 && snapshotSchema<=0) ||
+           version - snapshotVersion != events.size())
+            throw new SQLException("INCOMPLETE_ACTOR_JOURNAL");
         return new Recovery(version,snapshotVersion,snapshotSchema,snapshot,events);
     }
     @Override public synchronized void close() throws SQLException { if(!closed){closed=true;db.close();} }
