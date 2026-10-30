@@ -78,6 +78,29 @@ final class ImplicitValInitializeSyntaxTest {
     }
 
     @Test
+    void constructorVisibilityPrefixesRetainExplicitVoidReturnContract() {
+        String source = """
+                pub define class Connection as
+                  pub final int connection_id;
+                  pub initialize(int id): void {
+                    self.connection_id = id;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+
+        String invalid = """
+                pub define class Connection as
+                  pub final int connection_id;
+                  pub initialize(int id) as
+                    self.connection_id = id;
+                  end
+                end
+                """;
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(invalid));
+    }
+
+    @Test
     void rejectsAsMissingReturnTypeAndNonVoidInitialize() {
         String[] bad = {
                 "initialize(int id) as self.connection_id = id; end",
