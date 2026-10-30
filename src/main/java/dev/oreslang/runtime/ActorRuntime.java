@@ -511,6 +511,9 @@ public final class ActorRuntime implements AutoCloseable {
     /** Physical native I/O operation/loan gate for the actor incarnation. */
     private volatile java.util.function.Predicate<ActorId> nativeIoLoanRetired =
             ignored -> true;
+    /** Physical actor-state loan gate; independent from native I/O. */
+    private volatile java.util.function.Predicate<ActorId> stateLoanRetired =
+            ignored -> true;
 
     /**
      * Host/isolate boundary hook. Returning true means the execution domain
@@ -823,6 +826,28 @@ public final class ActorRuntime implements AutoCloseable {
 
     /** Wake an already-stopping actor when its final native loan retires. */
     void onNativeIoLoanRetired(ActorId id) {
+        ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
+        if (cell == null) return;
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() && !cell.finalized) cell.finalizeStopLocked();
+            cell.lifecycleLock.notifyAll();
+        }
+    }
+
+    /**
+     * Install before admitting state-region loans. The predicate must be
+     * nonblocking and lock-free with respect to ActorCell.lifecycleLock.
+     * Returning false keeps DONE and actor-memory reclamation pending.
+     */
+    public void setStateLoanRetirementGate(
+            java.util.function.Predicate<ActorId> gate) {
+        requireSupervisorContext("install actor state-loan retirement gate");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        stateLoanRetired = Objects.requireNonNull(gate, "gate");
+    }
+
+    /** Wake an already-stopping actor when its final physical state loan retires. */
+    void onStateLoanRetired(ActorId id) {
         ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
         if (cell == null) return;
         synchronized (cell.lifecycleLock) {
@@ -8014,6 +8039,15 @@ public final class ActorRuntime implements AutoCloseable {
                 sourceStopCleanupAborted = true;
                 recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
                         "actor native I/O physical loan gate failed", gateFailure));
+                lifecycleLock.notifyAll();
+                return;
+            }
+            try {
+                if (!stateLoanRetired.test(ref.id())) return;
+            } catch (RuntimeException | Error gateFailure) {
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor state physical loan gate failed", gateFailure));
                 lifecycleLock.notifyAll();
                 return;
             }
