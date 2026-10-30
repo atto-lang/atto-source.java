@@ -793,6 +793,18 @@ public final class AsyncNativeIo implements AutoCloseable {
                 throw new SecurityException(
                         "native resource transfer belongs to a different actor incarnation");
             }
+            // An actor cannot declare a still-open Socket physically retired
+            // simply by dropping its registration. Trusted host transfers are
+            // distinct: a null actor identity means an explicit host owner,
+            // which must account for the transferred physical descriptor.
+            //
+            // This check must precede state.unregistered and any quota refund.
+            if (actorId != null && state.registeredBy != null
+                    && resource instanceof java.net.Socket socket
+                    && !socket.isClosed()) {
+                throw new SecurityException(
+                        "actor-owned native socket must be closed before unregister");
+            }
             // Trusted host cleanup remains permitted; it owns the resource
             // transfer protocol and does not acquire guest actor privileges.
             state.unregistered = true;
