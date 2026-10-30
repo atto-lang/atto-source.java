@@ -41,12 +41,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/test-native-guest-reports.mjs
           mkdir -p target
-          git rev-parse HEAD > target/native-guest-provenance.txt
-          java -version 2>> target/native-guest-provenance.txt
+          {
+            echo "source_head=$(git rev-parse HEAD)"
+            echo "source_tree=$(git rev-parse HEAD^{tree})"
+            echo "workflow_blob=$(git rev-parse HEAD:.github/workflows/actor-demo-native-guest.yml)"
+            echo "validator_blob=$(git rev-parse HEAD:scripts/VerifyNativeGuestReports.java)"
+            echo "validator_harness_blob=$(git rev-parse HEAD:scripts/test-native-guest-reports.mjs)"
+            java -version
+            mvn -version
+          } > target/native-guest-provenance.txt 2>&1
+          node scripts/test-native-guest-reports.mjs 2>&1 | tee target/native-guest-validator.log
           mvn -B -ntp -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test 2>&1 | tee target/native-guest-maven.log
-          java scripts/VerifyNativeGuestReports.java target/surefire-reports
+          java scripts/VerifyNativeGuestReports.java target/surefire-reports 2>&1 | tee -a target/native-guest-validator.log
       - name: Preserve compiler and guest evidence even on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -55,6 +62,7 @@ jobs:
           path: |
             target/surefire-reports/
             target/native-guest-provenance.txt
+            target/native-guest-validator.log
             target/native-guest-maven.log
           if-no-files-found: warn
           retention-days: 7
