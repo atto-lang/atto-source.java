@@ -43,6 +43,8 @@ public final class OresAsyncTrace {
         SUPERVISOR_CONTROL,
         CANCELLATION,
         TIMEOUT,
+        TIMER,
+        TASK_JOIN,
         CALLBACK_ADAPTER,
         IO_COMPLETION
     }
