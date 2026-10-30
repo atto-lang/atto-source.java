@@ -11,6 +11,7 @@ async fnc chained_callback() => int {
 }
 
 pub async routine main() => void {
-  stdio.println(await chained_callback());
+  val value = await chained_callback();
+  stdio.println(value);
   return;
 }
