@@ -79,6 +79,43 @@ public final class CollectionSharingProbe {
     rejects("pub async fnc main(): void { val owner = infer struct{value: 1}; val view = rt borrow owner; let Future<int> child = task { return view.value; }; return; }", "borrow");
     rejects("pub fnc main(): void { val owner = [10]; val lock = SharedMutex.new(owner); owner.get(0); return; }", "moved");
     rejects("pub fnc main(): void { val owner = [10]; val view = rt borrow owner; val lock = SharedMutex.new(view); return; }", "borrow");
+    // A structural readonly parameter can be borrowed from mutable caller
+    // storage. The caller keeps its writer; a local synchronous read is safe,
+    // but publishing the borrowed view into an independent Task is not.
+    compile("""
+        fnc inspect(structural {value: int} view): int {
+          return view.value;
+        }
+        pub fnc main(): int {
+          val owner = infer struct{value: 1};
+          val before = inspect(owner);
+          owner.value = 2;
+          return before;
+        }
+        """); checks++;
+    rejects("""
+        fnc leak(structural {value: int} view): Future<int> {
+          return task { return view.value; };
+        }
+        pub fnc main(): void {
+          val owner = infer struct{value: 1};
+          val child = leak(owner);
+          owner.value = 2;
+          return;
+        }
+        """, "borrow");
+    rejects("""
+        fnc illicit_publish(structural {value: int} view): void {
+          val shared = rt share view;
+          return;
+        }
+        pub fnc main(): void {
+          val owner = infer struct{value: 1};
+          illicit_publish(owner);
+          owner.value = 2;
+          return;
+        }
+        """, "rt share");
     System.out.println("PASS: " + checks + " collection sharing / scoped READ / frontend checks");
   }
 }
