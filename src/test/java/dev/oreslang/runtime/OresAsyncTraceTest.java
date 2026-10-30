@@ -495,5 +495,23 @@ final class OresAsyncTraceTest {
                 OresAsyncTrace.BoundaryKind.CALLBACK_ADAPTER,
                 site(140)));
     }
+    @Test
+    void hostFatalFailuresAreNeverDecoratedByTraceOrCallbackSnapshots() {
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("fatal", site(150)));
+        OresAsyncTrace.CallbackSnapshot callback;
+        try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(trace)) {
+            callback = OresAsyncTrace.captureCallback(
+                    OresAsyncTrace.BoundaryKind.CALLBACK_ADAPTER,
+                    site(151));
+        }
+
+        VirtualMachineError fatal = new VirtualMachineError("fatal") { };
+        assertSame(fatal, OresAsyncTrace.attachGuest(fatal, trace));
+        assertSame(fatal, OresAsyncTrace.attach(fatal, trace));
+        assertSame(fatal, OresAsyncTrace.attach(fatal, callback));
+        assertEquals(0, fatal.getSuppressed().length);
+    }
+
 
 }
