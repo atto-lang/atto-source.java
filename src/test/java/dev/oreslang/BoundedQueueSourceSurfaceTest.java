@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
@@ -92,5 +93,32 @@ final class BoundedQueueSourceSurfaceTest {
                 """));
 
         assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    @Test
+    void queueAndTicketCapabilitiesCannotCrossActorCallableBoundary() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class QueueTicket as
+                  val Channel<bool> cancelled = Channel.new<bool>(1);
+                end
+
+                pub actor fnc leak_ticket(QueueTicket ticket): void {
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class QueueSlice<T> as
+                  val Channel<T> items;
+
+                  constructor(int capacity) {
+                    self.items = Channel.new<T>(capacity);
+                  }
+                end
+
+                pub actor fnc leak_queue(QueueSlice<int> queue): void {
+                  return;
+                }
+                """)));
     }
 }
