@@ -7601,6 +7601,23 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof FutureFactory) {
                 return switch (name) {
+                    case "from_callback" -> (Invokable) args -> {
+                        requireOne(args, "Future.from_callback");
+                        if (!(args.getFirst() instanceof Invokable registrar)) {
+                            throw new IllegalArgumentException(
+                                    "Future.from_callback expects a callback registrar");
+                        }
+                        return OresFuture.fromCallback(completion -> {
+                            @SuppressWarnings("unchecked")
+                            OresFuture.Callback<Object> callback =
+                                    (OresFuture.Callback<Object>) completion;
+                            Object returned = registrar.call(List.of(new CallbackFacade(callback)));
+                            if (returned != null) {
+                                throw new IllegalArgumentException(
+                                        "Future.from_callback registrar must return void");
+                            }
+                        });
+                    };
                     case "all" -> (Invokable) args -> {
                         requireOne(args, "Future.all");
                         return OresFutures.all(asSequence(args.getFirst()));
@@ -7611,6 +7628,9 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException("unknown Future member " + name);
                 };
+            }
+            if (receiver instanceof CallbackFacade callback) {
+                return callback.member(name);
             }
             if (receiver instanceof GeneratorRuntime.Generator<?> generator) {
                 return switch (name) {
@@ -10074,6 +10094,68 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    private static final class CallbackFacade implements Invokable {
+        private final OresFuture.Callback<Object> callback;
+
+        private CallbackFacade(OresFuture.Callback<Object> callback) {
+            this.callback = Objects.requireNonNull(callback, "callback");
+        }
+
+        @Override
+        public Object call(List<Object> args) {
+            if (args.size() == 1) {
+                callback.resolve(args.getFirst());
+                return null;
+            }
+            if (args.size() == 2) {
+                Object error = args.get(0);
+                Object value = args.get(1);
+                if (error == null
+                        || (error instanceof OptionValue option && !option.present())) {
+                    callback.resolve(value);
+                } else if (error instanceof OptionValue option) {
+                    callback.reject(callbackFailure(option.value()));
+                } else {
+                    callback.reject(callbackFailure(error));
+                }
+                return null;
+            }
+            throw new IllegalArgumentException(
+                    "Callback<T> expects cb(value) or error-first cb(error, value)");
+        }
+
+        private Object member(String name) {
+            return switch (name) {
+                case "resolve" -> (Invokable) args -> {
+                    requireOne(args, "Callback.resolve");
+                    callback.resolve(args.getFirst());
+                    return null;
+                };
+                case "reject" -> (Invokable) args -> {
+                    requireOne(args, "Callback.reject");
+                    callback.reject(callbackFailure(args.getFirst()));
+                    return null;
+                };
+                case "cancel" -> (Invokable) args -> {
+                    requireZero(args, "Callback.cancel");
+                    callback.cancel();
+                    return null;
+                };
+                case "is_done" -> (Invokable) args -> {
+                    requireZero(args, "Callback.is_done");
+                    return callback.isDone();
+                };
+                default -> throw new IllegalArgumentException(
+                        "unknown Callback member " + name);
+            };
+        }
+
+        private Throwable callbackFailure(Object error) {
+            if (error instanceof Throwable failure) return failure;
+            return new IllegalStateException("callback rejected: " + String.valueOf(error));
+        }
+    }
+
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
