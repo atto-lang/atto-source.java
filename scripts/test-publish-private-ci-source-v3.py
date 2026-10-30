@@ -1367,6 +1367,81 @@ class PrivateCiV3Test(unittest.TestCase):
                     )
                 verify_source_pr.assert_not_called()
 
+    def test_source_handoff_journal_is_posted_and_reread_exactly(self):
+        journal = {
+            "schema": v3.SOURCE_HANDOFF_JOURNAL_SCHEMA,
+            "receipt_sha256": "1" * 64,
+        }
+        calls = []
+
+        def api(route, method="GET", payload=None):
+            calls.append((route, method, payload))
+            if method == "POST":
+                body = payload["body"]
+                return {
+                    "id": 4242,
+                    "user": {"id": 2148448, "login": "the1mills"},
+                    "body": body,
+                    "created_at": "2026-10-20T00:00:00Z",
+                    "updated_at": "2026-10-20T00:00:00Z",
+                }
+            if route.endswith("/issues/comments/4242"):
+                body = calls[0][2]["body"]
+                return {
+                    "id": 4242,
+                    "user": {"id": 2148448, "login": "the1mills"},
+                    "body": body,
+                    "created_at": "2026-10-20T00:00:00Z",
+                    "updated_at": "2026-10-20T00:00:00Z",
+                }
+            raise AssertionError((route, method, payload))
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            metadata = v3.record_source_handoff_journal(1482, journal)
+
+        self.assertEqual(metadata["comment_id"], 4242)
+        self.assertEqual(metadata["author_id"], 2148448)
+        self.assertEqual(len(metadata["body_sha256"]), 64)
+        self.assertEqual(
+            calls[0][0],
+            "repos/" + v3.legacy.SOURCE_REPO + "/issues/1482/comments",
+        )
+        self.assertEqual(calls[1][0], "repos/" + v3.legacy.SOURCE_REPO + "/issues/comments/4242")
+        self.assertTrue(
+            calls[0][2]["body"].startswith(v3.SOURCE_HANDOFF_JOURNAL_MARKER + " ")
+        )
+
+    def test_source_handoff_journal_rejects_edited_comment(self):
+        body = v3.SOURCE_HANDOFF_JOURNAL_MARKER + " {}"
+        comment = {
+            "id": 1,
+            "user": {"id": 2148448, "login": "the1mills"},
+            "body": body,
+            "created_at": "2026-10-20T00:00:00Z",
+            "updated_at": "2026-10-20T00:00:01Z",
+        }
+        with self.assertRaisesRegex(v3.Denied, "was edited"):
+            v3._validate_source_handoff_comment(comment, body)
+
+    def test_source_handoff_journal_rejects_body_or_identity_drift(self):
+        body = v3.SOURCE_HANDOFF_JOURNAL_MARKER + " {}"
+        base = {
+            "id": 1,
+            "user": {"id": 2148448, "login": "the1mills"},
+            "body": body,
+            "created_at": "2026-10-20T00:00:00Z",
+            "updated_at": "2026-10-20T00:00:00Z",
+        }
+        for changed in (
+            {**base, "body": body + "x"},
+            {**base, "id": 0},
+            {**base, "user": {"id": 0, "login": "the1mills"}},
+            {**base, "user": {"id": 2148448, "login": ""}},
+        ):
+            with self.subTest(changed=changed):
+                with self.assertRaises(v3.Denied):
+                    v3._validate_source_handoff_comment(changed, body)
+
     def test_publish_binds_receipt_branch_and_authorization_ref(self):
         carrier = contract()
         writes = []
@@ -1437,6 +1512,16 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorize_write") as authorize_write,
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
+                patch.object(
+                    v3, "record_source_handoff_journal",
+                    return_value={
+                        "comment_id": 4242,
+                        "author_id": 2148448,
+                        "author_login": "the1mills",
+                        "created_at": "2026-10-20T00:00:00Z",
+                        "body_sha256": "6" * 64,
+                    },
+                ) as handoff_journal,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
                 result = v3.publish(
@@ -1454,12 +1539,30 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(checked_contract.call_count, 3)
         self.assertEqual(checked_destination.call_count, 3)
         self.assertEqual(verify_source_pr.call_count, 3)
-        self.assertEqual(authorize_write.call_count, 7)
+        self.assertEqual(authorize_write.call_count, 8)
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
             result["authorization_ref"], "ci/authorized-" + COMMIT
         )
+        self.assertEqual(result["source_journal_comment_id"], 4242)
+        self.assertEqual(result["source_journal_author_id"], 2148448)
+        self.assertEqual(result["source_journal_body_sha256"], "6" * 64)
+        handoff_journal.assert_called_once()
+        journal_pr, journal = handoff_journal.call_args.args
+        self.assertEqual(journal_pr, 1482)
+        self.assertEqual(journal["schema"], v3.SOURCE_HANDOFF_JOURNAL_SCHEMA)
+        self.assertEqual(journal["source_authority_sha"], PROTECTED)
+        self.assertEqual(journal["source_policy_fingerprint"], POLICY)
+        self.assertEqual(journal["carrier"]["repo"], "trusted/ci")
+        self.assertEqual(journal["carrier"]["repo_id"], carrier["repository_id"])
+        self.assertEqual(journal["carrier"]["base_sha"], carrier["base_sha"])
+        self.assertEqual(journal["carrier"]["commit_sha"], COMMIT)
+        self.assertEqual(
+            journal["carrier"]["authorization_ref"], "ci/authorized-" + COMMIT
+        )
+        self.assertEqual(journal["source"]["head_sha"], "4" * 40)
+        self.assertEqual(journal["source"]["root_tree_sha"], SOURCE_TREE)
         receipt_bytes = next(
             item for item in blob_payloads if b'"schema":"ores-private-ci-receipt-v3"' in item
         )
