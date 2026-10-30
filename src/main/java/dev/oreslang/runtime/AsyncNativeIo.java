@@ -92,6 +92,11 @@ public final class AsyncNativeIo implements AutoCloseable {
         final long accountedBytes;
         int active;
         boolean unregistered;
+        /** Prevent new loans while a trusted adapter is closing this handle. */
+        boolean closeInProgress;
+        boolean closeFailed;
+        /** Only an actual successful trusted adapter callback can mint this. */
+        boolean adapterCloseSucceeded;
         ResourceLeaseState(long generation, AutoCloseable resource,
                 ActorRuntime.ActorId registeredBy,
                 ActorPermissionScope.ResourceReservation resourceQuota, long accountedBytes) {
@@ -335,7 +340,8 @@ public final class AsyncNativeIo implements AutoCloseable {
      */
     synchronized IoLoan borrow(AutoCloseable resource) {
         ResourceLeaseState state = resourceLoans.get(Objects.requireNonNull(resource));
-        if (closed || state == null || state.unregistered) {
+        if (closed || state == null || state.unregistered
+                || state.closeInProgress || state.closeFailed) {
             throw new RejectedExecutionException(
                     "native resource is closed, unregistered or shutdown-sealed");
         }
@@ -808,6 +814,20 @@ public final class AsyncNativeIo implements AutoCloseable {
                 throw new SecurityException(
                         "actor-owned native socket must be plain Socket and closed before unregister");
             }
+            // The host may transfer a generic AutoCloseable and assume its
+            // native ownership, but an actor must not issue that transfer
+            // without a successful trusted adapter close callback. Otherwise
+            // a guest could refund its quota while holding the real resource.
+            if (actorId != null && state.registeredBy != null
+                    && !(resource instanceof java.net.Socket)
+                    && !state.adapterCloseSucceeded) {
+                throw new SecurityException(
+                        "actor-owned generic native resource requires trusted close receipt");
+            }
+            if (state.closeInProgress && !state.adapterCloseSucceeded) {
+                throw new RejectedExecutionException(
+                        "native resource close is still physically in progress");
+            }
             // Trusted host cleanup remains permitted; it owns the resource
             // transfer protocol and does not acquire guest actor privileges.
             state.unregistered = true;
@@ -818,6 +838,75 @@ public final class AsyncNativeIo implements AutoCloseable {
                 retired = retireRegisteredResourceLocked(state);
                 resourceLoans.remove(resource);
             }
+        }
+        notifyActorRetirement(retired);
+    }
+
+    /**
+     * Trusted adapter's synchronous close-and-retire operation for generic
+     * AutoCloseables. This callback is a HOST attestation, not an OS-level
+     * physical-close proof: foreign FFI allocators must validate their own
+     * native descriptor/region retirement.
+     *
+     * No native callback runs under the AsyncNativeIo monitor. A failed close
+     * leaves the resource tracked and ineligible for new loans, and an exact
+     * trusted retry may finish it. The context shutdown sweep still retains
+     * the same strongly reachable resource on failure.
+     */
+    void closeAndUnregister(AutoCloseable resource) throws Exception {
+        Objects.requireNonNull(resource, "native resource");
+        final ResourceLeaseState state;
+        synchronized (this) {
+            state = resourceLoans.get(resource);
+            if (state == null || state.unregistered) {
+                throw new IllegalStateException("native resource not registered");
+            }
+            ActorRuntime.requireCurrentActorAuthorityActive("close registered native resource");
+            ActorRuntime.ActorId caller = currentOwnerActor();
+            if (state.registeredBy != null && caller != null
+                    && !state.registeredBy.equals(caller)) {
+                throw new SecurityException(
+                        "native resource close belongs to a different actor incarnation");
+            }
+            if (state.active != 0) {
+                throw new RejectedExecutionException(
+                        "native resource still has active physical loans");
+            }
+            if (state.closeInProgress && !state.closeFailed) {
+                throw new RejectedExecutionException(
+                        "native resource physical close already in progress");
+            }
+            state.closeInProgress = true;
+            state.closeFailed = false;
+        }
+        try {
+            resource.close();
+        } catch (Exception | Error failure) {
+            synchronized (this) {
+                state.closeFailed = true;
+                // Keep closeInProgress set to deny all new borrows. An
+                // explicit same-owner retry is allowed above.
+            }
+            throw failure;
+        }
+        ActorRuntime.ActorId retired = null;
+        synchronized (this) {
+            // A trusted host may concurrently initiate context shutdown but
+            // may not retire this registration before this callback returns.
+            if (resourceLoans.get(resource) != state || state.unregistered
+                    || state.active != 0) {
+                recordIncomplete(new IllegalStateException(
+                        "native close receipt changed before registration retirement"));
+                throw new IllegalStateException(
+                        "native close receipt is no longer unique");
+            }
+            state.adapterCloseSucceeded = true;
+            state.unregistered = true;
+            resources.remove(resource);
+            retired = retireRegisteredResourceLocked(state);
+            resourceLoans.remove(resource);
+            deferredUnregister.remove(resource);
+            this.notifyAll();
         }
         notifyActorRetirement(retired);
     }
