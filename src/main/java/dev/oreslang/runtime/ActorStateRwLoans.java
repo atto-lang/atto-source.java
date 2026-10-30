@@ -308,7 +308,17 @@ public final class ActorStateRwLoans implements AutoCloseable {
          * scheduler mechanism and do not call this method.
          */
         public boolean readyToSuspend(ExecutionContext execution) {
-            return !heldBy(execution);
+            Objects.requireNonNull(execution, "execution");
+            // heldBy() intentionally becomes false as soon as close() fences
+            // logical access. That is NOT physical retirement: a live loan
+            // must still block suspension while its handler unwinds.
+            //
+            // Do not invert heldBy(): a foreign or stale execution would then
+            // appear free to suspend while another execution owns this loan.
+            if (!authority.equals(authority(execution))) return false;
+            synchronized (monitor) {
+                return released;
+            }
         }
 
         @Override
