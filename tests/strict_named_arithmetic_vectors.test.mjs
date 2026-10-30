@@ -74,3 +74,44 @@ test("11 exact signed64 to binary64 vectors preserve IEEE754 bit patterns", () =
     }
   }
 });
+
+
+test("native Math abs/neg and precision vectors agree with exact independent semantics", () => {
+  const contract = JSON.parse(readFileSync(
+    new URL("../contracts/v1/native-math-unary-precision-v1.json", import.meta.url),
+    "utf8"));
+  assert.equal(contract.contract, "oreslang.native-math-unary-precision.v1");
+  assert.equal(contract.status, "normative-reference-not-backend-proof");
+  assert.equal(contract.signed_i64_unary.length, 10);
+
+  for (const {id, operation, operand, expect} of contract.signed_i64_unary) {
+    const value = BigInt(operand);
+    let actual;
+    if (value === MIN) {
+      actual = {error: "OVERFLOW"};
+    } else if (operation === "Math.abs") {
+      actual = {value: (value < 0n ? -value : value).toString()};
+    } else if (operation === "Math.neg") {
+      actual = {value: (-value).toString()};
+    } else {
+      throw new Error("unknown unary operation: " + operation);
+    }
+    assert.deepEqual(actual, expect, id);
+  }
+
+  for (const {id, operation, operand, expect} of contract.bigint_unary) {
+    const value = BigInt(operand);
+    const actual = operation === "Math.neg"
+      ? -value
+      : (value < 0n ? -value : value);
+    assert.equal(actual.toString(), expect, id);
+  }
+
+  const binary = contract.precision_cases.find(
+    value => value.id === "binary64-point-one-plus-point-two");
+  assert.equal(String(Number(binary.lhs) + Number(binary.rhs)),
+    binary.must_equal_decimal_string);
+  const exact = contract.precision_cases.find(
+    value => value.id === "bigint-above-2pow53");
+  assert.notEqual(BigInt(Number(exact.value)), BigInt(exact.value));
+});
