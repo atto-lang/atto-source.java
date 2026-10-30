@@ -19,19 +19,39 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
     private static final AtomicLong NEXT_QUEUE_ID = new AtomicLong();
 
     public enum PushStatus {
-        ADMITTED,
-        FULL,
-        CANCELLED,
-        CLOSED,
-        STALE_TICKET,
-        TICKET_USED,
-        RESOURCE_LIMIT
+        ADMITTED("admitted"),
+        FULL("full"),
+        CANCELLED("cancelled"),
+        CLOSED("closed"),
+        STALE_TICKET("stale_ticket"),
+        TICKET_USED("ticket_used"),
+        RESOURCE_LIMIT("resource_limit");
+
+        private final OresSymbol symbol;
+
+        PushStatus(String symbolName) {
+            this.symbol = OresSymbol.process(symbolName);
+        }
+
+        public OresSymbol symbol() {
+            return symbol;
+        }
     }
 
     public enum PopStatus {
-        VALUE,
-        EMPTY,
-        CLOSED_DRAINED
+        VALUE("value"),
+        EMPTY("empty"),
+        CLOSED_DRAINED("closed_drained");
+
+        private final OresSymbol symbol;
+
+        PopStatus(String symbolName) {
+            this.symbol = OresSymbol.process(symbolName);
+        }
+
+        public OresSymbol symbol() {
+            return symbol;
+        }
     }
 
     public record PopResult<T>(PopStatus status, T value) {
@@ -339,6 +359,28 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
             }
         });
 
+        return result;
+    }
+
+    /**
+     * Source-facing status adapter. It preserves the exact push operation
+     * Future and maps only its terminal value into the language's Symbol
+     * representation. Cancellation authority remains exclusively on Ticket.
+     */
+    public OresFuture<OresSymbol> pushSymbolAsync(T value, Ticket ticket) {
+        OresFuture<PushStatus> source = pushAsync(value, ticket);
+        OresFuture<OresSymbol> result =
+                new OresFuture<>(() -> false, () -> { });
+
+        source.whenCompleteRuntime((status, failure) -> {
+            if (failure == null) {
+                result.completeFromRuntime(status.symbol());
+            } else if (source.isCancelled()) {
+                result.cancel(false);
+            } else {
+                result.failFromRuntime(OresFuture.unwrap(failure));
+            }
+        });
         return result;
     }
 
