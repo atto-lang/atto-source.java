@@ -50,8 +50,21 @@ public final class SqlitePersistenceStoreTestMain {
             try(var store=new SqlitePersistenceStore(file)){
                 var restored=store.loadFenced(new Identity("tenant-a","a999","main"),1);
                 check(restored.version()==1 && restored.snapshot()[0]==42,"reopen lost snapshot");
-                check(store.commit(List.of(write("a999","op999",1,0,Kind.SNAPSHOT,42))).get(0).status()==Status.DUPLICATE,"dedupe lost");
+                Write original=write("a999","op999",1,0,Kind.SNAPSHOT,42);
+                Result committedAgain=store.commit(List.of(original)).get(0);
+                check(committedAgain.status()==Status.DUPLICATE && committedAgain.durable(),
+                        "dedupe lost or falsely nondurable");
+                check(store.verifyDurableCommit(original,committedAgain),
+                        "exact durable SQLite operation proof failed");
+                check(!store.verifyDurableCommit(
+                        write("a999","op999",1,0,Kind.SNAPSHOT,43),committedAgain),
+                        "mutated payload was accepted as durable proof");
+                check(!store.verifyDurableCommit(
+                        write("a999","op999",1,1,Kind.SNAPSHOT,42),committedAgain),
+                        "wrong expected version was accepted as durable proof");
                 store.grantEpoch("tenant-a","a999",2);
+                check(!store.verifyDurableCommit(original,committedAgain),
+                        "stale epoch re-used old durable proof");
                 boolean staleReadDenied=false;
                 try { store.loadFenced(new Identity("tenant-a","a999","main"),1); }
                 catch (SecurityException expected) { staleReadDenied=true; }
