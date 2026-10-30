@@ -5893,6 +5893,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Enum<?>
                     || value instanceof java.util.UUID
                     || value instanceof Complex
+                    || value instanceof dev.oreslang.runtime.OresSymbol
                     || value instanceof OptionUnwrapError) {
                 return value;
             }
@@ -5934,6 +5935,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof GeneratorRuntime.Step<?> step) {
                     return step.done() ? GeneratorRuntime.Step.doneStep()
                             : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
+                }
+                if (value instanceof BoundedQueueRuntime.PushResult<?> pushed) {
+                    if (pushed.status() == BoundedQueueRuntime.PushStatus.ADMITTED) {
+                        return BoundedQueueRuntime.PushResult.admitted();
+                    }
+                    return BoundedQueueRuntime.PushResult.rejected(
+                            pushed.status(),
+                            detachAsyncValue(pushed.rejectedValue(), visiting));
                 }
                 if (value instanceof BoundedQueueRuntime.PopResult<?> popped) {
                     if (popped.status() != BoundedQueueRuntime.PopStatus.VALUE) {
@@ -8216,7 +8225,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "BoundedQueue.try_push expects QueueTicket as second argument");
                         }
-                        return typed.tryPush(args.getFirst(), ticket).symbol();
+                        return typed.tryPush(args.getFirst(), ticket);
                     };
                     case "push_async" -> (Invokable) args -> {
                         requireTwo(args, "BoundedQueue.push_async");
@@ -8224,7 +8233,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "BoundedQueue.push_async expects QueueTicket as second argument");
                         }
-                        return typed.pushSymbolAsync(args.getFirst(), ticket);
+                        return typed.pushResultAsync(args.getFirst(), ticket);
                     };
                     case "try_pop" -> (Invokable) args -> {
                         requireZero(args, "BoundedQueue.try_pop");
@@ -8282,6 +8291,16 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown QueueTicket member " + name);
+                };
+            }
+            if (receiver instanceof BoundedQueueRuntime.PushResult<?> pushed) {
+                return switch (name) {
+                    case "status" -> pushed.status().symbol();
+                    case "value" -> pushed.status() == BoundedQueueRuntime.PushStatus.ADMITTED
+                            ? new OptionValue(false, null)
+                            : new OptionValue(true, pushed.rejectedValue());
+                    default -> throw new IllegalArgumentException(
+                            "unknown QueuePush member " + name);
                 };
             }
             if (receiver instanceof BoundedQueueRuntime.PopResult<?> popped) {
