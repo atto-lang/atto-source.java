@@ -5074,8 +5074,10 @@ public final class OresEvalRootNode extends RootNode {
                                 return;
                             }
                             try {
-                                continuation.accept(t,
-                                        applyIntegerIntrinsic(numericOwner, numericIntrinsic, arguments), null);
+                                Object result = numericOwner.equals("Math")
+                                        ? applyMathIntrinsic(numericIntrinsic, arguments)
+                                        : applyIntegerIntrinsic(numericOwner, numericIntrinsic, arguments);
+                                continuation.accept(t, result, null);
                             } catch (RuntimeException | Error invalid) {
                                 continuation.accept(t, null, invalid);
                             }
@@ -6971,7 +6973,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 List<Object> values = evaluateArguments(call.arguments(), env);
                 return invokableInvocation(
-                        arguments -> applyIntegerIntrinsic(numericOwner, numericIntrinsic, arguments),
+                        arguments -> numericOwner.equals("Math")
+                                ? applyMathIntrinsic(numericIntrinsic, arguments)
+                                : applyIntegerIntrinsic(numericOwner, numericIntrinsic, arguments),
                         values);
             }
             if (call.callee() instanceof Ast.NameExpr directName
@@ -7197,6 +7201,27 @@ public final class OresEvalRootNode extends RootNode {
             return switch (member.member()) {
                 case "abs", "neg" -> member.member();
                 default -> null;
+            };
+        }
+
+        private Object applyMathIntrinsic(String operation, List<Object> values) {
+            if (values.size() != 1) {
+                throw new IllegalArgumentException(
+                        "Math." + operation + " expects exactly one numeric argument");
+            }
+            Object value = values.getFirst();
+            if (value instanceof Double number) {
+                return operation.equals("abs") ? Math.abs(number) : -number;
+            }
+            if (value instanceof Float number) {
+                return operation.equals("abs") ? Math.abs(number) : -number;
+            }
+            long integer = integralLong(value);
+            return switch (operation) {
+                case "abs" -> dev.oreslang.runtime.StrictIntegerArithmetic.abs(integer);
+                case "neg" -> dev.oreslang.runtime.StrictIntegerArithmetic.neg(integer);
+                default -> throw new IllegalArgumentException(
+                        "unknown Math intrinsic: " + operation);
             };
         }
 
