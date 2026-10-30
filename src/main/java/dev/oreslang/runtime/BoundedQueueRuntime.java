@@ -258,19 +258,25 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
             PushStatus preflight = preflight(ticket);
             if (preflight != null) return preflight;
 
-            PushStatus claimed = ticket.claimOrTerminal();
-            if (claimed != null) return claimed;
+            // Immediate push has no pending Future to act as cancellation
+            // authority. Keep claim -> probe -> settlement under the ticket
+            // monitor so cancel() linearizes wholly before or after this
+            // nonblocking attempt, never through a half-claimed state.
+            synchronized (ticket) {
+                PushStatus claimed = ticket.claimOrTerminal();
+                if (claimed != null) return claimed;
 
-            boolean admitted;
-            try {
-                admitted = items.tryWrite(value);
-            } catch (ChannelRuntime.ChannelClosedException closed) {
+                boolean admitted;
+                try {
+                    admitted = items.tryWrite(value);
+                } catch (ChannelRuntime.ChannelClosedException closed) {
+                    ticket.settle();
+                    return PushStatus.CLOSED;
+                }
+
                 ticket.settle();
-                return PushStatus.CLOSED;
+                return admitted ? PushStatus.ADMITTED : PushStatus.FULL;
             }
-
-            ticket.settle();
-            return admitted ? PushStatus.ADMITTED : PushStatus.FULL;
         }
     }
 
