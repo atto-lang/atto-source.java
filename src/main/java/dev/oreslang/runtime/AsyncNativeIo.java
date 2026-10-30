@@ -176,6 +176,20 @@ public final class AsyncNativeIo implements AutoCloseable {
                     "native resource creation credit exhausted before allocation");
         }
         ActorRuntime.NativeIoAuthority authority = ActorRuntime.captureNativeIoAuthority();
+        // STOP and its final physical-loan gate share the actor lifecycle
+        // monitor. Keep that monitor across quota reservation AND publication
+        // of the pre-creation physical owner, not merely the quota check.
+        if (authority == null)
+            return reserveResourceCreationLocked(accountedBytes, null);
+        AtomicReference<ResourceCreationPermit> minted = new AtomicReference<>();
+        authority.withLiveIncarnation("reserve native creation credit", () ->
+                minted.set(reserveResourceCreationLocked(accountedBytes, authority)));
+        return minted.get();
+    }
+
+    /** AsyncNativeIo monitor and, for actors, exact incarnation lock held. */
+    private ResourceCreationPermit reserveResourceCreationLocked(
+            long accountedBytes, ActorRuntime.NativeIoAuthority authority) {
         ActorPermissionScope.ResourceReservation quota = authority == null
                 ? null : authority.reserveResource(accountedBytes, "create native resource");
         ActorRuntime.ActorId actor = currentOwnerActor();
