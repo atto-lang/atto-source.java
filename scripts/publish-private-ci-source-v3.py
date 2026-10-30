@@ -549,10 +549,29 @@ def checked_carrier_main(repository, contract):
                        or bypasses.get(key) for key in ("users", "teams", "apps"))):
             raise Denied("carrier main has pull-request review bypasses")
 
+    # Normalize the security-relevant protection contract so we can prove it
+    # did not weaken while pinned carrier governance is being inspected.
+    protection_contract = legacy._require_strict_source_protection(protection)
+
     codeowners, _ = remote_carrier_file(
         repository, legacy.CODEOWNERS_PATH, base_sha, MAX_GOVERNANCE_FILE
     )
     require_carrier_security_codeowners(codeowners)
+
+    # Close the carrier-side TOCTOU window just as the source-origin verifier
+    # does: main must still point at the reviewed base, remain protected, and
+    # expose the same strict protection contract after CODEOWNERS is checked.
+    final_branch = legacy.gh_api(f"repos/{repository}/branches/main")
+    if (final_branch.get("name") != "main"
+            or final_branch.get("protected") is not True
+            or final_branch.get("commit", {}).get("sha") != base_sha):
+        raise Denied("carrier main changed during protection attestation")
+    final_protection = legacy.gh_api(
+        f"repos/{repository}/branches/main/protection"
+    )
+    if (legacy._require_strict_source_protection(final_protection)
+            != protection_contract):
+        raise Denied("carrier main protection changed during attestation")
     return base_sha
 
 
@@ -904,6 +923,10 @@ def authorize_write(
     if (branch.get("name") != "main"
             or branch.get("commit", {}).get("sha") != contract["base_sha"]):
         raise Denied("carrier main changed during source-bearing write")
+    # A stable main SHA alone is insufficient: protection and CODEOWNERS can
+    # be weakened without creating a commit. Re-attest them before every
+    # source-bearing write.
+    checked_carrier_main(repository, contract)
     if verify_source_pr(source_pr, source_commit) != source_repo_id:
         raise Denied("source PR authorization changed during transfer")
     revalidate_source_governance(
