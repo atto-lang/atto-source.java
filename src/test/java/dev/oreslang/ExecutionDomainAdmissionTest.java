@@ -117,6 +117,22 @@ final class ExecutionDomainAdmissionTest {
     }
 
     @Test
+    void scalarCpuPreflightLimitsUnaryRecursionBeforeBuildingTheAst() {
+        String prefix = "pub fnc main():int{return cpu { ";
+        String suffix = "1 };}";
+        // A 64-operator unary chain is within the AST depth budget;
+        // 65 operators must fail at lexical preflight, not after recursion.
+        assertDoesNotThrow(() -> Parser.parse(prefix + "-".repeat(64) + suffix));
+        for (String op : List.of("-", "+", "!")) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(prefix + op.repeat(65) + suffix));
+            assertTrue(error.getMessage().contains("unary operator depth budget"),
+                    () -> "wrong failure gate for " + op + ": " + error.getMessage());
+        }
+    }
+
+    @Test
     void scalarCpuTokenBudgetCountsTheClosingBraceWithoutOffByOne() {
         String start = "pub fnc main():int{return cpu { ";
         String end = " };}";
