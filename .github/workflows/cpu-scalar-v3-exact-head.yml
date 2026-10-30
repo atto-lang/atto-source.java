@@ -1,0 +1,68 @@
+name: CPU scalar v3 exact-head JVM verification
+
+on:
+  push:
+    branches:
+      - feat/cpu-scalar-region-source-v3-20261029
+
+# Source-repository-only hosted runner, no cross-org export or self-hosted access.
+permissions:
+  contents: read
+
+concurrency:
+  group: cpu-scalar-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compiler-and-guest:
+    if: >-
+      github.repository == 'ores-truffle-oreslang/oreslang-source.java' &&
+      github.repository_id == 1400792274 &&
+      github.ref == 'refs/heads/feat/cpu-scalar-region-source-v3-20261029'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout immutable exact push commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # repository-pinned
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prove exact source tree and repository identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+          EXPECTED_REPO_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$EXPECTED_REPO_ID" = '1400792274'
+          test "$GITHUB_REF" = 'refs/heads/feat/cpu-scalar-region-source-v3-20261029'
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git cat-file -e "${EXPECTED_HEAD}^{commit}"
+          printf 'SOURCE_REPO_ID=%s\nSOURCE_HEAD=%s\nSOURCE_TREE=%s\n' \
+            "$EXPECTED_REPO_ID" "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')"
+      - name: Install GraalVM 25.3 / Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # repository-pinned
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          # No cross-org credentials, Maven cache, or source export.
+      - name: Verify runtime and compiler toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          javac --version
+          native-image --version
+          mvn --version
+          test "$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)" = 25
+      - name: Run actual CPU scalar and domain JUnit tests
+        run: >-
+          mvn -B -ntp -Dores.runtime.carriers=native
+          -Dtest=CpuScalarSyncV3Test,ExecutionDomainAdmissionTest,CpuGpuTaskV2ContractTest
+          test
+      - name: Run complete JVM verification
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
