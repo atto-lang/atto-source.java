@@ -300,6 +300,12 @@ public final class AsyncNativeIo implements AutoCloseable {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
             try {
                 result.failFromRuntime(failure);
+            } catch (RuntimeException | Error notificationFailure) {
+                // A failed terminal callback has not supplied a trustworthy
+                // physical retirement receipt. Quarantine instead of
+                // publishing a misleading delegated-scope drain.
+                recordIncomplete(notificationFailure);
+                throw notificationFailure;
             } finally {
                 if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
             }
