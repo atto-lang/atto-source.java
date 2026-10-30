@@ -19,7 +19,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class ReusableLongStateRegion implements AutoCloseable {
     private static final int MAX_CAPACITY = 65_536;
-    private static final int MAX_DOMAIN = 0xFF_FFFF;
+    // The top bit marks a lifetime-pin ticket instead of a state handle.
+    private static final long PIN_TAG = Long.MIN_VALUE;
+    private static final int MAX_DOMAIN = 0x7F_FFFF;
+    private static final int MAX_PINS = 64;
     private static final int MAX_GENERATION = 0xFF_FFFF;
     private static final AtomicInteger NEXT_DOMAIN = new AtomicInteger(1);
     private final int domain;
@@ -27,6 +30,9 @@ public final class ReusableLongStateRegion implements AutoCloseable {
     private final int[] generations;
     private final boolean[] live;
     private final int[] freeSlots;
+    private final int[] pinGenerations = new int[MAX_PINS];
+    private final boolean[] activePinSlots = new boolean[MAX_PINS];
+    private int activePins;
     private int nextSlot;
     private int freeCount;
     private int liveCount;
@@ -48,11 +54,13 @@ public final class ReusableLongStateRegion implements AutoCloseable {
         live = new boolean[capacity];
         freeSlots = new int[capacity];
         Arrays.fill(generations, 1);
+        Arrays.fill(pinGenerations, 1);
     }
 
-    /** Handle: 24-bit nonreused domain, 24-bit generation, 16-bit slot.
+    /** Handle: 23-bit nonreused domain, 24-bit generation, 16-bit slot.
+     * The top tag bit is clear for state handles and set for lifetime pins.
      * Overflow fails closed rather than authorizing an ABA collision.
-     * Handles are not cryptographic capabilities and must not cross trust boundaries. */
+     * Handles and pin tickets are not cryptographic capabilities. */
     public synchronized long insert(long value) {
         requireAdmitting();
         final int slot;
@@ -127,6 +135,46 @@ public final class ReusableLongStateRegion implements AutoCloseable {
         --liveCount;
     }
 
+    /**
+     * Admit one bounded, nonallocating lifetime pin before scheduling a task,
+     * I/O operation or FFI callback. The trusted caller must retain the
+     * primitive ticket until physical completion, then release it exactly
+     * once. This is not a guest-visible borrow or permission grant.
+     */
+    public synchronized long pin() {
+        requireAdmitting();
+        for (int slot = 0; slot < MAX_PINS; slot++) {
+            if (!activePinSlots[slot] && pinGenerations[slot] < MAX_GENERATION) {
+                activePinSlots[slot] = true;
+                ++activePins;
+                return PIN_TAG | ((long) domain << 40)
+                        | ((long) pinGenerations[slot] << 16) | (long) slot;
+            }
+        }
+        throw new IllegalStateException("region lifetime pin budget exhausted");
+    }
+
+    /**
+     * Release a completed pin even after admission has been retired.
+     * Duplicate, foreign, stale and untyped tickets fail closed.
+     * Cancellation requests alone must not call this method.
+     */
+    public synchronized void releasePin(long ticket) {
+        int ticketDomain = (int) ((ticket >>> 40) & 0x7F_FFFFL);
+        int slot = (int) (ticket & 0xFFFFL);
+        int generation = (int) ((ticket >>> 16) & 0xFF_FFFFL);
+        if (closed || (ticket & PIN_TAG) == 0 || ticketDomain != domain
+                || slot >= MAX_PINS || generation == 0 || !activePinSlots[slot]
+                || pinGenerations[slot] != generation) {
+            throw new IllegalStateException("invalid, foreign or stale region lifetime pin");
+        }
+        activePinSlots[slot] = false;
+        ++pinGenerations[slot]; // saturated slot is never admitted again
+        --activePins;
+    }
+
+    public synchronized int activePins() { return activePins; }
+
     /** Monotonic admission barrier; does not prove async cancellation drained. */
     public synchronized void beginRetire() {
         retiring = true;
@@ -140,12 +188,14 @@ public final class ReusableLongStateRegion implements AutoCloseable {
     public synchronized boolean tryClose() {
         retiring = true;
         if (closed) return true;
-        if (mutating) return false;
+        if (mutating || activePins != 0) return false;
         Arrays.fill(values, 0L);
         Arrays.fill(live, false);
         Arrays.fill(freeSlots, 0);
+        Arrays.fill(activePinSlots, false);
         liveCount = 0;
         freeCount = 0;
+        activePins = 0;
         closed = true;
         return true;
     }
