@@ -1,0 +1,29 @@
+// Real Oreslang smoke for std/math. No host arithmetic oracle.
+import module Math from "std/math";
+
+pub routine main(): void {
+  val int lowest = -9223372036854775807 - 1;
+  val int highest = 9223372036854775807;
+
+  if Math.abs(0) != 0; do
+    rt fail("Math.abs zero");
+  fi
+  if Math.abs(-42) != 42; do
+    rt fail("Math.abs negative");
+  fi
+  if Math.abs(lowest + 1) != highest; do
+    rt fail("Math.abs near signed minimum");
+  fi
+  if Math.neg(42) != -42; do
+    rt fail("Math.neg positive");
+  fi
+  if Math.neg(-42) != 42; do
+    rt fail("Math.neg negative");
+  fi
+  if Math.neg(0) != 0; do
+    rt fail("Math.neg zero");
+  fi
+
+  stdio.stdout.println("NATIVE-MATH-OK");
+  return;
+}
