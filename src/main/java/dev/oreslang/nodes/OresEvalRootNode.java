@@ -590,9 +590,13 @@ public final class OresEvalRootNode extends RootNode {
                 Env initializerEnv =
                         new Env(null, false, fieldOwner, object);
                 initializerEnv.define("self", object, Ast.BindingKind.VAL, fieldOwner);
+                Object initialized = eval(field.initializer(), initializerEnv);
                 fields.put(
                         field.name(),
-                        eval(field.initializer(), initializerEnv));
+                        shapeNumericCarrier(
+                                numericCarrierForType(field.type()),
+                                initialized,
+                                "actor field " + klass.name() + "." + field.name()));
             }
 
             Ast.MethodDecl startup =
@@ -5647,8 +5651,12 @@ public final class OresEvalRootNode extends RootNode {
                                     + " does not contain statically admitted field "
                                     + staticClass.name() + "." + fieldName);
                 }
-                object.fields.put(fieldName, value);
-                return value;
+                Object shaped = shapeNumericCarrier(
+                        numericCarrierForType(targetField.field().type()),
+                        value,
+                        "field " + targetField.owner().name() + "." + fieldName);
+                object.fields.put(fieldName, shaped);
+                return shaped;
             }
             if (receiver instanceof MutableStructValue rawStruct) {
                 if (!(key instanceof String fieldName)) {
@@ -7530,8 +7538,12 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                     + target.member() + "' is immutable");
                         }
-                        object.fields.put(target.member(), value);
-                        return value;
+                        Object shaped = shapeNumericCarrier(
+                                numericCarrierForType(field.type()),
+                                value,
+                                "field " + ownedField.owner().name() + "." + target.member());
+                        object.fields.put(target.member(), shaped);
+                        return shaped;
                     }
                     // Concrete inferred/explicit structs use this mutable owned-map path.
                     // Structural records use ReadonlyRecordValue and never reach it.
@@ -9270,7 +9282,12 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "missing constructor field " + klass.name() + "." + field.name());
                     }
-                    fields.put(field.name(), value);
+                    fields.put(
+                            field.name(),
+                            shapeNumericCarrier(
+                                    numericCarrierForType(field.type()),
+                                    value,
+                                    "field " + klass.name() + "." + field.name()));
                 }
                 return object;
             }
@@ -9339,7 +9356,13 @@ public final class OresEvalRootNode extends RootNode {
                 Env initializerEnv = new Env(
                         fieldOwner == klass ? scalarInitializerArgs : null,
                         false, fieldOwner, null);
-                fields.put(field.name(), eval(field.initializer(), initializerEnv));
+                Object initialized = eval(field.initializer(), initializerEnv);
+                fields.put(
+                        field.name(),
+                        shapeNumericCarrier(
+                                numericCarrierForType(field.type()),
+                                initialized,
+                                "field " + klass.name() + "." + field.name()));
             }
 
             try {
