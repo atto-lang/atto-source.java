@@ -339,6 +339,38 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void manifestOwnedProviderCannotImportUnlistedSiblingSource() throws Exception {
+        Path project = temp.resolve("checkout");
+        billing(project);
+        source(project, "src/billing/unlisted.ores", "billing", """
+                define module hidden as
+                  pub fnc secret(): int { return 999; }
+                end
+                """);
+        Files.writeString(project.resolve("src/billing/charge.ores"), """
+                namespace billing;
+                import module hidden from "./unlisted.ores";
+                pub fnc charge(int value): int { return value; }
+                """);
+        Path main = source(project, "src/main.ores", "client", """
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  stdio.println(payments.refund());
+                  return;
+                }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, Files.readString(manifest).replace(
+                "  \"src/billing/invoice.ores\",",
+                "  \"src/billing/invoice.ores\",\n  \"src/main.ores\","));
+        // The sibling is real and parsable but is intentionally absent
+        // from the manifest's authenticated package-member list.
+        SecurityException denied = assertThrows(
+                SecurityException.class, () -> LinkedProgramRunner.validate(main));
+        assertTrue(denied.getMessage().contains("undeclared or foreign package source"));
+    }
+
+    @Test
     void pinnedSourceMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
         Path providerManifest = billing(provider);

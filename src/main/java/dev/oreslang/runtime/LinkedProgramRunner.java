@@ -436,17 +436,37 @@ public final class LinkedProgramRunner {
         PackageNamespaceWorkspace.verifyPinnedSnapshot(workspace, admitted);
         PackageNamespaceIndex index = PackageNamespaceIndex.load(
                 workspace.manifests(), admitted, workspace.aliases());
-        // External alias authority belongs to the *root* manifest packages.
-        // A package pulled in transitively cannot reuse its consumer's alias
-        // table to import unrelated dependencies.
+        // A manifest-listed provider can import only another member of its
+        // own exact package, compiler-owned core/std, or an explicit verified
+        // namespace dependency. Without this check a pinned provider could
+        // import arbitrary extra .ores files through the root project search
+        // paths, defeating the source digest and package-membership boundary.
         for (Map.Entry<String, MixedSourceUnit> entry : units.entrySet()) {
             if (!entry.getValue().hasOresSource()) continue;
+            String importer = entry.getKey();
+            String owner = index.ownerOf(importer);
             for (Ast.ImportDecl imported : Parser.parse(entry.getValue().oresSource()).imports()) {
-                if (imported.sourceNamespace() != null
-                        && !"+/".equals(imported.path())
-                        && !workspace.rootPackageIds().contains(index.ownerOf(entry.getKey()))) {
+                if (imported.sourceNamespace() != null) {
+                    if (!"+/".equals(imported.path())
+                            && !workspace.rootPackageIds().contains(owner)) {
+                        throw new SecurityException(
+                                "namespace dependency alias is not authorized for source: " + importer);
+                    }
+                    continue;
+                }
+                if (owner == null) continue; // legacy non-package source, not a provider
+                if (ImportRules.isJavaPath(imported.path())) {
                     throw new SecurityException(
-                            "namespace dependency alias is not authorized for source: " + entry.getKey());
+                            "manifest-owned namespace member cannot import host Java: " + importer);
+                }
+                if (CoreLibrarySources.isStdImport(imported.path())
+                        || CoreLibrarySources.isOresCoreImport(imported.path())) continue;
+                String target = importResolutions.getOrDefault(importer, Map.of())
+                        .get(imported.path());
+                if (target == null || !owner.equals(index.ownerOf(target))) {
+                    throw new SecurityException(
+                            "manifest-owned namespace member imports undeclared or foreign package source: "
+                                    + importer + " from " + imported.path());
                 }
             }
         }
