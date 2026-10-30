@@ -7924,6 +7924,14 @@ public final class OresEvalRootNode extends RootNode {
                     case "actor_startup_ns" -> exchange.startupNanos();
                     case "move_to_claim_ns" -> exchange.transferNanos();
                     case "request_id" -> exchange.requestId();
+                    case "request_deadline_remaining_ns" -> exchange.requestContext().remainingNanos(System.nanoTime());
+                    case "request_local" -> (Invokable) args -> exchange.requestLocal(requireStringArg(args, "request_local"));
+                    case "has_request_local" -> (Invokable) args -> exchange.hasRequestLocal(requireStringArg(args, "has_request_local"));
+                    case "set_request_local" -> (Invokable) args -> {
+                        requireTwo(args, "set_request_local");
+                        exchange.setRequestLocal(requireString(args.get(0), "key"), requireString(args.get(1), "value"));
+                        return null;
+                    };
                     case "admitted_ns" -> exchange.admittedNanos();
                     case "completion" -> exchange.completion();
                     case "operation_id" -> exchange.operationId();
