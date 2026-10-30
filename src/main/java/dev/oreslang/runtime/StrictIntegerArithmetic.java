@@ -10,6 +10,16 @@ package dev.oreslang.runtime;
 public final class StrictIntegerArithmetic {
     private StrictIntegerArithmetic() { }
 
+    /** Checked arithmetic negation; signed minimum has no positive i64 counterpart. */
+    public static long neg(long value) {
+        return Math.negateExact(value);
+    }
+
+    /** Checked absolute value; never silently wraps Long.MIN_VALUE. */
+    public static long abs(long value) {
+        return value < 0 ? Math.negateExact(value) : value;
+    }
+
     /** Truncating remainder: sign follows the dividend; zero divisor traps. */
     public static long rem(long dividend, long divisor) {
         if (divisor == 0) throw new ArithmeticException("integer remainder by zero");
