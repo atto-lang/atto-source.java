@@ -2,6 +2,7 @@ package dev.oreslang.runtime.persistence;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
@@ -79,7 +80,12 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
         Write write = new Write(original.id(), original.operationId(), original.epoch(),
                 original.expectedVersion(), original.schemaVersion(), original.kind(), original.payload());
         if (write.ownedPayload().length > maxPayloadBytes) throw new AdmissionException("PAYLOAD_TOO_LARGE");
-        long charge = 128L + write.ownedPayload().length; // even an empty write consumes admission credit
+        // Per-tenant fixed envelope reserve plus the variable UTF-8 identifier bytes.
+        // Count the admitted owned payload, not a caller-retained mutable buffer.
+        long charge = 128L + write.ownedPayload().length
+                + write.id().actor().getBytes(StandardCharsets.UTF_8).length
+                + write.id().state().getBytes(StandardCharsets.UTF_8).length
+                + write.operationId().getBytes(StandardCharsets.UTF_8).length;
         CompletableFuture<Result> future = new CompletableFuture<>();
         synchronized (queue) {
             if (closed) throw new AdmissionException("CLOSED");
@@ -173,7 +179,9 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
     }
     private static void validId(String value) {
         if (value == null || value.isBlank() || value.getBytes(StandardCharsets.UTF_8).length > 128
-                || value.chars().anyMatch(Character::isISOControl))
+                || !Normalizer.isNormalized(value, Normalizer.Form.NFC)
+                || value.codePoints().anyMatch(cp -> Character.isISOControl(cp)
+                        || (cp >= 0xD800 && cp <= 0xDFFF)))
             throw new IllegalArgumentException("invalid identity");
     }
 
