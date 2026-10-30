@@ -685,6 +685,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 closing = new ArrayList<>(resources);
             }
             Throwable closeFailure = null;
+            List<ActorRuntime.ActorId> registrationRetirements = new ArrayList<>();
             resourceCloseActive = true;
             try {
                 for (AutoCloseable resource : closing) {
@@ -700,7 +701,9 @@ public final class AsyncNativeIo implements AutoCloseable {
                                 // Registration is a physical actor-owned loan,
                                 // independent of currently active read/write
                                 // loans, and is retired only after close.
-                                decrementActorOperationLocked(owner.registeredBy);
+                                ActorRuntime.ActorId finalOwner =
+                                        decrementActorOperationLocked(owner.registeredBy);
+                                if (finalOwner != null) registrationRetirements.add(finalOwner);
                                 if (owner.physicalLease != null && incompleteReceipt == null) {
                                     owner.physicalLease.close();
                                 }
@@ -716,6 +719,13 @@ public final class AsyncNativeIo implements AutoCloseable {
                 // the reentrancy fence permanently armed. Failed resources
                 // remain owned and may be closed on a later explicit retry.
                 resourceCloseActive = false;
+            }
+            // Keep callbacks outside the AsyncNativeIo monitor. The physical
+            // resource close has already returned and its owner count was
+            // decremented; now the actor may retry finalization if this was
+            // its last registration.
+            for (ActorRuntime.ActorId actorId : registrationRetirements) {
+                notifyActorRetirement(actorId);
             }
             synchronized (this) {
                 if (!resources.isEmpty()) {
