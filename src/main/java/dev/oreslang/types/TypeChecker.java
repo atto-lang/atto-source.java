@@ -9584,7 +9584,13 @@ public final class TypeChecker {
         }
 
         return switch (ref.name()) {
-            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint" -> Primitive.INT;
+            case "int", "i64" -> Primitive.INT;
+            case "i8", "i16", "i32" -> throw new IllegalArgumentException(
+                    ref.name() + " is reserved but fixed-width narrowing/runtime lowering is not implemented; "
+                            + "use int/i64 for the current checked signed-64 domain");
+            case "uint", "u8", "u16", "u32", "u64" -> throw new IllegalArgumentException(
+                    ref.name() + " is reserved but unsigned runtime/lowering is not implemented; "
+                            + "refusing to alias unsigned values to signed int");
             case "f64", "float" -> Primitive.FLOAT;
             case "f32" -> throw new IllegalArgumentException(
                     "f32 is reserved but binary32 runtime/lowering is not implemented; use float/f64 for binary64");
