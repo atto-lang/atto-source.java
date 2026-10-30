@@ -38,9 +38,7 @@ public final class TypeChecker {
     // compiler-known scalar and nominal constructors. Do not allocate it per
     // recursive validation node or admit arbitrary unresolved nominal names.
     private static final Set<String> GENERIC_DEFAULT_BUILTINS = Set.of(
-            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-            "int", "uint", "bigint", "f32", "f64", "float",
-            "decimal", "complex64", "complex128", "complex",
+            "i64", "int", "f64", "float", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
             "Symbol", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
@@ -9598,7 +9596,10 @@ public final class TypeChecker {
                     "bigint is reserved but arbitrary-precision runtime/lowering is not implemented; refusing to alias it to int");
             case "decimal" -> throw new IllegalArgumentException(
                     "decimal is reserved but exact base-10 runtime/lowering is not implemented; refusing to alias it to float/int");
-            case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
+            case "complex64" -> throw new IllegalArgumentException(
+                    "complex64 is reserved but binary32-component complex lowering is not implemented; "
+                            + "use complex/complex128 for the current binary64-component representation");
+            case "complex128", "complex" -> Primitive.COMPLEX;
             case "bool", "Bool" -> {
                 if (!ref.arguments().isEmpty() || ref.inferArguments()) {
                     throw new IllegalArgumentException("bool/boolean does not accept type arguments or sequence shapes");
