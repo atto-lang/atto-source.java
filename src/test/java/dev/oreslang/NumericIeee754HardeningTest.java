@@ -52,6 +52,25 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void mathAbsAndNegPreserveBinary64SignSemantics() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      val float positiveZero = Math.abs(-0.0);
+                      val float negativeZero = Math.neg(0.0);
+                      val float positiveInfinity = 1.0 / positiveZero;
+                      val float negativeInfinity = 1.0 / negativeZero;
+                      val float nan = 0.0 / 0.0;
+                      return positiveInfinity > 0.0
+                        && negativeInfinity < 0.0
+                        && !(Math.abs(nan) eq Math.abs(nan))
+                        && !(Math.neg(nan) eq Math.neg(nan));
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void nanIsUnorderedAndSignedZeroIsNumericallyEqual() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
