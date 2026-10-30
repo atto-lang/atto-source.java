@@ -1,0 +1,91 @@
+name: Native resource security exact-head regression
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/AsyncNativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorPermissionScope.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/OresContext.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeResourceCreationPermitTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRegisteredResourceQuotaTest.java'
+      - '.github/workflows/native-resource-exact-head.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-resource-exact-head-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-resource-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact source revision without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify checkout provenance (fail closed)
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_HEAD=$EXPECTED_SHA"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Setup GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Record runtime toolchain
+        run: |
+          set -euo pipefail
+          java -version
+          javac -version
+          mvn -version
+          native-image --version
+      - name: Compile and run focused physical lifetime regressions
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=NativeResourceCreationPermitTest,ActorRegisteredResourceQuotaTest,ActorNativeIoIncarnationFenceTest,ActorSubtreeIoQuotaTest,PhysicalIoLoanRevocationTest,AsyncNativeIoTest \
+            test
+      - name: Confirm non-empty Surefire execution receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          reports = list(Path('target/surefire-reports').glob('TEST-*.xml'))
+          if not reports:
+              raise SystemExit('DENIED: no executed Surefire XML reports')
+          total = failed = 0
+          required = {
+              'NativeResourceCreationPermitTest',
+              'ActorRegisteredResourceQuotaTest',
+              'ActorNativeIoIncarnationFenceTest',
+              'ActorSubtreeIoQuotaTest',
+              'PhysicalIoLoanRevocationTest',
+              'AsyncNativeIoTest',
+          }
+          seen = set()
+          for report in reports:
+              root = ET.parse(report).getroot()
+              name = root.attrib.get('name', report.stem)
+              for suffix in required:
+                  if name.endswith(suffix) or report.stem.endswith(suffix):
+                      seen.add(suffix)
+              total += int(root.attrib.get('tests', 0))
+              failed += int(root.attrib.get('failures', 0)) + int(root.attrib.get('errors', 0))
+          if total <= 0 or failed != 0 or not required.issubset(seen):
+              raise SystemExit(f'DENIED: tests={total} failed={failed} missing={sorted(required-seen)}')
+          print(f'PASS: exact-head focused Surefire receipts tests={total} failures=0')
+          PY
