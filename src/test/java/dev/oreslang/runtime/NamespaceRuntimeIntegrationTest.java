@@ -554,6 +554,58 @@ final class NamespaceRuntimeIntegrationTest {
 
 
     @Test
+    void nestedManifestAtExplicitProjectRootCannotClaimParentPackage() throws Exception {
+        Path project = temp.resolve("root-boundary");
+        Path entry = source(project, "entry.ores", "app",
+                "pub fnc main(): void { return; }");
+        Path provider = source(project, "src/worker.ores", "app",
+                "pub fnc value(): int { return 7; }");
+        Files.writeString(project.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "src"
+                [packages.app]
+                files = ["worker.ores"]
+                """);
+
+        // A deliberate subdirectory root is permitted when no other
+        // package manifest owns that directory.
+        var admitted = PackageNamespaceWorkspace.discover(entry);
+        assertTrue(admitted.files().contains(provider.toRealPath()));
+
+        // The nearest manifest for src/worker.ores would now differ from
+        // the parent manifest claiming the provider; fail before guest code.
+        Files.writeString(project.resolve("src/.ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.foreign]
+                files = ["worker.ores"]
+                """);
+        SecurityException rejected = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.discover(entry));
+        assertTrue(rejected.getMessage().contains("nested namespace package boundary"));
+    }
+
+    @Test
+    void danglingNestedManifestSymlinkIsStillAPackageBoundary() throws Exception {
+        Path project = temp.resolve("dangling-nested-manifest");
+        billing(project);
+        Path entry = source(project, "src/client.ores", "app",
+                "pub fnc main(): void { return; }");
+        Path marker = project.resolve("src/billing/.ores.pkg.toml");
+        try {
+            Files.createSymbolicLink(marker, Path.of("not-yet-created.toml"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        SecurityException rejected = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.discover(entry));
+        assertTrue(rejected.getMessage().contains("nested namespace package boundary"));
+    }
+
+    @Test
     void symlinkedProjectRootIsRejectedBeforeGuestExecution() throws Exception {
         Path project = temp.resolve("root-alias-project");
         Path main = source(project, "src/main.ores", "app", """
