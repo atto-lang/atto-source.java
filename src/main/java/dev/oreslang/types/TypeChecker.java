@@ -2831,10 +2831,6 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Future.from_callback requires an inline callback registrar");
                 }
-                if (registrar.async()) {
-                    throw new IllegalArgumentException(
-                            "Future.from_callback registrar cannot be async; it must register and return");
-                }
                 if (call.typeArguments().size() > 1) {
                     throw new IllegalArgumentException(
                             "Future.from_callback accepts at most one result type argument");
@@ -3346,10 +3342,6 @@ public final class TypeChecker {
                         if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr registrar)) {
                             throw new IllegalArgumentException(
                                     "Future.attach_callback requires an inline callback registrar");
-                        }
-                        if (registrar.async()) {
-                            throw new IllegalArgumentException(
-                                    "Future.attach_callback registrar cannot be async; it must register and return");
                         }
                         if (call.typeArguments().size() > 1) {
                             throw new IllegalArgumentException(
