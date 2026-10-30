@@ -54,6 +54,31 @@ public final class CollectionSharingProbe {
     rejects("pub fnc main(): void { val values = [1, 2]; val shared = rt share values; return; }", "rt share");
     rejects("pub fnc main(): void { val values = [1, 2]; val other = rt take values; values.get(0); return; }", "moved");
     rejects("pub async fnc main(): void { val mutex = SharedMutex.new([10]); val guard = mutex.lock(); await mutex.lock_async(); guard.release(); return; }", "cannot await");
+    // A readonly structural view may be assigned from writable storage;
+    // the writer is not revoked by the type conversion.
+    var writable = new Types.Record(Map.of("value", scalar), false);
+    require(Types.isAssignable(writable, view), "expected writable -> readonly view");
+    require(!Types.isAssignable(view, writable), "readonly view recovered write access");
+    require(!TypeAutoTraits.inferClosed(view).sync(), "readonly conversion minted Sync");
+    require(!TypeAutoTraits.inferClosed(view).share(), "readonly conversion minted Share");
+    require(!ThreadSafetyTraits.has(new Types.Borrow(view, false),
+        ThreadSafetyTraits.Trait.SEND, (t,k)->false),
+        "borrowed readonly alias crossed thread boundary");
+    // Exercise wrapper composition and the guest source-admission path, not
+    // just a direct call to the auto-trait classifier.
+    for (Types.Type wrapper : List.of(
+        new Types.Named("Option", List.of(view)),
+        new Types.Named("Result", List.of(scalar, view)),
+        new Types.Named("Arc", List.of(view)),
+        new Types.Named("Weak", List.of(view)))) {
+      var caps = TypeAutoTraits.inferClosed(wrapper);
+      require(!caps.sync() && !caps.share(), "wrapper laundered readonly view");
+    }
+    compile("pub fnc main(): int { const row = record{value: 1}; return row.value; }"); checks++;
+    rejects("pub fnc main(): void { const row = record{value: 1}; val shared = rt share row; return; }", "rt share");
+    rejects("pub async fnc main(): void { val owner = infer struct{value: 1}; val view = rt borrow owner; let Future<int> child = task { return view.value; }; return; }", "borrow");
+    rejects("pub fnc main(): void { val owner = [10]; val protected = SharedMutex.new(owner); owner.get(0); return; }", "moved");
+    rejects("pub fnc main(): void { val owner = [10]; val view = rt borrow owner; val protected = SharedMutex.new(view); return; }", "owned");
     System.out.println("PASS: " + checks + " collection sharing / scoped READ / frontend checks");
   }
 }
