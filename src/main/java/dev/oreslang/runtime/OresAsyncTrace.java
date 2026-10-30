@@ -337,6 +337,15 @@ public final class OresAsyncTrace {
      * It may safely cross carrier threads because it snapshots the logical trace rather than
      * installing or retaining the mutable {@link Trace} execution lease.</p>
      */
+    public static CallbackSnapshot captureCallback(BoundaryKind boundary) {
+        Trace trace = CURRENT.get();
+        if (trace == null) return null;
+        return new CallbackSnapshot(
+                trace,
+                Objects.requireNonNull(boundary, "boundary"),
+                trace.currentFrame().site());
+    }
+
     public static CallbackSnapshot captureCallback(BoundaryKind boundary, SourceSite site) {
         Trace trace = CURRENT.get();
         if (trace == null) return null;
