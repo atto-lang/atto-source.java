@@ -4,19 +4,25 @@ on:
   pull_request:
     paths:
       - 'stdlib/core.ores'
+      - 'stdlib/math.ores'
       - 'stdlib/trace.ores'
       - 'stdlib/testing.ores'
       - 'formal/stdlib/**'
       - 'examples/native-core-smt-refinement.ores'
+      - 'examples/native-math-refinement.ores'
+      - 'examples/native-math-overflow.ores'
       - '.github/workflows/stdlib-smt.yml'
   push:
     branches: [main]
     paths:
       - 'stdlib/core.ores'
+      - 'stdlib/math.ores'
       - 'stdlib/trace.ores'
       - 'stdlib/testing.ores'
       - 'formal/stdlib/**'
       - 'examples/native-core-smt-refinement.ores'
+      - 'examples/native-math-refinement.ores'
+      - 'examples/native-math-overflow.ores'
       - '.github/workflows/stdlib-smt.yml'
 permissions:
   contents: read
@@ -73,6 +79,18 @@ jobs:
           mvn -B -ntp -DskipTests compile
           mvn -B -ntp exec:java -Dexec.args="examples/native-core-smt-refinement.ores" | tee "${RUNNER_TEMP}/core-refinement.out"
           grep -Fx 'CORE-SMT-REFINEMENT-OK' "${RUNNER_TEMP}/core-refinement.out"
+      - name: Execute native Oreslang Math refinement and MIN overflow boundary
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java -Dexec.args="examples/native-math-refinement.ores" | tee "${RUNNER_TEMP}/math-refinement.out"
+          grep -Fx 'NATIVE-MATH-OK' "${RUNNER_TEMP}/math-refinement.out"
+          set +e
+          mvn -B -ntp exec:java -Dexec.args="examples/native-math-overflow.ores" >"${RUNNER_TEMP}/math-overflow.out" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          ! grep -F 'wrapped instead of overflowing' "${RUNNER_TEMP}/math-overflow.out"
       - name: Run real Oreslang testing.run_suite guest refinement
         run: |
           set -euo pipefail
