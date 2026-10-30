@@ -21,7 +21,9 @@
     "source_i64": {},
     "checked_i64_overflow": {},
     "binary64_ordering": {},
-    "binary32_arithmetic": {},
+    "binary32_arithmetic": {
+      "scope": "f32 previously resolved to Primitive.FLOAT; this branch now rejects f32 until distinct binary32 storage, round-after-each-operation lowering, ABI, and serialization exist"
+    },
     "bigint_exact": {},
     "decimal_exact": {},
     "complex_binary64": {},
@@ -31,13 +33,13 @@
       "scope": "checked signed-i64 overflow path exists in guest arithmetic; named Math.abs/Math.neg guest binding still requires execution proof"
     },
     "binary64_unary": {
-      "scope": "IEEE sign behavior covered by shared reference and Java runtime primitives; guest named binding unverified"
+      "scope": "binary64 arithmetic/order semantics are present; shared sign-bit reference exists, but Math.abs/Math.neg guest named binding is not integrated with this branch"
     },
     "bigint_unary": {
-      "scope": "ExactScalarMath.abs/neg bounded host carrier; guest BigInt source admission still not implemented"
+      "scope": "guest bigint carrier exists and ExactScalarMath.abs/neg are bounded/exact; Math.abs/Math.neg guest overload binding is on the strict named-arithmetic branch and is not yet integrated here"
     },
     "decimal_unary": {
-      "scope": "ExactScalarMath.abs/neg preserves BigDecimal scale; guest Decimal source admission still not implemented"
+      "scope": "guest decimal carrier exists and ExactScalarMath.abs/neg preserve BigDecimal scale; Math.abs/Math.neg guest overload binding is not yet integrated with this branch"
     }
   },
   "source_i64_fixture_git_blob_sha": "bbc319c19ecd007109d33592e210091eb267e5a2",
