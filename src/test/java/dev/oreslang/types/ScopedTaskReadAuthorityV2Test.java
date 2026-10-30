@@ -160,6 +160,45 @@ final class ScopedTaskReadAuthorityV2Test {
         }
     }
 
+    @Test
+    void publishedCheckedTaskStillRejectsReadonlyViewProofLaundering() {
+        // Prove against an admitted Task epoch, not only the private staging
+        // helper on a parser-only Program. Invalid referent types must fail
+        // even after successful whole-program capture publication.
+        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task { return value + 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(program);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        var root = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 37, 1, true);
+        var view = new Types.Record(
+                java.util.Map.of("value", Types.Primitive.INT), true);
+
+        for (Types.Type referent : List.of(
+                view,
+                new Types.Record(java.util.Map.of(), true),
+                new Types.Named("Option", List.of(view)),
+                new Types.Named("Result", List.of(Types.Primitive.INT, view)),
+                new Types.Named("Arc", List.of(view)),
+                new Types.Named("Weak", List.of(view)))) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> ScopedTaskReadAuthority.prove(
+                            program, task, epoch, root, List.of(), referent));
+            assertTrue(failure.getMessage().contains("Sync"),
+                    failure::getMessage);
+        }
+        // Ensure the negative checks are not satisfied by a stale epoch or
+        // incorrectly constructed Task: scalar READ is still admissible.
+        assertDoesNotThrow(() -> ScopedTaskReadAuthority.prove(
+                program, task, epoch, root, List.of(), Types.Primitive.INT));
+    }
+
     private static Ast.TaskExpr firstTask(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
