@@ -84,5 +84,33 @@ class NativeMathUnaryPrecisionContractTest(unittest.TestCase):
         self.assertEqual("NONTERMINATING_REQUIRES_CONTEXT", third["without_context"])
 
 
+
+class BigIntExactContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = Path(__file__).resolve().parents[1] / "contracts/v1/bigint-exact-v1.json"
+        cls.contract = json.loads(path.read_text(encoding="utf-8"))
+
+    def test_exact_bigint_division_and_conversion_vectors(self):
+        self.assertEqual("oreslang.bigint-exact.v1", self.contract["contract"])
+        for item in self.contract["division_cases"]:
+            a, b = int(item["left"]), int(item["right"])
+            if item.get("error"):
+                self.assertEqual(0, b, item["id"])
+                continue
+            q = abs(a) // abs(b)
+            if (a < 0) != (b < 0):
+                q = -q
+            r = a - q * b
+            self.assertEqual(item["quot"], str(q), item["id"])
+            self.assertEqual(item["rem"], str(r), item["id"])
+            self.assertEqual(a, q * b + r, item["id"])
+
+        for item in self.contract["conversion_cases"]:
+            value = int(item["operand"])
+            if item["operation"] == "to_i64_checked":
+                overflow = value < -(1 << 63) or value > (1 << 63) - 1
+                self.assertEqual(bool(item.get("error")), overflow, item["id"])
+
 if __name__ == "__main__":
     unittest.main()
