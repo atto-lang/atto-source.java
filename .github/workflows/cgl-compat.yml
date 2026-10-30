@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'scripts/cgl_preflight.rs'
+      - 'src/test/java/dev/oreslang/runtime/CglActorMessageTrace*'
       - 'pom.xml'
       - 'src/main/java/**'
       - 'stdlib/**'
@@ -47,6 +48,16 @@ jobs:
           "$RUNNER_TEMP/cgl-preflight-tests" --test-threads=1
           rustc --edition=2021 -D warnings -O scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight"
           "$RUNNER_TEMP/cgl-preflight"
+      - name: Verify bounded Java actor-call trace without Maven dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cgl-java-classes"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/cgl-java-classes" \
+            src/main/java/dev/oreslang/runtime/CglActorMessageTrace.java \
+            src/test/java/dev/oreslang/runtime/CglActorMessageTraceSmoke.java
+          java -cp "$RUNNER_TEMP/cgl-java-classes" \
+            dev.oreslang.runtime.CglActorMessageTraceSmoke
       - name: Run Maven tests, build launcher, and execute actual guest source
         run: |
           set -euo pipefail
