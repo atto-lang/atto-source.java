@@ -38,6 +38,44 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
         }
     }
 
+    /**
+     * Ownership-preserving push result.
+     *
+     * <p>ADMITTED permanently transfers the payload into the queue and carries
+     * no value back. Every non-admitted terminal outcome returns the exact
+     * original payload so move-only source values are never silently lost on
+     * full, cancellation, close, stale/used tickets, or waiter-budget failure.</p>
+     */
+    public record PushResult<T>(PushStatus status, T rejectedValue) {
+        public PushResult {
+            Objects.requireNonNull(status, "status");
+            if (status == PushStatus.ADMITTED) {
+                if (rejectedValue != null) {
+                    throw new IllegalArgumentException(
+                            "ADMITTED push cannot return payload ownership");
+                }
+            } else {
+                Objects.requireNonNull(
+                        rejectedValue,
+                        "non-admitted push must return payload ownership");
+            }
+        }
+
+        public static <T> PushResult<T> admitted() {
+            return new PushResult<>(PushStatus.ADMITTED, null);
+        }
+
+        public static <T> PushResult<T> rejected(
+                PushStatus status,
+                T value) {
+            if (status == PushStatus.ADMITTED) {
+                throw new IllegalArgumentException(
+                        "use PushResult.admitted() for successful admission");
+            }
+            return new PushResult<>(status, Objects.requireNonNull(value, "value"));
+        }
+    }
+
     public enum PopStatus {
         VALUE("value"),
         EMPTY("empty"),
@@ -270,13 +308,13 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
     /**
      * Immediate push. FULL never retains a writer registration.
      */
-    public PushStatus tryPush(T value, Ticket ticket) {
+    public PushResult<T> tryPush(T value, Ticket ticket) {
         Objects.requireNonNull(value, "value");
         Objects.requireNonNull(ticket, "ticket");
 
         synchronized (stateLock) {
             PushStatus preflight = preflight(ticket);
-            if (preflight != null) return preflight;
+            if (preflight != null) return PushResult.rejected(preflight, value);
 
             // Immediate push has no pending Future to act as cancellation
             // authority. Keep claim -> probe -> settlement under the ticket
@@ -284,18 +322,20 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
             // nonblocking attempt, never through a half-claimed state.
             synchronized (ticket) {
                 PushStatus claimed = ticket.claimOrTerminal();
-                if (claimed != null) return claimed;
+                if (claimed != null) return PushResult.rejected(claimed, value);
 
                 boolean admitted;
                 try {
                     admitted = items.tryWrite(value);
                 } catch (ChannelRuntime.ChannelClosedException closed) {
                     ticket.settle();
-                    return PushStatus.CLOSED;
+                    return PushResult.rejected(PushStatus.CLOSED, value);
                 }
 
                 ticket.settle();
-                return admitted ? PushStatus.ADMITTED : PushStatus.FULL;
+                return admitted
+                        ? PushResult.admitted()
+                        : PushResult.rejected(PushStatus.FULL, value);
             }
         }
     }
@@ -308,36 +348,41 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
      * cancellation capability avoids re-entrant outer-Future settlement races
      * while the underlying channel cancellation publishes synchronously.</p>
      */
-    public OresFuture<PushStatus> pushAsync(T value, Ticket ticket) {
+    public OresFuture<PushResult<T>> pushAsync(T value, Ticket ticket) {
         Objects.requireNonNull(value, "value");
         Objects.requireNonNull(ticket, "ticket");
 
         final OresFuture<Void> pending;
         synchronized (stateLock) {
             PushStatus preflight = preflight(ticket);
-            if (preflight != null) return OresFuture.completed(preflight);
+            if (preflight != null) {
+                return OresFuture.completed(PushResult.rejected(preflight, value));
+            }
 
             synchronized (ticket) {
                 PushStatus claimed = ticket.claimOrTerminal();
-                if (claimed != null) return OresFuture.completed(claimed);
+                if (claimed != null) {
+                    return OresFuture.completed(PushResult.rejected(claimed, value));
+                }
 
                 try {
                     pending = items.writeAsync(value);
                 } catch (ChannelRuntime.ChannelClosedException closed) {
                     ticket.settle();
-                    return OresFuture.completed(PushStatus.CLOSED);
+                    return OresFuture.completed(
+                            PushResult.rejected(PushStatus.CLOSED, value));
                 }
                 ticket.bindPendingWriteLocked(pending);
             }
         }
 
-        OresFuture<PushStatus> result =
+        OresFuture<PushResult<T>> result =
                 new OresFuture<>(() -> false, () -> { });
 
         pending.whenCompleteRuntime((ignored, failure) -> {
             if (failure == null) {
                 ticket.settle();
-                result.completeFromRuntime(PushStatus.ADMITTED);
+                result.completeFromRuntime(PushResult.admitted());
                 return;
             }
 
@@ -345,14 +390,17 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
             if (pending.isCancelled()
                     || terminal instanceof CancellationException) {
                 ticket.settleCancelled();
-                result.completeFromRuntime(PushStatus.CANCELLED);
+                result.completeFromRuntime(
+                        PushResult.rejected(PushStatus.CANCELLED, value));
             } else if (terminal instanceof ChannelRuntime.ChannelClosedException) {
                 ticket.settle();
-                result.completeFromRuntime(PushStatus.CLOSED);
+                result.completeFromRuntime(
+                        PushResult.rejected(PushStatus.CLOSED, value));
             } else if (terminal instanceof ChannelRuntime.ChannelBackpressureException
                     || terminal instanceof ChannelRuntime.SelectAdmissionException) {
                 ticket.settle();
-                result.completeFromRuntime(PushStatus.RESOURCE_LIMIT);
+                result.completeFromRuntime(
+                        PushResult.rejected(PushStatus.RESOURCE_LIMIT, value));
             } else {
                 ticket.settle();
                 result.failFromRuntime(terminal);
@@ -363,25 +411,12 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
     }
 
     /**
-     * Source-facing status adapter. It preserves the exact push operation
-     * Future and maps only its terminal value into the language's Symbol
-     * representation. Cancellation authority remains exclusively on Ticket.
+     * Source lowering consumes the exact ownership-preserving PushResult<T>
+     * returned by pushAsync; no status-only adapter is permitted because a
+     * rejected move-only payload must remain recoverable.
      */
-    public OresFuture<OresSymbol> pushSymbolAsync(T value, Ticket ticket) {
-        OresFuture<PushStatus> source = pushAsync(value, ticket);
-        OresFuture<OresSymbol> result =
-                new OresFuture<>(() -> false, () -> { });
-
-        source.whenCompleteRuntime((status, failure) -> {
-            if (failure == null) {
-                result.completeFromRuntime(status.symbol());
-            } else if (source.isCancelled()) {
-                result.cancel(false);
-            } else {
-                result.failFromRuntime(OresFuture.unwrap(failure));
-            }
-        });
-        return result;
+    public OresFuture<PushResult<T>> pushResultAsync(T value, Ticket ticket) {
+        return pushAsync(value, ticket);
     }
 
     /**
