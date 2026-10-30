@@ -18,8 +18,59 @@ import java.util.Objects;
 public final class ExactScalarMath {
     private static final int MAX_DIGITS = 4096;
     private static final int MAX_ABSOLUTE_SCALE = 16384;
+    private static final int MAX_PARSE_CHARS = MAX_DIGITS + 32;
+    private static final java.util.regex.Pattern BIGINT_TEXT =
+            java.util.regex.Pattern.compile("-?(?:0|[1-9][0-9]*)");
+    private static final java.util.regex.Pattern DECIMAL_TEXT =
+            java.util.regex.Pattern.compile(
+                    "-?(?:0|[1-9][0-9]*)(?:[.][0-9]+)?(?:[eE][+-]?[0-9]+)?");
 
     private ExactScalarMath() { }
+
+    /** Exact, bounded canonical BigInt text admission for the future Oreslang wrapper. */
+    public static BigInteger parseBigInt(String text) {
+        Objects.requireNonNull(text, "text");
+        if (text.length() > MAX_PARSE_CHARS || !BIGINT_TEXT.matcher(text).matches()) {
+            throw new IllegalArgumentException("invalid canonical BigInt text");
+        }
+        BigInteger value;
+        try {
+            value = new BigInteger(text);
+        } catch (NumberFormatException invalid) {
+            throw new IllegalArgumentException("invalid BigInt text", invalid);
+        }
+        validate(value);
+        return value;
+    }
+
+    /**
+     * Exact bounded Decimal text admission. Decimal source text is parsed
+     * directly in base 10 and never passes through binary64.
+     */
+    public static BigDecimal parseDecimal(String text) {
+        Objects.requireNonNull(text, "text");
+        if (text.length() > MAX_PARSE_CHARS || !DECIMAL_TEXT.matcher(text).matches()) {
+            throw new IllegalArgumentException("invalid Decimal text");
+        }
+        BigDecimal value;
+        try {
+            value = new BigDecimal(text);
+        } catch (NumberFormatException invalid) {
+            throw new IllegalArgumentException("invalid Decimal text", invalid);
+        }
+        validate(value);
+        return value;
+    }
+
+    public static String formatBigInt(BigInteger value) {
+        validate(Objects.requireNonNull(value, "value"));
+        return value.toString();
+    }
+
+    public static String formatDecimalPreservingScale(BigDecimal value) {
+        validate(Objects.requireNonNull(value, "value"));
+        return value.toPlainString();
+    }
 
     /** Immutable quotient/remainder pair with truncation-toward-zero semantics. */
     public record IntegerDivision(BigInteger quotient, BigInteger remainder) {
