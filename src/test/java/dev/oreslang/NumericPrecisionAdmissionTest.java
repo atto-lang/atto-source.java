@@ -72,4 +72,31 @@ final class NumericPrecisionAdmissionTest {
                         && failure.getMessage().contains("exact base-10 runtime/lowering is not implemented"),
                 () -> "unexpected decimal diagnostic: " + failure.getMessage());
     }
+
+    @Test
+    void complex64DoesNotAliasBinary64ComponentComplex() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc identity(complex64 value): complex64 { return value; }
+                        """)));
+        assertTrue(failure.getMessage() != null
+                        && failure.getMessage().contains("binary32-component complex lowering is not implemented"),
+                () -> "unexpected complex64 diagnostic: " + failure.getMessage());
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc identity(complex128 value): complex128 { return value; }
+                """)));
+    }
+
+    @Test
+    void unsupportedPrecisionTypesCannotHideInGenericDefaults() {
+        for (String type : new String[] {
+                "i32", "u64", "bigint", "f32", "decimal", "complex64"
+        }) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "fnc identity<T=" + type + ">(T value): T { return value; }")));
+            assertTrue(failure.getMessage() != null && !failure.getMessage().isBlank(),
+                    () -> "missing generic-default rejection for " + type);
+        }
+    }
 }
