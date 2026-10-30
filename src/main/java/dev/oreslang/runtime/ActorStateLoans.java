@@ -26,6 +26,8 @@ public final class ActorStateLoans implements AutoCloseable {
     private long nextEpoch;
     private boolean closed;
     private boolean publishing;
+    /** Pending Future close notifications may be blocked on external subscribers. */
+    private boolean failingPendingCallbacks;
     private AuthorityMode authorityMode = AuthorityMode.UNSET;
     private ExecutionContext.AllocationDomain boundAllocation;
     private final Runnable retirementWakeup;
@@ -57,7 +59,8 @@ public final class ActorStateLoans implements AutoCloseable {
 
     private boolean physicallyRetiredLocked() {
         return closed && active == null && pending.isEmpty()
-                && completions.isEmpty() && !publishing;
+                && completions.isEmpty() && !publishing
+                && !failingPendingCallbacks;
     }
 
     private void maybeWakeRetirement() {
@@ -231,6 +234,10 @@ public final class ActorStateLoans implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
+        // Last physical loan may close from inside a completion subscriber
+        // while publishing=true; only the outer publisher exit can wake the
+        // actor finalizer once the synchronous notifications have unwound.
+        maybeWakeRetirement();
         if (firstFailure != null) {
             if (firstFailure instanceof Error fatal) throw fatal;
             if (firstFailure instanceof RuntimeException failure) throw failure;
@@ -312,12 +319,29 @@ public final class ActorStateLoans implements AutoCloseable {
             abandoned = new ArrayDeque<>(pending);
             pending.clear();
             for (Pending waiter : abandoned) owners.remove(waiter.owner);
+            failingPendingCallbacks = !abandoned.isEmpty();
         }
-        for (Pending waiter : abandoned) {
-            waiter.future.failFromRuntime(new IllegalStateException("actor state loans closed"));
+        Throwable firstFailure = null;
+        try {
+            for (Pending waiter : abandoned) {
+                try {
+                    waiter.future.failFromRuntime(
+                            new IllegalStateException("actor state loans closed"));
+                } catch (Throwable callbackFailure) {
+                    if (firstFailure == null) firstFailure = callbackFailure;
+                    else firstFailure.addSuppressed(callbackFailure);
+                }
+            }
+        } finally {
+            synchronized (monitor) { failingPendingCallbacks = false; }
+            maybeWakeRetirement();
+        }
+        if (firstFailure instanceof Error fatal) throw fatal;
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure != null) {
+            throw new IllegalStateException("state loan close completion failed", firstFailure);
         }
         // The active loan stays physically held until its handler's
         // finally/cleanup closes it. Closing only fences further state access.
-        maybeWakeRetirement();
     }
 }
