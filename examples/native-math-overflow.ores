@@ -1,0 +1,9 @@
+// Negative real-Oreslang fixture: Math.neg(MIN_INT) must not wrap.
+import module Math from "std/math";
+
+pub routine main(): void {
+  val int lowest = -9223372036854775807 - 1;
+  val int impossible = Math.neg(lowest);
+  stdio.stdout.println(impossible);
+  rt fail("Math.neg(MIN_INT) wrapped instead of overflowing");
+}
