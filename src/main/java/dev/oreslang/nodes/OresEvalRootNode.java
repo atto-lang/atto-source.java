@@ -8681,8 +8681,8 @@ public final class OresEvalRootNode extends RootNode {
                     case '*' -> Math.multiplyExact(x, y);
                     case '%' -> {
                         if (y == 0) throw new ArithmeticException("integer remainder by zero");
-                        if (x == Long.MIN_VALUE && y == -1)
-                            throw new ArithmeticException("integer remainder overflow");
+                        // MIN_VALUE / -1 overflows the quotient, but the
+                        // mathematical remainder is exactly zero and is representable.
                         yield x % y;
                     }
                     default -> throw new IllegalArgumentException("bad numeric operator");
