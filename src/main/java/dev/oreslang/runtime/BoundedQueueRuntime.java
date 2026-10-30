@@ -352,15 +352,27 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
      * committed value into the buffer after the first empty probe.
      */
     public PopResult<T> tryPop() {
-        Optional<T> first = items.tryRead();
+        final Optional<T> first;
+        try {
+            first = items.tryRead();
+        } catch (ChannelRuntime.ChannelClosedException closed) {
+            return PopResult.closedDrained();
+        }
         if (first.isPresent()) return PopResult.value(first.get());
 
         if (!items.isClosed()) return PopResult.empty();
 
-        Optional<T> afterClose = items.tryRead();
-        return afterClose
-                .<PopResult<T>>map(PopResult::value)
-                .orElseGet(PopResult::closedDrained);
+        // Close may have raced a write which committed after the first empty
+        // probe but before close won. Once close is visible, a second probe is
+        // authoritative because no later writes can commit.
+        try {
+            Optional<T> afterClose = items.tryRead();
+            return afterClose
+                    .<PopResult<T>>map(PopResult::value)
+                    .orElseGet(PopResult::closedDrained);
+        } catch (ChannelRuntime.ChannelClosedException closed) {
+            return PopResult.closedDrained();
+        }
     }
 
     /**
