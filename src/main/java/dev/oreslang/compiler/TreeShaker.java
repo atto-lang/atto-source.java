@@ -468,17 +468,46 @@ public final class TreeShaker {
         }
 
         private boolean constantEquals(Object left, Object right) {
-            if (left == right) return true;
-            if (left == null || right == null) return false;
+            // Numeric semantics precede host reference identity so NaN never
+            // becomes equal to itself merely because a const value is reused.
             if (left instanceof Number a && right instanceof Number b) {
-                boolean aIntegral = a instanceof Byte || a instanceof Short
-                        || a instanceof Integer || a instanceof Long;
-                boolean bIntegral = b instanceof Byte || b instanceof Short
-                        || b instanceof Integer || b instanceof Long;
-                if (aIntegral && bIntegral) return a.longValue() == b.longValue();
+                if (isNaNNumber(a) || isNaNNumber(b)) return false;
+                boolean ai = isIntegralNumber(a), bi = isIntegralNumber(b);
+                if (ai && bi) return a.longValue() == b.longValue();
+                if (ai != bi || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger
+                        || a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal) {
+                    if (isInfiniteFloatNumber(a) || isInfiniteFloatNumber(b)) return false;
+                    return exactFiniteDecimal(a).compareTo(exactFiniteDecimal(b)) == 0;
+                }
                 return a.doubleValue() == b.doubleValue();
             }
+            if (left == right) return true;
+            if (left == null || right == null) return false;
             return Objects.equals(left, right);
+        }
+
+        private boolean isIntegralNumber(Number value) {
+            return value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long;
+        }
+
+        private boolean isNaNNumber(Number value) {
+            return (value instanceof Float || value instanceof Double)
+                    && Double.isNaN(value.doubleValue());
+        }
+
+        private boolean isInfiniteFloatNumber(Number value) {
+            return (value instanceof Float || value instanceof Double)
+                    && Double.isInfinite(value.doubleValue());
+        }
+
+        private java.math.BigDecimal exactFiniteDecimal(Number value) {
+            if (value instanceof java.math.BigDecimal decimal) return decimal;
+            if (value instanceof java.math.BigInteger integer)
+                return new java.math.BigDecimal(integer);
+            if (isIntegralNumber(value))
+                return java.math.BigDecimal.valueOf(value.longValue());
+            return new java.math.BigDecimal(value.doubleValue());
         }
 
         private Object evaluate(Ast.Expr expression, String module, Map<String, Object> locals) {
@@ -500,7 +529,16 @@ public final class TreeShaker {
                 if (operand == UNKNOWN) return UNKNOWN;
                 if (unary.operator().equals("!") && operand instanceof Boolean value) return !value;
                 if (unary.operator().equals("+") && operand instanceof Number) return operand;
-                if (unary.operator().equals("-") && operand instanceof Long value) return -value;
+                if (unary.operator().equals("-") && operand instanceof Long value) {
+                    try {
+                        return Math.negateExact(value);
+                    } catch (ArithmeticException overflow) {
+                        // Do not turn checked runtime overflow into wrapped
+                        // compile-time data. Leaving it unknown preserves the
+                        // original expression and its checked failure path.
+                        return UNKNOWN;
+                    }
+                }
                 if (unary.operator().equals("-") && operand instanceof Double value) return -value;
                 return UNKNOWN;
             }
@@ -533,7 +571,26 @@ public final class TreeShaker {
 
         private Object compare(Object left, Object right, java.util.function.IntPredicate predicate) {
             if (left instanceof Number l && right instanceof Number r) {
-                return predicate.test(Double.compare(l.doubleValue(), r.doubleValue()));
+                if (isNaNNumber(l) || isNaNNumber(r)) return false;
+                final int compared;
+                boolean li = isIntegralNumber(l), ri = isIntegralNumber(r);
+                if (li && ri) {
+                    compared = Long.compare(l.longValue(), r.longValue());
+                } else if (isInfiniteFloatNumber(l)) {
+                    compared = isInfiniteFloatNumber(r)
+                            ? Double.compare(l.doubleValue(), r.doubleValue())
+                            : (l.doubleValue() > 0 ? 1 : -1);
+                } else if (isInfiniteFloatNumber(r)) {
+                    compared = r.doubleValue() > 0 ? -1 : 1;
+                } else if (li != ri || l instanceof java.math.BigInteger || r instanceof java.math.BigInteger
+                        || l instanceof java.math.BigDecimal || r instanceof java.math.BigDecimal) {
+                    compared = exactFiniteDecimal(l).compareTo(exactFiniteDecimal(r));
+                } else {
+                    double a = l.doubleValue(), b = r.doubleValue();
+                    // IEEE ordered comparison treats -0.0 and +0.0 as equal.
+                    compared = a < b ? -1 : a > b ? 1 : 0;
+                }
+                return predicate.test(compared);
             }
             if (left instanceof String l && right instanceof String r) {
                 return predicate.test(l.compareTo(r));
