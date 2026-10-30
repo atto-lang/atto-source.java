@@ -9,8 +9,10 @@ on:
       - 'stdlib/decimal.ores'
       - 'examples/native-bigint-reference.ores'
       - 'examples/native-bigint-division-zero-rejected.ores'
+      - 'examples/native-bigint-resource-rejected.ores'
       - 'examples/native-decimal-reference.ores'
       - 'examples/native-decimal-division-rejected.ores'
+      - 'examples/native-decimal-resource-rejected.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
@@ -37,8 +39,10 @@ on:
       - 'stdlib/decimal.ores'
       - 'examples/native-bigint-reference.ores'
       - 'examples/native-bigint-division-zero-rejected.ores'
+      - 'examples/native-bigint-resource-rejected.ores'
       - 'examples/native-decimal-reference.ores'
       - 'examples/native-decimal-division-rejected.ores'
+      - 'examples/native-decimal-resource-rejected.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
@@ -143,6 +147,16 @@ jobs:
           test "$status" -ne 0
           grep -F 'bigint: division by zero' "${RUNNER_TEMP}/bigint-div-zero.out"
           ! grep -F 'unexpectedly returned' "${RUNNER_TEMP}/bigint-div-zero.out"
+      - name: Require BigInt bounded-work policy
+        run: |
+          set -euo pipefail
+          set +e
+          mvn -B -ntp exec:java -Dexec.args="examples/native-bigint-resource-rejected.ores" >"${RUNNER_TEMP}/bigint-resource.out" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -F 'bigint: multiplication exceeds bounded operation policy' "${RUNNER_TEMP}/bigint-resource.out"
+          ! grep -F 'unexpectedly admitted' "${RUNNER_TEMP}/bigint-resource.out"
       - name: Execute pure-Oreslang exact Decimal reference
         run: |
           set -euo pipefail
@@ -159,6 +173,16 @@ jobs:
           test "$status" -ne 0
           grep -F 'division/rounding not implemented' "${RUNNER_TEMP}/decimal-div.out"
           ! grep -F 'unexpectedly returned' "${RUNNER_TEMP}/decimal-div.out"
+      - name: Require Decimal bounded coefficient policy
+        run: |
+          set -euo pipefail
+          set +e
+          mvn -B -ntp exec:java -Dexec.args="examples/native-decimal-resource-rejected.ores" >"${RUNNER_TEMP}/decimal-resource.out" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -F 'decimal: coefficient exceeds bounded limb policy' "${RUNNER_TEMP}/decimal-resource.out"
+          ! grep -F 'unexpectedly admitted' "${RUNNER_TEMP}/decimal-resource.out"
       - name: Run real Oreslang testing.run_suite guest refinement
         run: |
           set -euo pipefail
