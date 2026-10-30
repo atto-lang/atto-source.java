@@ -3897,15 +3897,15 @@ public final class TypeChecker {
                     && queueType.arguments().size() == 1) {
                 Type element = queueType.arguments().getFirst();
                 Type ticket = new Named("QueueTicket", List.of());
-                Type symbol = new Named("$builtin$Symbol", List.of());
+                Type push = new Named("QueuePush", List.of(element));
                 Type pop = new Named("QueuePop", List.of(element));
                 return switch (member.member()) {
                     case "new_ticket" -> new Function(List.of(), ticket);
                     case "try_push" -> new Function(
-                            List.of(element, ticket), symbol);
+                            List.of(element, ticket), push);
                     case "push_async" -> new Function(
                             List.of(element, ticket),
-                            new Named("Future", List.of(symbol)));
+                            new Named("Future", List.of(push)));
                     case "try_pop" -> new Function(List.of(), pop);
                     case "pop_async" -> new Function(
                             List.of(), new Named("Future", List.of(pop)));
@@ -3927,6 +3927,17 @@ public final class TypeChecker {
                             new Function(List.of(), Primitive.INT);
                     default -> throw new IllegalArgumentException(
                             "unknown QueueTicket member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named pushType
+                    && pushType.name().equals("QueuePush")
+                    && pushType.arguments().size() == 1) {
+                return switch (member.member()) {
+                    case "status" -> new Named("$builtin$Symbol", List.of());
+                    case "value" -> new Named(
+                            "Option", List.of(pushType.arguments().getFirst()));
+                    default -> throw new IllegalArgumentException(
+                            "unknown QueuePush member '" + member.member() + "'");
                 };
             }
             if (sumReceiver instanceof Named popType
@@ -5925,6 +5936,15 @@ public final class TypeChecker {
             return;
         }
         if (type instanceof Named named
+                && named.name().equals("QueuePush")
+                && named.arguments().size() == 1
+                && isSendSafe(
+                        named.arguments().getFirst(),
+                        new LinkedHashSet<>(),
+                        Map.of())) {
+            return;
+        }
+        if (type instanceof Named named
                 && named.name().equals("QueuePop")
                 && named.arguments().size() == 1
                 && isSendSafe(
@@ -5989,8 +6009,8 @@ public final class TypeChecker {
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("ActorStream") || named.name().equals("StreamOperator")
                 || named.name().equals("Channel") || named.name().equals("BoundedQueue")
-                || named.name().equals("QueueTicket") || named.name().equals("QueuePop")
-                || named.name().equals("SelectCase")
+                || named.name().equals("QueueTicket") || named.name().equals("QueuePush")
+                || named.name().equals("QueuePop") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
@@ -6112,7 +6132,7 @@ public final class TypeChecker {
                 "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock",
                 "Mutex", "MutexGuard", "SharedMutex",
                 "Future", "Iterator", "AsyncIterator", "ActorStream", "StreamOperator",
-                "Channel", "BoundedQueue", "QueueTicket", "QueuePop",
+                "Channel", "BoundedQueue", "QueueTicket", "QueuePush", "QueuePop",
                 "SelectCase", "SelectSet", "SelectResult")
                 .contains(named.name())) {
             return false;
@@ -9776,7 +9796,7 @@ public final class TypeChecker {
                 validateChannelPayloadType(element, "Channel<T>");
                 yield new Named("Channel", List.of(element));
             }
-            case "BoundedQueue", "QueuePop" -> {
+            case "BoundedQueue", "QueuePush", "QueuePop" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(
                             ref.name() + " requires exactly one explicit type argument");
