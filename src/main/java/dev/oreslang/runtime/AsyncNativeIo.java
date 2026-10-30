@@ -56,6 +56,9 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final int maxRegisteredResources;
     /** Trusted host-supplied attribution; unknown sizes must not count as verified. */
     private long registeredAccountedBytes;
+    /** Pre-creation permits count against context capacity until published or aborted. */
+    private int pendingResourceCreations;
+    private long pendingCreationBytes;
     /** Counts entire I/O operations from admission through callback drain. */
     private final ConcurrentHashMap<ActorRuntime.ActorId, Integer> actorOperations =
             new ConcurrentHashMap<>();
@@ -98,6 +101,144 @@ public final class AsyncNativeIo implements AutoCloseable {
             this.resourceQuota = resourceQuota;
             this.accountedBytes = accountedBytes;
         }
+    }
+
+    /**
+     * Host-only permit acquired before native resource construction. Its
+     * original actor quota and actor liveness lease move to the registered
+     * resource without any refund/re-admission gap.
+     */
+    final class ResourceCreationPermit implements AutoCloseable {
+        private final AsyncNativeIo owner = AsyncNativeIo.this;
+        private final long accountedBytes;
+        private final ActorRuntime.ActorId actorId;
+        private final ActorRuntime.NativeIoAuthority authority;
+        private final ActorPermissionScope.ResourceReservation scopeQuota;
+        private boolean attached;
+        private boolean abandoned;
+        private boolean quarantined;
+
+        private ResourceCreationPermit(long accountedBytes,
+                ActorRuntime.ActorId actorId,
+                ActorRuntime.NativeIoAuthority authority,
+                ActorPermissionScope.ResourceReservation scopeQuota) {
+            this.accountedBytes = accountedBytes;
+            this.actorId = actorId;
+            this.authority = authority;
+            this.scopeQuota = scopeQuota;
+        }
+
+        /** True if a post-admission STOP now owns the physical handle. */
+        boolean quarantined() { synchronized (AsyncNativeIo.this) { return quarantined; } }
+
+        @Override public void close() {
+            ActorRuntime.ActorId retired = null;
+            synchronized (AsyncNativeIo.this) {
+                if (attached || abandoned) return;
+                if (pendingResourceCreations <= 0
+                        || pendingCreationBytes < accountedBytes) {
+                    recordIncomplete(new IllegalStateException(
+                            "native creation permit underflow"));
+                    throw new IllegalStateException("native creation permit underflow");
+                }
+                // This exact actor scope receipt cannot be reused by another
+                // native resource after an abandoned constructor.
+                try {
+                    if (scopeQuota != null) scopeQuota.close();
+                } catch (RuntimeException badReceipt) {
+                    recordIncomplete(badReceipt);
+                    throw badReceipt;
+                }
+                abandoned = true;
+                pendingResourceCreations--;
+                pendingCreationBytes -= accountedBytes;
+                retired = decrementActorOperationLocked(actorId);
+                AsyncNativeIo.this.notifyAll();
+            }
+            notifyActorRetirement(retired);
+        }
+    }
+
+    /**
+     * Claim a native handle slot BEFORE construction. The trusted adapter
+     * must close this permit on constructor failure and transfer it exactly
+     * once to registerCreated(...) after actual creation.
+     */
+    synchronized ResourceCreationPermit reserveResourceCreation(long accountedBytes) {
+        if (accountedBytes < 0 || accountedBytes > MAX_ACCOUNTED_REGISTERED_BYTES)
+            throw new IllegalArgumentException("invalid native creation size");
+        if (closed || incompleteReceipt != null)
+            throw new RejectedExecutionException("native creation context sealed/quarantined");
+        if (resourceLoans.size() + pendingResourceCreations >= maxRegisteredResources
+                || accountedBytes > MAX_ACCOUNTED_REGISTERED_BYTES
+                        - registeredAccountedBytes - pendingCreationBytes) {
+            throw new RejectedExecutionException(
+                    "native resource creation credit exhausted before allocation");
+        }
+        ActorRuntime.NativeIoAuthority authority = ActorRuntime.captureNativeIoAuthority();
+        ActorPermissionScope.ResourceReservation quota = authority == null
+                ? null : authority.reserveResource(accountedBytes, "create native resource");
+        ActorRuntime.ActorId actor = currentOwnerActor();
+        pendingResourceCreations++;
+        pendingCreationBytes += accountedBytes;
+        incrementActorOperationLocked(actor);
+        return new ResourceCreationPermit(accountedBytes, actor, authority, quota);
+    }
+
+    /** Transfer an already-charged pre-creation permit to the real handle. */
+    synchronized void registerCreated(
+            AutoCloseable resource, ResourceCreationPermit permit) {
+        Objects.requireNonNull(resource, "native resource");
+        Objects.requireNonNull(permit, "creation permit");
+        if (permit.owner != this) {
+            throw new SecurityException("native creation permit belongs to another context");
+        }
+        if (permit.attached || permit.abandoned)
+            throw new IllegalStateException("native creation permit already consumed");
+        if (resourceLoans.containsKey(resource))
+            throw new IllegalStateException("duplicate native resource registration");
+        if (pendingResourceCreations <= 0
+                || pendingCreationBytes < permit.accountedBytes) {
+            recordIncomplete(new IllegalStateException("creation permit missing from context"));
+            throw new IllegalStateException("creation permit accounting is incomplete");
+        }
+        // Pre-reserved handle is now physically real: even a simultaneous
+        // actor STOP cannot discard this resource. On rejection, retain it
+        // for the context's physical close sweep, not for guest publication.
+        Runnable publish = () -> attachCreatedResourceLocked(resource, permit, false);
+        if (!closed && permit.authority != null) {
+            try {
+                permit.authority.withLiveIncarnation(
+                        "publish pre-created native resource", publish);
+                return;
+            } catch (SecurityException revoked) {
+                attachCreatedResourceLocked(resource, permit, true);
+                throw revoked;
+            }
+        }
+        if (!closed) {
+            publish.run();
+        } else {
+            attachCreatedResourceLocked(resource, permit, true);
+            throw new RejectedExecutionException(
+                    "native creation completed after context shutdown; resource quarantined");
+        }
+    }
+
+    private void attachCreatedResourceLocked(
+            AutoCloseable resource, ResourceCreationPermit permit, boolean quarantine) {
+        // AsyncNativeIo monitor held; for live actors, the exact incarnation
+        // lock is also held. The permit already owns quota and actor liveness.
+        resources.add(resource);
+        resourceLoans.put(resource, new ResourceLeaseState(
+                nextResourceGeneration.incrementAndGet(), resource,
+                permit.actorId, permit.scopeQuota, permit.accountedBytes));
+        registeredAccountedBytes += permit.accountedBytes;
+        pendingResourceCreations--;
+        pendingCreationBytes -= permit.accountedBytes;
+        permit.attached = true;
+        permit.quarantined = quarantine;
+        AsyncNativeIo.this.notifyAll();
     }
 
     /**
@@ -559,8 +700,9 @@ public final class AsyncNativeIo implements AutoCloseable {
         // In the normal open path, reject revoked actor/worker authority
         // before publishing a new native resource to the context.
         ActorRuntime.requireCurrentActorAuthorityActive("register native I/O resource");
-        if (resourceLoans.size() >= maxRegisteredResources
-                || accountedBytes > MAX_ACCOUNTED_REGISTERED_BYTES - registeredAccountedBytes) {
+        if (resourceLoans.size() + pendingResourceCreations >= maxRegisteredResources
+                || accountedBytes > MAX_ACCOUNTED_REGISTERED_BYTES
+                        - registeredAccountedBytes - pendingCreationBytes) {
             throw new RejectedExecutionException(
                     "native registered resource handle/byte admission capacity exhausted");
         }
@@ -697,6 +839,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                         // physical callback receipts until their last terminal
                         // subscriber has returned. Wait only to the deadline.
                         while ((!pending.isEmpty() || !controls.isEmpty()
+                                || pendingResourceCreations != 0
                                 || resourceLoans.values().stream().anyMatch(x -> x.active != 0))
                                 && incompleteReceipt == null) {
                             wait = deadline - System.nanoTime();
@@ -704,6 +847,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                             TimeUnit.NANOSECONDS.timedWait(this, wait);
                         }
                         joined = pending.isEmpty() && controls.isEmpty()
+                                && pendingResourceCreations == 0
                                 && resourceLoans.values().stream().noneMatch(x -> x.active != 0)
                                 && incompleteReceipt == null;
                     }
