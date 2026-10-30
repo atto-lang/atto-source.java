@@ -16,6 +16,57 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void requestLocalsFollowOneExchangeAcrossAwaitAndPooledActorReuse() throws Exception {
+        String output = run("""
+            define actor Worker as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                if request.has_request_local("trace_id"); then
+                  await request.respond(500, "text/plain", "leaked from previous request");
+                  return;
+                fi
+                val original = request.request_id;
+                request.set_request_local("trace_id", original);
+                val text = await request.body_text();
+                if request.request_local("trace_id") != original; then
+                  await request.respond(500, "text/plain", "context changed across await");
+                  return;
+                fi
+                if request.request_deadline_remaining_ns <= 0; then
+                  await request.respond(500, "text/plain", "deadline not bound to request");
+                  return;
+                fi
+                await request.respond(200, "text/plain", request.request_local("trace_id"));
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 3, 1024, 5000);
+              val handler = http.handler("Worker").pooled(1);
+              stdio.println(server.port);
+              for (let int i = 0; i < 3; i = i + 1) {
+                val request = await server.accept();
+                val completion = request.completion;
+                handler.dispatch(rt borrow mut request);
+                await completion;
+              }
+              await server.shutdown(0);
+              stdio.println(handler.created);
+              stdio.println(handler.reused);
+              return;
+            }
+            """, port -> {
+            var seen = new java.util.HashSet<String>();
+            for (int i = 0; i < 3; i++) {
+                HttpResponse<String> result = request(port, "POST", "/", "payload");
+                assertEquals(200, result.statusCode());
+                assertTrue(result.body().matches("[0-9a-fA-F-]{36}"), result.body());
+                assertTrue(seen.add(result.body()), "request context ID leaked across pooled actor turns");
+            }
+        });
+        assertTrue(output.endsWith("1\n2\n"), output);
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
