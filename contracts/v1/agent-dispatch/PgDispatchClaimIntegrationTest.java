@@ -55,6 +55,9 @@ public final class PgDispatchClaimIntegrationTest {
         check(!db.claimOnce(new AgentHostDispatchGate.Scope("tenant","unfenced",7,9,
             "a".repeat(40),prefix+"-unfenced","b".repeat(64),
             System.currentTimeMillis()+300_000,1024,24)));
+        check(!db.claimOnce(new AgentHostDispatchGate.Scope("unbound-tenant","worker",7,9,
+            "a".repeat(40),prefix+"-unbound","b".repeat(64),
+            System.currentTimeMillis()+300_000,1024,24)));
         check(!db.claimOnce(new AgentHostDispatchGate.Scope("tenant","worker",8,9,
             "a".repeat(40),prefix+"-stale","b".repeat(64),
             System.currentTimeMillis()+300_000,1024,24)));
