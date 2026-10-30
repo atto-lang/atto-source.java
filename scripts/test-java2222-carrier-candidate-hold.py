@@ -46,6 +46,9 @@ def main():
         "runner_capacity_canary_run_id",
         "runner_capacity_canary_job_id",
         "runner_capacity_canary_result",
+        "source_branch_protection_provider_result",
+        "carrier_branch_protection_provider_result",
+        "branch_protection_public_visibility_workaround_allowed",
         "carrier_exact_head_approved","blocking_incidents","incidents_resolved",
         "reviewed_destination_allowlist_contains_carrier",
         "carrier_contract_contains_carrier","source_exact_head_approved",
@@ -92,10 +95,16 @@ def main():
         fail("runner capacity canary repository id")
     if doc["runner_capacity_canary_quarantined"] is not True:
         fail("runner capacity canary must remain quarantined")
-    if doc["runner_capacity_canary_run_id"] != 41010251509 or doc["runner_capacity_canary_job_id"] != 123914277235:
+    if doc["runner_capacity_canary_run_id"] != 41010382689 or doc["runner_capacity_canary_job_id"] != 123914680747:
         fail("runner capacity canary identity")
     if doc["runner_capacity_canary_result"] != "success":
         fail("runner capacity canary result")
+    if doc["source_branch_protection_provider_result"] != "upgrade-required":
+        fail("source branch-protection provider result")
+    if doc["carrier_branch_protection_provider_result"] != "upgrade-required":
+        fail("carrier branch-protection provider result")
+    if doc["branch_protection_public_visibility_workaround_allowed"] is not False:
+        fail("public visibility workaround must remain forbidden")
     if doc["carrier_execution_requires_protected_main"] is not True:
         fail("carrier execution must require protected main")
     if doc["carrier_execution_requires_direct_main_parent"] is not True:
