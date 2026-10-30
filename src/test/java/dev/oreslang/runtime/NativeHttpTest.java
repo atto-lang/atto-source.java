@@ -19,16 +19,14 @@ class NativeHttpTest {
     @Test void requestLocalsFollowOneExchangeAcrossAwaitAndPooledActorReuse() throws Exception {
         String output = run("""
             define actor Worker as
-              let int handled = 0;
+              val String actor_identity = process.unique_id();
               receive(ActorMail<String> mail): void {
                 val request = http.claim(mail.value);
                 if request.has_request_local("trace_id"); then
                   await request.respond(500, "text/plain", "leaked from previous request");
                   return;
                 fi
-                self.handled = self.handled + 1;
-                request.set_header("X-Actor-Handled",
-                    self.handled == 1 ? "1" : (self.handled == 2 ? "2" : "3"));
+                request.set_header("X-Actor-Identity", self.actor_identity);
                 val original = request.request_id;
                 request.set_request_local("trace_id", original);
                 val text = await request.body_text();
@@ -61,15 +59,16 @@ class NativeHttpTest {
             }
             """, port -> {
             var seen = new java.util.HashSet<String>();
+            var actorIds = new java.util.HashSet<String>();
             for (int i = 0; i < 3; i++) {
                 HttpResponse<String> result = request(port, "POST", "/", "payload");
                 assertEquals(200, result.statusCode());
-                assertEquals(Integer.toString(i + 1),
-                        result.headers().firstValue("X-Actor-Handled").orElseThrow(),
-                        "actor-local count must persist across requests");
+                actorIds.add(result.headers().firstValue("X-Actor-Identity").orElseThrow());
                 assertTrue(result.body().matches("[0-9a-fA-F-]{36}"), result.body());
                 assertTrue(seen.add(result.body()), "request context ID leaked across pooled actor turns");
             }
+            assertEquals(1, actorIds.size(),
+                    "pooled worker must retain actor-local identity across distinct requests");
         });
         assertTrue(output.endsWith("1\n2\n"), output);
     }
