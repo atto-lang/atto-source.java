@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import struct
@@ -111,6 +112,71 @@ class BigIntExactContractTest(unittest.TestCase):
             if item["operation"] == "to_i64_checked":
                 overflow = value < -(1 << 63) or value > (1 << 63) - 1
                 self.assertEqual(bool(item.get("error")), overflow, item["id"])
+
+
+class DecimalPrecisionContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = Path(__file__).resolve().parents[1] / "contracts/v1/decimal-precision-v1.json"
+        raw = path.read_bytes()
+        header = b"blob " + str(len(raw)).encode("ascii") + b"\0"
+        assert hashlib.sha1(header + raw).hexdigest() == "3bbb44277f3816add53da40a1e161e466ab162b1"
+        cls.contract = json.loads(raw)
+
+    def test_decimal_exact_and_context_vectors(self):
+        self.assertEqual("oreslang.decimal-precision.v1", self.contract["contract"])
+        for item in self.contract["exact_cases"]:
+            a, b = Decimal(item["left"]), Decimal(item["right"])
+            if item["operation"] == "add":
+                actual = a + b
+            elif item["operation"] == "sub":
+                actual = a - b
+            elif item["operation"] == "mul":
+                actual = a * b
+            elif item["operation"] == "div_exact":
+                if b == 0:
+                    self.assertEqual("DIVISOR_ZERO", item["error"], item["id"])
+                    continue
+                # Exact terminating decimal iff the reduced denominator has no
+                # prime factors other than 2 and 5.
+                from fractions import Fraction
+                frac = Fraction(int(a.scaleb(-a.as_tuple().exponent)),
+                                int(b.scaleb(-b.as_tuple().exponent)))
+                denom = frac.denominator
+                while denom % 2 == 0: denom //= 2
+                while denom % 5 == 0: denom //= 5
+                if denom != 1:
+                    self.assertEqual("NONTERMINATING_REQUIRES_CONTEXT", item["error"], item["id"])
+                    continue
+                actual = a / b
+            else:
+                raise AssertionError(item["operation"])
+            self.assertEqual(Decimal(item["expect"]), actual, item["id"])
+
+        for item in self.contract["context_cases"]:
+            ctx = Context(prec=item["precision"], rounding=ROUND_HALF_EVEN)
+            with localcontext(ctx):
+                if item["operation"] == "div":
+                    actual = Decimal(item["left"]) / Decimal(item["right"])
+                else:
+                    actual = +Decimal(item["operand"])
+            self.assertEqual(Decimal(item["expect"]), actual, item["id"])
+
+    def test_decimal_binary64_conversion_vectors_are_explicit(self):
+        import struct
+        for item in self.contract["conversion_cases"]:
+            value = Decimal(item["operand"])
+            nearest = float(value)
+            bits = struct.pack(">d", nearest).hex()
+            exact = Decimal.from_float(nearest) == value
+            if item["operation"] == "to_f64_exact":
+                if item.get("error"):
+                    self.assertFalse(exact, item["id"])
+                else:
+                    self.assertTrue(exact, item["id"])
+                    self.assertEqual(item["expect_bits"], bits, item["id"])
+            else:
+                self.assertEqual(item["expect_bits"], bits, item["id"])
 
 if __name__ == "__main__":
     unittest.main()
