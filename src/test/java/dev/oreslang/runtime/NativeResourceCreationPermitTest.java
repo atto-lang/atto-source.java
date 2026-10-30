@@ -292,4 +292,58 @@ final class NativeResourceCreationPermitTest {
         }
     }
 
+    @Test
+    void actorOwnedSocketCannotRefundRegistrationBeforePhysicalClose()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var checked = new java.util.concurrent.CountDownLatch(1);
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var refusedPrematureRefund = new java.util.concurrent.atomic.AtomicBoolean();
+        var retainedHandleCount = new AtomicInteger(-1);
+        var afterCloseHandleCount = new AtomicInteger(-1);
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        try {
+                            var socket = new java.net.Socket();
+                            io.register(socket);
+                            try {
+                                io.unregister(socket);
+                            } catch (SecurityException rejected) {
+                                refusedPrematureRefund.set(true);
+                            }
+                            retainedHandleCount.set(io.registeredResourceCount());
+                            socket.close();
+                            io.unregister(socket);
+                            afterCloseHandleCount.set(io.registeredResourceCount());
+                        } catch (Throwable error) {
+                            failure.compareAndSet(null, error);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+            actor.send("probe");
+            assertTrue(checked.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertTrue(refusedPrematureRefund.get());
+            assertEquals(1, retainedHandleCount.get(),
+                    "unclosed actor socket must retain its physical resource credit");
+            assertEquals(0, afterCloseHandleCount.get(),
+                    "successful socket.close permits exact-once credit retirement");
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(actor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
 }
