@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.oreslang.parser.Parser;
@@ -12,8 +13,8 @@ import org.junit.jupiter.api.Test;
  * <p>This does not duplicate the library implementation. It pins the language
  * features that the userland queue requires: generic Channel<T> fields,
  * Result-returning generic methods, immediate probes, and a suspending
- * priority select that races cancellation/close reads against write
- * admission.</p>
+ * priority select that races cancellation against write admission, plus
+ * source-visible Channel.close()/is_closed() terminal handling.</p>
  */
 final class BoundedQueueSourceSurfaceTest {
 
@@ -40,7 +41,6 @@ final class BoundedQueueSourceSurfaceTest {
 
                 define class QueueSlice<T> as
                   val Channel<T> items;
-                  val Channel<bool> closed = Channel.new<bool>(1);
                   let int generation;
 
                   constructor(int capacity) {
@@ -49,6 +49,9 @@ final class BoundedQueueSourceSurfaceTest {
                   }
 
                   pub try_push(T value): Result<bool, String> {
+                    if self.items.is_closed(); then
+                      return Err("closed");
+                    fi
                     val bool admitted = try writech self.items, value;
                     if admitted; then
                       return Ok(true);
@@ -63,36 +66,92 @@ final class BoundedQueueSourceSurfaceTest {
                     val Channel<bool> cancellation =
                         ticket.cancellation_signal();
 
-                    do select first {
-                      when readch cancellation: const ignored {
-                        ticket.restore_cancelled();
-                        return Err("cancelled");
+                    try {
+                      do select first {
+                        when readch cancellation: const ignored {
+                          ticket.restore_cancelled();
+                          return Err("cancelled");
+                        }
+                        when writech self.items, value: {
+                          return Ok(true);
+                        }
                       }
-                      when readch self.closed: const ignored {
-                        try writech self.closed, true;
+                    } catch (err) {
+                      if self.items.is_closed(); then
                         return Err("closed");
-                      }
-                      when writech self.items, value: {
-                        return Ok(true);
-                      }
+                      fi
+                      throw err;
                     }
                   }
 
                   pub pop_blocking(): Option<T> {
-                    do select first {
-                      when readch self.items: val value {
-                        return Some(value);
-                      }
-                      when readch self.closed: const ignored {
-                        try writech self.closed, true;
+                    try {
+                      return Some(readch self.items);
+                    } catch (err) {
+                      if self.items.is_closed(); then
                         return None;
-                      }
+                      fi
+                      throw err;
                     }
+                  }
+
+                  pub close(): void {
+                    self.generation = self.generation + 1;
+                    self.items.close();
+                    return;
                   }
                 end
                 """));
 
         assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    @Test
+    void actualChannelCloseFailsUncommittedWriteAndPreservesDrain() throws Exception {
+        String source = """
+                async fnc pending_push(Channel<int> channel): String {
+                  try {
+                    do select first {
+                      when writech channel, 2: {
+                        return "written";
+                      }
+                    }
+                  } catch (err) {
+                    if channel.is_closed(); then
+                      return "closed";
+                    fi
+                    throw err;
+                  }
+                  return "unreachable";
+                }
+
+                pub async fnc main(): void {
+                  val Channel<int> channel = Channel.new<int>(1);
+                  writech channel, 1;
+                  val Future<String> pending = pending_push(channel);
+
+                  channel.close();
+
+                  stdio.stdout.write(await pending);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(readch channel);
+                  stdio.stdout.write("|");
+
+                  try {
+                    readch channel;
+                    stdio.stdout.write("unexpected");
+                  } catch (err) {
+                    if channel.is_closed(); then
+                      stdio.stdout.write("drained");
+                    else
+                      throw err;
+                    fi
+                  }
+                  return;
+                }
+                """;
+
+        assertEquals("closed|1|drained", SelectNestedReturnContractTest.run(source));
     }
 
     @Test
