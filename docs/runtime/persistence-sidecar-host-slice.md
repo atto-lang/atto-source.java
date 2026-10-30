@@ -3,6 +3,9 @@
 **Status: host adapter implementation, NOT a compiled .ores PersistenceSidecar actor and NOT production durable storage.** Reference design: https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/227
 
 - BatchPersistenceSidecar owns a bounded tenant queue, separate storage worker, per-actor/slot write metadata, scheduled or manual flush and CAS/fencing provider contracts.
+- Identity and operation names are NFC-normalized, valid UTF-8 scalar strings; malformed unpaired surrogates and control characters fail closed. Queue admission reserves fixed envelope overhead, payload bytes, and variable UTF-8 actor/state/operation identifier bytes (a conservative budget, not total JVM heap accounting).
+- `SqlitePersistenceStore.loadFenced(id, trustedEpoch)` is the **actor reactivation** read API: it verifies the current epoch and reads committed state within one SQLite snapshot transaction. An unfenced `load(id)` remains a privileged host inspection/migration operation and must never be lowered as an actor guest API. The new source actor incarnation must not publish restored state before the fence check succeeds.
+
 - The owned Write record defensively copies payload bytes; raw guest references do not cross an actor/sidecar boundary.
 - MemoryStore is deliberately **volatile**, for contract tests only. Receipt \`durable=false\` even for COMMITTED and DUPLICATE. A production durable Store must confirm provider commit transaction and set \`durable=true\` only when justified.
 - ActorPersistenceBridge uses real ActorRuntime.OresFuture and continuation APIs. Guest code must never invoke store callbacks on the storage thread. The bridge is **not wired into the Oreslang parser/guest source lowering yet**.
