@@ -28,6 +28,33 @@ fi
 
 The implicit `http.current_request_id` and `http.current_request_local` do not return a mutable request State or issue new capabilities. Mutation remains explicit on the owned `exchange` handle. Outside an active bound receive, they fail closed. The request remains tied to its HTTP exchange while the actor's immutable actor-local identity persists independently across pooled requests.
 
+## Scheduler continuation hardening (additional draft change)
+
+A mailbox receive has a monotonically assigned message sequence. A transient
+`CURRENT_HTTP_MAIL_SEQUENCE` marker is installed *only* while the scheduler
+actually executes that specific envelope and is removed/restored in
+`HttpMailDispatchScope.close()`, including exception paths. This marker is a
+carrier-local check value, never the request owner or a request-local store.
+
+`ContinuationTarget` captures the originating message sequence at registration
+time, before any foreign Future/HTTP producer completes. The corresponding
+continuation envelope carries that sequence. `currentHttpExchange()` requires
+both this exact dispatch marker and the retained `activeMail.sequence()` to
+match before consulting the active exchange. Unassociated SourceTask commands
+and anonymous runtime continuations carry -1 and fail closed rather than
+ambiently inheriting a suspended request.
+
+The suspension-completion continuation snapshots the source-mail sequence under
+the same lifecycle lock that marks `sourceReceiveSuspended`; it does not read
+`activeMail` later on a producer callback thread.
+
+**Important missing path:** SourceTask continuations which resume a guest
+`await` but do not use `ContinuationTarget` still have no authenticated
+request sequence and must fail closed. The JDK25/Graal guest test will expose
+this if the current compiler uses that route. Before promoting ambient lookup,
+such SourceTask entries must explicitly carry a scheduler-minted logical
+execution/request binding (not copy `activeHttpExchange` from actor-wide state).
+
 ## What this does not do yet
 
 - A fully general `TaskLocal<T>`, `ActorLocal<T>`, `RequestLocal<T>` generic type or a language-wide `request_context.current()` intrinsic.
