@@ -22,6 +22,25 @@ final class NumericPrecisionAdmissionTest {
     }
 
     @Test
+    void narrowerAndUnsignedIntegersDoNotAliasSigned64() {
+        IllegalArgumentException narrow = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc identity(i32 value): i32 { return value; }
+                        """)));
+        assertTrue(narrow.getMessage() != null
+                        && narrow.getMessage().contains("fixed-width narrowing/runtime lowering is not implemented"),
+                () -> "unexpected i32 diagnostic: " + narrow.getMessage());
+
+        IllegalArgumentException unsigned = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc identity(u64 value): u64 { return value; }
+                        """)));
+        assertTrue(unsigned.getMessage() != null
+                        && unsigned.getMessage().contains("refusing to alias unsigned values to signed int"),
+                () -> "unexpected u64 diagnostic: " + unsigned.getMessage());
+    }
+
+    @Test
     void f32FailsClosedUntilBinary32LoweringExists() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
