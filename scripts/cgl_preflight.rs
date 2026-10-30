@@ -384,8 +384,7 @@ mod tests {
     #[test] fn denies_load_address_wraparound() {
         let mut v=elf(62,5,None,2,None);
         put64(&mut v,64+16,u64::MAX);
-        put64(&mut v,64+40,1);
-        assert!(Fixture::new(&v).inspect().is_err());
+        assert!(Fixture::new(&v).inspect().unwrap_err().contains("overflows"));
     }
     #[test] fn denies_bad_load_alignment() {
         let mut v=elf(62,5,None,2,None);
