@@ -150,6 +150,12 @@ effects. It must not copy mutable fields out or expose escaping internal
 references. Preserve the cheap owned-class path when the region never
 escapes its task/actor.
 
+Both guest oracles now require `7|3|true|false|false|false`, representing
+a successful reservation of three units followed by over-capacity, zero,
+and negative refusals with the joint `available/reserved` invariant preserved.
+This is **sequential invariant preservation**, not an atomic concurrent
+transaction; shared-thread admission still needs region-level protection.
+
 ## Source-first implementation milestone
 
 `examples/state-container-injection.ores` is the first canonical native
