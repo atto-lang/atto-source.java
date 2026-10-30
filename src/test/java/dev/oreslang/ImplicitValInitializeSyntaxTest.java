@@ -276,6 +276,40 @@ final class ImplicitValInitializeSyntaxTest {
     }
 
     @Test
+    void childInitializerCannotFillUninitializedInheritedFixedSlot() {
+        String source = """
+                define class Parent as
+                  pub val int inherited_id;
+                end
+                define class Child extends Parent as
+                  initialize(int id) -> void {
+                    self.inherited_id = id;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("immutable/final"),
+                "inherited fixed fields cannot gain constructor-write privileges: " + error);
+    }
+
+    @Test
+    void childInitializerRetainsWriteAccessToInheritedLetField() {
+        String source = """
+                define class Parent as
+                  pub let int inherited_id = 0;
+                end
+                define class Child extends Parent as
+                  initialize(int id) -> void {
+                    self.inherited_id = id;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void rejectsUnprovenLoopBeforeFixedSlotInitialization() {
         String source = """
                 define class Connection as
