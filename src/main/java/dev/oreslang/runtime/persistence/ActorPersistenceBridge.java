@@ -40,6 +40,11 @@ public final class ActorPersistenceBridge {
         Objects.requireNonNull(context);
         Objects.requireNonNull(authenticatedIdentity);
         if (trustedEpoch <= 0) throw new IllegalArgumentException("invalid trusted epoch");
+        // The host ActorRuntime's UNTRUSTED kind is not a verified process
+        // sandbox. An untrusted tenant requires an external, authenticated
+        // persistence broker within a physically isolated VM/process.
+        if (context.kind() == ActorRuntime.ActorKind.UNTRUSTED)
+            throw new SecurityException("untrusted actor persistence requires verified isolation broker");
         ActorRuntime runtime = Objects.requireNonNull(context.runtime());
         requireActorTurn(runtime);
         ActorRuntime.ActorId active = ActorRuntime.currentActorId().orElseThrow();
