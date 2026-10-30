@@ -10154,7 +10154,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable, Set<Ast.TypeAliasDecl> resolving) {
-            if (declared == null) return value;
+            if (declared == null || declared.name().equals("$infer$")) return value;
 
             Ast.TypeAliasDecl alias = findTypeAlias(declared.name());
             if (alias != null) {
@@ -10186,6 +10186,15 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(callable + " return value does not match any union alternative: " + failures);
             }
 
+            // A string-literal type is a contract on the returned value, not
+            // merely a compile-time hint. This protects host/import boundaries.
+            if (declared.isStringLiteral()) {
+                if (!(value instanceof String literal) || !literal.equals(declared.stringLiteralValue())) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                return value;
+            }
+
             if (declared.isTupleType()) {
                 List<?> items = asSequence(value);
                 if (items.size() != declared.arguments().size()) {
@@ -10215,6 +10224,18 @@ public final class OresEvalRootNode extends RootNode {
                     shaped.add(shapeReturnedValue(declared.arguments().getFirst(), items.get(i), callable + "[" + i + "]", resolving));
                 }
                 return shaped;
+            }
+
+            // Preserve the exact number of Option layers: no implicit
+            // flattening, no untyped payload, and no raw value masquerading
+            // as a Some/None result at an unchecked execution boundary.
+            if (declared.name().equals("Option")) {
+                if (!(value instanceof OptionValue option)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                if (!option.present() || declared.arguments().isEmpty()) return option;
+                return new OptionValue(true, shapeReturnedValue(
+                        declared.arguments().getFirst(), option.value(), callable + ".Some", resolving));
             }
 
             if (declared.name().equals("bool") || declared.name().equals("Bool")) {
