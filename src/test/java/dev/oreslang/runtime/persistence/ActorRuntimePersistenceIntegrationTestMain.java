@@ -52,8 +52,11 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                         ActorPersistenceBridge.bindTrustedCurrentActor(context, key, 1);
                     oldGrant.set(binding);
                     return (delta, turn) -> {
+                        // Compute an owned candidate without publishing it to the
+                        // actor's mutable state before provider durability.
                         long next = Math.addExact(block.readLong(0), delta);
-                        block.writeLong(0, next);
+                        check(block.readLong(0) == 1L,
+                            "uncommitted mutation became visible before submission");
                         ActorPersistenceBridge.onSnapshotCompletionInCurrentActor(
                             binding, sidecar, "first-deposit", 0, 1, encode(next),
                             (receipt, failure) -> {
@@ -67,8 +70,13 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                                     check(receipt.durable() &&
                                         receipt.status() == Status.COMMITTED &&
                                         receipt.version() == 1, "commit receipt not durable");
+                                    check(block.readLong(0) == 1L,
+                                        "durable state was published before commit callback");
+                                    // Only the current actor turn may now make the
+                                    // provider-confirmed candidate visible.
+                                    block.writeLong(0, next);
                                     check(block.readLong(0) == next,
-                                        "actor-local state modified off actor carrier");
+                                        "committed mutation not published on actor carrier");
                                     persisted.complete(receipt);
                                 } catch (Throwable problem) {
                                     persisted.completeExceptionally(problem);
