@@ -31,7 +31,7 @@ final class InjectedMutableStateContainerTest {
               }
 
               pub try_reserve(mut self InventoryState)(int amount): bool {
-                if amount < 0; then return false; fi
+                if amount <= 0; then return false; fi
                 if amount > self.available; then return false; fi
                 self.available = self.available - amount;
                 self.reserved = self.reserved + amount;
@@ -133,11 +133,11 @@ final class InjectedMutableStateContainerTest {
         try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
             context.eval(Source.newBuilder("ores", source, "state-container-injection.ores").build());
         }
-        assertEquals("7|3|true|false", out.toString(StandardCharsets.UTF_8));
+        assertEquals("7|3|true|false|false|false", out.toString(StandardCharsets.UTF_8));
     }
 
     @Test
-    void guest_reservation_is_atomic_with_respect_to_its_two_field_invariant() throws Exception {
+    void denied_reservations_do_not_partially_update_private_state() throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
             context.eval(Source.newBuilder("ores", INVENTORY + """
@@ -145,6 +145,8 @@ final class InjectedMutableStateContainerTest {
                       let mut InventoryState state = new InventoryState();
                       const bool first = state.try_reserve(3);
                       const bool invalid = state.try_reserve(20);
+                      const bool zero = state.try_reserve(0);
+                      const bool negative = state.try_reserve(-1);
                       stdio.stdout.write(state.available_count());
                       stdio.stdout.write("|");
                       stdio.stdout.write(state.reserved_count());
@@ -152,11 +154,15 @@ final class InjectedMutableStateContainerTest {
                       stdio.stdout.write(first);
                       stdio.stdout.write("|");
                       stdio.stdout.write(invalid);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(zero);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(negative);
                       return;
                     }
                     """, "injected-state-container.ores").build());
         }
-        assertEquals("7|3|true|false", out.toString(StandardCharsets.UTF_8));
+        assertEquals("7|3|true|false|false|false", out.toString(StandardCharsets.UTF_8));
     }
 
 }
