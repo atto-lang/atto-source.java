@@ -36,6 +36,77 @@ final class BoundedQueueRuntimeTest {
     }
 
     @Test
+    void livePendingWritersPreserveRegistrationOrder() {
+        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
+        assertEquals(
+                BoundedQueueRuntime.PushStatus.ADMITTED,
+                queue.tryPush(0, queue.newTicket()));
+
+        BoundedQueueRuntime.Ticket firstTicket = queue.newTicket();
+        BoundedQueueRuntime.Ticket secondTicket = queue.newTicket();
+        OresFuture<BoundedQueueRuntime.PushStatus> first =
+                queue.pushAsync(1, firstTicket);
+        OresFuture<BoundedQueueRuntime.PushStatus> second =
+                queue.pushAsync(2, secondTicket);
+
+        assertEquals(2, queue.pendingRegistrations());
+
+        BoundedQueueRuntime.PopResult<Integer> seed = queue.tryPop();
+        assertEquals(BoundedQueueRuntime.PopStatus.VALUE, seed.status());
+        assertEquals(0, seed.value());
+
+        assertEquals(
+                BoundedQueueRuntime.PushStatus.ADMITTED,
+                first.join());
+        assertFalse(second.isDone());
+        assertEquals(1, queue.pendingRegistrations());
+
+        BoundedQueueRuntime.PopResult<Integer> firstValue = queue.tryPop();
+        assertEquals(BoundedQueueRuntime.PopStatus.VALUE, firstValue.status());
+        assertEquals(1, firstValue.value());
+
+        assertEquals(
+                BoundedQueueRuntime.PushStatus.ADMITTED,
+                second.join());
+        BoundedQueueRuntime.PopResult<Integer> secondValue = queue.tryPop();
+        assertEquals(BoundedQueueRuntime.PopStatus.VALUE, secondValue.status());
+        assertEquals(2, secondValue.value());
+        assertEquals(0, queue.pendingRegistrations());
+    }
+
+    @Test
+    void cancellationBeforeUseIsStickyAndRegistersNothing() {
+        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
+        BoundedQueueRuntime.Ticket ticket = queue.newTicket();
+
+        assertTrue(ticket.cancel());
+        assertTrue(ticket.isCancelled());
+        assertEquals(
+                BoundedQueueRuntime.PushStatus.CANCELLED,
+                queue.tryPush(1, ticket));
+        assertEquals(0, queue.pendingRegistrations());
+        assertEquals(
+                BoundedQueueRuntime.PopStatus.EMPTY,
+                queue.tryPop().status());
+        assertFalse(ticket.cancel());
+    }
+
+    @Test
+    void ticketSequenceAndGenerationAreMonotonicWithinQueue() {
+        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(2);
+        BoundedQueueRuntime.Ticket first = queue.newTicket();
+        BoundedQueueRuntime.Ticket second = queue.newTicket();
+
+        assertEquals(queue.generation(), first.generation());
+        assertEquals(first.generation(), second.generation());
+        assertEquals(first.sequence() + 1, second.sequence());
+
+        long generation = queue.generation();
+        assertTrue(queue.closeQueue());
+        assertEquals(generation + 1, queue.generation());
+    }
+
+    @Test
     void cancellingOlderPendingWriterLetsLaterWriterAdvanceWithoutGhostDelivery() {
         BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
         assertEquals(
