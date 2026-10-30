@@ -111,13 +111,19 @@ final class ActorCriticalStateModeTest {
 
     @Test
     void criticalCallbackCannotSuspend() {
-        String source = actor("""
-                    self.handle_state(critical[write] |s| -> {
-                      await self.get_done();
-                    });
-                """);
-        assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
+        // Both read and write loans are synchronous lexical scopes: permitting
+        // a read loan to suspend could retain a physical pin indefinitely.
+        for (String mode : java.util.List.of("read", "write")) {
+            String source = actor(
+                    "    self.handle_state(critical[" + mode + "] |s| -> {\n"
+                            + "      await self.get_done();\n"
+                            + "    });\n");
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source),
+                    "critical[" + mode + "] must not suspend");
+            assertNotNull(failure.getMessage());
+        }
     }
 
     @Test
