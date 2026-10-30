@@ -720,11 +720,18 @@ class PrivateCiV3Test(unittest.TestCase):
             "required_pull_request_reviews": {
                 "require_code_owner_reviews": True,
                 "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
                 "required_approving_review_count": 1,
                 "bypass_pull_request_allowances": {
                     "users": [], "teams": [], "apps": [],
                 },
             },
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["private-ci-carrier"],
+                "checks": [],
+            },
+            "required_conversation_resolution": {"enabled": True},
             "enforce_admins": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
@@ -771,6 +778,56 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3.legacy, "gh_api", side_effect=weak_api):
             with self.assertRaisesRegex(v3.Denied, "bypasses"):
                 v3.checked_carrier_main("trusted/ci", carrier)
+
+        for label, mutate, error in (
+            (
+                "last-push approval",
+                lambda doc: doc["required_pull_request_reviews"].__setitem__(
+                    "require_last_push_approval", False
+                ),
+                "last-push",
+            ),
+            (
+                "strict required CI",
+                lambda doc: doc["required_status_checks"].__setitem__(
+                    "strict", False
+                ),
+                "strict required CI",
+            ),
+            (
+                "nonempty required CI",
+                lambda doc: (
+                    doc["required_status_checks"].__setitem__("contexts", []),
+                    doc["required_status_checks"].__setitem__("checks", []),
+                ),
+                "strict required CI",
+            ),
+            (
+                "conversation resolution",
+                lambda doc: doc["required_conversation_resolution"].__setitem__(
+                    "enabled", False
+                ),
+                "conversation resolution",
+            ),
+        ):
+            candidate = json.loads(json.dumps(protection))
+            mutate(candidate)
+
+            def candidate_api(route, method="GET", payload=None):
+                if route == "repos/trusted/ci/branches/main":
+                    return {
+                        "name": "main",
+                        "protected": True,
+                        "commit": {"sha": BASE},
+                    }
+                if route == "repos/trusted/ci/branches/main/protection":
+                    return candidate
+                raise AssertionError(route)
+
+            with self.subTest(rule=label):
+                with patch.object(v3.legacy, "gh_api", side_effect=candidate_api):
+                    with self.assertRaisesRegex(v3.Denied, error):
+                        v3.checked_carrier_main("trusted/ci", carrier)
 
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
