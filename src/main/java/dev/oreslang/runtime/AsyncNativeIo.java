@@ -135,6 +135,16 @@ public final class AsyncNativeIo implements AutoCloseable {
             ActorRuntime.ActorId retired = null;
             synchronized (AsyncNativeIo.this) {
                 if (attached || abandoned) return;
+                // An untransferred permit may be abandoned only by the
+                // identity that minted it. A sibling cannot refund another
+                // actor's physical construction budget before publication.
+                ActorRuntime.NativeIoAuthority caller =
+                        ActorRuntime.captureNativeIoAuthority();
+                if (authority == null ? caller != null
+                        : !authority.sameIncarnation(caller)) {
+                    throw new SecurityException(
+                            "native creation permit abort belongs to another actor incarnation");
+                }
                 if (pendingResourceCreations <= 0
                         || pendingCreationBytes < accountedBytes) {
                     recordIncomplete(new IllegalStateException(
