@@ -1154,7 +1154,7 @@ public final class ActorRuntime implements AutoCloseable {
             return openArena().allocate(bytes);
         }
 
-        public int cleanupMark() {
+        public long cleanupMark() {
             return openArena().cleanupMark();
         }
 
@@ -1178,7 +1178,7 @@ public final class ActorRuntime implements AutoCloseable {
             return openArena().dropOwned(handle);
         }
 
-        public boolean cleanupTo(int mark) {
+        public boolean cleanupTo(long mark) {
             return openArena().cleanupTo(mark);
         }
 
