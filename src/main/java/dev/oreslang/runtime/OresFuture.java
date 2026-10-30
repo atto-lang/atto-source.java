@@ -249,11 +249,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                         ? failure
                         : callbackContext.attachTrace(failure);
                 future.failFromRuntime(traced);
-            } else if (failure instanceof VirtualMachineError fatal) {
-                throw fatal;
-            } else if (failure instanceof ThreadDeath fatal) {
-                throw fatal;
-            } else if (failure instanceof LinkageError fatal) {
+            } else if (failure instanceof Error fatal) {
+                // Error-class failures are non-trappable runtime/control failures.
+                // A callback that already settled a value must not make them disappear.
                 throw fatal;
             }
         }
