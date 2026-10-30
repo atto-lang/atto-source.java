@@ -3934,8 +3934,9 @@ public final class TypeChecker {
                     && pushType.arguments().size() == 1) {
                 return switch (member.member()) {
                     case "status" -> new Named("$builtin$Symbol", List.of());
-                    case "value" -> new Named(
-                            "Option", List.of(pushType.arguments().getFirst()));
+                    case "take_value" -> new Function(
+                            List.of(),
+                            new Named("Option", List.of(pushType.arguments().getFirst())));
                     default -> throw new IllegalArgumentException(
                             "unknown QueuePush member '" + member.member() + "'");
                 };
@@ -3945,8 +3946,9 @@ public final class TypeChecker {
                     && popType.arguments().size() == 1) {
                 return switch (member.member()) {
                     case "status" -> new Named("$builtin$Symbol", List.of());
-                    case "value" -> new Named(
-                            "Option", List.of(popType.arguments().getFirst()));
+                    case "take_value" -> new Function(
+                            List.of(),
+                            new Named("Option", List.of(popType.arguments().getFirst())));
                     default -> throw new IllegalArgumentException(
                             "unknown QueuePop member '" + member.member() + "'");
                 };
