@@ -8664,7 +8664,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
             // High-precision values must never reach doubleValue() implicitly.
             // The exact scalar helper enforces explicit domain, digit and scale
-            // budgets. Guest BigInt/Decimal type admission remains separate.
+            // budgets for the guest BigInt/Decimal carriers.
             if (a instanceof java.math.BigInteger || b instanceof java.math.BigInteger
                     || a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal) {
                 return dev.oreslang.math.ExactScalarMath.evaluate(a, b, op);
@@ -8709,11 +8709,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
-            if (value instanceof java.math.BigInteger b) {
-                return dev.oreslang.math.ExactScalarMath.evaluate(java.math.BigInteger.ZERO, b, '-');
-            }
-            if (value instanceof java.math.BigDecimal d) {
-                return dev.oreslang.math.ExactScalarMath.evaluate(java.math.BigDecimal.ZERO, d, '-');
+            if (value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal) {
+                return dev.oreslang.math.ExactScalarMath.neg((Number) value);
             }
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long)
                 return Math.negateExact(((Number) value).longValue());
