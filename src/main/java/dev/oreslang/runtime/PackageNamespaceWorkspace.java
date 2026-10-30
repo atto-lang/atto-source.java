@@ -334,7 +334,14 @@ final class PackageNamespaceWorkspace {
     }
 
     static String sourceDigest(Path manifest, List<Path> sourceFiles) throws IOException {
-        Path root = checkedProjectRoot(manifest, checkedManifest(manifest));
+        TomlParseResult parsed = checkedManifest(manifest);
+        Path root = checkedProjectRoot(manifest, parsed);
+        // A pinned sources digest authenticates the ENTIRE manifest-owned
+        // inventory, not a caller-selected subset. Recompute membership from
+        // the checked manifest so a caller cannot mint a valid-looking digest
+        // for an unlisted or omitted provider.
+        Set<Path> manifestMembers = new LinkedHashSet<>(members(manifest, parsed));
+        Set<Path> digestedMembers = new LinkedHashSet<>();
         List<String> parts = new ArrayList<>();
         for (Path source : sourceFiles) {
             Path logical = source.toAbsolutePath().normalize();
@@ -356,8 +363,17 @@ final class PackageNamespaceWorkspace {
             if (!canonical.equals(logical) || !Files.isRegularFile(canonical)) {
                 throw new SecurityException("namespace digest source is not a regular manifest-root file");
             }
+            if (!manifestMembers.contains(canonical)) {
+                throw new SecurityException("namespace digest source is not manifest-listed: " + source);
+            }
+            if (!digestedMembers.add(canonical)) {
+                throw new IllegalArgumentException("duplicate namespace digest source: " + source);
+            }
             parts.add(root.relativize(canonical).toString().replace('\\', '/')
                     + "\n" + sha256(Files.readAllBytes(canonical)) + "\n");
+        }
+        if (!digestedMembers.equals(manifestMembers)) {
+            throw new SecurityException("namespace digest source set differs from manifest members");
         }
         parts.sort(String::compareTo);
         return sha256(String.join("", parts).getBytes(StandardCharsets.UTF_8));
