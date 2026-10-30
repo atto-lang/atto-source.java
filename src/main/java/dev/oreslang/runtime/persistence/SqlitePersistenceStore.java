@@ -144,6 +144,57 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         }
     }
     /**
+     * Called only by the trusted batch writer after commit(). The receipt
+     * alone never authorizes state publication. Both the current epoch fence
+     * and the exact durable operation record are read in one SQLite snapshot.
+     */
+    @Override public synchronized boolean verifyDurableCommit(Write write, Result receipt)
+            throws SQLException {
+        checkOpen();
+        Objects.requireNonNull(write);
+        Objects.requireNonNull(receipt);
+        Identity id = write.id();
+        checkId(id.tenant());
+        checkId(id.actor());
+        checkId(id.state());
+        checkId(write.operationId());
+        if (!receipt.durable()
+                || (receipt.status() != Status.COMMITTED && receipt.status() != Status.DUPLICATE)
+                || !receipt.operationId().equals(write.operationId())
+                || write.expectedVersion() == Long.MAX_VALUE
+                || receipt.version() != write.expectedVersion() + 1L) return false;
+        execute("BEGIN");
+        try {
+            boolean valid = false;
+            if (epoch(id) == write.epoch()) {
+                try (PreparedStatement q=db.prepareStatement(
+                        "SELECT epoch,expected,kind,schema,payload,version FROM ops "
+                        + "WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
+                    bindKey(q,id);
+                    q.setString(4,write.operationId());
+                    try (ResultSet row=q.executeQuery()) {
+                        if (row.next()) {
+                            int kind = write.kind() == Kind.SNAPSHOT ? 1 : 2;
+                            valid = row.getLong(1) == write.epoch()
+                                    && row.getLong(2) == write.expectedVersion()
+                                    && row.getInt(3) == kind
+                                    && row.getInt(4) == write.schemaVersion()
+                                    && Arrays.equals(row.getBytes(5),write.ownedPayload())
+                                    && row.getLong(6) == receipt.version();
+                        }
+                    }
+                }
+            }
+            commitTransaction();
+            return valid;
+        } catch (Exception error) {
+            rollback();
+            if (error instanceof SQLException sql) throw sql;
+            if (error instanceof RuntimeException runtime) throw runtime;
+            throw new SQLException("durable operation proof unavailable",error);
+        }
+    }
+    /**
      * Activation-scoped restore. Fence lookup and all recovered data reads
      * share one SQLite read snapshot, so another connection cannot change the
      * epoch between the authorization check and subsequent state queries.
