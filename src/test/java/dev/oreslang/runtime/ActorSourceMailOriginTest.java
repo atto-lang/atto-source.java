@@ -64,7 +64,7 @@ final class ActorSourceMailOriginTest {
                     });
                     taskCompletion.set(source);
                     context.runtime().suspendCurrentUserMailboxUntil(source);
-                } catch (Throwable failure) {
+                } catch (RuntimeException | Error failure) {
                     unexpected.set(failure);
                     throw failure;
                 }
