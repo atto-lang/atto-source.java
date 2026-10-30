@@ -43,7 +43,8 @@ pub routine main(): void {
   require(difference.limb_count() == 1 && difference.limb_at(0) == 59,
           "bigint subtraction magnitude");
 
-  val BigIntValue doubled_max = mul(&maximum, &from_int(2));
+  val BigIntValue two = from_int(2);
+  val BigIntValue doubled_max = mul(&maximum, &two);
   require(doubled_max.signum() == 1, "bigint multiplication sign");
   require(doubled_max.limb_count() == 4, "bigint multiplication limb count");
   require(doubled_max.limb_at(0) == 65534, "bigint multiplication low limb");
