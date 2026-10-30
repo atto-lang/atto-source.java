@@ -22,6 +22,38 @@ final class StrictIntegerArithmeticTest {
     @TempDir Path temp;
 
     @Test
+    void absAndNegAreCheckedAcrossEntireSigned64Domain() {
+        assertEquals(0L, StrictIntegerArithmetic.neg(0));
+        assertEquals(-42L, StrictIntegerArithmetic.neg(42));
+        assertEquals(42L, StrictIntegerArithmetic.neg(-42));
+        assertEquals(0L, StrictIntegerArithmetic.abs(0));
+        assertEquals(42L, StrictIntegerArithmetic.abs(42));
+        assertEquals(42L, StrictIntegerArithmetic.abs(-42));
+        assertEquals(Long.MAX_VALUE, StrictIntegerArithmetic.abs(Long.MAX_VALUE));
+        assertThrows(ArithmeticException.class,
+                () -> StrictIntegerArithmetic.neg(Long.MIN_VALUE));
+        assertThrows(ArithmeticException.class,
+                () -> StrictIntegerArithmetic.abs(Long.MIN_VALUE));
+
+        Random random = new Random(0x0AB5);
+        for (int i = 0; i < 10_000; i++) {
+            long value = random.nextLong();
+            BigInteger exact = BigInteger.valueOf(value);
+            if (value == Long.MIN_VALUE) {
+                assertThrows(ArithmeticException.class,
+                        () -> StrictIntegerArithmetic.neg(value));
+                assertThrows(ArithmeticException.class,
+                        () -> StrictIntegerArithmetic.abs(value));
+            } else {
+                assertEquals(exact.negate().longValueExact(),
+                        StrictIntegerArithmetic.neg(value));
+                assertEquals(exact.abs().longValueExact(),
+                        StrictIntegerArithmetic.abs(value));
+            }
+        }
+    }
+
+    @Test
     void divisionEdgesAndEuclideanModulusAreDefined() {
         assertEquals(-1L, StrictIntegerArithmetic.rem(-9, 4));
         assertEquals(1L, StrictIntegerArithmetic.rem(9, -4));
@@ -89,6 +121,8 @@ final class StrictIntegerArithmeticTest {
         Files.writeString(entry, """
                 import * as numeric from "ores.core/numeric";
                 pub routine main(): void {
+                  stdio.println(numeric.abs_int(-42));
+                  stdio.println(numeric.neg_int(42));
                   stdio.println(numeric.rem_int(-9, 4));
                   stdio.println(numeric.mod_int(-9, 4));
                   stdio.println(numeric.mod_int(-9, -4));
@@ -101,7 +135,7 @@ final class StrictIntegerArithmeticTest {
         LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
                 new ByteArrayOutputStream());
-        assertEquals("-1\n3\n3\n6\n-1\n", out.toString(StandardCharsets.UTF_8));
+        assertEquals("42\n-42\n-1\n3\n3\n6\n-1\n", out.toString(StandardCharsets.UTF_8));
     }
 
     @Test
@@ -109,6 +143,10 @@ final class StrictIntegerArithmeticTest {
         Path entry = temp.resolve("integer-named.ores");
         Files.writeString(entry, """
                 pub routine main(): void {
+                  stdio.println(Math.abs(-42));
+                  stdio.println(Math.neg(42));
+                  stdio.println(Integer.abs(-42));
+                  stdio.println(Integer.neg(42));
                   stdio.println(Integer.rem(-9, 4));
                   stdio.println(Integer.mod(-9, 4));
                   stdio.println(Integer.mod(-9, -4));
@@ -122,12 +160,16 @@ final class StrictIntegerArithmeticTest {
         LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
                 new ByteArrayOutputStream());
-        assertEquals("-1\n3\n3\n-8\n1\n6\n", out.toString(StandardCharsets.UTF_8));
+        assertEquals("42\n-42\n42\n-42\n-1\n3\n3\n-8\n1\n6\n", out.toString(StandardCharsets.UTF_8));
     }
 
     @Test
     void guestIntegerNamedOperationsRejectBadStaticCallShapes() throws Exception {
         for (String invalidCall : java.util.List.of(
+                "Math.abs(1, 2)",
+                "Math.neg(2.5)",
+                "Integer.abs(1, 2)",
+                "Integer.neg(false)",
                 "Integer.mod(2)",
                 "Integer.pow(2.5, 2)",
                 "Integer.bitXor(true, 1)",
@@ -170,8 +212,33 @@ final class StrictIntegerArithmeticTest {
     }
 
     @Test
+    void userDefinedMathShadowsSealedMathIntrinsic() throws Exception {
+        Path entry = temp.resolve("math-shadow.ores");
+        Files.writeString(entry, """
+                define class Math as
+                  static fnc abs(int value): int { return 7; }
+                  static fnc neg(int value): int { return 8; }
+                end
+                pub routine main(): void {
+                  stdio.println(Math.abs(-42));
+                  stdio.println(Math.neg(42));
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals("7\n8\n", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void guestIntegerNamedOperationsTrapOnInvalidArithmetic() throws Exception {
         for (String invalidCall : java.util.List.of(
+                "Math.abs(-9223372036854775808)",
+                "Math.neg(-9223372036854775808)",
+                "Integer.abs(-9223372036854775808)",
+                "Integer.neg(-9223372036854775808)",
                 "Integer.mod(2, 0)",
                 "Integer.pow(2, 63)",
                 "Integer.pow(2, -1)")) {
