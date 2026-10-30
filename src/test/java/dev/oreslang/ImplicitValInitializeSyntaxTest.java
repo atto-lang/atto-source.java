@@ -295,6 +295,36 @@ final class ImplicitValInitializeSyntaxTest {
     }
 
     @Test
+    void rejectsChildConstructorThatLeavesParentFixedFieldUninitialized() {
+        String source = """
+                define class Parent as
+                  pub val int inherited_id;
+                end
+                define class Child extends Parent as
+                  initialize(int id) -> void {}
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("inherits uninitialized fixed field"),
+                error::toString);
+    }
+
+    @Test
+    void childConstructorCanUseAlreadyInitializedParentFixedField() {
+        String source = """
+                define class Parent as
+                  pub final int inherited_id: 7;
+                end
+                define class Child extends Parent as
+                  initialize(int id) -> void {}
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void childInitializerRetainsWriteAccessToInheritedLetField() {
         String source = """
                 define class Parent as
