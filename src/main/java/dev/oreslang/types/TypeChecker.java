@@ -5831,6 +5831,11 @@ public final class TypeChecker {
             return;
         }
         String name = ref.name();
+        if (name.equals("f32")) {
+            throw new IllegalArgumentException(
+                    "f32 runtime patterns are disabled until binary32 has distinct "
+                            + "storage, arithmetic rounding, ABI and serialization semantics");
+        }
         if (Set.of(
                 "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "uint", "bigint",
                 "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String",
@@ -7963,7 +7968,10 @@ public final class TypeChecker {
         return switch (ref.name()) {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint" -> Primitive.INT;
             case "bigint" -> Primitive.BIGINT;
-            case "f32", "f64", "float" -> Primitive.FLOAT;
+            case "f32" -> throw new IllegalArgumentException(
+                    "f32 requires a distinct IEEE-754 binary32 representation and "
+                            + "round-after-each-operation lowering; it must not alias binary64");
+            case "f64", "float" -> Primitive.FLOAT;
             case "decimal" -> Primitive.DECIMAL;
             case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
             case "bool", "Bool" -> {
