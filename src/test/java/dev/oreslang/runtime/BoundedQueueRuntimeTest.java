@@ -232,15 +232,16 @@ final class BoundedQueueRuntimeTest {
     }
 
     @Test
-    void wrongQueueTicketIsRejectedWithoutTouchingPayload() {
+    void wrongQueuePushReturnsExactPayloadWhileDirectCancelStillRejectsForeignTicket() {
         BoundedQueueRuntime<Object> first = new BoundedQueueRuntime<>(1);
         BoundedQueueRuntime<Object> second = new BoundedQueueRuntime<>(1);
         BoundedQueueRuntime.Ticket ticket = first.newTicket();
         Object value = new Object();
 
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> second.tryPush(value, ticket));
+        assertRejected(
+                BoundedQueueRuntime.PushStatus.WRONG_QUEUE,
+                value,
+                second.tryPush(value, ticket));
         assertEquals(
                 BoundedQueueRuntime.PopStatus.EMPTY,
                 second.tryPop().status());
