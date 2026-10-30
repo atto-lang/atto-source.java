@@ -9,14 +9,14 @@ CARRIER = "honeypot-r-us-test/hnpt-lib-core"
 
 EXPECTED_BLOBS = {
     "carrier_review_workflow_blob_sha": "805f8a1919afc8e5949bbabf3447ed1d7ced8d46",
-    "carrier_execution_workflow_blob_sha": "db75eae33079bf4c66b2817d85d01fea66ab6c20",
+    "carrier_execution_workflow_blob_sha": "7b850ecfcd46b0671014276e9aad88419a2dbac9",
     "carrier_codeowners_blob_sha": "0110a557c162204a399ebf1e628e50c9ed991439",
-    "carrier_manifest_blob_sha": "d4801600385462c4a53d0e9989623457b69ccfea",
+    "carrier_manifest_blob_sha": "d28c851eb7ef7d52bf7b6fa8087a4b1ac5ab3353",
     "carrier_test_plan_blob_sha": "0894f7241eb0b510f335351b8ad33378946f9503",
     "carrier_candidate_verifier_blob_sha": "a26ca47b00280e58114315a9b1ffbc5e5b291e18",
     "carrier_source_verifier_blob_sha": "4eccdaf0235d7bb4d05461341bbb4ded09249fde",
     "carrier_runner_blob_sha": "a77ea1e03b36dd2d3a34b7904ab7f1196bed21bf",
-    "carrier_adversarial_test_blob_sha": "ac6d6105cba6eb22726780876d1e830aacf78a59",
+    "carrier_adversarial_test_blob_sha": "debc98a26cdf25d89030565b18f5d855ee155877",
 }
 
 def fail(message):
@@ -67,14 +67,14 @@ def main():
         fail("carrier identity")
     if doc["carrier_review_pr"] != 24:
         fail("carrier review PR")
-    if doc["carrier_review_head_sha"] != "4e2e6496225e706f6a8455f09b04009eb8e5dc18":
+    if doc["carrier_review_head_sha"] != "6cca0ab07b92e315f6dd5b60455947951b578890":
         fail("carrier review head")
     for key, expected in EXPECTED_BLOBS.items():
         if doc.get(key) != expected:
             fail(key)
-    if doc["carrier_current_head_source_free_run_id"] != 41008722433:
+    if doc["carrier_current_head_source_free_run_id"] != 41010225921:
         fail("current-head run identity")
-    if doc["carrier_current_head_source_free_job_id"] != 123909499411:
+    if doc["carrier_current_head_source_free_job_id"] != 123914196663:
         fail("current-head job identity")
     if doc["carrier_current_head_source_free_result"] != "zero-step-failure":
         fail("current-head source-free classification")
@@ -92,7 +92,7 @@ def main():
         fail("runner capacity canary repository id")
     if doc["runner_capacity_canary_quarantined"] is not True:
         fail("runner capacity canary must remain quarantined")
-    if doc["runner_capacity_canary_run_id"] != 41009207044 or doc["runner_capacity_canary_job_id"] != 123911021605:
+    if doc["runner_capacity_canary_run_id"] != 41010251509 or doc["runner_capacity_canary_job_id"] != 123914277235:
         fail("runner capacity canary identity")
     if doc["runner_capacity_canary_result"] != "success":
         fail("runner capacity canary result")
