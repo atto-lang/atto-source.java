@@ -269,6 +269,35 @@ final class ExecutionCallbackTraceIntegrationTest {
         }
     }
 
+    @Test
+    void hostFatalFailureIsNeverDecoratedWithCallbackDiagnostics() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
+            CountDownLatch registered = new CountDownLatch(1);
+            OresAsyncTrace.Trace logical = trace("fatal_callback_origin", 70);
+
+            OresFuture<Integer> source = scheduler.startSync(() -> {
+                try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(logical)) {
+                    return OresFuture.fromCallback(callback -> {
+                        completion.set(callback);
+                        registered.countDown();
+                    });
+                }
+            }).get(5, TimeUnit.SECONDS);
+
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            VirtualMachineError fatal = new VirtualMachineError("fatal callback") { };
+            Thread.ofPlatform().start(() -> completion.get().reject(fatal)).join();
+
+            ExecutionException terminal = assertThrows(
+                    ExecutionException.class,
+                    () -> source.get(5, TimeUnit.SECONDS));
+            assertSame(fatal, terminal.getCause());
+            assertEquals(0, fatal.getSuppressed().length,
+                    "host-fatal failures must not be decorated with logical diagnostics");
+        }
+    }
+
     private static int count(String value, String needle) {
         int count = 0;
         int offset = 0;
