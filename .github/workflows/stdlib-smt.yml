@@ -13,9 +13,11 @@ on:
       - 'examples/native-decimal-division-rejected.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
       - 'src/test/java/dev/oreslang/DefaultCheckedI64ArithmeticTest.java'
       - 'src/test/java/dev/oreslang/BinaryFloatSemanticsTest.java'
       - 'src/test/java/dev/oreslang/NumericPrecisionAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/TreeShakerTest.java'
       - 'src/test/java/dev/oreslang/MathIntrinsicSemanticsTest.java'
       - 'src/test/java/dev/oreslang/FloatCarrierSemanticsTest.java'
       - 'src/test/java/dev/oreslang/FloatFieldCarrierSemanticsTest.java'
@@ -39,9 +41,11 @@ on:
       - 'examples/native-decimal-division-rejected.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
       - 'src/test/java/dev/oreslang/DefaultCheckedI64ArithmeticTest.java'
       - 'src/test/java/dev/oreslang/BinaryFloatSemanticsTest.java'
       - 'src/test/java/dev/oreslang/NumericPrecisionAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/TreeShakerTest.java'
       - 'src/test/java/dev/oreslang/MathIntrinsicSemanticsTest.java'
       - 'src/test/java/dev/oreslang/FloatCarrierSemanticsTest.java'
       - 'src/test/java/dev/oreslang/FloatFieldCarrierSemanticsTest.java'
@@ -72,7 +76,7 @@ jobs:
       - name: Record exact inputs and tool versions
         run: |
           git rev-parse HEAD
-          git hash-object stdlib/core.ores stdlib/trace.ores stdlib/testing.ores
+          git hash-object stdlib/core.ores stdlib/math.ores stdlib/bigint.ores stdlib/decimal.ores stdlib/trace.ores stdlib/testing.ores
           rustc --version
           z3 -version
       - name: Rust gate regression tests
@@ -110,7 +114,7 @@ jobs:
       - name: Verify default checked i64 arithmetic in real Graal guest
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest,BinaryFloatSemanticsTest,NumericPrecisionAdmissionTest,MathIntrinsicSemanticsTest,FloatCarrierSemanticsTest,FloatFieldCarrierSemanticsTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest,BinaryFloatSemanticsTest,NumericPrecisionAdmissionTest,MathIntrinsicSemanticsTest,FloatCarrierSemanticsTest,FloatFieldCarrierSemanticsTest,TreeShakerTest -DfailIfNoTests=true test
       - name: Execute native Oreslang Math refinement and MIN overflow boundary
         run: |
           set -euo pipefail
