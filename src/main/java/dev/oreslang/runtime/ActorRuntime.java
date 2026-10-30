@@ -209,6 +209,53 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
+    /**
+     * Bind a claimed HTTP exchange to the CURRENT admitted actor message,
+     * rather than the reusable actor identity or its carrier thread. The
+     * mailbox retains activeMail across source receive suspension.
+     *
+     * <p>Do not call this from producer callbacks: they have no active
+     * ActorExecutionContext and cannot install HTTP request authority.</p>
+     */
+    void bindCurrentHttpExchange(NativeHttp.Exchange exchange) {
+        Objects.requireNonNull(exchange, "exchange");
+        if (currentActorRuntime() != this) {
+            throw new SecurityException("HTTP request binding requires an admitted actor execution");
+        }
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) throw new SecurityException("no admitted actor mailbox turn");
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.activeMail == null) {
+                throw new SecurityException("HTTP request binding requires an active user mail");
+            }
+            if (cell.activeHttpExchange != null && cell.activeHttpExchange != exchange) {
+                throw new SecurityException("one mailbox receive cannot bind multiple HTTP requests");
+            }
+            cell.activeHttpExchange = exchange;
+        }
+    }
+
+    /**
+     * Lookup only for the currently admitted logical actor receive.
+     * The exchange still independently checks owner, generation, and liveness
+     * on every accessor. Returning it here does not grant foreign callbacks
+     * a capability, and no thread-local pointer survives dispatch exit.
+     */
+    NativeHttp.Exchange currentHttpExchange() {
+        if (currentActorRuntime() != this) {
+            throw new SecurityException("request context requires an admitted actor execution");
+        }
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) throw new SecurityException("request context has no active mailbox");
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.activeMail == null
+                    || cell.activeHttpExchange == null) {
+                throw new SecurityException("no active request is bound to this mailbox receive");
+            }
+            return cell.activeHttpExchange;
+        }
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
@@ -2390,6 +2437,7 @@ public final class ActorRuntime implements AutoCloseable {
                             ? -1L : cell.activeMail.sequence();
                     cell.sourceReceiveSuspended = false;
                     cell.activeMail = null;
+                    cell.activeHttpExchange = null;
                     cell.lifecycleLock.notifyAll();
                 }
                 if (failure != null) {
@@ -2412,6 +2460,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!cell.stopped.get() && !cell.finalized) {
                         cell.sourceReceiveSuspended = false;
                         cell.activeMail = null;
+                        cell.activeHttpExchange = null;
                         failActor = true;
                     }
                 }
@@ -7579,6 +7628,8 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        /** Request-affine binding for this source receive, NEVER actor-wide TLS. */
+        private NativeHttp.Exchange activeHttpExchange;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -8558,6 +8609,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
+                            activeHttpExchange = null;
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -8580,7 +8632,10 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                if (!sourceReceiveSuspended) activeMail = null;
+                                if (!sourceReceiveSuspended) {
+                                    activeMail = null;
+                                    activeHttpExchange = null;
+                                }
                             }
                         }
                         if (codeExecutor == null
@@ -8669,6 +8724,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             sourceReceiveSuspended = false;
             activeMail = null;
+            activeHttpExchange = null;
         }
 
         private void drainMailboxReservations() {
