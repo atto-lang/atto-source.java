@@ -299,6 +299,10 @@ mod tests {
         put16(&mut v, 56, n as u16);
         put32(&mut v, 64, 1);
         put32(&mut v, 68, flags);
+        // Populate a real file-backed RX load, not just an executable flag.
+        let bytes = v.len() as u64;
+        put64(&mut v, 64 + 32, bytes);
+        put64(&mut v, 64 + 40, bytes);
         put64(&mut v, 112, 4096);
         let mut p = 120;
         if let Some(s) = stack {
@@ -327,6 +331,22 @@ mod tests {
     #[test] fn denies_executable_stack() {
         for flags in [1,5,7] { assert!(Fixture::new(&elf(62,5,Some(flags),2,None)).inspect().unwrap_err().contains("executable PT_GNU_STACK")); }
         assert!(Fixture::new(&elf(62,5,Some(6),2,None)).inspect().is_ok());
+    }
+    #[test] fn rejects_empty_executable_and_unmapped_entry() {
+        let mut empty = elf(62, 5, None, 2, None);
+        put64(&mut empty, 64 + 32, 0);
+        put64(&mut empty, 64 + 40, 0);
+        assert!(Fixture::new(&empty).inspect().unwrap_err().contains("no file-backed bytes"));
+        let mut unmapped = elf(62, 5, None, 2, None);
+        put64(&mut unmapped, 24, 0x8000);
+        assert!(Fixture::new(&unmapped).inspect().unwrap_err().contains("entry point"));
+        let mut boundary = elf(62, 5, None, 2, None);
+        let last = boundary.len() as u64;
+        put64(&mut boundary, 24, last);
+        assert!(Fixture::new(&boundary).inspect().unwrap_err().contains("entry point"));
+        let mut valid = elf(62, 5, None, 2, None);
+        put64(&mut valid, 24, last - 1);
+        assert!(Fixture::new(&valid).inspect().is_ok());
     }
     #[test] fn denies_data_only_load() {
         for flags in [0,2,4,6] { assert!(Fixture::new(&elf(62,flags,None,2,None)).inspect().unwrap_err().contains("executable PT_LOAD")); }
@@ -358,7 +378,7 @@ mod tests {
     }
     #[test] fn denies_memsz_smaller_than_filesz() {
         let mut v=elf(62,5,None,2,None);
-        put64(&mut v,64+32,1);
+        put64(&mut v,64+40,1);
         assert!(Fixture::new(&v).inspect().is_err());
     }
     #[test] fn denies_load_address_wraparound() {
