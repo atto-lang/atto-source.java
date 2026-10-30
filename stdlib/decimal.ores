@@ -234,6 +234,12 @@ define module decimal_math as
       denominator = step.quotient;
       powers_of_two = powers_of_two + 1;
     }
+    val BigIntDivRem extra_two =
+      bigint_math.div_rem(&denominator, &two);
+    if extra_two.remainder.signum() == 0; do
+      rt fail("decimal: factorization exceeds bounded operation policy");
+    fi
+
     for (let int i = 0; i < 512; i = i + 1) {
       val BigIntDivRem step = bigint_math.div_rem(&denominator, &five);
       if step.remainder.signum() != 0; do
@@ -242,6 +248,11 @@ define module decimal_math as
       denominator = step.quotient;
       powers_of_five = powers_of_five + 1;
     }
+    val BigIntDivRem extra_five =
+      bigint_math.div_rem(&denominator, &five);
+    if extra_five.remainder.signum() == 0; do
+      rt fail("decimal: factorization exceeds bounded operation policy");
+    fi
 
     if !bigint_math.equal(&denominator, &one); do
       rt fail("decimal: nonterminating exact division requires context");
