@@ -28,6 +28,7 @@ public final class ActorLinearArena implements AutoCloseable {
 
     private final ByteBuffer memory;
     private final int[] offsets;
+    private final int[] reservationStarts;
     private final int[] lengths;
     private final long[] tokens;
     private final boolean[] live;
@@ -58,6 +59,7 @@ public final class ActorLinearArena implements AutoCloseable {
             throw new IllegalArgumentException("bounded positive slot capacity required");
         memory = ByteBuffer.allocateDirect(bytes).order(ByteOrder.nativeOrder());
         offsets = new int[slots];
+        reservationStarts = new int[slots];
         lengths = new int[slots];
         tokens = new long[slots];
         live = new boolean[slots];
@@ -99,6 +101,7 @@ public final class ActorLinearArena implements AutoCloseable {
         trackedNodeBySlot[slot] = -1;
         long token = (sequence << SLOT_BITS) | (slot + 1L);
         offsets[slot] = aligned;
+        reservationStarts[slot] = cursor;
         lengths[slot] = bytes;
         tokens[slot] = token;
         live[slot] = true;
@@ -180,16 +183,25 @@ public final class ActorLinearArena implements AutoCloseable {
     public boolean remove(long handle) {
         int slot = validSlot(handle);
         if (slot < 0) return false;
+        int reservationStart = reservationStarts[slot];
+        int reservationEnd = offsets[slot] + lengths[slot];
         zero(offsets[slot], lengths[slot]);
         live[slot] = false;
         tokens[slot] = 0L;
         offsets[slot] = 0;
+        reservationStarts[slot] = 0;
         lengths[slot] = 0;
         freeSlots[freeCount++] = slot;
         liveCount--;
         if (liveCount == 0) {
             zero(0, cursor);
             cursor = 0;
+        } else if (reservationEnd == cursor) {
+            // Reclaim the topmost bump reservation (including alignment
+            // padding) immediately. Persistent actor fields can survive while
+            // turn temporaries reuse this space indefinitely. A non-topmost
+            // removal still leaves a bounded hole until full region reset.
+            cursor = reservationStart;
         }
         return true;
     }
@@ -232,6 +244,7 @@ public final class ActorLinearArena implements AutoCloseable {
             live[i] = false;
             tokens[i] = 0L;
             offsets[i] = 0;
+            reservationStarts[i] = 0;
             lengths[i] = 0;
         }
         java.util.Arrays.fill(ownedCleanup, INVALID_HANDLE);
