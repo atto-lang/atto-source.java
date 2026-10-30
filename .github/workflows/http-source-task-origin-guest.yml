@@ -1,0 +1,73 @@
+name: HTTP SourceTask request-origin guest regression
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSourceMailOriginTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeHttpTest.java'
+      - '.github/workflows/http-source-task-origin-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-head-http-source-task:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact pull-request HEAD without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source tree and required tests
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git status --porcelain)"
+          for file in \
+            src/main/java/dev/oreslang/runtime/ActorRuntime.java \
+            src/main/java/dev/oreslang/runtime/OresScheduler.java \
+            src/main/java/dev/oreslang/runtime/NativeHttp.java \
+            src/test/java/dev/oreslang/runtime/ActorSourceMailOriginTest.java \
+            src/test/java/dev/oreslang/runtime/NativeHttpTest.java; do
+            git ls-files --error-unmatch -- "$file" >/dev/null
+            echo "EXACT_HTTP_SOURCE_BLOB $file $(git hash-object "$file")"
+          done
+          echo "HTTP_SOURCE_TASK_HEAD=$EXPECTED_SHA"
+      - name: Install GraalVM JDK25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+          cache: maven
+      - name: Compile and execute real source and HTTP runtime tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp \
+            -Dtest=ActorSourceMailOriginTest,NativeHttpTest,HttpRequestLocalsTest,ActorCarrierIdentityCleanupTest \
+            -DfailIfNoTests=true test
+          for class in \
+            ActorSourceMailOriginTest \
+            NativeHttpTest \
+            HttpRequestLocalsTest \
+            ActorCarrierIdentityCleanupTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.runtime.${class}.xml"
+            test -s "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            for field in errors failures skipped; do
+              grep -Eq '<testsuite[^>]*'${field}'="0"' "$report"
+            done
+            echo "HTTP_SOURCE_TASK_GUEST_SUITE_PASS $class"
+          done
+          echo "HTTP_SOURCE_TASK_EXACT_HEAD_GUEST_PASS"
