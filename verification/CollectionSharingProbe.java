@@ -77,8 +77,8 @@ public final class CollectionSharingProbe {
     compile("pub fnc main(): int { const row = record{value: 1}; return row.value; }"); checks++;
     rejects("pub fnc main(): void { const row = record{value: 1}; val shared = rt share row; return; }", "rt share");
     rejects("pub async fnc main(): void { val owner = infer struct{value: 1}; val view = rt borrow owner; let Future<int> child = task { return view.value; }; return; }", "borrow");
-    rejects("pub fnc main(): void { val owner = [10]; val protected = SharedMutex.new(owner); owner.get(0); return; }", "moved");
-    rejects("pub fnc main(): void { val owner = [10]; val view = rt borrow owner; val protected = SharedMutex.new(view); return; }", "owned");
+    rejects("pub fnc main(): void { val owner = [10]; val lock = SharedMutex.new(owner); owner.get(0); return; }", "moved");
+    rejects("pub fnc main(): void { val owner = [10]; val view = rt borrow owner; val lock = SharedMutex.new(view); return; }", "borrow");
     System.out.println("PASS: " + checks + " collection sharing / scoped READ / frontend checks");
   }
 }
