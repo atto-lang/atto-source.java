@@ -164,10 +164,34 @@ final class StrictIntegerArithmeticTest {
     }
 
     @Test
+    void guestMathUnaryPreservesBinary64SignAndFractionSemantics() throws Exception {
+        Path entry = temp.resolve("math-float.ores");
+        Files.writeString(entry, """
+                pub routine main(): void {
+                  val float absolute = Math.abs(-2.5);
+                  val float negated = Math.neg(2.5);
+                  val float positiveZero = Math.abs(-0.0);
+                  val float negativeZero = Math.neg(0.0);
+                  stdio.println(absolute);
+                  stdio.println(negated);
+                  stdio.println(positiveZero);
+                  stdio.println(negativeZero);
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals("2.5\n-2.5\n0.0\n-0.0\n",
+                out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void guestIntegerNamedOperationsRejectBadStaticCallShapes() throws Exception {
         for (String invalidCall : java.util.List.of(
                 "Math.abs(1, 2)",
-                "Math.neg(2.5)",
+                "Math.neg(true)",
                 "Integer.abs(1, 2)",
                 "Integer.neg(false)",
                 "Integer.mod(2)",
