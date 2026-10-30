@@ -476,6 +476,48 @@ final class NamespaceRuntimeIntegrationTest {
         assertTrue(refused.getMessage().contains("symlinked namespace dependency path"));
     }
 
+
+    @Test
+    void pinnedManifestMutationMustFailBeforeGuestExecution() throws Exception {
+        Path provider = temp.resolve("checkout");
+        Path providerManifest = billing(provider);
+        Path client = temp.resolve("client");
+        Path main = source(client, "src/main.ores", "app", """
+                import namespace billing as payments from "checkout";
+                pub fnc main(): void {
+                  stdio.println(payments.refund());
+                  return;
+                }
+                """);
+        List<Path> members = List.of(
+                provider.resolve("src/billing/charge.ores"),
+                provider.resolve("src/billing/refund.ores"),
+                provider.resolve("src/billing/balance.ores"),
+                provider.resolve("src/billing/invoice.ores"));
+        Files.writeString(client.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                [namespace_dependencies.checkout]
+                manifest = "../checkout/.ores.pkg.toml"
+                package = "checkout"
+                manifest_sha256 = "%s"
+                sources_sha256 = "%s"
+                """.formatted(
+                PackageNamespaceWorkspace.sha256(Files.readAllBytes(providerManifest)),
+                PackageNamespaceWorkspace.sourceDigest(providerManifest, members)));
+
+        // This edit preserves the TOML package inventory and every provider
+        // source byte, but must still invalidate the authenticated manifest.
+        Files.writeString(providerManifest,
+                Files.readString(providerManifest) + "# modified after pinning\n");
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(denied.getMessage().contains("manifest pin mismatch"));
+    }
+
     @Test
     void pinnedSourceMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
