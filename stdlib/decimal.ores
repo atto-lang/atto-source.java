@@ -471,4 +471,12 @@ define module decimal_math as
     return new DecimalValue(coefficient, result_scale);
   }
 
+  pub fnc round(
+    &DecimalValue value,
+    &DecimalContext context
+  ): DecimalValue {
+    val DecimalValue one = from_int(1);
+    return div(&value, &one, &context);
+  }
+
 end
