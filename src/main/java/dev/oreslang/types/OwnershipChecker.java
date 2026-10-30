@@ -1850,6 +1850,21 @@ public final class OwnershipChecker {
                 concreteReceiver = receiverValue.type.isBorrow()
                         ? receiverValue.type.borrowedTarget() : receiverValue.type;
             }
+            // Do not let a chained factory call or a projected mutex receiver
+            // evade the nested-lock gate above, which handles named locals.
+            // TypeChecker already recognizes these builtin receiver types.
+            boolean acquiringMutex = switch (member.member()) {
+                case "lock", "try_lock", "lock_async", "with_lock", "recover" -> true;
+                default -> false;
+            };
+            if (acquiringMutex && concreteReceiver != null
+                    && (concreteReceiver.name().equals("Mutex")
+                            || concreteReceiver.name().equals("SharedMutex"))
+                    && concreteReceiver.arguments().size() == 1
+                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
+                throw error("nested mutex acquisition requires a proven lock order; "
+                        + "release the current MutexGuard before acquiring another mutex");
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());

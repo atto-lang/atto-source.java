@@ -66,6 +66,24 @@ final class MutexLockOrderAdmissionTest {
     }
 
     @Test
+    void inline_mutex_factory_cannot_bypass_live_guard_admission() {
+        rejects("""
+                  const first = left.lock();
+                  const second = Mutex.new(3).lock();
+                  first.release();
+                """);
+    }
+
+    @Test
+    void inline_shared_mutex_factory_cannot_bypass_live_guard_admission() {
+        rejects("""
+                  const first = left.lock();
+                  const second = SharedMutex.new(3).try_lock();
+                  first.release();
+                """);
+    }
+
+    @Test
     void guards_released_between_acquisitions_remain_valid() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(TWO_MUTEXES + """
                   const first = left.lock();
