@@ -2465,6 +2465,10 @@ public final class TypeChecker {
             if (booleanIntrinsic != null) {
                 return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
             }
+            String mathIntrinsic = mathIntrinsicName(call, env);
+            if (mathIntrinsic != null) {
+                return typeMathIntrinsicCall(mathIntrinsic, call, env, generics, self);
+            }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
@@ -4093,6 +4097,49 @@ public final class TypeChecker {
             return member.member();
         }
         return null;
+    }
+
+    private String mathIntrinsicName(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Math")
+                || env.lookup("Math") != null
+                || importedValues.contains("Math")
+                || modules.containsKey("Math")
+                || findClass("Math") != null) {
+            return null;
+        }
+        return switch (member.member()) {
+            case "abs", "neg" -> member.member();
+            default -> null;
+        };
+    }
+
+    private Type typeMathIntrinsicCall(
+            String name,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "Math." + name + " does not accept call-site type arguments");
+        }
+        if (call.arguments().size() != 1
+                || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+            throw new IllegalArgumentException(
+                    "Math." + name + " expects exactly one numeric argument");
+        }
+        Type operand = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+        if (operand == Primitive.INT
+                || operand == Primitive.FLOAT
+                || operand == Primitive.BIGINT
+                || operand == Primitive.DECIMAL) {
+            return operand;
+        }
+        throw new IllegalArgumentException(
+                "Math." + name + " requires int, f64/float, bigint, or decimal; got "
+                        + operand);
     }
 
     private Type typeBooleanIntrinsicCall(
