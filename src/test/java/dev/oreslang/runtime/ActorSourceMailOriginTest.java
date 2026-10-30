@@ -95,4 +95,63 @@ final class ActorSourceMailOriginTest {
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void staleOriginFromPreviousPooledMailboxMessageCannotEnqueueSourceTask()
+            throws Exception {
+        CountDownLatch firstSeen = new CountDownLatch(1);
+        CountDownLatch secondSeen = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.SourceMailOrigin> firstOrigin =
+                new AtomicReference<>();
+        AtomicInteger injectedExecutions = new AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 1, 8, 16))) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if (message.equals("first")) {
+                    firstOrigin.set(ActorRuntime.captureSourceMailOrigin());
+                    firstSeen.countDown();
+                } else if (message.equals("second")) {
+                    secondSeen.countDown();
+                } else {
+                    throw new AssertionError("unexpected actor message");
+                }
+            });
+            actor.send("first");
+            assertTrue(firstSeen.await(10, TimeUnit.SECONDS));
+            assertNotNull(firstOrigin.get());
+            actor.send("second");
+            assertTrue(secondSeen.await(10, TimeUnit.SECONDS));
+
+            // Exercise the exact ActorCell mailbox admission boundary with a
+            // scheduler-shaped command bearing the earlier mailbox sequence.
+            // This avoids pretending a detached producer can simply call a
+            // guest API and acquire an authenticated actor execution.
+            var cellsField = ActorRuntime.class.getDeclaredField("actors");
+            cellsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var cells = (java.util.Map<ActorRuntime.ActorId, ?>) cellsField.get(runtime);
+            Object cell = cells.get(actor.id());
+            assertNotNull(cell);
+
+            Class<?> cellClass =
+                    Class.forName("dev.oreslang.runtime.ActorRuntime$ActorCell");
+            var enqueue = ActorRuntime.class.getDeclaredMethod(
+                    "enqueueSourceTaskContinuation", cellClass, Runnable.class);
+            enqueue.setAccessible(true);
+            var stale = new OresScheduler.SourceTaskTurn(
+                    injectedExecutions::incrementAndGet, firstOrigin.get());
+            var rejected = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> enqueue.invoke(runtime, cell, stale));
+            assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                    rejected.getCause(),
+                    "stale mailbox origin must be rejected as scheduler admission failure");
+            assertEquals(0, injectedExecutions.get(),
+                    "rejected task must never execute guest work");
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
 }
