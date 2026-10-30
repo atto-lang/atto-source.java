@@ -68,6 +68,14 @@ and its permission/delegation predecessors. Shared reference: platform PR #246.
 - Registered physical resources are counted in the existing
   `actorOperations` liveness ledger, not reclaimed when Futures merely
   complete. Failed native cleanup quarantines actor finalization.
+- Context shutdown is now a bounded two-pass physical join: STOP is requested,
+  native I/O workers/handles retire, and actor finalization is rechecked
+  after native retirement. Otherwise actor finalization could wait forever
+  for a registered handle that the old coordinator did not close until after
+  waiting for the actor.
+- The shutdown coordinator **does not** declare success after a failed
+  retirement pass. It only succeeds if subsequent independent actor and I/O
+  join attempts both complete; unreconciled failures remain quarantine gates.
 
 ## Verification matrix / merge block
 
@@ -75,7 +83,8 @@ and its permission/delegation predecessors. Shared reference: platform PR #246.
 2. JDK25 Maven targeted JUnit:
    `ActorRegisteredResourceQuotaTest,ActorNativeIoIncarnationFenceTest,
    ActorSubtreeIoQuotaTest,PhysicalIoLoanRevocationTest`.
-3. Host resource lifecycle regressions: duplicated registration,
+3. Nine JUnit methods including a production-coordinator shutdown regression.
+   Host resource lifecycle regressions: duplicated registration,
    unregister-with-live-loan, scope revocation, handle/byte exhaustion,
    exact-once close, failed close and retry, context shutdown races,
    real child registration after STOP and ancestor/sibling isolation.
