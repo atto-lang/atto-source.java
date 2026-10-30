@@ -498,6 +498,11 @@ public final class AsyncNativeIo implements AutoCloseable {
             resourceLoans.put(resource, new ResourceLeaseState(
                     nextResourceGeneration.incrementAndGet(), resource,
                     currentOwnerActor(), null));
+            // This late handle never obtained a new (already-sealed)
+            // delegated physical lease. Its eventual close is not a valid
+            // per-scope retirement witness: quarantine the delegated scope
+            // instead of publishing a false completed drain.
+            ActorRuntime.quarantineCurrentPhysicalDrain();
             throw new IllegalStateException("I/O context closed");
         }
         // Check AFTER the closed-path quarantine branch: a resource created
