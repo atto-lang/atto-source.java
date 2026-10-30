@@ -245,9 +245,17 @@ final class BoundedQueueRuntimeTest {
         assertEquals(
                 BoundedQueueRuntime.PopStatus.EMPTY,
                 second.tryPop().status());
+
+        // The foreign attempt must not consume or settle the ticket. Its owner
+        // may still use the exact same ticket for one legitimate push.
+        assertAdmitted(first.tryPush(value, ticket));
+        BoundedQueueRuntime.PopResult<Object> recovered = first.tryPop();
+        assertSame(value, recovered.value());
+
+        BoundedQueueRuntime.Ticket foreignCancel = first.newTicket();
         assertThrows(
                 IllegalArgumentException.class,
-                () -> second.cancel(ticket));
+                () -> second.cancel(foreignCancel));
     }
 
     @Test
