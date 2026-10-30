@@ -11042,8 +11042,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private static void requireActorOwnership(OresObject object) {
             ActorRuntime.ActorId ownerId = object.actorOwnerId;
-            if (ownerId == null
-                    || ActorRuntime.currentActorRuntime() != object.owner.context.actors()
+            ActorRuntime activeRuntime = ActorRuntime.currentActorRuntime();
+            if (ownerId == null || activeRuntime == null || object.owner == null
+                    || activeRuntime != object.owner.context.actors()
                     || !ownerId.equals(ActorRuntime.currentActorId().orElse(null))) {
                 throw new SecurityException(
                         "sealed actor state requires the owning admitted actor incarnation");
