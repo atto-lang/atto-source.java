@@ -2957,6 +2957,10 @@ public final class TypeChecker {
             if (booleanIntrinsic != null) {
                 return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
             }
+            String mathIntrinsic = mathIntrinsicName(call, env);
+            if (mathIntrinsic != null) {
+                return typeMathIntrinsicCall(mathIntrinsic, call, env, generics, self);
+            }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
@@ -4772,6 +4776,44 @@ public final class TypeChecker {
         type = deref(type);
         if (type instanceof ListType || type instanceof Tuple) return;
         throw new IllegalArgumentException(operation + " requires an array/list/tuple value");
+    }
+
+    private static boolean isMathIntrinsicName(String name) {
+        return name.equals("abs") || name.equals("neg");
+    }
+
+    private String mathIntrinsicName(Ast.CallExpr call, Env env) {
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Math")
+                && isMathIntrinsicName(member.member())
+                && env.lookup("Math") == null
+                && !modules.containsKey("Math")
+                && !importedNames.contains("Math")) {
+            return member.member();
+        }
+        return null;
+    }
+
+    private Type typeMathIntrinsicCall(
+            String name,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException("Math." + name
+                    + " does not accept call-site type arguments");
+        }
+        if (call.arguments().size() != 1) {
+            throw new IllegalArgumentException("Math." + name
+                    + " expects exactly one numeric argument");
+        }
+        Type operand = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+        if (operand == Primitive.INT || operand == Primitive.FLOAT) return operand;
+        throw new IllegalArgumentException("Math." + name
+                + " currently supports int/i64 and float/f64; bigint, decimal and f32 "
+                + "remain fail-closed until distinct runtime lowering exists");
     }
 
     private static boolean isBooleanIntrinsicName(String name) {
