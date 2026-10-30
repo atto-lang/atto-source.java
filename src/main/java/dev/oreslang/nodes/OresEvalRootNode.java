@@ -10107,7 +10107,20 @@ public final class OresEvalRootNode extends RootNode {
                 // An implicit VM fast-throw exception may have suppression disabled,
                 // which would discard source-boundary diagnostics after warm-up.
                 if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
-                return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+                try {
+                    return switch (op) {
+                        case '+' -> Math.addExact(x, y);
+                        case '-' -> Math.subtractExact(x, y);
+                        case '*' -> Math.multiplyExact(x, y);
+                        case '%' -> x % y;
+                        default -> throw new IllegalArgumentException("bad numeric operator");
+                    };
+                } catch (ArithmeticException overflow) {
+                    // Default fixed-width Oreslang arithmetic is checked.
+                    // Normalize the host signal; guest ArithmeticOverflowError
+                    // effect/unwind integration remains a separate ABI gate.
+                    throw new ArithmeticException("ORES_I64_OVERFLOW: checked signed 64-bit " + op);
+                }
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -10130,7 +10143,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+                try {
+                    return Math.negateExact(((Number) value).longValue());
+                } catch (ArithmeticException overflow) {
+                    throw new ArithmeticException("ORES_I64_OVERFLOW: checked signed 64-bit negate");
+                }
+            }
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
