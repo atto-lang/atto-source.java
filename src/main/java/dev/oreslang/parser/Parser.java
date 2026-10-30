@@ -3862,7 +3862,9 @@ public final class Parser {
 
     private Ast.Expr parseUnary() {
         boolean scalarFrame = scalarCpuRecursiveFrames >= 0;
-        if (scalarFrame && ++scalarCpuRecursiveFrames > 64) {
+        // A 64-operator unary expression legitimately needs a 65th
+        // parseUnary frame for its terminal literal.
+        if (scalarFrame && ++scalarCpuRecursiveFrames > 65) {
             scalarCpuRecursiveFrames--;
             throw error(peek(), "scalar cpu region exceeds combined recursive parser depth budget");
         }
