@@ -142,9 +142,9 @@ final class ActorCriticalStateModeTest {
                     "self.end();",
                     "stdio.stdout.write(\"unsafe\");")) {
                 String source = actor(
-                        "    self.handle_state(critical[" + mode + "] |s| -> {\\n"
-                                + "      " + operation + "\\n"
-                                + "    });\\n");
+                        "    self.handle_state(critical[" + mode + "] |s| -> {\n"
+                                + "      " + operation + "\n"
+                                + "    });\n");
                 IllegalArgumentException failure = assertThrows(
                         IllegalArgumentException.class,
                         () -> OresCompiler.parseAndTypeCheck(source),
