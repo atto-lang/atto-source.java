@@ -64,17 +64,19 @@ final class CallbackSourceTypingTest {
     }
 
     @Test
-    void futureAttachCallbackRejectsAsyncRegistrar() {
+    void futureAttachCallbackRequiresInlineRegistrarCapabilityScope() {
         String source = """
+                fnc detached_registrar(int value, Callback<int> completion) -> void {
+                  completion.resolve(value + 2);
+                  return;
+                }
+
                 async fnc bad_chain() => int {
                   val source = Future.from_callback<int>(|completion| -> {
                     completion.resolve(40);
                     return;
                   });
-                  val chained = source.attach_callback<int>(async |value, completion| -> {
-                    completion.resolve(value + 2);
-                    return;
-                  });
+                  val chained = source.attach_callback<int>(detached_registrar);
                   return await chained;
                 }
                 """;
@@ -82,7 +84,7 @@ final class CallbackSourceTypingTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
-        assertTrue(failure.getMessage().contains("cannot be async"),
+        assertTrue(failure.getMessage().contains("inline callback registrar"),
                 failure::getMessage);
     }
 
