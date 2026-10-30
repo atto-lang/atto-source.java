@@ -511,6 +511,36 @@ final class NamespaceRuntimeIntegrationTest {
 
 
     @Test
+    void symlinkedProjectRootIsRejectedBeforeGuestExecution() throws Exception {
+        Path project = temp.resolve("root-alias-project");
+        Path main = source(project, "src/main.ores", "app", """
+                pub fnc main(): void {
+                  stdio.println(7);
+                  return;
+                }
+                """);
+        // The alias points *inside* the package, so containment checking
+        // alone would accept it. The target can still change after admission.
+        Path rootAlias = project.resolve("alias");
+        try {
+            Files.createSymbolicLink(rootAlias, project.resolve("src"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        Files.writeString(project.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "alias"
+                [packages.app]
+                files = ["main.ores"]
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(denied.getMessage().contains("symlinked namespace project root"));
+    }
+
+    @Test
     void pinnedManifestMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
         Path providerManifest = billing(provider);
