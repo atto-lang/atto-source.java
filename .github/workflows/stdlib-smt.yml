@@ -79,6 +79,10 @@ jobs:
           mvn -B -ntp -DskipTests compile
           mvn -B -ntp exec:java -Dexec.args="examples/native-core-smt-refinement.ores" | tee "${RUNNER_TEMP}/core-refinement.out"
           grep -Fx 'CORE-SMT-REFINEMENT-OK' "${RUNNER_TEMP}/core-refinement.out"
+      - name: Verify default checked i64 arithmetic in real Graal guest
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest -DfailIfNoTests=true test
       - name: Execute native Oreslang Math refinement and MIN overflow boundary
         run: |
           set -euo pipefail
