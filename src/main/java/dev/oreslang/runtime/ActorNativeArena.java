@@ -199,7 +199,7 @@ public final class ActorNativeArena implements AutoCloseable {
      * sufficient to grant actor memory authority.
      */
     public synchronized void registerNativeFacade(NativeValue facade, NativeValue backing) {
-        checkAccess();
+        checkAdmission();
         Objects.requireNonNull(facade, "facade");
         Long issued = issuedNativeOffsets.get(backing);
         if (!(backing instanceof Fields) || issued == null
@@ -219,7 +219,7 @@ public final class ActorNativeArena implements AutoCloseable {
      * this actor's arena must never grant authority to guest-native storage.
      */
     synchronized void issueNativeCapability(NativeCapability capability) {
-        checkAccess();
+        checkAdmission();
         issuedNativeCapabilities.put(Objects.requireNonNull(capability), Boolean.TRUE);
     }
 
