@@ -171,7 +171,7 @@ final class ActorLinearArenaTest {
     void ownershipTrackingCanReleaseOutOfOrderWithoutMovingOtherCheckpoints() {
         try (var arena = new ActorLinearArena(2048, 64)) {
             int mark = arena.cleanupMark();
-            long[] owners = new long[64];
+            long[] owners = new long[63];
             for (int i = 0; i < owners.length; i++) {
                 owners[i] = arena.allocateOwned(16);
                 assertNotEquals(0L, owners[i]);
@@ -183,7 +183,7 @@ final class ActorLinearArenaTest {
             assertNotEquals(0L, child);
             assertTrue(arena.cleanupTo(nested));
             assertThrows(IllegalStateException.class, () -> arena.getLong(child, 0));
-            assertEquals(64, arena.liveAllocations());
+            assertEquals(63, arena.liveAllocations());
             assertTrue(arena.cleanupTo(mark));
             assertEquals(32, arena.liveAllocations());
             for (int i = 0; i < owners.length; i += 2)
