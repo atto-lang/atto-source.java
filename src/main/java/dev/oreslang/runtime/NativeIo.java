@@ -272,17 +272,34 @@ public final class NativeIo {
         }
         String endpoint = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.connect");
-        Socket socket = new Socket();
-        try {
-            context.nativeIo().register(socket);
-            try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
-                socket.connect(new InetSocketAddress(host, port), 15_000);
-                return new TcpConnection(context, endpoint, socket);
+        // Reserve an actual native handle credit before constructing a socket.
+        // A successfully registered credit moves to the context's physical
+        // resource ledger; constructor failures return the credit atomically.
+        try (AsyncNativeIo.ResourceCreationPermit credit =
+                context.nativeIo().reserveResourceCreation(0L)) {
+            Socket socket = new Socket();
+            try {
+                context.nativeIo().registerCreated(socket, credit);
+                try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
+                    socket.connect(new InetSocketAddress(host, port), 15_000);
+                    return new TcpConnection(context, endpoint, socket);
+                }
+            } catch (Exception failure) {
+                if (!credit.quarantined()) {
+                    // Never release the registered credit before physical
+                    // handle closure: a failed Socket.close remains owned by
+                    // the context's shutdown sweep.
+                    try {
+                        socket.close();
+                        context.nativeIo().unregister(socket);
+                    } catch (IOException cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                throw new IllegalStateException(
+                        "network connection failed for " + endpoint + ": "
+                                + failure.getMessage(), failure);
             }
-        } catch (Exception failure) {
-            context.nativeIo().unregister(socket);
-            try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
-            throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
         }
     }
 
