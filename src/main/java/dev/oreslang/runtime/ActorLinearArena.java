@@ -32,14 +32,18 @@ public final class ActorLinearArena implements AutoCloseable {
     private final long[] tokens;
     private final boolean[] live;
     private final int[] freeSlots;
-    // Compiler-owned cleanup stack. Scope marks are primitive ints; tracking
-    // uses this preallocated array so lexical cleanup itself creates no Java
-    // objects or collections on the hot path.
+    // Preallocated intrusive ownership stack. Nodes are distinct from storage
+    // slots: an out-of-band remove may leave a stale owner node behind until
+    // cleanupTo reports the ownership violation. All normal owner transfers,
+    // early drops and lexical cleanup use O(1) node operations.
     private final long[] ownedCleanup;
-    // Each entry retains an admission serial independent of its current stack
-    // index. A lexical mark must remain valid when an older owner is moved or
-    // dropped; array length alone is not a stable lifetime checkpoint.
     private final int[] ownedCleanupSerial;
+    private final int[] cleanupPrev;
+    private final int[] cleanupNext;
+    private final int[] trackedNodeBySlot;
+    private int cleanupTail = -1;
+    private int freeCleanupNode = -1;
+    private int nextCleanupNode;
     private int ownedCleanupCount;
     private int lastCleanupSerial;
     private int cursor;
@@ -60,6 +64,10 @@ public final class ActorLinearArena implements AutoCloseable {
         freeSlots = new int[slots];
         ownedCleanup = new long[slots];
         ownedCleanupSerial = new int[slots];
+        cleanupPrev = new int[slots];
+        cleanupNext = new int[slots];
+        trackedNodeBySlot = new int[slots];
+        java.util.Arrays.fill(trackedNodeBySlot, -1);
     }
 
     public int capacityBytes() { return memory.capacity(); }
@@ -85,6 +93,10 @@ public final class ActorLinearArena implements AutoCloseable {
         long sequence = nextSequence();
         if (sequence == 0) return INVALID_HANDLE;
         int slot = freeCount == 0 ? nextSlot++ : freeSlots[--freeCount];
+        // A previous owner may have been removed out of band. Its cleanup node
+        // remains in the list for error reporting, but cannot authorize a new
+        // allocation that reuses this storage slot.
+        trackedNodeBySlot[slot] = -1;
         long token = (sequence << SLOT_BITS) | (slot + 1L);
         offsets[slot] = aligned;
         lengths[slot] = bytes;
@@ -113,14 +125,12 @@ public final class ActorLinearArena implements AutoCloseable {
         if (lastCleanupSerial == Integer.MAX_VALUE) return INVALID_HANDLE;
         long handle = allocate(bytes, alignment);
         if (handle == INVALID_HANDLE) return INVALID_HANDLE;
-        if (ownedCleanupCount >= ownedCleanup.length) {
-            // Live slots and cleanup capacity are equal, so this indicates a
-            // runtime/compiler invariant violation rather than normal pressure.
+        if (!trackOwner(handle)) {
+            // A stale owner removed outside compiler lowering may still occupy
+            // a cleanup node; never overwrite that node or silently skip it.
             if (!remove(handle)) throw new IllegalStateException("failed to roll back untracked owner");
             throw new IllegalStateException("actor arena cleanup stack exhausted");
         }
-        ownedCleanup[ownedCleanupCount] = handle;
-        ownedCleanupSerial[ownedCleanupCount++] = ++lastCleanupSerial;
         return handle;
     }
 
@@ -128,27 +138,24 @@ public final class ActorLinearArena implements AutoCloseable {
 
     /** Disarm lexical cleanup for a move/ownership transfer. */
     public boolean releaseOwned(long handle) {
-        int index = cleanupIndex(handle);
-        if (index < 0) return false;
-        untrackAt(index);
+        int node = trackedNode(handle);
+        if (node < 0) return false;
+        unlinkOwner(node);
         return true;
     }
 
     /** Adopt a live transferred owner into the current lexical scope. */
     public boolean adoptOwned(long handle) {
-        if (validSlot(handle) < 0 || cleanupIndex(handle) >= 0
-                || ownedCleanupCount >= ownedCleanup.length
-                || lastCleanupSerial == Integer.MAX_VALUE) return false;
-        ownedCleanup[ownedCleanupCount] = handle;
-        ownedCleanupSerial[ownedCleanupCount++] = ++lastCleanupSerial;
-        return true;
+        if (lastCleanupSerial == Integer.MAX_VALUE || trackedNode(handle) >= 0)
+            return false;
+        return trackOwner(handle);
     }
 
     /** Drop one compiler-tracked owner immediately and exactly once. */
     public boolean dropOwned(long handle) {
-        int index = cleanupIndex(handle);
-        if (index < 0 || !remove(handle)) return false;
-        untrackAt(index);
+        int node = trackedNode(handle);
+        if (node < 0 || !remove(handle)) return false;
+        unlinkOwner(node);
         return true;
     }
 
@@ -161,10 +168,10 @@ public final class ActorLinearArena implements AutoCloseable {
         if (mark < 0 || mark > lastCleanupSerial)
             throw new IllegalArgumentException("invalid actor arena cleanup mark");
         boolean ok = true;
-        while (ownedCleanupCount > 0 && ownedCleanupSerial[ownedCleanupCount - 1] > mark) {
-            long handle = ownedCleanup[--ownedCleanupCount];
-            ownedCleanup[ownedCleanupCount] = INVALID_HANDLE;
-            ownedCleanupSerial[ownedCleanupCount] = 0;
+        while (cleanupTail >= 0 && ownedCleanupSerial[cleanupTail] > mark) {
+            int node = cleanupTail;
+            long handle = ownedCleanup[node];
+            unlinkOwner(node);
             if (!remove(handle)) ok = false;
         }
         return ok;
@@ -229,7 +236,11 @@ public final class ActorLinearArena implements AutoCloseable {
         }
         java.util.Arrays.fill(ownedCleanup, INVALID_HANDLE);
         java.util.Arrays.fill(ownedCleanupSerial, 0);
+        java.util.Arrays.fill(trackedNodeBySlot, -1);
         ownedCleanupCount = 0;
+        cleanupTail = -1;
+        freeCleanupNode = -1;
+        nextCleanupNode = 0;
         cursor = 0;
         nextSlot = 0;
         freeCount = 0;
@@ -237,21 +248,53 @@ public final class ActorLinearArena implements AutoCloseable {
         closed = true;
     }
 
-    private int cleanupIndex(long handle) {
-        for (int i = 0; i < ownedCleanupCount; i++) {
-            if (ownedCleanup[i] == handle) return i;
-        }
-        return -1;
+    private int trackedNode(long handle) {
+        int slot = validSlot(handle);
+        if (slot < 0) return -1;
+        int node = trackedNodeBySlot[slot];
+        return node >= 0 && ownedCleanup[node] == handle ? node : -1;
     }
 
-    private void untrackAt(int index) {
-        int moved = ownedCleanupCount - index - 1;
-        if (moved > 0) {
-            System.arraycopy(ownedCleanup, index + 1, ownedCleanup, index, moved);
-            System.arraycopy(ownedCleanupSerial, index + 1, ownedCleanupSerial, index, moved);
+    private boolean trackOwner(long handle) {
+        int slot = validSlot(handle);
+        if (slot < 0 || trackedNodeBySlot[slot] >= 0
+                || ownedCleanupCount >= ownedCleanup.length
+                || lastCleanupSerial == Integer.MAX_VALUE) return false;
+
+        int node;
+        if (freeCleanupNode >= 0) {
+            node = freeCleanupNode;
+            freeCleanupNode = cleanupNext[node];
+        } else {
+            if (nextCleanupNode >= ownedCleanup.length) return false;
+            node = nextCleanupNode++;
         }
-        ownedCleanup[--ownedCleanupCount] = INVALID_HANDLE;
-        ownedCleanupSerial[ownedCleanupCount] = 0;
+        ownedCleanup[node] = handle;
+        ownedCleanupSerial[node] = ++lastCleanupSerial;
+        cleanupPrev[node] = cleanupTail;
+        cleanupNext[node] = -1;
+        if (cleanupTail >= 0) cleanupNext[cleanupTail] = node;
+        cleanupTail = node;
+        trackedNodeBySlot[slot] = node;
+        ownedCleanupCount++;
+        return true;
+    }
+
+    private void unlinkOwner(int node) {
+        int prev = cleanupPrev[node], next = cleanupNext[node];
+        if (prev >= 0) cleanupNext[prev] = next;
+        if (next >= 0) cleanupPrev[next] = prev;
+        else cleanupTail = prev;
+        long handle = ownedCleanup[node];
+        int slot = (int) (handle & SLOT_MASK) - 1;
+        if (slot >= 0 && slot < trackedNodeBySlot.length && trackedNodeBySlot[slot] == node)
+            trackedNodeBySlot[slot] = -1;
+        ownedCleanup[node] = INVALID_HANDLE;
+        ownedCleanupSerial[node] = 0;
+        cleanupPrev[node] = -1;
+        cleanupNext[node] = freeCleanupNode;
+        freeCleanupNode = node;
+        ownedCleanupCount--;
     }
 
     private int validSlot(long handle) {
