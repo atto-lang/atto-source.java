@@ -397,8 +397,8 @@ define module bigint_math as
   }
 
   // Binary long division over canonical magnitudes. This intentionally has a
-  // tighter bound than add/sub so runtime work remains reviewable; 256 limbs
-  // also covers Decimal's bounded context-scaling intermediates.
+  // tighter bound than add/sub so runtime work remains reviewable; 128 limbs
+  // caps binary long-division bit iterations and repeated bounded allocations.
   pub fnc div_rem(
     &BigIntValue dividend,
     &BigIntValue divisor
@@ -409,8 +409,8 @@ define module bigint_math as
     if dividend.signum() == 0; do
       return new BigIntDivRem(zero(), zero());
     fi
-    if dividend.limb_count() > 256 || divisor.limb_count() > 256; do
-      rt fail("bigint: division exceeds bounded operation policy");
+    if dividend.limb_count() > 128 || divisor.limb_count() > 128; do
+      rt fail("bigint: division exceeds bounded 128-limb operation policy");
     fi
 
     val BigIntValue dividend_magnitude = abs(&dividend);
