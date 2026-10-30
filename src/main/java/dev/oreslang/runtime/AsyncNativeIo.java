@@ -216,6 +216,24 @@ public final class AsyncNativeIo implements AutoCloseable {
             recordIncomplete(new IllegalStateException("creation permit missing from context"));
             throw new IllegalStateException("creation permit accounting is incomplete");
         }
+        // The permit must be consumed by the SAME physical actor incarnation
+        // that reserved it. Siblings may share an inherited permission scope,
+        // but that is not authority to attach each other's native handles.
+        // If physical construction has already happened, reject publication
+        // while retaining the created resource for the trusted close sweep.
+        ActorRuntime.NativeIoAuthority caller;
+        try {
+            caller = ActorRuntime.captureNativeIoAuthority();
+        } catch (SecurityException missingIdentity) {
+            attachCreatedResourceLocked(resource, permit, true);
+            throw missingIdentity;
+        }
+        if (permit.authority == null ? caller != null
+                : !permit.authority.sameIncarnation(caller)) {
+            attachCreatedResourceLocked(resource, permit, true);
+            throw new SecurityException(
+                    "native resource creation permit belongs to a different actor incarnation");
+        }
         // Pre-reserved handle is now physically real: even a simultaneous
         // actor STOP cannot discard this resource. On rejection, retain it
         // for the context's physical close sweep, not for guest publication.
