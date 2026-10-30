@@ -67,6 +67,27 @@ jobs:
           CP="$RUNNER_TEMP/pg-dispatch-classes:/usr/share/java/postgresql.jar"
           java -cp "$CP" PostgresActorDispatchClaimContractTest
           java -cp "$CP" PgDispatchClaimIntegrationTest java-100
+          # Independent JVMs sharing one logical effect (not merely threads).
+          pids=()
+          for i in {1..12}; do
+            java -cp "$CP" PgDispatchClaimIntegrationTest probe java-process-race >"$RUNNER_TEMP/java-proc-$i.log" 2>&1 &
+            pids+=("$!")
+          done
+          winners=0; denied=0
+          for pid in "${pids[@]}"; do
+            rc=0
+            wait "$pid" || rc=$?
+            if [ "$rc" -eq 0 ]; then winners=$((winners+1))
+            elif [ "$rc" -eq 2 ]; then denied=$((denied+1))
+            else echo "unexpected Java process status $rc"; exit 1; fi
+          done
+          test "$winners" -eq 1
+          test "$denied" -eq 11
+          rows=$(psql -U postgres -tAc "SELECT count(*) FROM ores_dispatch.claim_v1 WHERE tenant_id='tenant' AND actor_id='worker' AND dispatch_id='java-process-race'")
+          test "$rows" -eq 1
+          if psql -U ores_dispatch_test_runtime -tAc "SELECT count(*) FROM ores_dispatch.runtime_binding_v1" >/dev/null 2>&1; then
+            echo 'SECURITY_FAILURE runtime can read actor bindings'; exit 2
+          fi
           java -cp "$CP" PgDispatchClaimIntegrationTest probe-hold java-killed >"$RUNNER_TEMP/claim.log" 2>&1 &
           pid=$!
           seen=0
