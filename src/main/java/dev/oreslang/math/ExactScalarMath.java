@@ -84,6 +84,46 @@ public final class ExactScalarMath {
         return result;
     }
 
+    /** Exact arbitrary-precision negation with no binary-float coercion. */
+    public static Number neg(Number value) {
+        Objects.requireNonNull(value, "value");
+        if (value instanceof Float || value instanceof Double) {
+            throw new IllegalArgumentException(
+                    "Math.neg exact domain does not accept binary floating point");
+        }
+        if (value instanceof BigDecimal decimal) {
+            validate(decimal);
+            BigDecimal result = decimal.negate();
+            validate(result);
+            return result;
+        }
+        BigInteger integer = toBigInteger(value);
+        validate(integer);
+        BigInteger result = integer.negate();
+        validate(result);
+        return result;
+    }
+
+    /** Exact arbitrary-precision absolute value with no binary-float coercion. */
+    public static Number abs(Number value) {
+        Objects.requireNonNull(value, "value");
+        if (value instanceof Float || value instanceof Double) {
+            throw new IllegalArgumentException(
+                    "Math.abs exact domain does not accept binary floating point");
+        }
+        if (value instanceof BigDecimal decimal) {
+            validate(decimal);
+            BigDecimal result = decimal.abs();
+            validate(result);
+            return result;
+        }
+        BigInteger integer = toBigInteger(value);
+        validate(integer);
+        BigInteger result = integer.abs();
+        validate(result);
+        return result;
+    }
+
     /**
      * Explicit caller-selected rounding context for nonterminating division.
      * No mutable process-global precision or rounding state is used.
