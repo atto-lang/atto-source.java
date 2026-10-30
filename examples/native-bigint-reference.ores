@@ -1,5 +1,5 @@
-import class BigIntValue from '../stdlib/bigint';
-import fnc from_int, abs, neg, compare, equal, add, sub, mul from '../stdlib/bigint';
+import class BigIntValue, BigIntDivRem from '../stdlib/bigint';
+import fnc from_int, abs, neg, compare, equal, add, sub, mul, div_rem from '../stdlib/bigint';
 
 fnc require(bool condition, String message): void {
   if !condition; do
@@ -57,6 +57,33 @@ pub routine main(): void {
   require(equal(&abs_minimum, &neg_minimum), "bigint abs/neg minimum parity");
   require(compare(&minimum, &zero) < 0, "bigint signed comparison");
   require(compare(&beyond_i64, &maximum) > 0, "bigint cross-i64 comparison");
+
+  val BigIntValue seven = from_int(7);
+  val BigIntValue negative_seven = from_int(-7);
+  val BigIntValue three = from_int(3);
+  val BigIntValue negative_three = from_int(-3);
+  val BigIntValue negative_two = from_int(-2);
+  val BigIntValue positive_two = from_int(2);
+  val BigIntValue negative_one = from_int(-1);
+
+  val BigIntDivRem neg_pos = div_rem(&negative_seven, &three);
+  require(equal(&neg_pos.quotient, &negative_two), "bigint -7 / 3 quotient");
+  require(equal(&neg_pos.remainder, &negative_one), "bigint -7 % 3 remainder");
+
+  val BigIntDivRem pos_neg = div_rem(&seven, &negative_three);
+  require(equal(&pos_neg.quotient, &negative_two), "bigint 7 / -3 quotient");
+  require(equal(&pos_neg.remainder, &one), "bigint 7 % -3 remainder");
+
+  val BigIntDivRem neg_neg = div_rem(&negative_seven, &negative_three);
+  require(equal(&neg_neg.quotient, &positive_two), "bigint -7 / -3 quotient");
+  require(equal(&neg_neg.remainder, &negative_one), "bigint -7 % -3 remainder");
+
+  val BigIntValue two_power_62 = from_int(4611686018427387904);
+  val BigIntDivRem beyond_div_two = div_rem(&beyond_i64, &two);
+  require(equal(&beyond_div_two.quotient, &two_power_62),
+          "bigint cross-i64 division quotient");
+  require(equal(&beyond_div_two.remainder, &zero),
+          "bigint cross-i64 division remainder");
 
   stdio.stdout.println("NATIVE-BIGINT-REFERENCE-OK");
   return;
