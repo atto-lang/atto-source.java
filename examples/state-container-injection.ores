@@ -35,6 +35,8 @@ pub routine main(): void {
   let mut InventoryState state = new InventoryState();
   const bool accepted = checkout(rt mut borrow state, 3);
   const bool refused = checkout(rt mut borrow state, 20);
+  const bool zero = checkout(rt mut borrow state, 0);
+  const bool negative = checkout(rt mut borrow state, -1);
   stdio.stdout.write(remaining(rt borrow state));
   stdio.stdout.write("|");
   stdio.stdout.write(state.reserved_count());
@@ -42,5 +44,9 @@ pub routine main(): void {
   stdio.stdout.write(accepted);
   stdio.stdout.write("|");
   stdio.stdout.write(refused);
+  stdio.stdout.write("|");
+  stdio.stdout.write(zero);
+  stdio.stdout.write("|");
+  stdio.stdout.write(negative);
   return;
 }
