@@ -66,6 +66,9 @@ CONTROL_PLANE_PATHS = (
 )
 MAX_CONTROL_PLANE_FILE = 512 * 1024
 MAX_GH_API_RESPONSE_BYTES = 24 * 1024 * 1024
+CAPACITY_MAX_AGE = dt.timedelta(minutes=15)
+MAX_CAPACITY_JOB_PAGES = 5
+HOUSEKEEPING_STEPS = frozenset(("Set up job", "Complete job"))
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -633,6 +636,119 @@ def checked_destination(repository, contract):
     return repo, base_tree, plan_bytes
 
 
+
+def _capacity_step_executed(step):
+    """Require one real successful non-housekeeping step with timestamps."""
+    if not isinstance(step, dict):
+        return False
+    name = step.get("name")
+    if (not isinstance(name, str) or not name.strip()
+            or name in HOUSEKEEPING_STEPS or name.startswith("Post ")):
+        return False
+    if step.get("status") != "completed" or step.get("conclusion") != "success":
+        return False
+    try:
+        started = github_timestamp(
+            step.get("started_at"), "capacity step start timestamp invalid"
+        )
+        completed = github_timestamp(
+            step.get("completed_at"), "capacity step completion timestamp invalid"
+        )
+    except Denied:
+        return False
+    return completed >= started
+
+
+def verify_carrier_capacity(repository, contract, run_id, now=None):
+    """Require a fresh, real GitHub-hosted execution before any source export.
+
+    Capacity evidence is deliberately not authorization. The independently
+    reviewed carrier contract, protected source/carrier governance, exact PR
+    review and per-write re-attestation remain mandatory. This gate only
+    prevents source-bearing writes to a carrier that has not recently proven
+    that GitHub actually allocated a runner and executed a meaningful step.
+    """
+    if type(run_id) is not int or run_id <= 0:
+        raise Denied("carrier capacity run id invalid")
+    if not isinstance(contract, dict):
+        raise Denied("carrier capacity contract invalid")
+    expected_repo_id = contract.get("repository_id")
+    if (type(expected_repo_id) is not int or expected_repo_id <= 0):
+        raise Denied("carrier capacity repository id invalid")
+
+    current = dt.datetime.now(dt.timezone.utc) if now is None else now
+    if (not isinstance(current, dt.datetime)
+            or current.tzinfo is None or current.utcoffset() is None):
+        raise Denied("carrier capacity clock invalid")
+    current = current.astimezone(dt.timezone.utc)
+
+    run = legacy.gh_api(f"repos/{repository}/actions/runs/{run_id}")
+    run_repo = run.get("repository") if isinstance(run, dict) else None
+    attempt = run.get("run_attempt") if isinstance(run, dict) else None
+    if (not isinstance(run, dict)
+            or run.get("id") != run_id
+            or not isinstance(run_repo, dict)
+            or run_repo.get("id") != expected_repo_id
+            or run_repo.get("full_name") != repository
+            or type(attempt) is not int or attempt <= 0
+            or run.get("status") != "completed"
+            or run.get("conclusion") != "success"):
+        raise Denied("carrier capacity run is not a successful exact-repository run")
+
+    started = github_timestamp(
+        run.get("run_started_at"), "carrier capacity run start timestamp invalid"
+    )
+    updated = github_timestamp(
+        run.get("updated_at"), "carrier capacity run update timestamp invalid"
+    )
+    age = current - started
+    if (age < dt.timedelta(0) or age > CAPACITY_MAX_AGE or updated < started):
+        raise Denied("carrier capacity run is stale or temporally invalid")
+
+    seen_job_ids = set()
+    qualifying = False
+    exhausted = False
+    for page in range(1, MAX_CAPACITY_JOB_PAGES + 1):
+        response = legacy.gh_api(
+            f"repos/{repository}/actions/runs/{run_id}/attempts/{attempt}"
+            f"/jobs?per_page=100&page={page}"
+        )
+        jobs = response.get("jobs") if isinstance(response, dict) else None
+        if not isinstance(jobs, list):
+            raise Denied("carrier capacity jobs response is unobserved")
+        for job in jobs:
+            if not isinstance(job, dict):
+                raise Denied("carrier capacity job entry is unobserved")
+            job_id = job.get("id")
+            if (type(job_id) is not int or job_id <= 0
+                    or job_id in seen_job_ids):
+                raise Denied("carrier capacity job identity is invalid or duplicated")
+            seen_job_ids.add(job_id)
+            runner_id = job.get("runner_id")
+            runner_name = job.get("runner_name")
+            steps = job.get("steps")
+            if (job.get("run_id") == run_id
+                    and job.get("run_attempt") == attempt
+                    and type(runner_id) is int and runner_id > 0
+                    and isinstance(runner_name, str) and runner_name.strip()
+                    and job.get("status") == "completed"
+                    and job.get("conclusion") == "success"
+                    and isinstance(steps, list)
+                    and any(_capacity_step_executed(step) for step in steps)):
+                qualifying = True
+        if len(jobs) < 100:
+            exhausted = True
+            break
+    if not exhausted:
+        raise Denied("carrier capacity job pagination exceeds bounded proof")
+    if not qualifying:
+        raise Denied("carrier capacity has no positively executed runner job")
+    return {
+        "run_id": run_id,
+        "run_attempt": attempt,
+        "started_at": started.isoformat().replace("+00:00", "Z"),
+    }
+
 def require_source_pr_independent_review(source_pr, source_commit, author):
     """Require the latest immutable security-owner review to approve this exact head."""
     if (not isinstance(author, dict)
@@ -1146,7 +1262,7 @@ def record_source_handoff_journal(source_pr, journal):
     return metadata
 
 
-def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
+def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, *, capacity_run_id, now=None):
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
     source_commit = valid_sha(source_commit, "invalid source commit")
@@ -1171,6 +1287,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         )
     source_repo_id = verify_source_pr(source_pr, source_commit)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
+    capacity = verify_carrier_capacity(
+        repository, contract, capacity_run_id, now=now
+    )
     plan_meta = validate_test_plan(plan_bytes, source_pr)
 
     trusted = trusted_root.resolve(strict=True)
@@ -1451,6 +1570,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         "source_journal_comment_id": journal_metadata["comment_id"],
         "source_journal_author_id": journal_metadata["author_id"],
         "source_journal_body_sha256": journal_metadata["body_sha256"],
+        "capacity_run_id": capacity["run_id"],
+        "capacity_run_attempt": capacity["run_attempt"],
         "files": len(files),
     }
 
@@ -1462,6 +1583,7 @@ def main(argv=None):
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--source-pr", required=True, type=int)
     parser.add_argument("--test-plan", required=True)
+    parser.add_argument("--capacity-run-id", required=True, type=int)
     args = parser.parse_args(argv)
     root = SCRIPT_DIR.parent
     try:
@@ -1472,6 +1594,7 @@ def main(argv=None):
             args.source_pr,
             args.test_plan,
             root,
+            capacity_run_id=args.capacity_run_id,
         )
     except (Denied, OSError, ValueError) as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
