@@ -143,6 +143,30 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             throw new SQLException("unexpected storage failure",error);
         }
     }
+    /**
+     * Activation-scoped restore. Fence lookup and all recovered data reads
+     * share one SQLite read snapshot, so another connection cannot change the
+     * epoch between the authorization check and subsequent state queries.
+     * A trusted host may still call load() for migration or inspection;
+     * actor reactivation must use this fenced entry point instead.
+     */
+    public synchronized Recovery loadFenced(Identity id, long trustedEpoch) throws SQLException {
+        checkOpen();
+        Objects.requireNonNull(id);
+        if (trustedEpoch <= 0) throw new IllegalArgumentException("invalid restore epoch");
+        execute("BEGIN");
+        try {
+            if (epoch(id) != trustedEpoch) throw new SecurityException("STALE_EPOCH");
+            Recovery restored = load(id);
+            commitTransaction();
+            return restored;
+        } catch (Exception failure) {
+            rollback();
+            if (failure instanceof SQLException sql) throw sql;
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            throw new SQLException("restore outcome unknown", failure);
+        }
+    }
     public synchronized Recovery load(Identity id) throws SQLException {
         checkOpen();Objects.requireNonNull(id);
         checkId(id.tenant());checkId(id.actor());checkId(id.state());
