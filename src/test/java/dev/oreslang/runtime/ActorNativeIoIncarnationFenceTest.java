@@ -147,4 +147,74 @@ final class ActorNativeIoIncarnationFenceTest {
             actors.close();
         }
     }
+
+    @Test
+    void alreadyRunningWorkerMayRetireButCannotSubmitNestedWorkAfterActorStop()
+            throws Exception {
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2);
+        var actorRef = new AtomicReference<ActorRuntime.ActorRef<String>>();
+        var first = new AtomicReference<OresFuture<Integer>>();
+        var nested = new AtomicReference<OresFuture<Integer>>();
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var stopped = new CountDownLatch(1);
+        var reported = new AtomicReference<Throwable>();
+        var nestedInvocations = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            try (var actors = runtime(ceiling)) {
+                actors.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+                io.setActorLoanRetiredListener(actors::onNativeIoLoanRetired);
+                var actor = actors.<String>spawnSharedTrusted(
+                        IsolatePolicy.developer(),
+                        ignored -> (message, context) -> {
+                            try {
+                                if ("start".equals(message)) {
+                                    first.set(io.submit("already admitted", () -> {
+                                        started.countDown();
+                                        if (!release.await(5, TimeUnit.SECONDS))
+                                            throw new AssertionError("native worker release timeout");
+                                        nested.set(io.submit("post-stop nested", () -> {
+                                            nestedInvocations.incrementAndGet();
+                                            return 13;
+                                        }));
+                                        return 7;
+                                    }));
+                                } else if ("stop".equals(message)) {
+                                    context.runtime().stop(actorRef.get());
+                                }
+                            } catch (Throwable failure) {
+                                reported.compareAndSet(null, failure);
+                            } finally {
+                                if ("stop".equals(message)) stopped.countDown();
+                            }
+                        });
+                actorRef.set(actor);
+                try {
+                    actor.send("start");
+                    assertTrue(started.await(5, TimeUnit.SECONDS));
+                    actor.send("stop");
+                    assertTrue(stopped.await(5, TimeUnit.SECONDS));
+                    assertNull(reported.get(), () -> String.valueOf(reported.get()));
+                    assertFalse(actor.awaitTermination(50, TimeUnit.MILLISECONDS),
+                            "actor memory cannot retire while physical I/O is running");
+                    release.countDown();
+                    assertEquals(7, first.get().get(5, TimeUnit.SECONDS));
+                    assertNotNull(nested.get());
+                    var rejected = assertThrows(Exception.class, () ->
+                            nested.get().get(5, TimeUnit.SECONDS));
+                    assertTrue(rejected.toString().contains("incarnation")
+                            || (rejected.getCause() != null
+                                    && rejected.getCause().toString().contains("incarnation")));
+                    assertEquals(0, nestedInvocations.get());
+                    assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                } finally {
+                    release.countDown();
+                }
+            }
+        } finally {
+            release.countDown();
+            io.close();
+        }
+    }
 }
