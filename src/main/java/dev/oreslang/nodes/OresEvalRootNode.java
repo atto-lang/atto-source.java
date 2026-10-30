@@ -5937,20 +5937,17 @@ public final class OresEvalRootNode extends RootNode {
                             : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
                 }
                 if (value instanceof BoundedQueueRuntime.PushResult<?> pushed) {
-                    if (pushed.status() == BoundedQueueRuntime.PushStatus.ADMITTED) {
-                        return BoundedQueueRuntime.PushResult.admitted();
-                    }
-                    return BoundedQueueRuntime.PushResult.rejected(
-                            pushed.status(),
-                            detachAsyncValue(pushed.rejectedValue(), visiting));
+                    // QueuePush<T> is an immutable runtime-owned ownership
+                    // transfer view. OwnershipChecker moves non-Copy views at
+                    // the async boundary, so preserve the exact wrapper and
+                    // rejected payload rather than cloning/detaching T.
+                    return pushed;
                 }
                 if (value instanceof BoundedQueueRuntime.PopResult<?> popped) {
-                    if (popped.status() != BoundedQueueRuntime.PopStatus.VALUE) {
-                        return new BoundedQueueRuntime.PopResult<>(
-                                popped.status(), null);
-                    }
-                    return BoundedQueueRuntime.PopResult.value(
-                            detachAsyncValue(popped.value(), visiting));
+                    // Same ownership-transfer rule as QueuePush<T>: the source
+                    // binding moves when T is non-Copy, so preserve exact value
+                    // identity for zero-copy local task return.
+                    return popped;
                 }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
