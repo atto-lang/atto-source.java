@@ -156,3 +156,24 @@ host-initiated ownership transfers remain a separate trusted operation.
 Even with these restrictions, trusted host transfers of native resources are
 explicitly allowed and the receiving host must maintain independent ownership
 accounting. This is not an OS sandbox, nor proof of zero-GC or hard real-time.
+
+### Physical-retirement receipt ordering (additional fail-closed gate)
+
+The actor/host unregister paths and the trusted close-and-unregister path now
+retain their original strongly reachable resource until the quota receipt
+retires successfully. An underflow, duplicate/stale receipt or other accounting
+exception cannot remove the resource from the context's shutdown sweep before
+quarantine. A successful context join also requires the **registered resource
+ownership ledger to be empty**, not just the ordinary close-sweep set.
+
+The host shutdown sweep claims each registered resource before invoking its
+close callback. It will not race a concurrently executing trusted adapter close,
+and cannot invent success when the callback fails with either Exception or Error.
+A native callback that closes its physical resource but then fails bookkeeping
+is quarantined rather than being closed a second time merely to repair a
+logical receipt.
+
+This is fail-closed bookkeeping, not proof that arbitrary user-defined
+AutoCloseable code really released all native memory. Buffer/FFI adapters still
+need verified physical retirement semantics. Execution of the added JUnit
+tests on actual JVM/JDK25/AOT remains the merge gate.
