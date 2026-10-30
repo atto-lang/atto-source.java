@@ -12,7 +12,7 @@ pub fnc main(): int {
 
 - `cpu { 42 }` and `cpu { return 42; }` return a plain **int**, never `Future<int>`.
 - Only closed signed-i64 integer literals, unary +/-, binary +, -, * are admitted.
-- Before expression parsing, the Java parser caps a scalar region at **1,024 tokens** and **64 parenthesis levels**, rejecting nested blocks. After parsing, the scalar AST constructor independently caps accepted expressions at **512 total nodes** and **64 levels** from the root. Both limits are rejection gates; they are not source-runtime performance certifications.
+- Before expression parsing, the Java parser caps a scalar region at **1,024 tokens**, **64 parenthesis levels** and **64 consecutive unary-operator tokens**, rejecting nested blocks. After parsing, the scalar AST constructor independently caps accepted expressions at **512 total nodes** and **64 levels** from the root. Both limits are rejection gates; they are not source-runtime performance certifications.
 - Arithmetic uses `Math.addExact`, `Math.subtractExact`, `Math.multiplyExact` and `Math.negateExact`: overflows throw, never wrap.
 - The type checker resolves the dedicated `Ast.CpuScalarRegionExpr` as `int`. The ownership checker visits it explicitly. A closed AST constructor denies name references, actor state, call/interop, `await`, `rt` effects, assignment, buffers, GPU nested execution, and arbitrary statements. Interpreter only executes the checked scalar subset and throws on unrecognized opcodes.
 - `cpu task { ... }` retains its existing asynchronous `Future<T>` submission / sealed capture handling; `gpu task { ... }` and bare `gpu {}` stay fail-closed (no physical GPU provider, no implicit CPU fallback).
