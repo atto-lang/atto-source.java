@@ -37,6 +37,15 @@ and the physical native-loan revocation work in #2292.
    physical close. The existing guest TCP read/write/end-to-end tests must
    be rerun on the exact implementation head.
 
+8. A permit carries its originating actor-incarnation identity, not merely
+   inherited permission scope or actor ID. Only the same actor may attach or
+   abandon an untransferred permit. An attempted foreign attachment keeps
+   the physical handle charged in the quarantine ledger.
+9. Actor-registered resources cannot be borrowed or unregistered by a
+   different actor. The TCP wrapper checks its originating actor before
+   read, write AND physical Socket.close(). Explicitly host-registered
+   resources preserve the existing trusted-host sharing semantics.
+
 ## What this does NOT yet prove
 
 - This covers one socket-creation path, not all file, server-listener, FFI,
@@ -63,9 +72,14 @@ JDK25 Maven:
 mvn test -Dtest=NativeResourceCreationPermitTest,ActorRegisteredResourceQuotaTest,ActorNativeIoIncarnationFenceTest,ActorSubtreeIoQuotaTest,PhysicalIoLoanRevocationTest,AsyncNativeIoTest
 ```
 
-Eight JUnit methods are checked in, including an actual actor self-STOP
+Nine JUnit methods are checked in, including an actual actor self-STOP
 between creation credit and physical registration, with a live handle retained
-until the production actor/native shutdown coordinator joins it.
+until the production actor/native shutdown coordinator joins it. The ninth
+method checks sibling-actor denial for foreign abort, attach, borrow and
+ownership transfer, without falsely releasing the real handle.
+Shared reference-model test bodies currently pass 11/11 in an isolated
+JavaScript harness; this is NOT execution of a Java compiler, hosted CI
+workflow, or Oreslang guest.
 
 Required edge cases: capacity exhausted before socket creation; constructor
 failure refund; successful transfer without early refund; stale/cross-context
