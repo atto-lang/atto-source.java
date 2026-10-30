@@ -95,6 +95,60 @@ final class NumericExactGuestBoundaryTest {
     }
 
     @Test
+    void mathAbsAndNegPreserveExactGuestDomains() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      val bigint negativeBig = -9007199254740993;
+                      val decimal one = 1;
+                      val decimal four = 4;
+                      val decimal negativeQuarter = -(one / four);
+                      return Math.abs(negativeBig) eq 9007199254740993
+                        && Math.neg(negativeBig) eq 9007199254740993
+                        && Math.abs(negativeQuarter) eq 0.25
+                        && Math.neg(negativeQuarter) eq 0.25;
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
+    void mathSigned64MinimumNeverWraps() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            RuntimeException abs = assertThrows(RuntimeException.class, () ->
+                    context.eval(OresLanguage.ID, """
+                            pub routine main(): int {
+                              return Math.abs(-9223372036854775808);
+                            }
+                            """));
+            assertTrue(abs.getMessage() == null || !abs.getMessage().isBlank());
+
+            RuntimeException neg = assertThrows(RuntimeException.class, () ->
+                    context.eval(OresLanguage.ID, """
+                            pub routine main(): int {
+                              return Math.neg(-9223372036854775808);
+                            }
+                            """));
+            assertTrue(neg.getMessage() == null || !neg.getMessage().isBlank());
+        }
+    }
+
+    @Test
+    void userMathClassShadowsCompilerIntrinsic() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    define class Math as
+                      static fnc abs(int value): int { return 7; }
+                      static fnc neg(int value): int { return 8; }
+                    end
+                    pub routine main(): bool {
+                      return Math.abs(-42) eq 7 && Math.neg(42) eq 8;
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void preciseCarrierAdmissionRejectsFloatAndExtremeScale() {
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.math.ExactScalarMath.admitDecimal(0.1d));
