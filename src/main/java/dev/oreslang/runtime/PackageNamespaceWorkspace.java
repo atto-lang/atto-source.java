@@ -9,6 +9,7 @@ import org.tomlj.TomlTable;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -212,6 +213,15 @@ final class PackageNamespaceWorkspace {
 
     private static List<Path> members(Path manifest, TomlParseResult parsed) throws IOException {
         Path root = checkedProjectRoot(manifest, parsed);
+        // A project.root subdirectory is still owned by this manifest. Do not
+        // cross a second package boundary at that root; otherwise the nearest
+        // manifest for a guest entry and the manifest admitting its providers
+        // could disagree on ownership. NOFOLLOW_LINKS also fences a dangling
+        // manifest symlink, which is not a regular file but can be retargeted.
+        if (!root.equals(manifest.getParent().toRealPath())
+                && Files.exists(root.resolve(".ores.pkg.toml"), LinkOption.NOFOLLOW_LINKS)) {
+            throw new SecurityException("nested namespace package boundary: " + root);
+        }
         Object raw = parsed.get("packages");
         if (!(raw instanceof TomlTable packages) || packages.size() == 0
                 || packages.size() > 128) {
@@ -244,7 +254,7 @@ final class PackageNamespaceWorkspace {
                         throw new SecurityException("symlinked namespace package member: " + cursor);
                     }
                     if (!cursor.equals(root) && !cursor.equals(source)
-                            && Files.isRegularFile(cursor.resolve(".ores.pkg.toml"))) {
+                            && Files.exists(cursor.resolve(".ores.pkg.toml"), LinkOption.NOFOLLOW_LINKS)) {
                         throw new SecurityException("nested namespace package boundary: " + cursor);
                     }
                 }
