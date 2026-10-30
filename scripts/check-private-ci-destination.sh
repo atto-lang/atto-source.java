@@ -60,7 +60,7 @@ for quarantined_id in "${quarantined_ids[@]}"; do
 done
 
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
-metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring), (.archived|tostring), (.disabled|tostring)] | @tsv' 2>/dev/null)" ||
+metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private | if type == "boolean" then tostring else "invalid" end), (.id | if type == "number" then tostring else "invalid" end), (.archived | if type == "boolean" then tostring else "invalid" end), (.disabled | if type == "boolean" then tostring else "invalid" end)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* && "$metadata" != *$'\r'* ]] ||
   fail 'API returned empty or multiline repository metadata'
