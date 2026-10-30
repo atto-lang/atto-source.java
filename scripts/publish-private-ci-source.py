@@ -70,6 +70,9 @@ SECURITY_CODEOWNER_PATHS = (
     "/scripts/publish-private-ci-source-v3.py",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
+INCIDENT_DISPOSITION_REVIEWER = "ORESoftware"
+INCIDENT_DISPOSITION_REVIEWER_ID = 11139560
+INCIDENT_DISPOSITION_MARKER = "PRIVATE_CI_INCIDENT_DISPOSITION_RESOLVED"
 
 
 class Denied(RuntimeError):
@@ -232,6 +235,34 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
+def gh_api_list(route):
+    """Authenticated GitHub list response through the same sealed transport."""
+    argv = [trusted_github_cli(), "api", "--method", "GET", route,
+            "--header", "Accept: application/vnd.github+json"]
+    try:
+        p = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            env=github_api_environment(),
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("authenticated GitHub API request unavailable") from exc
+    if (not isinstance(p.stdout, str)
+            or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS
+            or not isinstance(p.stderr, str)
+            or len(p.stderr) > MAX_GH_API_RESPONSE_CHARS):
+        raise Denied("authenticated GitHub API response exceeds size limit")
+    if p.returncode != 0:
+        raise Denied("authenticated GitHub API request failed")
+    data = strict_json_loads(p.stdout)
+    if not isinstance(data, list):
+        raise Denied("unexpected GitHub list response shape")
+    return data
+
+
 def checked_repo(repository, expected_repository_id=None):
     result = gh_api("repos/" + repository)
     if (not isinstance(result.get("full_name"), str)
@@ -288,6 +319,36 @@ def require_resolved_blocking_incidents():
                 or issue.get("state_reason") != "completed"):
             raise Denied(
                 "blocking P0 incident #" + str(number) + " remains unresolved"
+            )
+        comments = gh_api_list(
+            "repos/" + BLOCKING_INCIDENT_REPO + "/issues/"
+            + str(number) + "/comments?per_page=100"
+        )
+        # If a page is completely full, later comments may exist and could
+        # revoke or supersede disposition. Fail closed instead of accepting an
+        # incomplete view.
+        if len(comments) >= 100:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " disposition comments exceed single-page audit bound"
+            )
+        marker = INCIDENT_DISPOSITION_MARKER + " issue=#" + str(number)
+        approved = False
+        for comment in comments:
+            if not isinstance(comment, dict):
+                raise Denied("blocking P0 incident comment shape invalid")
+            user = comment.get("user")
+            body = comment.get("body")
+            if (isinstance(user, dict)
+                    and user.get("id") == INCIDENT_DISPOSITION_REVIEWER_ID
+                    and user.get("login") == INCIDENT_DISPOSITION_REVIEWER
+                    and isinstance(body, str)
+                    and marker in {line.strip() for line in body.splitlines()}):
+                approved = True
+        if not approved:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " lacks independent security disposition"
             )
 
 
