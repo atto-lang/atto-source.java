@@ -40,9 +40,15 @@ public final class PgDispatchClaimIntegrationTest {
         String user=Objects.requireNonNull(System.getenv("ORES_TEST_PG_USER"));
         String pass=Objects.requireNonNull(System.getenv("ORES_TEST_PG_PASSWORD"));
         var db=new PostgresActorDispatchClaim(new DriverDataSource(url,user,pass));
-        if (args.length>0 && args[0].equals("probe")) {
+        if (args.length>0 && (args[0].equals("probe") || args[0].equals("probe-hold"))) {
             if(args.length!=2) throw new IllegalArgumentException("probe dispatch id");
-            System.exit(db.claimOnce(request(args[1],"b".repeat(64)))?0:2);
+            if (!db.claimOnce(request(args[1],"b".repeat(64)))) System.exit(2);
+            if (args[0].equals("probe-hold")) {
+                System.out.println("CLAIM_COMMITTED");
+                System.out.flush();
+                Thread.sleep(30_000);
+            }
+            System.exit(0);
         }
         // Database has a supervisor-installed fence for tenant/worker gen7/epoch9.
         String prefix=args.length==0?"java-db-v1":args[0];
