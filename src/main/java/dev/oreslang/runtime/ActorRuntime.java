@@ -159,10 +159,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
         void requirePermission(
                 RuntimePermissions.Permission permission, String resource, String operation) {
+            requireActive(operation);
             scope.require(permission, resource, operation);
+            requireActive(operation);
         }
         void requireNetworkListen(String resource, String operation) {
+            requireActive(operation);
             scope.requireNetworkListen(resource, operation);
+            requireActive(operation);
         }
     }
 
@@ -275,6 +279,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     /** Enforce the immutable resource policy of the current actor turn. */
     static void requireCurrentActorNetworkListen(String resource, String operation) {
+        requireCurrentActorAuthorityActive(operation);
         ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
         if (turn != null) turn.permissionScope().requireNetworkListen(resource, operation);
         NativeIoAuthority nativeIo = CURRENT_NATIVE_IO_AUTHORITY.get();
@@ -289,13 +294,29 @@ public final class ActorRuntime implements AutoCloseable {
      */
     static void requireCurrentActorAuthorityActive(String operation) {
         ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
-        if (turn != null) turn.permissionScope().requireActive(operation);
+        if (turn != null) {
+            ActorCell<?> owner = turn.runtime().actors.get(turn.actorId());
+            if (owner == null) {
+                throw new SecurityException(
+                        "actor incarnation is missing for " + operation);
+            }
+            synchronized (owner.lifecycleLock) {
+                if (turn.runtime().closed.get() || owner.stopped.get()
+                        || owner.sealing || owner.finalized || owner.forceKillFenced
+                        || turn.runtime().actors.get(turn.actorId()) != owner) {
+                    throw new SecurityException(
+                            "actor incarnation is stopping or retired for " + operation);
+                }
+                turn.permissionScope().requireActive(operation);
+            }
+        }
         NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
         if (io != null) io.requireActive(operation);
     }
 
     static void requireCurrentActorPermission(
             RuntimePermissions.Permission permission, String resource, String operation) {
+        requireCurrentActorAuthorityActive(operation);
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         if (current != null) {
             current.permissionScope().require(permission, resource, operation);
