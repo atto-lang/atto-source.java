@@ -844,6 +844,12 @@ public final class Parser {
     private void rejectUnloweredRuntimeEntityDeclaration() {
         if (check(EOF)) return;
         String name = peek().lexeme();
+        if (name.equals("singleton")) {
+            throw error(peek(), "ORES-SINGLETON-UNSUPPORTED: singleton declarations require "
+                    + "exactly-once complete publication, cycle/failure semantics, "
+                    + "runtime-derived actor authority for shared state, and "
+                    + "five-backend guest execution parity; not yet enabled");
+        }
         if (name.equals("readable") || name.equals("transform")
                 || name.equals("writable") || name.equals("duplex")) {
             if (current + 2 < tokens.size()
