@@ -189,7 +189,7 @@ public final class NativeHttp implements AutoCloseable {
             exchange.state.claimedNanos = System.nanoTime();
             try {
                 if (ActorRuntime.inActorExecution()) {
-                    context.actors().bindCurrentHttpExchange(exchange);
+                    context.actors().bindCurrentHttpExchange(exchange, token);
                 }
             } catch (RuntimeException | Error rejected) {
                 exchange.state.ticket = token;
