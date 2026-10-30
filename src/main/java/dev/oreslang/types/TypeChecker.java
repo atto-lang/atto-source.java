@@ -5663,6 +5663,9 @@ public final class TypeChecker {
         Type voidFuture = new Named("Future", List.of(Primitive.VOID));
         return switch (named.name()) {
             case "http" -> switch (name) {
+                case "current_request_id" -> Primitive.STRING;
+                case "current_request_local" -> new Function(List.of(Primitive.STRING), Primitive.STRING);
+                case "has_current_request_local" -> new Function(List.of(Primitive.STRING), Primitive.BOOL);
                 case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
                 case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
                 case "claim" -> new Function(List.of(Primitive.STRING), exchange);
