@@ -80,4 +80,43 @@ final class ActorLinearArenaLifecycleTest {
             assertNull(observed.get());
         }
     }
+    @Test
+    void privateActorTurnCleansNestedOwnersAfterOutOfOrderTransfer() throws Exception {
+        var done = new CountDownLatch(1);
+        var observed = new AtomicReference<Throwable>();
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnPrivate(() -> (message, context) -> {
+                try {
+                    var slice = context.privateMemory().orElseThrow();
+                    var arena = slice.allocateLinearArena(512, 8);
+                    int outer = arena.cleanupMark();
+                    long persistent = arena.allocateOwned(16);
+                    assertNotEquals(0L, persistent);
+                    assertTrue(arena.putLong(persistent, 0, 81L));
+                    int nested = arena.cleanupMark();
+                    long temporary = arena.allocateOwned(16);
+                    assertNotEquals(0L, temporary);
+                    assertTrue(arena.releaseOwned(persistent));
+                    assertTrue(arena.cleanupTo(nested));
+                    assertThrows(IllegalStateException.class, () -> arena.getLong(temporary, 0));
+                    assertEquals(81L, arena.getLong(persistent, 0));
+                    assertTrue(arena.adoptOwned(persistent));
+                    assertTrue(arena.cleanupTo(outer));
+                    assertEquals(0, arena.liveAllocations());
+                    assertEquals(0, arena.usedBytes());
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    done.countDown();
+                    context.self().stop();
+                }
+            });
+
+            actor.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertNull(observed.get(), "nested actor cleanup should finish without escaped owners");
+        }
+    }
 }
