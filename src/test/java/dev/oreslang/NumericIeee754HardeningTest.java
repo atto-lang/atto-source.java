@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.junit.jupiter.api.Test;
 
@@ -29,6 +30,25 @@ final class NumericIeee754HardeningTest {
                     () -> new Parser(new Lexer(source).scan()).parseExpression(), source);
             assertFalse(error.getMessage().isBlank(), source);
         }
+    }
+
+    @Test
+    void f32FailsClosedInsteadOfSilentlyRunningAsBinary64() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc identity(f32 value): f32 {
+                          return value;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("binary32"), error::getMessage);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc identity64(f64 value): f64 {
+                  return value;
+                }
+                fnc identityFloat(float value): float {
+                  return value;
+                }
+                """)));
     }
 
     @Test
