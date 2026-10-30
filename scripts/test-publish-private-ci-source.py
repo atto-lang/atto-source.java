@@ -100,13 +100,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     ),
                     "state": state,
                     "state_reason": reason,
+                    "closed_at": (
+                        "2026-10-30T04:00:00Z"
+                        if state == "closed" else None
+                    ),
                 }
             raise AssertionError((method, route))
         return api
 
     def incident_comments_api(
             self, reviewer_id=None, reviewer_login=None,
-            missing=None, body_overrides=None, full_page=None):
+            missing=None, body_overrides=None, full_page=None,
+            timestamp_overrides=None, later_bodies=None):
         reviewer_id = (
             pub.INCIDENT_DISPOSITION_REVIEWER_ID
             if reviewer_id is None else reviewer_id
@@ -118,6 +123,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         missing = set() if missing is None else set(missing)
         body_overrides = {} if body_overrides is None else dict(body_overrides)
         full_page = set() if full_page is None else set(full_page)
+        timestamp_overrides = (
+            {} if timestamp_overrides is None else dict(timestamp_overrides)
+        )
+        later_bodies = {} if later_bodies is None else dict(later_bodies)
 
         def api(route):
             prefix = (
@@ -134,6 +143,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 + " issue=#" + str(number)
             )
             body = body_overrides.get(number, marker)
+            created_at, updated_at = timestamp_overrides.get(
+                number,
+                ("2026-10-30T04:05:00Z", "2026-10-30T04:05:00Z"),
+            )
             comment = {
                 "id": number * 1000 + 1,
                 "user": {
@@ -141,11 +154,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "login": reviewer_login,
                 },
                 "body": body,
+                "created_at": created_at,
+                "updated_at": updated_at,
             }
             if number in full_page:
                 return [dict(comment, id=number * 1000 + index)
                         for index in range(100)]
-            return [comment]
+            comments = [comment]
+            if number in later_bodies:
+                comments.append({
+                    "id": number * 1000 + 2,
+                    "user": {
+                        "id": reviewer_id,
+                        "login": reviewer_login,
+                    },
+                    "body": later_bodies[number],
+                    "created_at": "2026-10-30T04:06:00Z",
+                    "updated_at": "2026-10-30T04:06:00Z",
+                })
+            return comments
         return api
 
     def test_blocking_p0_incidents_accept_only_completed_closure(self):
@@ -237,7 +264,58 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(
-                pub.Denied, "#22 lacks independent security disposition"
+                pub.Denied, "#22 latest independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_marker_embedded_in_prose(self):
+        marker = pub.INCIDENT_DISPOSITION_MARKER + " issue=#22"
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    body_overrides={22: "reviewed\n" + marker}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "latest independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_latest_reviewer_comment_can_revoke(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    later_bodies={22: "PRIVATE_CI_INCIDENT_DISPOSITION_REVOKED"}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "absent or revoked"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_disposition_before_current_closure(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T03:59:00Z",
+                            "2026-10-30T03:59:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "disposition predates current closure"
             ):
                 ORIGINAL_REQUIRE_RESOLVED()
 
