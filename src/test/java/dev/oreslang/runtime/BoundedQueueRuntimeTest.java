@@ -2,6 +2,8 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -9,44 +11,63 @@ import org.junit.jupiter.api.Test;
 
 final class BoundedQueueRuntimeTest {
 
-    @Test
-    void immediateFullIsNonRetainingAndTicketIsOneShot() {
-        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
+    private static <T> void assertAdmitted(
+            BoundedQueueRuntime.PushResult<T> result) {
+        assertEquals(BoundedQueueRuntime.PushStatus.ADMITTED, result.status());
+        assertNull(result.rejectedValue());
+    }
 
+    private static <T> void assertRejected(
+            BoundedQueueRuntime.PushStatus status,
+            T exactValue,
+            BoundedQueueRuntime.PushResult<T> result) {
+        assertEquals(status, result.status());
+        assertSame(
+                exactValue,
+                result.rejectedValue(),
+                "failed push must return exact payload ownership");
+    }
+
+    @Test
+    void immediateFullIsNonRetainingAndReturnsExactPayload() {
+        BoundedQueueRuntime<Object> queue = new BoundedQueueRuntime<>(1);
+
+        Object firstValue = new Object();
         BoundedQueueRuntime.Ticket first = queue.newTicket();
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                queue.tryPush(1, first));
+        assertAdmitted(queue.tryPush(firstValue, first));
         assertEquals(0, queue.pendingRegistrations());
 
+        Object fullValue = new Object();
         BoundedQueueRuntime.Ticket full = queue.newTicket();
-        assertEquals(
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.FULL,
-                queue.tryPush(2, full));
+                fullValue,
+                queue.tryPush(fullValue, full));
         assertEquals(0, queue.pendingRegistrations());
         assertFalse(full.cancel());
 
-        assertEquals(
+        Object reuseValue = new Object();
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.TICKET_USED,
-                queue.tryPush(3, full));
-        assertEquals(
-                BoundedQueueRuntime.PopStatus.VALUE,
-                queue.tryPop().status());
+                reuseValue,
+                queue.tryPush(reuseValue, full));
+
+        BoundedQueueRuntime.PopResult<Object> popped = queue.tryPop();
+        assertEquals(BoundedQueueRuntime.PopStatus.VALUE, popped.status());
+        assertSame(firstValue, popped.value());
         assertEquals(0, queue.size());
     }
 
     @Test
     void livePendingWritersPreserveRegistrationOrder() {
         BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                queue.tryPush(0, queue.newTicket()));
+        assertAdmitted(queue.tryPush(0, queue.newTicket()));
 
         BoundedQueueRuntime.Ticket firstTicket = queue.newTicket();
         BoundedQueueRuntime.Ticket secondTicket = queue.newTicket();
-        OresFuture<BoundedQueueRuntime.PushStatus> first =
+        OresFuture<BoundedQueueRuntime.PushResult<Integer>> first =
                 queue.pushAsync(1, firstTicket);
-        OresFuture<BoundedQueueRuntime.PushStatus> second =
+        OresFuture<BoundedQueueRuntime.PushResult<Integer>> second =
                 queue.pushAsync(2, secondTicket);
 
         assertEquals(2, queue.pendingRegistrations());
@@ -55,9 +76,7 @@ final class BoundedQueueRuntimeTest {
         assertEquals(BoundedQueueRuntime.PopStatus.VALUE, seed.status());
         assertEquals(0, seed.value());
 
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                first.join());
+        assertAdmitted(first.join());
         assertFalse(second.isDone());
         assertEquals(1, queue.pendingRegistrations());
 
@@ -65,9 +84,7 @@ final class BoundedQueueRuntimeTest {
         assertEquals(BoundedQueueRuntime.PopStatus.VALUE, firstValue.status());
         assertEquals(1, firstValue.value());
 
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                second.join());
+        assertAdmitted(second.join());
         BoundedQueueRuntime.PopResult<Integer> secondValue = queue.tryPop();
         assertEquals(BoundedQueueRuntime.PopStatus.VALUE, secondValue.status());
         assertEquals(2, secondValue.value());
@@ -75,15 +92,17 @@ final class BoundedQueueRuntimeTest {
     }
 
     @Test
-    void cancellationBeforeUseIsStickyAndRegistersNothing() {
-        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
+    void cancellationBeforeUseIsStickyAndReturnsPayload() {
+        BoundedQueueRuntime<Object> queue = new BoundedQueueRuntime<>(1);
         BoundedQueueRuntime.Ticket ticket = queue.newTicket();
+        Object value = new Object();
 
         assertTrue(ticket.cancel());
         assertTrue(ticket.isCancelled());
-        assertEquals(
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.CANCELLED,
-                queue.tryPush(1, ticket));
+                value,
+                queue.tryPush(value, ticket));
         assertEquals(0, queue.pendingRegistrations());
         assertEquals(
                 BoundedQueueRuntime.PopStatus.EMPTY,
@@ -108,36 +127,36 @@ final class BoundedQueueRuntimeTest {
 
     @Test
     void cancellingOlderPendingWriterLetsLaterWriterAdvanceWithoutGhostDelivery() {
-        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                queue.tryPush(0, queue.newTicket()));
+        BoundedQueueRuntime<Object> queue = new BoundedQueueRuntime<>(1);
+        Object seedValue = new Object();
+        assertAdmitted(queue.tryPush(seedValue, queue.newTicket()));
 
+        Object olderValue = new Object();
+        Object laterValue = new Object();
         BoundedQueueRuntime.Ticket older = queue.newTicket();
         BoundedQueueRuntime.Ticket later = queue.newTicket();
-        OresFuture<BoundedQueueRuntime.PushStatus> olderPush =
-                queue.pushAsync(1, older);
-        OresFuture<BoundedQueueRuntime.PushStatus> laterPush =
-                queue.pushAsync(2, later);
+        OresFuture<BoundedQueueRuntime.PushResult<Object>> olderPush =
+                queue.pushAsync(olderValue, older);
+        OresFuture<BoundedQueueRuntime.PushResult<Object>> laterPush =
+                queue.pushAsync(laterValue, later);
 
         assertEquals(2, queue.pendingRegistrations());
         assertTrue(queue.cancel(older));
         assertEquals(1, queue.pendingRegistrations());
 
-        BoundedQueueRuntime.PopResult<Integer> seed = queue.tryPop();
+        BoundedQueueRuntime.PopResult<Object> seed = queue.tryPop();
         assertEquals(BoundedQueueRuntime.PopStatus.VALUE, seed.status());
-        assertEquals(0, seed.value());
+        assertSame(seedValue, seed.value());
 
-        assertEquals(
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.CANCELLED,
+                olderValue,
                 olderPush.join());
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                laterPush.join());
+        assertAdmitted(laterPush.join());
 
-        BoundedQueueRuntime.PopResult<Integer> delivered = queue.tryPop();
+        BoundedQueueRuntime.PopResult<Object> delivered = queue.tryPop();
         assertEquals(BoundedQueueRuntime.PopStatus.VALUE, delivered.status());
-        assertEquals(2, delivered.value());
+        assertSame(laterValue, delivered.value());
         assertEquals(
                 BoundedQueueRuntime.PopStatus.EMPTY,
                 queue.tryPop().status());
@@ -149,12 +168,10 @@ final class BoundedQueueRuntimeTest {
         BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
         BoundedQueueRuntime.Ticket ticket = queue.newTicket();
 
-        OresFuture<BoundedQueueRuntime.PushStatus> push =
+        OresFuture<BoundedQueueRuntime.PushResult<Integer>> push =
                 queue.pushAsync(7, ticket);
 
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                push.join());
+        assertAdmitted(push.join());
         assertFalse(queue.cancel(ticket));
 
         BoundedQueueRuntime.PopResult<Integer> delivered = queue.tryPop();
@@ -163,28 +180,29 @@ final class BoundedQueueRuntimeTest {
     }
 
     @Test
-    void closeSettlesPendingWriterAndPreservesCommittedDrain() {
-        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                queue.tryPush(0, queue.newTicket()));
+    void closeSettlesPendingWriterReturnsPayloadAndPreservesCommittedDrain() {
+        BoundedQueueRuntime<Object> queue = new BoundedQueueRuntime<>(1);
+        Object committed = new Object();
+        Object pendingValue = new Object();
+        assertAdmitted(queue.tryPush(committed, queue.newTicket()));
 
         BoundedQueueRuntime.Ticket pendingTicket = queue.newTicket();
-        OresFuture<BoundedQueueRuntime.PushStatus> pending =
-                queue.pushAsync(1, pendingTicket);
+        OresFuture<BoundedQueueRuntime.PushResult<Object>> pending =
+                queue.pushAsync(pendingValue, pendingTicket);
         assertEquals(1, queue.pendingRegistrations());
 
         assertTrue(queue.closeQueue());
         assertFalse(queue.closeQueue());
 
-        assertEquals(
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.CLOSED,
+                pendingValue,
                 pending.join());
         assertEquals(0, queue.pendingRegistrations());
 
-        BoundedQueueRuntime.PopResult<Integer> buffered = queue.tryPop();
+        BoundedQueueRuntime.PopResult<Object> buffered = queue.tryPop();
         assertEquals(BoundedQueueRuntime.PopStatus.VALUE, buffered.status());
-        assertEquals(0, buffered.value());
+        assertSame(committed, buffered.value());
         assertEquals(
                 BoundedQueueRuntime.PopStatus.CLOSED_DRAINED,
                 queue.tryPop().status());
@@ -194,16 +212,18 @@ final class BoundedQueueRuntimeTest {
     }
 
     @Test
-    void closeInvalidatesUnclaimedGenerationTicket() {
-        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
+    void closeInvalidatesUnclaimedGenerationTicketAndReturnsPayload() {
+        BoundedQueueRuntime<Object> queue = new BoundedQueueRuntime<>(1);
         BoundedQueueRuntime.Ticket stale = queue.newTicket();
+        Object value = new Object();
         long generation = queue.generation();
 
         assertTrue(queue.closeQueue());
         assertEquals(generation + 1, queue.generation());
-        assertEquals(
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.STALE_TICKET,
-                queue.tryPush(1, stale));
+                value,
+                queue.tryPush(value, stale));
         assertTrue(stale.isSettled());
 
         assertThrows(
@@ -212,50 +232,57 @@ final class BoundedQueueRuntimeTest {
     }
 
     @Test
-    void wrongQueueTicketIsRejected() {
-        BoundedQueueRuntime<Integer> first = new BoundedQueueRuntime<>(1);
-        BoundedQueueRuntime<Integer> second = new BoundedQueueRuntime<>(1);
+    void wrongQueueTicketIsRejectedWithoutTouchingPayload() {
+        BoundedQueueRuntime<Object> first = new BoundedQueueRuntime<>(1);
+        BoundedQueueRuntime<Object> second = new BoundedQueueRuntime<>(1);
         BoundedQueueRuntime.Ticket ticket = first.newTicket();
+        Object value = new Object();
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> second.tryPush(1, ticket));
+                () -> second.tryPush(value, ticket));
+        assertEquals(
+                BoundedQueueRuntime.PopStatus.EMPTY,
+                second.tryPop().status());
         assertThrows(
                 IllegalArgumentException.class,
                 () -> second.cancel(ticket));
     }
 
     @Test
-    void pendingWriterBudgetFailsClosedWithoutDisturbingOlderWaiter() {
-        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1, 1);
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                queue.tryPush(0, queue.newTicket()));
+    void pendingWriterBudgetFailsClosedAndReturnsRejectedPayload() {
+        BoundedQueueRuntime<Object> queue = new BoundedQueueRuntime<>(1, 1);
+        Object seedValue = new Object();
+        Object firstValue = new Object();
+        Object rejectedValue = new Object();
+        assertAdmitted(queue.tryPush(seedValue, queue.newTicket()));
 
         BoundedQueueRuntime.Ticket admittedWaiter = queue.newTicket();
-        OresFuture<BoundedQueueRuntime.PushStatus> firstPending =
-                queue.pushAsync(1, admittedWaiter);
+        OresFuture<BoundedQueueRuntime.PushResult<Object>> firstPending =
+                queue.pushAsync(firstValue, admittedWaiter);
         assertEquals(1, queue.pendingRegistrations());
 
         BoundedQueueRuntime.Ticket rejectedWaiter = queue.newTicket();
-        OresFuture<BoundedQueueRuntime.PushStatus> secondPending =
-                queue.pushAsync(2, rejectedWaiter);
+        OresFuture<BoundedQueueRuntime.PushResult<Object>> secondPending =
+                queue.pushAsync(rejectedValue, rejectedWaiter);
 
-        assertEquals(
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.RESOURCE_LIMIT,
+                rejectedValue,
                 secondPending.join());
         assertEquals(1, queue.pendingRegistrations());
         assertTrue(rejectedWaiter.isSettled());
 
         assertTrue(queue.cancel(admittedWaiter));
-        assertEquals(
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.CANCELLED,
+                firstValue,
                 firstPending.join());
         assertEquals(0, queue.pendingRegistrations());
 
-        BoundedQueueRuntime.PopResult<Integer> seed = queue.tryPop();
+        BoundedQueueRuntime.PopResult<Object> seed = queue.tryPop();
         assertEquals(BoundedQueueRuntime.PopStatus.VALUE, seed.status());
-        assertEquals(0, seed.value());
+        assertSame(seedValue, seed.value());
         assertEquals(
                 BoundedQueueRuntime.PopStatus.EMPTY,
                 queue.tryPop().status());
@@ -263,14 +290,14 @@ final class BoundedQueueRuntimeTest {
 
     @Test
     void pushFutureCannotBypassTicketCancellationAuthority() {
-        BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
-        assertEquals(
-                BoundedQueueRuntime.PushStatus.ADMITTED,
-                queue.tryPush(0, queue.newTicket()));
+        BoundedQueueRuntime<Object> queue = new BoundedQueueRuntime<>(1);
+        Object seedValue = new Object();
+        Object pendingValue = new Object();
+        assertAdmitted(queue.tryPush(seedValue, queue.newTicket()));
 
         BoundedQueueRuntime.Ticket ticket = queue.newTicket();
-        OresFuture<BoundedQueueRuntime.PushStatus> push =
-                queue.pushAsync(1, ticket);
+        OresFuture<BoundedQueueRuntime.PushResult<Object>> push =
+                queue.pushAsync(pendingValue, ticket);
         assertEquals(1, queue.pendingRegistrations());
 
         assertFalse(push.cancel(false));
@@ -279,13 +306,14 @@ final class BoundedQueueRuntimeTest {
 
         assertTrue(queue.cancel(ticket));
         assertTrue(ticket.isCancelled());
-        assertEquals(
+        assertRejected(
                 BoundedQueueRuntime.PushStatus.CANCELLED,
+                pendingValue,
                 push.join());
         assertEquals(0, queue.pendingRegistrations());
 
-        BoundedQueueRuntime.PopResult<Integer> seed = queue.tryPop();
-        assertEquals(0, seed.value());
+        BoundedQueueRuntime.PopResult<Object> seed = queue.tryPop();
+        assertSame(seedValue, seed.value());
         assertEquals(
                 BoundedQueueRuntime.PopStatus.EMPTY,
                 queue.tryPop().status());
