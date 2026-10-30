@@ -280,21 +280,29 @@ public final class NativeIo {
                 return new TcpConnection(context, endpoint, socket);
             }
         } catch (Exception failure) {
-            // A registration is a physical actor-owned loan, even if connect
-            // never established a session. Do NOT retire it before closing
-            // the kernel socket: otherwise actor memory and a permission
-            // drain receipt could be published while its handle remains live.
-            try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
-            if (socket.isClosed()) {
-                try {
-                    context.nativeIo().unregister(socket);
-                } catch (RuntimeException retirementFailure) {
-                    failure.addSuppressed(retirementFailure);
-                }
-            }
-            // A socket that could not be physically closed stays registered
-            // and must be quarantined by context shutdown, not forged retired.
+            retireFailedConnect(context.nativeIo(), socket, failure);
             throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
+        }
+    }
+
+    /**
+     * The failed connection still owns its physical registration. A native
+     * handle must close BEFORE its actor registration can retire; this is
+     * shared by the actual connect failure path and a deterministic test.
+     * A socket that cannot be shown closed remains context-owned/quarantined.
+     */
+    static void retireFailedConnect(AsyncNativeIo io, Socket socket, Exception failure) {
+        try {
+            socket.close();
+        } catch (IOException cleanup) {
+            failure.addSuppressed(cleanup);
+        }
+        if (socket.isClosed()) {
+            try {
+                io.unregister(socket);
+            } catch (RuntimeException retirementFailure) {
+                failure.addSuppressed(retirementFailure);
+            }
         }
     }
 
