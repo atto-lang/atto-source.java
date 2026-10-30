@@ -2899,7 +2899,7 @@ public final class TypeChecker {
                 }
                 if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, Callback, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 return new Named(factory.name(), List.of(element));
             }
@@ -8614,7 +8614,7 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) throw new IllegalArgumentException("SharedMutex<void> is invalid");
                 if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires a concrete shared-safe type; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            "SharedMutex<T> requires a concrete shared-safe type; borrows, Mutex, MutexGuard, Future, Callback, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 yield new Named("SharedMutex", List.of(element));
             }
