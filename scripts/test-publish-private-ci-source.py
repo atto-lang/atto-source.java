@@ -343,7 +343,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             patch.object(
                 pub, "gh_api_list",
                 side_effect=self.incident_comments_api(
-                    body_overrides={22: marker + "\\n"}
+                    body_overrides={22: marker + "\n"}
                 ),
             ),
         ):
