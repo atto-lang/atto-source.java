@@ -4,13 +4,20 @@
 set -euo pipefail
 
 fail() { printf 'NATIVE_ACTOR_SMOKE_REJECTED: %s\n' "$1" >&2; exit 1; }
-[[ $# -eq 4 ]] || fail 'usage: script /absolute/compiler valid.ores expected-git-blob expected-stdout'
+[[ $# -eq 5 ]] || fail 'usage: script /absolute/compiler compiler-sha256 valid.ores expected-git-blob expected-stdout'
 binary="$1"
-fixture="$2"
-expected_blob="$3"
-expected_stdout="$4"
+expected_compiler_sha256="$2"
+fixture="$3"
+expected_blob="$4"
+expected_stdout="$5"
 [[ "$binary" = /* && -f "$binary" && -x "$binary" && ! -L "$binary" ]] ||
   fail 'compiler must be an absolute executable regular file, not a symlink'
+[[ "$expected_compiler_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+  fail 'compiler SHA-256 pin must be 64 lowercase hex characters'
+command -v sha256sum >/dev/null 2>&1 || fail 'SHA-256 utility unavailable'
+actual_compiler_sha256="$(sha256sum -- "$binary" | cut -d ' ' -f 1)"
+[[ "$actual_compiler_sha256" == "$expected_compiler_sha256" ]] ||
+  fail 'compiler binary changed since its pinned build receipt'
 [[ -f "$fixture" && ! -L "$fixture" && -s "$fixture" ]] || fail 'missing or symlinked guest'
 [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]] || fail 'invalid pinned Git blob'
 [[ "$(git hash-object -- "$fixture")" = "$expected_blob" ]] ||
@@ -52,4 +59,4 @@ printf '%s' "$expected_stdout" > "$scratch/guest.expected"
 cmp -s -- "$scratch/guest.expected" "$scratch/guest.stdout" ||
   fail 'native guest stdout differs byte-for-byte'
 [[ ! -s "$scratch/guest.stderr" ]] || fail 'native guest emitted unexpected stderr'
-printf 'NATIVE_AOT_ACTOR_GUEST_SMOKE_PASS=1 git_blob=%s\n' "$expected_blob"
+printf 'NATIVE_AOT_ACTOR_GUEST_SMOKE_PASS=1 git_blob=%s compiler_sha256=%s\n' "$expected_blob" "$actual_compiler_sha256"

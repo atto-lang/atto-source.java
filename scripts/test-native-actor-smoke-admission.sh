@@ -53,8 +53,9 @@ else
 fi
 MOCK
 chmod 0700 "$mock"
+compiler_sha256="$(sha256sum -- "$mock" | cut -d ' ' -f 1)"
 
-MOCK_CASE=valid bash "$guard" "$mock" "$guest" "$blob" complete \
+MOCK_CASE=valid bash "$guard" "$mock" "$compiler_sha256" "$guest" "$blob" complete \
   > "$scratch/good.stdout" 2> "$scratch/good.stderr" || {
     echo 'ADMISSION_TEST_FAILED: valid positive mock was rejected' >&2
     cat "$scratch/good.stderr" >&2
@@ -65,7 +66,7 @@ rejected=0
 for scenario in invalid-accepted invalid-timeout invalid-signal invalid-usage \
   invalid-empty invalid-other-error invalid-unpositioned invalid-stdout \
   valid-io-error guest-failed guest-stderr guest-mismatch; do
-  if MOCK_CASE="$scenario" bash "$guard" "$mock" "$guest" "$blob" complete \
+  if MOCK_CASE="$scenario" bash "$guard" "$mock" "$compiler_sha256" "$guest" "$blob" complete \
     > "$scratch/out" 2> "$scratch/err"; then
     echo "ADMISSION_TEST_FAILED: false positive: $scenario" >&2
     exit 1
@@ -77,17 +78,33 @@ for scenario in invalid-accepted invalid-timeout invalid-signal invalid-usage \
   }
   rejected=$((rejected+1))
 done
-if MOCK_CASE=valid bash "$guard" "$mock" "$guest" \
+if MOCK_CASE=valid bash "$guard" "$mock" "$compiler_sha256" "$guest" \
   0000000000000000000000000000000000000000 complete > "$scratch/out" 2>"$scratch/err"; then
   echo 'ADMISSION_TEST_FAILED: accepted wrong guest blob' >&2
   exit 1
 fi
 rejected=$((rejected+1))
 ln -s "$guest" "$scratch/link.ores"
-if MOCK_CASE=valid bash "$guard" "$mock" "$scratch/link.ores" "$blob" complete > "$scratch/out" 2>"$scratch/err"; then
+if MOCK_CASE=valid bash "$guard" "$mock" "$compiler_sha256" "$scratch/link.ores" "$blob" complete > "$scratch/out" 2>"$scratch/err"; then
   echo 'ADMISSION_TEST_FAILED: accepted symlinked guest' >&2
   exit 1
 fi
 rejected=$((rejected+1))
-[[ "$rejected" -eq 14 ]] || exit 1
+# The compiler binary must be bound to the sha256 build receipt; neither a
+# syntactically valid wrong digest nor an altered binary may be admitted.
+if MOCK_CASE=valid bash "$guard" "$mock" \
+  0000000000000000000000000000000000000000000000000000000000000000 \
+  "$guest" "$blob" complete > "$scratch/out" 2>"$scratch/err"; then
+  echo 'ADMISSION_TEST_FAILED: accepted wrong compiler digest' >&2
+  exit 1
+fi
+rejected=$((rejected+1))
+printf '\n# modified binary after pin\n' >> "$mock"
+if MOCK_CASE=valid bash "$guard" "$mock" "$compiler_sha256" "$guest" "$blob" complete \
+  > "$scratch/out" 2>"$scratch/err"; then
+  echo 'ADMISSION_TEST_FAILED: accepted modified compiler binary' >&2
+  exit 1
+fi
+rejected=$((rejected+1))
+[[ "$rejected" -eq 16 ]] || exit 1
 printf 'NATIVE_ACTOR_SMOKE_ADVERSARIAL_PASS positive=1 negative=%s (mock only)\n' "$rejected"

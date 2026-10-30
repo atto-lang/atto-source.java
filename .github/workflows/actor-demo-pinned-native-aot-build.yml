@@ -99,6 +99,7 @@ jobs:
           bash scripts/verify-native-build-info.sh target/ores-aot.build-info.json
           bash scripts/verify-native-actor-smoke.sh \
             "$(realpath target/ores-aot)" \
+            "$(cut -d ' ' -f 1 target/ores-aot.sha256)" \
             src/test/resources/parity/actor-step-sequential.ores \
             e8d9b1c0a870ff6a8d35ced1acf860f85fd7e42d \
             complete | tee target/ores-aot.actor-smoke.receipt.txt
