@@ -43,7 +43,7 @@ cat > "$case_file" <<'JSON'
 JSON
 reject duplicate_true_then_true
 cat > "$case_file" <<'JSON'
-{"build_mode":"aot","default_execution_mode":"interpreter","guest_execution":true,"guest_\\u0065xecution":true,"guest_execution_mode":"interpreter-no-jit","managed_reference_mode":"compressed32"}
+{"build_mode":"aot","default_execution_mode":"interpreter","guest_execution":true,"guest_\u0065xecution":true,"guest_execution_mode":"interpreter-no-jit","managed_reference_mode":"compressed32"}
 JSON
 reject duplicate_unicode_alias
 cat > "$case_file" <<'JSON'
