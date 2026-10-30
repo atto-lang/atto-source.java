@@ -363,6 +363,97 @@ final class ImplicitValInitializeSyntaxTest {
     }
 
     @Test
+    void mutableLetSlotMustBeInitializedBeforeConstructorCompletes() {
+        String source = """
+                define class Connection as
+                  let int request_count;
+                  initialize() -> void {}
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("must initialize field(s)"), error::toString);
+    }
+
+    @Test
+    void mutableLetSlotMayBeAssignedRepeatedlyAfterFirstInitialization() {
+        String source = """
+                define class Connection as
+                  let int request_count;
+                  initialize(int count) -> void {
+                    self.request_count = count;
+                    self.request_count = count + 1;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void mutableLetSlotMustBeInitializedOnBothConditionalBranches() {
+        String source = """
+                define class Connection as
+                  let int request_count;
+                  initialize(int count) -> void {
+                    if count eq 0 then
+                      self.request_count = 0;
+                    fi
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("must initialize field(s)"), error::toString);
+    }
+
+    @Test
+    void incompleteMutableLetSlotCannotEscapeThroughSelf() {
+        String source = """
+                define class Connection as
+                  let int request_count;
+                  initialize(int count) -> void {
+                    publish(self);
+                    self.request_count = count;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("uses or escapes self"), error::toString);
+    }
+
+    @Test
+    void inheritedUninitializedLetNeedsExplicitChildInitialization() {
+        String missing = """
+                define class Parent as
+                  pub let int request_count;
+                end
+                define class Child extends Parent as
+                  initialize(int count) -> void {}
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(missing)));
+        assertTrue(error.getMessage().contains("must initialize field(s)"), error::toString);
+
+        String initialized = """
+                define class Parent as
+                  pub let int request_count;
+                end
+                define class Child extends Parent as
+                  initialize(int count) -> void {
+                    self.request_count = count;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(initialized)));
+    }
+
+    @Test
     void rejectsUnprovenLoopBeforeFixedSlotInitialization() {
         String source = """
                 define class Connection as
