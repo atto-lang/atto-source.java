@@ -702,7 +702,8 @@ def verify_carrier_capacity(repository, contract, run_id, now=None):
         run.get("updated_at"), "carrier capacity run update timestamp invalid"
     )
     age = current - started
-    if (age < dt.timedelta(0) or age > CAPACITY_MAX_AGE or updated < started):
+    if (age < dt.timedelta(0) or age > CAPACITY_MAX_AGE
+            or updated < started or updated > current):
         raise Denied("carrier capacity run is stale or temporally invalid")
 
     seen_job_ids = set()
@@ -726,11 +727,16 @@ def verify_carrier_capacity(repository, contract, run_id, now=None):
             seen_job_ids.add(job_id)
             runner_id = job.get("runner_id")
             runner_name = job.get("runner_name")
+            runner_group = job.get("runner_group_name")
+            labels = job.get("labels")
             steps = job.get("steps")
             if (job.get("run_id") == run_id
                     and job.get("run_attempt") == attempt
                     and type(runner_id) is int and runner_id > 0
                     and isinstance(runner_name, str) and runner_name.strip()
+                    and runner_group == "GitHub Actions"
+                    and isinstance(labels, list)
+                    and "self-hosted" not in labels
                     and job.get("status") == "completed"
                     and job.get("conclusion") == "success"
                     and isinstance(steps, list)
