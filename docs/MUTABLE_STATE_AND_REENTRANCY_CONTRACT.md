@@ -123,9 +123,32 @@ allocation counting under sustained actor traffic, and hard-RT
 worst-case admission/dispatch timing when applicable. Compiler admission
 alone cannot establish no-GC or allocation-free execution.
 
+## Incremental state-container implementation using existing classes
+
+The first implementable shape is an ordinary owned class with a coherent
+invariant and an explicit `mut self` method, not an assumed implicit global
+lock. A separate service may receive `borrow mut InventoryState` for a
+synchronous state operation; the borrower cannot keep or publish that loan.
+Read-only injection uses `borrow InventoryState` and cannot invoke an
+exclusive mutation operation. Coherent operations such as updating
+`available` and `reserved` together belong in one method; a future
+shared-mode wrapper must protect the entire invariant.
+
+`InjectedMutableStateContainerTest` now exercises: exclusively owned
+two-field mutation across cooperation without a mutex; borrowed injection
+into a mutating method; and rejection of a read-only borrow attempting that
+method. These are admission tests; no actor reentrancy, automatic injection
+framework, partition optimizer, or shared-state synchronization is implied.
+
+A next-step shared container should be an opaque owning handle with distinct
+reader/writer authorities, deterministic release, and explicit access
+effects. It must not copy mutable fields out or expose escaping internal
+references. Preserve the cheap owned-class path when the region never
+escapes its task/actor.
+
 ## Java baseline regression scope
 
-LocalMutableStateBoundaryTest has 13 tests, plus five MutexLockOrderAdmissionTest cases: local scalar and exclusive heap
+LocalMutableStateBoundaryTest has 13 tests, plus five MutexLockOrderAdmissionTest cases and three InjectedMutableStateContainerTest cases: local scalar and exclusive heap
 mutation, lexical loan retirement, synchronous exclusive parameter access,
 conflicting local loans, local-reference return/capture, cooperation with a
 live read/write loan, live/released guard admission, and one exact-output
