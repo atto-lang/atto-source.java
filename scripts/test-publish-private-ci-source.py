@@ -1066,6 +1066,34 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
 
+    def test_bounded_collector_accepts_current_java_full_tree_file_count(self):
+        # Synthetic files only: current Java #2281 HEAD contains 1175 blobs.
+        self.assertGreaterEqual(pub.MAX_FILES, 1175)
+        self.assertLess(pub.MAX_FILES, pub.MAX_DIRECTORY_ENTRIES)
+        with tempfile.TemporaryDirectory() as tmp:
+            trusted = Path(tmp)
+            source = trusted / "synthetic-source"
+            source.mkdir()
+            for number in range(1175):
+                (source / f"public-synthetic-{number:04d}.ores").write_bytes(b"x")
+            files = pub.collect_source(source, trusted)
+            self.assertEqual(len(files), 1175)
+            self.assertEqual(len({entry[0] for entry in files}), 1175)
+            self.assertTrue(all(data == b"x" and mode == "100644"
+                                for _, data, mode in files))
+
+    def test_bounded_collector_rejects_over_limit_without_external_publish(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trusted = Path(tmp)
+            source = trusted / "synthetic-source"
+            source.mkdir()
+            for number in range(pub.MAX_FILES + 1):
+                (source / f"public-synthetic-{number:04d}.ores").write_bytes(b"x")
+            with self.assertRaisesRegex(pub.Denied, "exceeds bounded capacity"):
+                pub.collect_source(source, trusted)
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
