@@ -29,6 +29,12 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=normal)"
           printf 'COMPILER_SOURCE_SHA=%s\n' "$EXPECTED_SHA"
           printf 'COMPILER_SOURCE_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+      - name: Run source-free JSON compiler-admission security regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-native-build-info-admission.sh
+
       - name: Set up pinned GraalVM JDK
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -89,29 +95,7 @@ jobs:
           test "$(wc -c < target/ores-aot.build-info.json)" -le 2048
           # Native AOT must identify its concrete execution mode; reject
           # JSON strings, JVM/hybrid impersonation, or multiple documents.
-          jq -e -s 'length == 1 and (.[0] | type == "object"
-            and .build_mode == "aot"
-            and .guest_execution == true
-            and .guest_execution_mode == "interpreter-no-jit")' \
-            target/ores-aot.build-info.json >/dev/null
-          # jq's ordinary parser retains only the last duplicate JSON key.
-          # Stream the original key/value tokens so an escaped Unicode alias
-          # or a repeated protected key cannot override compiler admission.
-          # --stream -s can emit both false and trailing true, with the
-          # final true masking duplicate keys under jq -e. Reduce *all*
-          # streamed tokens to ONE final boolean; fail on decoded aliases.
-          jq -n --stream -e '
-            reduce inputs as $event
-              ({seen: [], duplicate: false};
-               if ($event | length) == 2 and ($event[0] | length) == 1 then
-                 if (.seen | index($event[0][0])) != null then
-                   .duplicate = true
-                 else
-                   .seen += [$event[0][0]]
-                 end
-               else . end)
-            | (.duplicate | not)
-          ' target/ores-aot.build-info.json >/dev/null
+          bash scripts/verify-native-build-info.sh target/ores-aot.build-info.json
           invalid="$(mktemp --suffix=.ores)"
           trap 'rm -f "$invalid"' EXIT
           printf 'define actor BadSyntax as\n  this-is-not-valid-oreslang-@@@\nend\n' > "$invalid"
