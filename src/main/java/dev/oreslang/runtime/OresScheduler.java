@@ -668,11 +668,12 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure,
+            ActorRuntime.SourceMailOrigin origin) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
-        executor.execute(() -> {
+        Runnable submittedTurn = () -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             OresScheduler previousCarrierScheduler = CURRENT_CARRIER_SCHEDULER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
@@ -702,7 +703,8 @@ public final class OresScheduler implements AutoCloseable {
                     }
                 }
             }
-        });
+        };
+        executor.execute(origin == null ? submittedTurn : new SourceTaskTurn(submittedTurn, origin));
     }
 
     private void ensureTaskAdmissionOpen() {
@@ -768,6 +770,25 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
+    /**
+     * Scheduler-only delivery envelope. Origin is captured when TaskRunner is
+     * admitted, NEVER when a producer callback resolves an awaited Future.
+     * Only the owning actor's mailbox executor may interpret the origin.
+     */
+    static final class SourceTaskTurn implements Runnable {
+        private final Runnable body;
+        private final ActorRuntime.SourceMailOrigin origin;
+
+        SourceTaskTurn(Runnable body, ActorRuntime.SourceMailOrigin origin) {
+            this.body = Objects.requireNonNull(body, "source task body");
+            this.origin = Objects.requireNonNull(origin, "source mail origin");
+        }
+
+        ActorRuntime.SourceMailOrigin origin() { return origin; }
+
+        @Override public void run() { body.run(); }
+    }
+
     private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
@@ -778,6 +799,8 @@ public final class OresScheduler implements AutoCloseable {
 
         private final Task<T> task;
         private final ExecutionContext executionContext;
+        /** Fixed at Task creation, not derived from any later completion worker. */
+        private final ActorRuntime.SourceMailOrigin sourceMailOrigin;
         private final Runnable onQuiescent;
         // 0=unclaimed, 1=retirement callback executing, 2=retired,
         // 3=callback failed. The publication path cannot overtake state 1.
@@ -819,6 +842,7 @@ public final class OresScheduler implements AutoCloseable {
             this.task = task;
             long execution = allocatePositiveId(nextExecution, "execution");
             this.executionContext = ExecutionContext.task(schedulerDomain, execution);
+            this.sourceMailOrigin = ActorRuntime.captureSourceMailOrigin();
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
@@ -914,7 +938,8 @@ public final class OresScheduler implements AutoCloseable {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn(ownsExecution);
                     }
-                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal);
+                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal,
+                        sourceMailOrigin);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
