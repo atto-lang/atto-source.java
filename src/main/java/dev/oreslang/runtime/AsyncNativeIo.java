@@ -333,6 +333,13 @@ public final class AsyncNativeIo implements AutoCloseable {
         // calls from a worker whose earlier admission captured this actor.
         ActorRuntime.requireCurrentActorAuthorityActive("borrow native I/O resource");
         ActorRuntime.ActorId actorId = currentOwnerActor();
+        if (state.registeredBy != null && actorId != null
+                && !state.registeredBy.equals(actorId)) {
+            throw new SecurityException(
+                    "native resource belongs to a different actor incarnation");
+        }
+        // Resources intentionally registered by the trusted host remain
+        // shareable; an actor-owned resource cannot be borrowed by a sibling.
         state.active++;
         incrementActorOperationLocked(actorId);
         return new IoLoan(state, new IoLoanIdentity(
@@ -770,6 +777,14 @@ public final class AsyncNativeIo implements AutoCloseable {
         synchronized (this) {
             ResourceLeaseState state = resourceLoans.get(resource);
             if (state == null || state.unregistered) return;
+            ActorRuntime.ActorId actorId = currentOwnerActor();
+            if (state.registeredBy != null && actorId != null
+                    && !state.registeredBy.equals(actorId)) {
+                throw new SecurityException(
+                        "native resource transfer belongs to a different actor incarnation");
+            }
+            // Trusted host cleanup remains permitted; it owns the resource
+            // transfer protocol and does not acquire guest actor privileges.
             state.unregistered = true;
             resources.remove(resource);
             if (state.active != 0) {
