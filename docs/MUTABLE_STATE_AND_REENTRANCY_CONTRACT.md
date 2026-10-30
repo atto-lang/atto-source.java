@@ -1,7 +1,8 @@
 # Mutable state, local ownership, and reentrancy: staged contract
 
-Status: design contract and Java baseline regressions, not a new state-class
-syntax implementation or cross-backend safety proof.
+Status: staged design contract plus concrete Java nested-mutex admission hardening
+and baseline regression tests. This does not implement state-class syntax,
+actor reentrancy, lock-order inference, zero GC, or cross-backend safety proof.
 
 ## Language decision
 
@@ -78,9 +79,53 @@ An arbitrary method named lock is not a synchronization proof.
 - Reentrancy opportunities do not promise a scheduler switch or starvation
   freedom. Fair admission, cancellation, and priority behavior need runtime tests.
 
+## Nested lock admission: implemented Java fail-closed rule
+
+The Java ownership checker now rejects attempting a recognized `Mutex` or
+`SharedMutex` acquisition (`lock`, `try_lock`, `lock_async`, `with_lock`,
+`recover`) while an acquired lexical `MutexGuard` remains live or an inline
+mutex critical callback is active. This is a conservative restriction, not
+a general deadlock proof: an alias of an existing mutex can otherwise create
+a self-cycle even when a second receiver has a different variable name.
+It leaves non-nested sequential acquisitions legal. A future ordered
+multi-lock primitive must validate resource identity, total ordering,
+cancellation, and exception safety before lifting this restriction.
+
+Five added `MutexLockOrderAdmissionTest` cases cover overlapping distinct
+and identical handles, `try_lock`, `lock_async`, and positive sequential
+release/acquire. Source parsing is required before negative ownership checks;
+the new cases are authored but not yet JDK/Maven-executed.
+
+## Memory-model requirements (not yet implemented or measured)
+
+* LLVM: no tracing GC in guest code. Borrow and lock authority is checked at
+  compile time and erased from emitted code when possible. Owned local mutation
+  uses stack/SSA storage if it does not escape; independently owned heap graphs
+  use deterministic arena/region cleanup. Owning a region is not necessarily
+  an allocation, and nested cycles must not leak beyond a torn-down region.
+* Java/GraalVM: minimize managed allocations and collector pressure through
+  actor/container-owned native/off-heap arenas for suitable bounded data,
+  while retaining checked handle generations and safe native reclamation.
+  JVM and Native Image objects still have managed runtime semantics; no
+  blanket zero-GC or off-heap safety guarantee is made.
+* Borrow lifetimes are logical, not derived from stack/heap location. A
+  suspension can move locals into continuation storage. Concurrent readers,
+  cancellation, and task/actor retirement must all be resolved before memory
+  reuse, and reuse must prevent stale-generation access.
+* Protected state operations must avoid mandatory snapshots, per-access
+  guard allocations, mandatory heap boxing, and hidden allocation on
+  hard-real-time paths. Publication of immutable snapshots is optional
+  and cannot expose internal mutable aliases.
+
+Evidence gates: native emitted-IR or assembly inspection, source-level
+accept/reject conformance, deterministic teardown/ABA and cycle tests,
+allocation counting under sustained actor traffic, and hard-RT
+worst-case admission/dispatch timing when applicable. Compiler admission
+alone cannot establish no-GC or allocation-free execution.
+
 ## Java baseline regression scope
 
-LocalMutableStateBoundaryTest has 13 tests: local scalar and exclusive heap
+LocalMutableStateBoundaryTest has 13 tests, plus five MutexLockOrderAdmissionTest cases: local scalar and exclusive heap
 mutation, lexical loan retirement, synchronous exclusive parameter access,
 conflicting local loans, local-reference return/capture, cooperation with a
 live read/write loan, live/released guard admission, and one exact-output
@@ -93,7 +138,7 @@ rejection from satisfying the suite.
 
 Run with JDK 25 and the repository's GraalVM dependencies:
 
-    mvn -B -ntp -Dtest=LocalMutableStateBoundaryTest -DfailIfNoTests=true test
+    mvn -B -ntp -Dtest=LocalMutableStateBoundaryTest,MutexLockOrderAdmissionTest -DfailIfNoTests=true test
 
 Then run the existing ownership, mutex, actor-state, and source-cooperation
 regressions, full verify, and Native Image gates. No skipped-only or zero-step
