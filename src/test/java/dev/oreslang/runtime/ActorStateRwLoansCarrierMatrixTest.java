@@ -167,4 +167,56 @@ final class ActorStateRwLoansCarrierMatrixTest {
             }
         }
     }
+
+    @Test
+    void physicalRetirementWaitsForEveryReaderAtThreeSevenFifteenCarriers()
+            throws Exception {
+        for (int count : THREAD_COUNTS) {
+            ExecutorService carriers = Executors.newFixedThreadPool(count);
+            CountDownLatch allReading = new CountDownLatch(count);
+            CountDownLatch releaseReaders = new CountDownLatch(1);
+            AtomicInteger retirementWakeups = new AtomicInteger();
+            try (var loans = new ActorStateRwLoans(
+                    count + 1, retirementWakeups::incrementAndGet)) {
+                List<Future<?>> readers = new ArrayList<>();
+                for (int i = 0; i < count; i++) {
+                    final int index = i;
+                    readers.add(carriers.submit(() -> {
+                        try (var loan = loans.acquireReadAsync(actor(index))
+                                .get(15, TimeUnit.SECONDS)) {
+                            allReading.countDown();
+                            if (!releaseReaders.await(15, TimeUnit.SECONDS)) {
+                                throw new AssertionError("release latch timed out");
+                            }
+                            assertFalse(loan.heldBy(actor(index)),
+                                    "logical stop must revoke state access before physical release");
+                            assertFalse(loan.readyToSuspend(actor(index)),
+                                    "logical stop cannot release a physical suspension fence");
+                        } catch (Exception error) {
+                            throw new RuntimeException(error);
+                        }
+                    }));
+                }
+                assertTrue(allReading.await(15, TimeUnit.SECONDS));
+                assertEquals(count, loans.activeReaderCount());
+                loans.close();
+                assertFalse(loans.physicallyRetired());
+                assertEquals(0, retirementWakeups.get());
+                assertTrue(loans.acquireReadAsync(actor(count + 1))
+                        .isCompletedExceptionally(),
+                        "retired region must reject new admission");
+
+                releaseReaders.countDown();
+                for (Future<?> reader : readers) reader.get(20, TimeUnit.SECONDS);
+                assertTrue(loans.physicallyRetired(),
+                        "all physical readers must release before arena retirement");
+                assertEquals(1, retirementWakeups.get(),
+                        "exactly one retirement wakeup after final receipt");
+            } finally {
+                releaseReaders.countDown();
+                carriers.shutdownNow();
+                assertTrue(carriers.awaitTermination(20, TimeUnit.SECONDS));
+            }
+        }
+    }
 }
