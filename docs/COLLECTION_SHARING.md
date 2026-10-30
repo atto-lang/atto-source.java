@@ -30,3 +30,40 @@ JUnit coverage also lives in TypeAutoTraitsTest and ScopedTaskReadAuthorityV2Tes
 
 This patch hardens Java compiler admission. It does not introduce a frozen
 collection type, an ETS table runtime, or prove other backends conform.
+
+## Ownership boundary regressions
+
+The test matrix includes a writable record assignable to a readonly record
+view. Type compatibility permits that narrowing, but it does **not** consume
+or freeze the original writable allocation. Neither the readonly view nor an
+`Option`, `Result`, `Arc`, or `Weak` wrapper may infer `Sync` or `Share`
+from the narrowing. A borrowed readonly alias must also fail the separate
+`ThreadSafetyTraits` cross-thread `Send` query.
+
+The frontend probe tests ordinary local readonly reads, denies `rt share`
+of a move-only readonly record, rejects borrowed mutable struct capture by
+an independent Task, and checks that `SharedMutex.new` takes its owned
+collection rather than leaving a second unprotected owner. It also rejects
+constructing mutex state from a borrowed value. The JUnit test exercises
+`ScopedTaskReadAuthority.prove` against an already-published checked Task
+epoch; an invalid referent must fail even with valid Task admission.
+
+These are complementary boundaries. `Send` of an owned record does not
+authorize a borrowed reference or a retained writable alias to cross lanes.
+`SharedMutex` only justifies sharing **through** its protected interface.
+
+## Exact-head merge verification
+
+Run the **unmodified** branch source with JDK 21 or newer:
+
+```sh
+bash scripts/test_collection_sharing.sh
+mvn -B -ntp -Dores.runtime.carriers=native verify
+```
+
+Keep the PR in draft until source-level fixtures, JUnit tests, and existing
+examples execute on the exact head and record JVM version, test totals, job
+steps, and commit/tree identity. A GitHub Actions failure with no assigned
+runner and no executed steps is infrastructure-admission evidence, **not** a
+compiler or Maven test failure. Private cross-organization mirroring remains
+forbidden unless the independently reviewed destination policy allows it.
