@@ -92,6 +92,17 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void signed64MinimumRemainderByMinusOneIsRepresentableZero() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      return (-9223372036854775808 % -1) eq 0;
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void mixedInt64AndBinary64ComparisonsKeepExactIntegerOrder() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
