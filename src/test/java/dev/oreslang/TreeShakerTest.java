@@ -452,6 +452,88 @@ final class TreeShakerTest {
     }
 
     @Test
+    void treeShakerDoesNotAliasI64AboveBinary64ExactBoundary() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                pub const bool alias = 9007199254740993 == 9007199254740992.0;
+
+                define module Wrong as
+                  pub routine run(): void { return; }
+                end
+                define module Right as
+                  pub routine run(): void { return; }
+                end
+
+                pub routine main(): void {
+                  if alias; do
+                    Wrong.run();
+                  else
+                    Right.run();
+                  fi
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        assertTrue(result.removed("Wrong.run"),
+                "2^53+1 must not alias the rounded binary64 2^53");
+        assertTrue(result.retained("Right.run"));
+    }
+
+    @Test
+    void treeShakerTreatsSignedZeroAsEqualForOrderedComparisons() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                pub const bool negative_zero_is_less = -0.0 < 0.0;
+
+                define module Wrong as
+                  pub routine run(): void { return; }
+                end
+                define module Right as
+                  pub routine run(): void { return; }
+                end
+
+                pub routine main(): void {
+                  if negative_zero_is_less; do
+                    Wrong.run();
+                  else
+                    Right.run();
+                  fi
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        assertTrue(result.removed("Wrong.run"),
+                "-0.0 is not ordered below +0.0 under IEEE comparisons");
+        assertTrue(result.retained("Right.run"));
+    }
+
+    @Test
+    void treeShakerNeverFoldsCheckedMinNegationIntoWrappedData() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                pub const bool wrapped =
+                    -(-9223372036854775808) == -9223372036854775808;
+
+                define module IfWrapped as
+                  pub routine run(): void { return; }
+                end
+                define module IfOverflow as
+                  pub routine run(): void { return; }
+                end
+
+                pub routine main(): void {
+                  if wrapped; do
+                    IfWrapped.run();
+                  else
+                    IfOverflow.run();
+                  fi
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        assertTrue(result.retained("IfWrapped.run"));
+        assertTrue(result.retained("IfOverflow.run"),
+                "overflowing const negation must remain unfurled, never wrap to MIN");
+    }
+
+    @Test
     void treeShakingPreservesStructuralFieldDomainForRewrittenReceiver() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 define class Product as
