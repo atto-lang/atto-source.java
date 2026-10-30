@@ -144,6 +144,23 @@ public final class OresContext implements AutoCloseable {
     public ActorRuntime actors() { return actors; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
+
+    /**
+     * Read-only logical guest execution currently admitted on this carrier.
+     * Host callback provenance is deliberately exposed separately below.
+     */
+    public ExecutionContext currentExecutionContext() {
+        return OresScheduler.currentExecutionContext();
+    }
+
+    /**
+     * Read-only causal provenance while host callback bookkeeping is running.
+     * This value grants no guest-entry, actor-state, allocation, or permission authority.
+     */
+    public ExecutionCallbackContext currentCallbackContext() {
+        return ExecutionCallbackContext.current();
+    }
+
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public RuntimePermissions runtimePermissions() { return runtimePermissions; }
