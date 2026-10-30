@@ -485,12 +485,22 @@ public final class OresAsyncTrace {
         private final SourceSite boundarySite;
 
         private CallbackSnapshot(Trace trace, BoundaryKind boundary, SourceSite boundarySite) {
-            Trace actual = Objects.requireNonNull(trace, "trace");
-            this.traceIdentity = actual.identity();
+            this(
+                    Objects.requireNonNull(trace, "trace").identity(),
+                    trace.snapshot(),
+                    boundary,
+                    boundarySite);
+        }
+
+        private CallbackSnapshot(
+                Object traceIdentity,
+                TraceSnapshot base,
+                BoundaryKind boundary,
+                SourceSite boundarySite) {
+            this.traceIdentity = Objects.requireNonNull(traceIdentity, "traceIdentity");
             this.boundary = Objects.requireNonNull(boundary, "boundary");
             this.boundarySite = Objects.requireNonNull(boundarySite, "boundarySite");
 
-            TraceSnapshot base = actual.snapshot();
             ArrayList<Event> events = new ArrayList<>(base.events());
             long elided = base.elidedEvents();
             while (events.size() >= DEFAULT_MAX_EVENTS) {
@@ -503,6 +513,20 @@ public final class OresAsyncTrace {
                     events,
                     elided,
                     base.revision());
+        }
+
+        /**
+         * Derive another immutable callback boundary from this snapshot.
+         *
+         * <p>This is used when host-only callback bookkeeping registers another escaping callback
+         * on a producer thread. It extends provenance without installing the mutable Trace.</p>
+         */
+        public CallbackSnapshot withBoundary(BoundaryKind nextBoundary) {
+            return new CallbackSnapshot(
+                    traceIdentity,
+                    snapshot,
+                    Objects.requireNonNull(nextBoundary, "nextBoundary"),
+                    snapshot.currentFrame().site());
         }
 
         public BoundaryKind boundary() {
@@ -730,7 +754,8 @@ public final class OresAsyncTrace {
             return traceIdentity == callback.traceIdentity
                     && traceRevision == callback.snapshot.revision()
                     && callbackBoundary == callback.boundary
-                    && Objects.equals(callbackBoundarySite, callback.boundarySite);
+                    && Objects.equals(callbackBoundarySite, callback.boundarySite)
+                    && snapshot.equals(callback.snapshot);
         }
 
         public String logicalTrace() {
