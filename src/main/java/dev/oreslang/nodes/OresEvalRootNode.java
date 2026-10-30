@@ -1053,7 +1053,53 @@ public final class OresEvalRootNode extends RootNode {
         private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
             Ast.ClassDecl view = staticClassView(binding.declaredType());
             if (view == null) view = staticClassView(binding.initializer(), env);
-            env.define(binding.name(), value, binding.kind(), view);
+            NumericCarrier carrier = numericCarrierForBinding(binding.declaredType(), value);
+            env.define(
+                    binding.name(),
+                    shapeNumericCarrier(carrier, value, "binding " + binding.name()),
+                    binding.kind(),
+                    view,
+                    carrier);
+        }
+
+        private NumericCarrier numericCarrierForBinding(Ast.TypeRef declared, Object value) {
+            if (declared != null) return numericCarrierForType(declared);
+            if (value instanceof Double) return NumericCarrier.F64;
+            if (value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long) return NumericCarrier.I64;
+            return NumericCarrier.NONE;
+        }
+
+        private NumericCarrier numericCarrierForType(Ast.TypeRef declared) {
+            if (declared == null || declared.isUnion() || declared.isComplement()) return NumericCarrier.NONE;
+            return switch (declared.name()) {
+                case "int", "i64" -> NumericCarrier.I64;
+                case "float", "f64" -> NumericCarrier.F64;
+                default -> NumericCarrier.NONE;
+            };
+        }
+
+        private Object shapeNumericCarrier(NumericCarrier carrier, Object value, String label) {
+            return switch (carrier) {
+                case NONE -> value;
+                case I64 -> {
+                    if (!(value instanceof Byte || value instanceof Short
+                            || value instanceof Integer || value instanceof Long)) {
+                        throw new IllegalArgumentException(label
+                                + " requires the checked signed-64 runtime carrier");
+                    }
+                    yield ((Number) value).longValue();
+                }
+                case F64 -> {
+                    if (!(value instanceof Number number)
+                            || value instanceof java.math.BigInteger
+                            || value instanceof java.math.BigDecimal) {
+                        throw new IllegalArgumentException(label
+                                + " requires the binary64 runtime carrier");
+                    }
+                    yield number.doubleValue();
+                }
+            };
         }
 
         private Ast.ClassDecl objectDestructureStaticClassView(
@@ -1088,13 +1134,16 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> tuple = new ArrayList<>(args.size());
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
-                Object value = args.get(i);
+                NumericCarrier carrier = numericCarrierForType(param.type());
+                Object value = shapeNumericCarrier(
+                        carrier, args.get(i), label + " argument " + param.name());
                 tuple.add(value);
                 env.define(
                         param.name(),
                         value,
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
-                        staticClassView(param.type()));
+                        staticClassView(param.type()),
+                        carrier);
             }
             env.define(
                     "arguments",
@@ -10667,7 +10716,17 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Ast.BindingKind kind,
                 Ast.ClassDecl staticClassView) {
-            if (slots.putIfAbsent(name, new Slot(value, kind, staticClassView)) != null) {
+            define(name, value, kind, staticClassView, NumericCarrier.NONE);
+        }
+        private void define(
+                String name,
+                Object value,
+                Ast.BindingKind kind,
+                Ast.ClassDecl staticClassView,
+                NumericCarrier numericCarrier) {
+            if (slots.putIfAbsent(
+                    name,
+                    new Slot(value, kind, staticClassView, numericCarrier)) != null) {
                 throw new IllegalArgumentException("duplicate binding " + name);
             }
         }
@@ -10702,7 +10761,26 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
-                slot.value = value;
+                slot.value = switch (slot.numericCarrier) {
+                    case NONE -> value;
+                    case I64 -> {
+                        if (!(value instanceof Byte || value instanceof Short
+                                || value instanceof Integer || value instanceof Long)) {
+                            throw new IllegalArgumentException(
+                                    "binding " + name + " requires checked signed-64 value");
+                        }
+                        yield ((Number) value).longValue();
+                    }
+                    case F64 -> {
+                        if (!(value instanceof Number number)
+                                || value instanceof java.math.BigInteger
+                                || value instanceof java.math.BigDecimal) {
+                            throw new IllegalArgumentException(
+                                    "binding " + name + " requires binary64 value");
+                        }
+                        yield number.doubleValue();
+                    }
+                };
                 return;
             }
             if (parent != null) { parent.assign(name, value); return; }
@@ -10859,7 +10937,8 @@ public final class OresEvalRootNode extends RootNode {
                         new Slot(
                                 captured,
                                 source.kind,
-                                source.staticClassView));
+                                source.staticClassView,
+                                source.numericCarrier));
             }
             return cp;
         }
@@ -11042,17 +11121,28 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
+    private enum NumericCarrier { NONE, I64, F64 }
+
     private static final class Slot {
         private Object value;
         private final Ast.BindingKind kind;
         private final Ast.ClassDecl staticClassView;
+        private final NumericCarrier numericCarrier;
         private Slot(
                 Object value,
                 Ast.BindingKind kind,
                 Ast.ClassDecl staticClassView) {
+            this(value, kind, staticClassView, NumericCarrier.NONE);
+        }
+        private Slot(
+                Object value,
+                Ast.BindingKind kind,
+                Ast.ClassDecl staticClassView,
+                NumericCarrier numericCarrier) {
             this.value = value;
             this.kind = kind;
             this.staticClassView = staticClassView;
+            this.numericCarrier = Objects.requireNonNull(numericCarrier, "numeric carrier");
         }
     }
 
