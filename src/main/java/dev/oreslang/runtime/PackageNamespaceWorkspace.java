@@ -313,8 +313,27 @@ final class PackageNamespaceWorkspace {
         Path root = checkedProjectRoot(manifest, checkedManifest(manifest));
         List<String> parts = new ArrayList<>();
         for (Path source : sourceFiles) {
-            parts.add(root.relativize(source.toRealPath()).toString().replace('\\', '/')
-                    + "\n" + sha256(Files.readAllBytes(source)) + "\n");
+            Path logical = source.toAbsolutePath().normalize();
+            // Digests are only meaningful inside the authenticated project root.
+            // Canonicalization alone is insufficient: a symlink that currently
+            // points inside the tree may be retargeted between the digest and
+            // subsequent compiler admission.
+            if (!logical.startsWith(root)) {
+                throw new SecurityException("namespace digest source is outside manifest root: " + source);
+            }
+            Path cursor = root;
+            for (Path component : root.relativize(logical)) {
+                cursor = cursor.resolve(component);
+                if (Files.isSymbolicLink(cursor)) {
+                    throw new SecurityException("symlinked namespace digest source: " + cursor);
+                }
+            }
+            Path canonical = logical.toRealPath();
+            if (!canonical.equals(logical) || !Files.isRegularFile(canonical)) {
+                throw new SecurityException("namespace digest source is not a regular manifest-root file");
+            }
+            parts.add(root.relativize(canonical).toString().replace('\\', '/')
+                    + "\n" + sha256(Files.readAllBytes(canonical)) + "\n");
         }
         parts.sort(String::compareTo);
         return sha256(String.join("", parts).getBytes(StandardCharsets.UTF_8));
