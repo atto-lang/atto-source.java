@@ -702,8 +702,26 @@ public final class AsyncNativeIo implements AutoCloseable {
     }
 
     private ActorRuntime.ActorId currentOwnerActor() {
-        ActorRuntime.ActorId id = currentOperationActor.get();
-        return id != null ? id : ActorRuntime.currentActorId().orElse(null);
+        ActorRuntime.ActorId operation = currentOperationActor.get();
+        ActorRuntime.ActorId turn = ActorRuntime.currentActorId().orElse(null);
+        ActorRuntime.NativeIoAuthority nativeAuthority =
+                ActorRuntime.currentNativeIoAuthority();
+        ActorRuntime.ActorId nativeActor = nativeAuthority == null
+                ? null : nativeAuthority.actorId();
+        if (operation != null && nativeActor != null
+                && !operation.equals(nativeActor)) {
+            throw new SecurityException("native resource operation/authority actor mismatch");
+        }
+        if (turn != null && nativeActor != null && !turn.equals(nativeActor)) {
+            throw new SecurityException("native resource turn/authority actor mismatch");
+        }
+        if (operation != null && turn != null && !operation.equals(turn)) {
+            throw new SecurityException("native resource operation/turn actor mismatch");
+        }
+        // A native-I/O worker may have only its captured authority installed
+        // outside the work.call() thread-local. It is still an actor, never
+        // an unscoped host that may transfer native resources freely.
+        return operation != null ? operation : turn != null ? turn : nativeActor;
     }
 
     void register(AutoCloseable resource) throws Exception {
