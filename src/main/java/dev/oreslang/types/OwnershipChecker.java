@@ -4079,20 +4079,15 @@ public final class OwnershipChecker {
 
         if (type.isClosedAggregateType()) {
             boolean send = true;
-            boolean sync = true;
-            boolean share = true;
             for (Ast.TypeRef member : type.aggregateMembers().values()) {
                 AutoTraitRules.Capabilities child =
                         taskCaptureCapabilities(member, visitingClasses);
                 send &= child.send();
-                sync &= child.sync();
-                share &= child.share();
             }
-            boolean immutable = type.isReadonlyRecordType();
-            return new AutoTraitRules.Capabilities(
-                    send,
-                    immutable && sync,
-                    immutable && share);
+            // Readonly structural metadata describes a view, not a frozen
+            // backing allocation. Keep this independent Task admission gate
+            // aligned with TypeAutoTraits and ThreadSafetyTraits.
+            return new AutoTraitRules.Capabilities(send, false, false);
         }
 
         String name = type.name();

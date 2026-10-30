@@ -76,8 +76,51 @@ final class TypeAutoTraitsTest {
         var readonlyRecord = TypeAutoTraits.inferClosed(
                 new Types.Record(Map.of("x", integer), true));
         assertTrue(readonlyRecord.send());
-        assertTrue(readonlyRecord.sync());
-        assertTrue(readonlyRecord.share());
+        assertFalse(readonlyRecord.sync());
+        assertFalse(readonlyRecord.share());
+    }
+
+    @Test
+    void readonlyViewsCannotBecomeSharedThroughContainersOrReferenceCounting() {
+        var view = new Types.Record(Map.of("count", Types.Primitive.INT), true);
+        for (Types.Type type : List.of(
+                view,
+                new Types.Record(Map.of(), true),
+                new Types.Tuple(List.of(view)),
+                new Types.Named("Option", List.of(view)),
+                new Types.Named("Result", List.of(Types.Primitive.INT, view)),
+                new Types.Named("Arc", List.of(view)),
+                new Types.Named("Weak", List.of(view)))) {
+            var capabilities = TypeAutoTraits.inferClosed(type);
+            assertFalse(capabilities.sync(), () -> "readonly view gained Sync: " + type);
+            assertFalse(capabilities.share(), () -> "readonly view gained Share: " + type);
+        }
+    }
+
+    @Test
+    void mutableCollectionOwnershipCanMoveOrBeProtectedWithoutImplicitSharing() {
+        var scalar = Types.Primitive.INT;
+        for (Types.Type type : List.of(
+                new Types.ListType(scalar),
+                new Types.Tuple(List.of(scalar), Types.TupleKind.FIXED_ARRAY),
+                new Types.Tuple(List.of(scalar), Types.TupleKind.FIXED_LIST),
+                new Types.Record(Map.of("count", scalar), true))) {
+            var owned = TypeAutoTraits.inferClosed(type);
+            assertTrue(owned.send());
+            assertFalse(owned.sync());
+            assertFalse(owned.share());
+
+            var protectedValue = TypeAutoTraits.inferClosed(
+                    new Types.Named("SharedMutex", List.of(type)));
+            assertTrue(protectedValue.send());
+            assertTrue(protectedValue.sync());
+            assertTrue(protectedValue.share());
+        }
+        var unsafe = new Types.ListType(
+                new Types.Named("Rc", List.of(scalar)));
+        assertFalse(TypeAutoTraits.inferClosed(unsafe).send());
+        assertFalse(TypeAutoTraits.inferClosed(
+                new Types.Named("SharedMutex", List.of(unsafe))).share());
     }
 
     @Test
@@ -91,3 +134,4 @@ final class TypeAutoTraitsTest {
         assertTrue(ref.share());
     }
 }
+

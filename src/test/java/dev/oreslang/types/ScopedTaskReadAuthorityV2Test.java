@@ -139,6 +139,27 @@ final class ScopedTaskReadAuthorityV2Test {
                         "PROCESS", "root", 1, 1, false));
     }
 
+    @Test
+    void readonlyRecordViewCannotMintScopedReadAuthority() {
+        Ast.Program program = dev.oreslang.parser.Parser.parse("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(program);
+        var root = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 27, 1, true);
+        for (Types.Type view : List.of(
+                new Types.Record(java.util.Map.of("value", Types.Primitive.INT), true),
+                new Types.Record(java.util.Map.of(), true))) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> ScopedTaskReadAuthority.freezeForOwnershipCheck(
+                            program, task, 991, root, List.of(), view));
+            assertTrue(failure.getMessage().contains("Sync"), failure::getMessage);
+        }
+    }
+
     private static Ast.TaskExpr firstTask(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
@@ -154,3 +175,4 @@ final class ScopedTaskReadAuthorityV2Test {
         throw new AssertionError("expected TaskExpr");
     }
 }
+
