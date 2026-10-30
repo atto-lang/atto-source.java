@@ -96,7 +96,11 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
             try (SqlitePersistenceStore store = new SqlitePersistenceStore(database);
                  ActorRuntime runtime = new ActorRuntime()) {
                 store.grantEpoch(key.tenant(), key.actor(), 2);
-                var recovered = store.load(key);
+                boolean staleRestoreDenied = false;
+                try { store.loadFenced(key, 1); }
+                catch (SecurityException expected) { staleRestoreDenied = true; }
+                check(staleRestoreDenied, "stale actor incarnation restored persistent state");
+                var recovered = store.loadFenced(key, 2);
                 check(recovered.version() == 1 &&
                     recovered.snapshotVersion() == 1 &&
                     recovered.snapshotSchema() == 1 &&
