@@ -180,12 +180,25 @@ public final class NativeHttp implements AutoCloseable {
         synchronized (exchange.state) {
             exchange.checkOwner();
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
+            // Bind the exchange to an admitted logical user-mail receive.
+            // If admission fails, restore the *same* one-shot transfer ticket:
+            // otherwise a foreign/late continuation could consume a token
+            // without ever acquiring the exchange or closing the request.
+            final long earlierClaimNanos = exchange.state.claimedNanos;
             exchange.state.ticket = null;
             exchange.state.claimedNanos = System.nanoTime();
-            // Binding runs only on the authenticated actor dispatch. The
-            // stored request follows the suspended mail, not the thread.
-            if (ActorRuntime.inActorExecution()) {
-                context.actors().bindCurrentHttpExchange(exchange);
+            try {
+                if (ActorRuntime.inActorExecution()) {
+                    context.actors().bindCurrentHttpExchange(exchange);
+                }
+            } catch (RuntimeException | Error rejected) {
+                exchange.state.ticket = token;
+                exchange.state.claimedNanos = earlierClaimNanos;
+                if (transfers.putIfAbsent(token, exchange) != null) {
+                    throw new IllegalStateException(
+                            "HTTP transfer rollback lost exclusive ticket identity", rejected);
+                }
+                throw rejected;
             }
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
             return exchange;
