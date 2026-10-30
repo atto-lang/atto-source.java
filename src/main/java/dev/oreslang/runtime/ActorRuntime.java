@@ -224,15 +224,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<?> cell = currentActor.get();
         if (cell == null) throw new SecurityException("no admitted actor mailbox turn");
-        synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized || cell.activeMail == null) {
-                throw new SecurityException("HTTP request binding requires an active user mail");
-            }
-            if (cell.activeHttpExchange != null && cell.activeHttpExchange != exchange) {
-                throw new SecurityException("one mailbox receive cannot bind multiple HTTP requests");
-            }
-            cell.activeHttpExchange = exchange;
+        // The actor's single-carrier lease serializes mailbox writes. Use
+        // volatile publication, not lifecycleLock: NativeHttp.checkOwner()
+        // commonly holds the exchange state monitor and the inverse order
+        // would deadlock against actor cancellation or teardown.
+        if (cell.stopped.get() || cell.activeMail == null) {
+            throw new SecurityException("HTTP request binding requires an active user mail");
         }
+        if (cell.activeHttpExchange != null && cell.activeHttpExchange != exchange) {
+            throw new SecurityException("one mailbox receive cannot bind multiple HTTP requests");
+        }
+        cell.activeHttpExchange = exchange;
     }
 
     /**
@@ -247,13 +249,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<?> cell = currentActor.get();
         if (cell == null) throw new SecurityException("request context has no active mailbox");
-        synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized || cell.activeMail == null
-                    || cell.activeHttpExchange == null) {
-                throw new SecurityException("no active request is bound to this mailbox receive");
-            }
-            return cell.activeHttpExchange;
+        if (cell.stopped.get() || cell.activeMail == null) {
+            throw new SecurityException("no active request is bound to this mailbox receive");
         }
+        NativeHttp.Exchange exchange = cell.activeHttpExchange;
+        if (exchange == null) {
+            throw new SecurityException("no active request is bound to this mailbox receive");
+        }
+        return exchange;
     }
 
     /** An actor's owned exchange is valid only for the same active mail. */
@@ -7634,9 +7637,9 @@ public final class ActorRuntime implements AutoCloseable {
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
-        private ActorInboxMail<M> activeMail;
-        /** Request-affine binding for this source receive, NEVER actor-wide TLS. */
-        private NativeHttp.Exchange activeHttpExchange;
+        private volatile ActorInboxMail<M> activeMail;
+        /** Visible across carrier migration; owned by the one active source receive. */
+        private volatile NativeHttp.Exchange activeHttpExchange;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
