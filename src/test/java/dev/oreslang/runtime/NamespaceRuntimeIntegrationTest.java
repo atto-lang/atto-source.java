@@ -541,6 +541,34 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void sourceDigestRejectsFilesOutsideAuthenticatedProjectRoot() throws Exception {
+        Path project = temp.resolve("digest-boundary");
+        Path manifest = billing(project);
+        Path foreign = source(temp.resolve("other-project"), "src/foreign.ores", "billing",
+                "pub fnc injected(): int { return 999; }");
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.sourceDigest(manifest, List.of(foreign)));
+        assertTrue(denied.getMessage().contains("outside manifest root"));
+    }
+
+    @Test
+    void sourceDigestRejectsSymlinkedSourceDirectoryInsideProject() throws Exception {
+        Path project = temp.resolve("digest-alias");
+        Path manifest = billing(project);
+        Path alias = project.resolve("src-link");
+        try {
+            Files.createSymbolicLink(alias, project.resolve("src"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.sourceDigest(manifest,
+                        List.of(alias.resolve("billing/charge.ores"))));
+        assertTrue(denied.getMessage().contains("symlinked namespace digest source"));
+    }
+
+    @Test
     void pinnedManifestMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
         Path providerManifest = billing(provider);
