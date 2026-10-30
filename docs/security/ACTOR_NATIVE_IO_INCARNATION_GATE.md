@@ -28,6 +28,9 @@ up an unrelated replacement actor incarnation by a user-supplied ID.
   new reservation from linearizing after STOP.
 - `requireActive(operation)`, used before a queued worker starts its
   callable and by `borrow`/`register`, also checks exact actor liveness.
+- Named-resource checks, network-listener authority, and actor-turn
+  physical resource admission independently reject stopped incarnations.
+  A still-live sibling is not revoked merely because one actor stopped.
 - The lock sequence for new admission is
   `AsyncNativeIo monitor -> ActorCell.lifecycleLock -> scope quota lock`.
   No native-worker continuation should invoke arbitrary callbacks with
@@ -58,9 +61,11 @@ Required adversarial cases:
 9. Run GraalVM Native Image AOT and hybrid; then compiled Oreslang guest
    negatives and equivalent behavior on LLVM, Wasm, .NET NativeAOT and Forge.
 
-The first four cases are represented by three JUnit methods. Cases 5–9 remain
-the exact-head executable evidence and cross-backend work required before
-merge or security certification.
+Four JUnit methods now cover cases 1–5 and a real already-running worker
+attempting nested I/O after actor STOP (part of case 6). These tests are
+checked in but **NOT_EXECUTED**. Broader randomized race scheduling, complete
+callback/lock-order validation, GraalVM AOT/hybrid and compiled guest/backend
+proof remain release blockers.
 
 **Evidence discipline:** zero-step Actions are pre-runner/admission
 failures, not test failures or passes. No private source may leave its
