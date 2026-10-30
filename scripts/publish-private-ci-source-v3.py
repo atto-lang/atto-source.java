@@ -504,7 +504,7 @@ def checked_carrier_main(repository, contract):
         raise Denied("carrier main advanced beyond reviewed base")
 
     if branch.get("protected") is not True:
-        return review_attested_carrier_main(repository, contract, branch)
+        raise Denied("carrier main is not protected")
 
     protection = legacy.gh_api(f"repos/{repository}/branches/main/protection")
     reviews = protection.get("required_pull_request_reviews")
