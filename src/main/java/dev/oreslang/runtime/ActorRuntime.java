@@ -2423,12 +2423,12 @@ public final class ActorRuntime implements AutoCloseable {
                     SourceMailOrigin origin = sourceTurn.origin();
                     if (origin.runtime() != this
                             || !origin.actorId().equals(cell.ref.id())) {
-                        throw new SecurityException("source task belongs to another actor incarnation");
+                        throw new RejectedExecutionException("source task belongs to another actor incarnation");
                     }
                     if (!cell.stopped.get()) {
                         if (cell.activeMail == null
                                 || cell.activeMail.sequence() != origin.mailSequence()) {
-                            throw new SecurityException("source task origin is no longer the active user mail");
+                            throw new RejectedExecutionException("source task origin is no longer the active user mail");
                         }
                         originSequence = origin.mailSequence();
                     }
