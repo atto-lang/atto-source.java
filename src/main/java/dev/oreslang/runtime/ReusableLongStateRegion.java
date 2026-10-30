@@ -84,6 +84,19 @@ public final class ReusableLongStateRegion implements AutoCloseable {
     }
 
     /**
+     * Checked, in-place scalar addition without a callback/closure.
+     * On signed overflow the existing value stays unchanged. This is
+     * intentionally a primitive operation: no guard, boxed number, snapshot,
+     * or user-supplied function is required on the successful hot path.
+     */
+    public synchronized long addExact(long handle, long delta) {
+        int slot = requireLive(handle);
+        long next = Math.addExact(values[slot], delta);
+        values[slot] = next;
+        return next;
+    }
+
+    /**
      * In-place read/modify/write. The caller may reuse an existing operator.
      * No token is allocated per call. While the operator executes, nested
      * reads/writes/releases/closure are denied; exception unwind clears the
