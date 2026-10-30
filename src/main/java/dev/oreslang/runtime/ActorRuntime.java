@@ -286,6 +286,23 @@ public final class ActorRuntime implements AutoCloseable {
         return exchange;
     }
 
+    /**
+     * Source-task routing provenance minted during an admitted actor mailbox
+     * dispatch. The immutable sequence is NOT an exchange capability.
+     */
+    record SourceMailOrigin(ActorRuntime runtime, ActorId actorId, long mailSequence) { }
+
+    static SourceMailOrigin captureSourceMailOrigin() {
+        ActorExecutionContext ctx = CURRENT_ACTOR_EXECUTION.get();
+        Long sequence = CURRENT_HTTP_MAIL_SEQUENCE.get();
+        if (ctx == null || sequence == null || sequence < 0) return null;
+        ActorCell<?> cell = ctx.runtime().currentActor.get();
+        if (cell == null || cell.stopped.get() || cell.activeMail == null
+                || cell.activeMail.sequence() != sequence.longValue()
+                || !cell.ref.id().equals(ctx.actorId())) return null;
+        return new SourceMailOrigin(ctx.runtime(), ctx.actorId(), sequence.longValue());
+    }
+
     /** An actor's owned exchange is valid only for the same active mail. */
     void requireCurrentHttpExchange(NativeHttp.Exchange exchange) {
         if (currentHttpExchange() != exchange) {
