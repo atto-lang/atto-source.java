@@ -330,6 +330,22 @@ public final class OresAsyncTrace {
         return CURRENT.get();
     }
 
+    /**
+     * Capture immutable diagnostic provenance for an escaping host callback.
+     *
+     * <p>The returned value contains no scheduler, actor, allocation, or guest-entry authority.
+     * It may safely cross carrier threads because it snapshots the logical trace rather than
+     * installing or retaining the mutable {@link Trace} execution lease.</p>
+     */
+    public static CallbackSnapshot captureCallback(BoundaryKind boundary, SourceSite site) {
+        Trace trace = CURRENT.get();
+        if (trace == null) return null;
+        return new CallbackSnapshot(
+                trace,
+                Objects.requireNonNull(boundary, "boundary"),
+                Objects.requireNonNull(site, "site"));
+    }
+
     public static Trace childOfCurrent(Frame frame, SourceSite callSite) {
         Trace parent = CURRENT.get();
         if (parent == null) return root(frame);
@@ -379,10 +395,7 @@ public final class OresAsyncTrace {
             LogicalAsyncTraceElision elision = null;
             for (Throwable suppressed : failure.getSuppressed()) {
                 if (suppressed instanceof LogicalAsyncStackTrace logical) {
-                    if (logical.traceIdentity == trace.identity()
-                            && logical.traceRevision == trace.revision) {
-                        return failure;
-                    }
+                    if (logical.matches(trace)) return failure;
                     attached++;
                 } else if (suppressed instanceof LogicalAsyncTraceElision marker) {
                     elision = marker;
@@ -391,6 +404,36 @@ public final class OresAsyncTrace {
 
             if (attached < MAX_ATTACHED_TRACES) {
                 failure.addSuppressed(new LogicalAsyncStackTrace(trace));
+            } else if (elision == null) {
+                failure.addSuppressed(new LogicalAsyncTraceElision());
+            } else {
+                elision.increment();
+            }
+        }
+        return failure;
+    }
+
+    /**
+     * Attach immutable callback provenance without acquiring or installing the source Trace lease.
+     */
+    public static Throwable attach(Throwable failure, CallbackSnapshot callback) {
+        Objects.requireNonNull(failure, "failure");
+        if (callback == null) return failure;
+
+        synchronized (failure) {
+            int attached = 0;
+            LogicalAsyncTraceElision elision = null;
+            for (Throwable suppressed : failure.getSuppressed()) {
+                if (suppressed instanceof LogicalAsyncStackTrace logical) {
+                    if (logical.matches(callback)) return failure;
+                    attached++;
+                } else if (suppressed instanceof LogicalAsyncTraceElision marker) {
+                    elision = marker;
+                }
+            }
+
+            if (attached < MAX_ATTACHED_TRACES) {
+                failure.addSuppressed(new LogicalAsyncStackTrace(callback));
             } else if (elision == null) {
                 failure.addSuppressed(new LogicalAsyncTraceElision());
             } else {
@@ -414,6 +457,57 @@ public final class OresAsyncTrace {
             if (revision < 0) {
                 throw new IllegalArgumentException("revision must be non-negative");
             }
+        }
+    }
+
+    /**
+     * Immutable, authority-free callback trace evidence.
+     *
+     * <p>The callback boundary is appended to a bounded copy of the logical event history. The
+     * mutable {@link Trace} itself is deliberately not retained, so a producer thread cannot
+     * acquire its single-carrier execution lease merely to preserve diagnostics.</p>
+     */
+    public static final class CallbackSnapshot {
+        private final Object traceIdentity;
+        private final TraceSnapshot snapshot;
+        private final BoundaryKind boundary;
+        private final SourceSite boundarySite;
+
+        private CallbackSnapshot(Trace trace, BoundaryKind boundary, SourceSite boundarySite) {
+            Trace actual = Objects.requireNonNull(trace, "trace");
+            this.traceIdentity = actual.identity();
+            this.boundary = Objects.requireNonNull(boundary, "boundary");
+            this.boundarySite = Objects.requireNonNull(boundarySite, "boundarySite");
+
+            TraceSnapshot base = actual.snapshot();
+            ArrayList<Event> events = new ArrayList<>(base.events());
+            long elided = base.elidedEvents();
+            while (events.size() >= DEFAULT_MAX_EVENTS) {
+                events.removeFirst();
+                if (elided != Long.MAX_VALUE) elided++;
+            }
+            events.add(new BoundaryEvent(boundary, base.currentFrame(), boundarySite));
+            this.snapshot = new TraceSnapshot(
+                    base.currentFrame(),
+                    events,
+                    elided,
+                    base.revision());
+        }
+
+        public BoundaryKind boundary() {
+            return boundary;
+        }
+
+        public SourceSite boundarySite() {
+            return boundarySite;
+        }
+
+        public String logicalTrace() {
+            return renderSnapshot(snapshot);
+        }
+
+        public StackTraceElement[] toJavaStackTrace() {
+            return javaStackSnapshot(snapshot);
         }
     }
 
@@ -574,26 +668,58 @@ public final class OresAsyncTrace {
     public static final class LogicalAsyncStackTrace extends RuntimeException {
         private final Object traceIdentity;
         private final long traceRevision;
+        private final BoundaryKind callbackBoundary;
+        private final SourceSite callbackBoundarySite;
         private final TraceSnapshot snapshot;
         private final String logicalTrace;
         private final long elidedEvents;
 
         private LogicalAsyncStackTrace(Trace trace) {
-            this(trace, trace.snapshot());
+            this(
+                    Objects.requireNonNull(trace, "trace").identity(),
+                    trace.snapshot(),
+                    null,
+                    null);
         }
 
-        private LogicalAsyncStackTrace(Trace trace, TraceSnapshot snapshot) {
+        private LogicalAsyncStackTrace(CallbackSnapshot callback) {
+            this(
+                    Objects.requireNonNull(callback, "callback").traceIdentity,
+                    callback.snapshot,
+                    callback.boundary,
+                    callback.boundarySite);
+        }
+
+        private LogicalAsyncStackTrace(
+                Object traceIdentity,
+                TraceSnapshot snapshot,
+                BoundaryKind callbackBoundary,
+                SourceSite callbackBoundarySite) {
             super("Oreslang logical async stack\n" + renderSnapshot(snapshot),
                     null,
                     false,
                     true);
-            Trace actual = Objects.requireNonNull(trace, "trace");
-            this.traceIdentity = actual.identity();
+            this.traceIdentity = Objects.requireNonNull(traceIdentity, "traceIdentity");
             this.traceRevision = snapshot.revision();
+            this.callbackBoundary = callbackBoundary;
+            this.callbackBoundarySite = callbackBoundarySite;
             this.snapshot = Objects.requireNonNull(snapshot, "snapshot");
             this.logicalTrace = renderSnapshot(snapshot);
             this.elidedEvents = snapshot.elidedEvents();
             setStackTrace(javaStackSnapshot(snapshot));
+        }
+
+        private boolean matches(Trace trace) {
+            return callbackBoundary == null
+                    && traceIdentity == trace.identity()
+                    && traceRevision == trace.revision();
+        }
+
+        private boolean matches(CallbackSnapshot callback) {
+            return traceIdentity == callback.traceIdentity
+                    && traceRevision == callback.snapshot.revision()
+                    && callbackBoundary == callback.boundary
+                    && Objects.equals(callbackBoundarySite, callback.boundarySite);
         }
 
         public String logicalTrace() {
