@@ -8296,9 +8296,12 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof BoundedQueueRuntime.PushResult<?> pushed) {
                 return switch (name) {
                     case "status" -> pushed.status().symbol();
-                    case "value" -> pushed.status() == BoundedQueueRuntime.PushStatus.ADMITTED
-                            ? new OptionValue(false, null)
-                            : new OptionValue(true, pushed.rejectedValue());
+                    case "take_value" -> (Invokable) args -> {
+                        requireZero(args, "QueuePush.take_value");
+                        return pushed.status() == BoundedQueueRuntime.PushStatus.ADMITTED
+                                ? new OptionValue(false, null)
+                                : new OptionValue(true, pushed.rejectedValue());
+                    };
                     default -> throw new IllegalArgumentException(
                             "unknown QueuePush member " + name);
                 };
@@ -8306,9 +8309,12 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof BoundedQueueRuntime.PopResult<?> popped) {
                 return switch (name) {
                     case "status" -> popped.status().symbol();
-                    case "value" -> popped.status() == BoundedQueueRuntime.PopStatus.VALUE
-                            ? new OptionValue(true, popped.value())
-                            : new OptionValue(false, null);
+                    case "take_value" -> (Invokable) args -> {
+                        requireZero(args, "QueuePop.take_value");
+                        return popped.status() == BoundedQueueRuntime.PopStatus.VALUE
+                                ? new OptionValue(true, popped.value())
+                                : new OptionValue(false, null);
+                    };
                     default -> throw new IllegalArgumentException(
                             "unknown QueuePop member " + name);
                 };
