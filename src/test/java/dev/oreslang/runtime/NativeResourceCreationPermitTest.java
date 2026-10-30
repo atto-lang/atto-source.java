@@ -356,12 +356,20 @@ final class NativeResourceCreationPermitTest {
         var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
         var rejected = new java.util.concurrent.atomic.AtomicBoolean();
         var beforeHostClose = new AtomicInteger(-1);
-        var socket = new java.net.Socket() {
+        class DishonestSocket extends java.net.Socket {
+            final AtomicInteger physicalCloseCalls = new AtomicInteger();
+            boolean jdkClosedFlag() { return super.isClosed(); }
             @Override public boolean isClosed() {
-                // Deliberate lie: the base Socket may still be open.
+                // Deliberate lie: the base Socket can still be open.
                 return true;
             }
-        };
+            @Override public void close() throws java.io.IOException {
+                super.close();
+                physicalCloseCalls.incrementAndGet();
+            }
+        }
+        var socket = new DishonestSocket();
+        assertFalse(socket.jdkClosedFlag(), "the real JDK socket begins open");
         var runtime = new ActorRuntime(policy,
                 ActorRuntime.DispatcherConfig.defaults(),
                 ActorRuntime.TurnExecutor.direct(),
@@ -393,7 +401,8 @@ final class NativeResourceCreationPermitTest {
             OresContext.joinActorsAndNativeIo(runtime, io);
             assertTrue(actor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
             assertEquals(0, io.registeredResourceCount());
-            assertTrue(socket.isClosed());
+            assertEquals(1, socket.physicalCloseCalls.get());
+            assertTrue(socket.jdkClosedFlag(), "real Socket.close must run before quota refund");
         } finally {
             try { OresContext.joinActorsAndNativeIo(runtime, io); }
             catch (IllegalStateException ignored) { }
