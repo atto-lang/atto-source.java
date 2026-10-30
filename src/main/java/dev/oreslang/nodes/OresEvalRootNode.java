@@ -22,6 +22,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.BoundedQueueRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.TaskScope;
@@ -5838,12 +5839,6 @@ public final class OresEvalRootNode extends RootNode {
             for (int i = 0; i < args.size(); i++) {
                 Object arg = args.get(i);
                 if (arg instanceof ChannelRuntime.Channel<?> channel) {
-                    // Channel<T> is an Ores-owned synchronized, copyable handle
-                    // within an execution domain. Preserve its coordinator
-                    // identity across local async source task arguments, but
-                    // require the *formal* to explicitly declare Channel<T>.
-                    // This runtime gate also protects host-entered callables
-                    // that might bypass source expression type checking.
                     Ast.TypeRef formal = parameters.get(i).type();
                     if (formal == null || formal.isBorrow()
                             || !"Channel".equals(formal.name())
@@ -5852,9 +5847,27 @@ public final class OresEvalRootNode extends RootNode {
                                 "async task channel argument " + (i + 1)
                                         + " requires an explicit Channel<T> parameter");
                     }
-                    // Actor/mailbox boundary capabilities remain forbidden.
-                    // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
+                } else if (arg instanceof BoundedQueueRuntime<?> queue) {
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"BoundedQueue".equals(formal.name())
+                            || formal.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "async task bounded-queue argument " + (i + 1)
+                                        + " requires an explicit BoundedQueue<T> parameter");
+                    }
+                    detached.add(queue);
+                } else if (arg instanceof BoundedQueueRuntime.Ticket ticket) {
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"QueueTicket".equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async task queue-ticket argument " + (i + 1)
+                                        + " requires an explicit QueueTicket parameter");
+                    }
+                    detached.add(ticket);
                 } else {
                     detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
                 }
@@ -5921,6 +5934,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof GeneratorRuntime.Step<?> step) {
                     return step.done() ? GeneratorRuntime.Step.doneStep()
                             : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
+                }
+                if (value instanceof BoundedQueueRuntime.PopResult<?> popped) {
+                    if (popped.status() != BoundedQueueRuntime.PopStatus.VALUE) {
+                        return new BoundedQueueRuntime.PopResult<>(
+                                popped.status(), null);
+                    }
+                    return BoundedQueueRuntime.PopResult.value(
+                            detachAsyncValue(popped.value(), visiting));
                 }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
@@ -7283,6 +7304,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("BoundedQueue")) return new BoundedQueueFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
@@ -8171,6 +8193,106 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("unknown Channel factory member " + name);
                 }
                 return (Invokable) factory::create;
+            }
+            if (receiver instanceof BoundedQueueFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException(
+                            "unknown BoundedQueue factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof BoundedQueueRuntime<?> queue) {
+                @SuppressWarnings("unchecked")
+                BoundedQueueRuntime<Object> typed =
+                        (BoundedQueueRuntime<Object>) queue;
+                return switch (name) {
+                    case "new_ticket" -> (Invokable) args -> {
+                        requireZero(args, "BoundedQueue.new_ticket");
+                        return queue.newTicket();
+                    };
+                    case "try_push" -> (Invokable) args -> {
+                        requireTwo(args, "BoundedQueue.try_push");
+                        if (!(args.get(1) instanceof BoundedQueueRuntime.Ticket ticket)) {
+                            throw new IllegalArgumentException(
+                                    "BoundedQueue.try_push expects QueueTicket as second argument");
+                        }
+                        return typed.tryPush(args.getFirst(), ticket).symbol();
+                    };
+                    case "push_async" -> (Invokable) args -> {
+                        requireTwo(args, "BoundedQueue.push_async");
+                        if (!(args.get(1) instanceof BoundedQueueRuntime.Ticket ticket)) {
+                            throw new IllegalArgumentException(
+                                    "BoundedQueue.push_async expects QueueTicket as second argument");
+                        }
+                        return typed.pushSymbolAsync(args.getFirst(), ticket);
+                    };
+                    case "try_pop" -> (Invokable) args -> {
+                        requireZero(args, "BoundedQueue.try_pop");
+                        return typed.tryPop();
+                    };
+                    case "pop_async" -> (Invokable) args -> {
+                        requireZero(args, "BoundedQueue.pop_async");
+                        return typed.popAsync();
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "BoundedQueue.close");
+                        return queue.closeQueue();
+                    };
+                    case "is_closed" -> (Invokable) args -> {
+                        requireZero(args, "BoundedQueue.is_closed");
+                        return queue.isClosed();
+                    };
+                    case "capacity" -> (Invokable) args -> {
+                        requireZero(args, "BoundedQueue.capacity");
+                        return (long) queue.capacity();
+                    };
+                    case "generation" -> (Invokable) args -> {
+                        requireZero(args, "BoundedQueue.generation");
+                        return queue.generation();
+                    };
+                    case "pending_registrations" -> (Invokable) args -> {
+                        requireZero(args, "BoundedQueue.pending_registrations");
+                        return (long) queue.pendingRegistrations();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown BoundedQueue member " + name);
+                };
+            }
+            if (receiver instanceof BoundedQueueRuntime.Ticket ticket) {
+                return switch (name) {
+                    case "cancel" -> (Invokable) args -> {
+                        requireZero(args, "QueueTicket.cancel");
+                        return ticket.cancel();
+                    };
+                    case "is_cancelled" -> (Invokable) args -> {
+                        requireZero(args, "QueueTicket.is_cancelled");
+                        return ticket.isCancelled();
+                    };
+                    case "is_settled" -> (Invokable) args -> {
+                        requireZero(args, "QueueTicket.is_settled");
+                        return ticket.isSettled();
+                    };
+                    case "generation" -> (Invokable) args -> {
+                        requireZero(args, "QueueTicket.generation");
+                        return ticket.generation();
+                    };
+                    case "id" -> (Invokable) args -> {
+                        requireZero(args, "QueueTicket.id");
+                        return ticket.sequence();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown QueueTicket member " + name);
+                };
+            }
+            if (receiver instanceof BoundedQueueRuntime.PopResult<?> popped) {
+                return switch (name) {
+                    case "status" -> popped.status().symbol();
+                    case "value" -> popped.status() == BoundedQueueRuntime.PopStatus.VALUE
+                            ? new OptionValue(true, popped.value())
+                            : new OptionValue(false, null);
+                    default -> throw new IllegalArgumentException(
+                            "unknown QueuePop member " + name);
+                };
             }
             if (receiver instanceof SelectCaseFactory factory) {
                 return switch (name) {
@@ -11103,6 +11225,29 @@ public final class OresEvalRootNode extends RootNode {
             }
             int capacity = Math.toIntExact(number.longValue());
             return new ChannelRuntime.Channel<>(capacity);
+        }
+    }
+
+    private static final class BoundedQueueFactory {
+        private Object create(List<Object> args) {
+            if (args.size() < 1 || args.size() > 2) {
+                throw new IllegalArgumentException(
+                        "BoundedQueue.new<T> expects capacity and optional max_pending");
+            }
+            if (!(args.getFirst() instanceof Number capacityValue)) {
+                throw new IllegalArgumentException(
+                        "BoundedQueue.new<T> capacity must be an integer");
+            }
+            int capacity = Math.toIntExact(capacityValue.longValue());
+            if (args.size() == 1) {
+                return new BoundedQueueRuntime<>(capacity);
+            }
+            if (!(args.get(1) instanceof Number maxPendingValue)) {
+                throw new IllegalArgumentException(
+                        "BoundedQueue.new<T> max_pending must be an integer");
+            }
+            int maxPending = Math.toIntExact(maxPendingValue.longValue());
+            return new BoundedQueueRuntime<>(capacity, maxPending);
         }
     }
 
