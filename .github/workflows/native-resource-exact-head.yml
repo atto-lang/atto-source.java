@@ -61,31 +61,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-          reports = list(Path('target/surefire-reports').glob('TEST-*.xml'))
-          if not reports:
-              raise SystemExit('DENIED: no executed Surefire XML reports')
-          total = failed = 0
-          required = {
-              'NativeResourceCreationPermitTest',
-              'ActorRegisteredResourceQuotaTest',
-              'ActorNativeIoIncarnationFenceTest',
-              'ActorSubtreeIoQuotaTest',
-              'PhysicalIoLoanRevocationTest',
-              'AsyncNativeIoTest',
-          }
-          seen = set()
-          for report in reports:
-              root = ET.parse(report).getroot()
-              name = root.attrib.get('name', report.stem)
-              for suffix in required:
-                  if name.endswith(suffix) or report.stem.endswith(suffix):
-                      seen.add(suffix)
-              total += int(root.attrib.get('tests', 0))
-              failed += int(root.attrib.get('failures', 0)) + int(root.attrib.get('errors', 0))
-          if total <= 0 or failed != 0 or not required.issubset(seen):
-              raise SystemExit(f'DENIED: tests={total} failed={failed} missing={sorted(required-seen)}')
-          print(f'PASS: exact-head focused Surefire receipts tests={total} failures=0')
-          PY
+          shopt -s nullglob
+          required=(
+            NativeResourceCreationPermitTest
+            ActorRegisteredResourceQuotaTest
+            ActorNativeIoIncarnationFenceTest
+            ActorSubtreeIoQuotaTest
+            PhysicalIoLoanRevocationTest
+            AsyncNativeIoTest
+          )
+          total=0
+          for class in "${required[@]}"; do
+            matches=(target/surefire-reports/TEST-*${class}.xml)
+            if (( ${#matches[@]} == 0 )); then
+              echo "::error::Missing exact-head Surefire report: ${class}" >&2
+              exit 1
+            fi
+            for report in "${matches[@]}"; do
+              test -s "$report"
+              if ! grep -Eq 'tests="[1-9][0-9]*"' "$report"; then
+                echo "::error::No executed tests in ${report}" >&2
+                exit 1
+              fi
+              if grep -Eq '<(failure|error)([[:space:]>])' "$report"; then
+                echo "::error::JUnit test failed in ${report}" >&2
+                exit 1
+              fi
+              total=$((total+1))
+            done
+          done
+          (( total >= ${#required[@]} ))
+          echo "PASS: ${total} required executed Surefire report(s), no failure/error entries"
