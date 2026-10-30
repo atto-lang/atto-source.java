@@ -230,6 +230,50 @@ final class ActorRegisteredResourceQuotaTest {
     }
 
     @Test
+    void coordinatedContextShutdownRetiresRegisteredHandleBeforeActorFinalizes()
+            throws Exception {
+        var ceiling = RuntimePermissions.denyAll();
+        var policy = IsolatePolicy.developer();
+        var io = new AsyncNativeIo(2, 1, 2, 2);
+        var retained = new Resource();
+        var registered = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        var rt = new ActorRuntime(
+                policy, ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        rt.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(rt::onNativeIoLoanRetired);
+        try {
+            var actor = rt.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        try {
+                            io.register(retained, 16);
+                        } catch (Throwable unexpected) {
+                            failure.compareAndSet(null, unexpected);
+                        } finally {
+                            registered.countDown();
+                        }
+                    });
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertEquals(1, io.registeredResourceCount());
+            // This exercise uses the production context shutdown coordinator.
+            // Actor physical quiescence cannot be true until the native
+            // registration's successful close returns its original lease.
+            OresContext.joinActorsAndNativeIo(rt, io);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, retained.closed.get());
+            assertEquals(0, io.registeredResourceCount());
+            assertEquals(0L, io.registeredAccountedBytes());
+        } finally {
+            try { OresContext.joinActorsAndNativeIo(rt, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
+    @Test
     void realActorNativeRegistrationEnforcesDelegatedResourceBudgets()
             throws Exception {
         var ceiling = RuntimePermissions.denyAll();
