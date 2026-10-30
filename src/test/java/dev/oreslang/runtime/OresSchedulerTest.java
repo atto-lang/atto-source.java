@@ -540,4 +540,79 @@ final class OresSchedulerTest {
         }
     }
 
+
+    @Test
+    void callbackAdapterFailureKeepsTraceWithoutProducerAuthority() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                    new OresAsyncTrace.Frame(
+                            "callback_guest",
+                            new OresAsyncTrace.SourceSite(
+                                    "callback-adapter-test.ores",
+                                    12,
+                                    5,
+                                    "cb1")));
+            AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
+            AtomicReference<Throwable> producedFailure = new AtomicReference<>();
+            AtomicReference<Throwable> producerProblem = new AtomicReference<>();
+            CountDownLatch registered = new CountDownLatch(1);
+            AtomicInteger pc = new AtomicInteger();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(trace)) {
+                    if (pc.getAndIncrement() == 0) {
+                        OresFuture<Integer> adapted = OresFuture.fromCallback(callback -> {
+                            completion.set(callback);
+                            registered.countDown();
+                        });
+                        return OresScheduler.await(adapted);
+                    }
+
+                    assertNotNull(resume.failure());
+                    Throwable failure = OresFuture.unwrap(resume.failure());
+                    if (failure instanceof RuntimeException runtime) throw runtime;
+                    if (failure instanceof Error error) throw error;
+                    throw new RuntimeException(failure);
+                }
+            });
+
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            Thread producer = Thread.ofPlatform().start(() -> {
+                try {
+                    assertNull(OresAsyncTrace.current(),
+                            "producer thread must not inherit the mutable guest trace");
+                    IllegalStateException failure =
+                            new IllegalStateException("foreign callback boom");
+                    producedFailure.set(failure);
+                    completion.get().reject(failure);
+                    assertNull(OresAsyncTrace.current(),
+                            "callback rejection must not install the mutable guest trace");
+                } catch (Throwable failure) {
+                    producerProblem.set(failure);
+                }
+            });
+            producer.join();
+
+            assertNull(producerProblem.get(),
+                    () -> "producer callback failed: " + producerProblem.get());
+
+            java.util.concurrent.ExecutionException thrown = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertSame(producedFailure.get(), thrown.getCause());
+
+            boolean sawCallbackBoundary = java.util.Arrays.stream(
+                            producedFailure.get().getSuppressed())
+                    .filter(OresAsyncTrace.LogicalAsyncStackTrace.class::isInstance)
+                    .map(OresAsyncTrace.LogicalAsyncStackTrace.class::cast)
+                    .anyMatch(logical ->
+                            logical.logicalTrace().contains("--- callback-adapter")
+                                    && logical.logicalTrace().contains("callback_guest")
+                                    && logical.logicalTrace().contains(
+                                            "callback-adapter-test.ores:12:5"));
+            assertTrue(sawCallbackBoundary,
+                    "foreign callback failure must retain immutable callback provenance");
+        }
+    }
+
 }
