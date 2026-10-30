@@ -210,8 +210,10 @@ final class ActorRegisteredResourceQuotaTest {
                 } catch (RejectedExecutionException expected) {
                     p.deniedHandle = true;
                 }
-                p.io.unregister(p.first); // trusted host ownership transfer
-                p.first.close();
+                assertThrows(SecurityException.class, () -> p.io.unregister(p.first));
+                // Generic actor-owned resources must retire via a trusted
+                // adapter callback, not an unproven unregister receipt.
+                p.io.closeAndUnregister(p.first);
                 p.handlesAfterTransfer = p.io.registeredResourceCount();
                 try {
                     p.io.register(p.second, 17);
@@ -219,8 +221,7 @@ final class ActorRegisteredResourceQuotaTest {
                     p.deniedBytes = true;
                 }
                 p.io.register(p.second, 1);
-                p.io.unregister(p.second);
-                p.second.close();
+                p.io.closeAndUnregister(p.second);
             } catch (Throwable failure) {
                 p.failure.compareAndSet(null, failure);
             } finally {
