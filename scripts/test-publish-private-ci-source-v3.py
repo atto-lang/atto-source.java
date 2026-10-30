@@ -23,6 +23,7 @@ WORKFLOW = "e" * 40
 PLAN_BLOB = "f" * 40
 PROTECTED = "1" * 40
 POLICY = b"p" * 32
+CAPACITY_RUN_ID = 987654321
 PLAN = (
     json.dumps(
         {
@@ -232,6 +233,175 @@ class PrivateCiV3Test(unittest.TestCase):
                 PROTECTED,
             )
             protected.assert_called_once_with("trusted/ci", POLICY, 246810)
+
+    def test_carrier_capacity_requires_fresh_positive_runner_and_meaningful_step(self):
+        now = dt.datetime(2026, 10, 30, 22, 40, tzinfo=dt.timezone.utc)
+        carrier = contract()
+        run = {
+            "id": CAPACITY_RUN_ID,
+            "repository": {
+                "id": carrier["repository_id"],
+                "full_name": "trusted/ci",
+            },
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "success",
+            "run_started_at": "2026-10-30T22:39:00Z",
+            "updated_at": "2026-10-30T22:39:30Z",
+        }
+        meaningful = {
+            "name": "Runner identity canary",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-10-30T22:39:10Z",
+            "completed_at": "2026-10-30T22:39:11Z",
+        }
+        job = {
+            "id": 7001,
+            "run_id": CAPACITY_RUN_ID,
+            "run_attempt": 2,
+            "runner_id": 1000001714,
+            "runner_name": "GitHub Actions 1000001714",
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [
+                dict(meaningful, name="Set up job"),
+                meaningful,
+                dict(meaningful, name="Complete job"),
+            ],
+        }
+
+        def good_api(route, method="GET", payload=None):
+            if route == f"repos/trusted/ci/actions/runs/{CAPACITY_RUN_ID}":
+                return run
+            if route == (
+                f"repos/trusted/ci/actions/runs/{CAPACITY_RUN_ID}"
+                "/attempts/2/jobs?per_page=100&page=1"
+            ):
+                return {"total_count": 1, "jobs": [job]}
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=good_api):
+            receipt = v3.verify_carrier_capacity(
+                "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
+            )
+        self.assertEqual(receipt["run_id"], CAPACITY_RUN_ID)
+        self.assertEqual(receipt["run_attempt"], 2)
+
+        bad_jobs = [
+            dict(job, runner_id=0),
+            dict(job, runner_name="  "),
+            dict(job, steps=[]),
+            dict(
+                job,
+                steps=[
+                    dict(meaningful, name="Set up job"),
+                    dict(meaningful, name="Post cleanup"),
+                    dict(meaningful, name="Complete job"),
+                ],
+            ),
+            dict(
+                job,
+                steps=[dict(meaningful, started_at=None)],
+            ),
+        ]
+        for bad_job in bad_jobs:
+            with self.subTest(bad_job=bad_job):
+                def bad_api(route, method="GET", payload=None):
+                    if route == f"repos/trusted/ci/actions/runs/{CAPACITY_RUN_ID}":
+                        return run
+                    return {"total_count": 1, "jobs": [bad_job]}
+                with patch.object(v3.legacy, "gh_api", side_effect=bad_api):
+                    with self.assertRaisesRegex(
+                        v3.Denied, "no positively executed runner job"
+                    ):
+                        v3.verify_carrier_capacity(
+                            "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
+                        )
+
+        stale = dict(
+            run,
+            run_started_at="2026-10-30T22:20:00Z",
+            updated_at="2026-10-30T22:20:30Z",
+        )
+        with patch.object(v3.legacy, "gh_api", return_value=stale):
+            with self.assertRaisesRegex(v3.Denied, "stale"):
+                v3.verify_carrier_capacity(
+                    "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
+                )
+
+    def test_carrier_capacity_rejects_unobserved_duplicate_and_unbounded_jobs(self):
+        now = dt.datetime(2026, 10, 30, 22, 40, tzinfo=dt.timezone.utc)
+        carrier = contract()
+        run = {
+            "id": CAPACITY_RUN_ID,
+            "repository": {
+                "id": carrier["repository_id"],
+                "full_name": "trusted/ci",
+            },
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "run_started_at": "2026-10-30T22:39:00Z",
+            "updated_at": "2026-10-30T22:39:30Z",
+        }
+        step = {
+            "name": "capacity",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-10-30T22:39:10Z",
+            "completed_at": "2026-10-30T22:39:11Z",
+        }
+        base_job = {
+            "run_id": CAPACITY_RUN_ID,
+            "run_attempt": 1,
+            "runner_id": 1000001714,
+            "runner_name": "GitHub Actions 1000001714",
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [step],
+        }
+
+        def duplicate_api(route, method="GET", payload=None):
+            if route == f"repos/trusted/ci/actions/runs/{CAPACITY_RUN_ID}":
+                return run
+            return {
+                "jobs": [
+                    dict(base_job, id=1),
+                    dict(base_job, id=1),
+                ]
+            }
+        with patch.object(v3.legacy, "gh_api", side_effect=duplicate_api):
+            with self.assertRaisesRegex(v3.Denied, "duplicated"):
+                v3.verify_carrier_capacity(
+                    "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
+                )
+
+        def unbounded_api(route, method="GET", payload=None):
+            if route == f"repos/trusted/ci/actions/runs/{CAPACITY_RUN_ID}":
+                return run
+            page = int(route.rsplit("=", 1)[1])
+            return {
+                "jobs": [
+                    dict(base_job, id=page * 1000 + index)
+                    for index in range(100)
+                ]
+            }
+        with patch.object(v3.legacy, "gh_api", side_effect=unbounded_api):
+            with self.assertRaisesRegex(v3.Denied, "pagination"):
+                v3.verify_carrier_capacity(
+                    "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
+                )
+
+        with patch.object(
+            v3.legacy,
+            "gh_api",
+            side_effect=[run, {"jobs": None}],
+        ):
+            with self.assertRaisesRegex(v3.Denied, "unobserved"):
+                v3.verify_carrier_capacity(
+                    "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
+                )
 
     def test_maven_plan_requires_offline_mode_and_exact_pom_blob(self):
         base = {
@@ -1329,6 +1499,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
                     )
                 preflight.assert_called_once()
                 origin.assert_not_called()
@@ -1364,6 +1535,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
                     )
                 verify_source_pr.assert_not_called()
 
@@ -1501,6 +1673,15 @@ class PrivateCiV3Test(unittest.TestCase):
                     ),
                 ) as checked_destination,
                 patch.object(
+                    v3,
+                    "verify_carrier_capacity",
+                    return_value={
+                        "run_id": CAPACITY_RUN_ID,
+                        "run_attempt": 1,
+                        "started_at": "2026-10-20T00:00:00Z",
+                    },
+                ),
+                patch.object(
                     v3.legacy,
                     "collect_source",
                     return_value=[("hello.ores", b"synthetic\n", "100644")],
@@ -1531,6 +1712,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     1482,
                     "ci/test-plans/java-pr1482.json",
                     root,
+                    capacity_run_id=CAPACITY_RUN_ID,
                     now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                 )
 
@@ -1679,6 +1861,15 @@ class PrivateCiV3Test(unittest.TestCase):
                     ),
                 ),
                 patch.object(
+                    v3,
+                    "verify_carrier_capacity",
+                    return_value={
+                        "run_id": CAPACITY_RUN_ID,
+                        "run_attempt": 1,
+                        "started_at": "2026-10-20T00:00:00Z",
+                    },
+                ),
+                patch.object(
                     v3.legacy, "collect_source",
                     return_value=[("hello.ores", b"synthetic\n", "100644")],
                 ),
@@ -1692,6 +1883,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
@@ -1743,6 +1935,15 @@ class PrivateCiV3Test(unittest.TestCase):
                     ),
                 ),
                 patch.object(
+                    v3,
+                    "verify_carrier_capacity",
+                    return_value={
+                        "run_id": CAPACITY_RUN_ID,
+                        "run_attempt": 1,
+                        "started_at": "2026-10-20T00:00:00Z",
+                    },
+                ),
+                patch.object(
                     v3.legacy, "collect_source",
                     return_value=[("hello.ores", b"synthetic\n", "100644")],
                 ),
@@ -1756,6 +1957,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
@@ -1812,6 +2014,15 @@ class PrivateCiV3Test(unittest.TestCase):
                     ),
                 ),
                 patch.object(
+                    v3,
+                    "verify_carrier_capacity",
+                    return_value={
+                        "run_id": CAPACITY_RUN_ID,
+                        "run_attempt": 1,
+                        "started_at": "2026-10-20T00:00:00Z",
+                    },
+                ),
+                patch.object(
                     v3.legacy, "collect_source",
                     return_value=[("hello.ores", b"synthetic\n", "100644")],
                 ),
@@ -1825,6 +2036,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
@@ -1884,6 +2096,15 @@ class PrivateCiV3Test(unittest.TestCase):
                     ),
                 ),
                 patch.object(
+                    v3,
+                    "verify_carrier_capacity",
+                    return_value={
+                        "run_id": CAPACITY_RUN_ID,
+                        "run_attempt": 1,
+                        "started_at": "2026-10-20T00:00:00Z",
+                    },
+                ),
+                patch.object(
                     v3.legacy, "collect_source",
                     return_value=[("hello.ores", b"synthetic\n", "100644")],
                 ),
@@ -1897,6 +2118,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
@@ -1956,6 +2178,15 @@ class PrivateCiV3Test(unittest.TestCase):
                     ),
                 ),
                 patch.object(
+                    v3,
+                    "verify_carrier_capacity",
+                    return_value={
+                        "run_id": CAPACITY_RUN_ID,
+                        "run_attempt": 1,
+                        "started_at": "2026-10-20T00:00:00Z",
+                    },
+                ),
+                patch.object(
                     v3.legacy, "collect_source",
                     return_value=[("hello.ores", b"synthetic\n", "100644")],
                 ),
@@ -1969,6 +2200,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
@@ -2028,6 +2260,15 @@ class PrivateCiV3Test(unittest.TestCase):
                     ),
                 ),
                 patch.object(
+                    v3,
+                    "verify_carrier_capacity",
+                    return_value={
+                        "run_id": CAPACITY_RUN_ID,
+                        "run_attempt": 1,
+                        "started_at": "2026-10-20T00:00:00Z",
+                    },
+                ),
+                patch.object(
                     v3.legacy, "collect_source",
                     return_value=[("hello.ores", b"synthetic\n", "100644")],
                 ),
@@ -2044,6 +2285,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
