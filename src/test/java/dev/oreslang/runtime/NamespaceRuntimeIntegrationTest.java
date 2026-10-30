@@ -697,6 +697,35 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void rootManifestSymlinkSwapWithIdenticalBytesStillFailsClosed() throws Exception {
+        Path project = temp.resolve("root-manifest-symlink-swap");
+        Path main = source(project, "src/main.ores", "app",
+                "pub fnc main(): void { return; }");
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.app]
+                files = ["src/main.ores"]
+                """);
+        PackageNamespaceWorkspace.Workspace admitted =
+                PackageNamespaceWorkspace.discover(main);
+        Path sameBytes = temp.resolve("identical-root-manifest.toml");
+        Files.write(sameBytes, Files.readAllBytes(manifest));
+        try {
+            Files.delete(manifest);
+            Files.createSymbolicLink(manifest, sameBytes);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyRootManifestSnapshot(admitted));
+        assertTrue(denied.getMessage().contains("root namespace manifest changed"));
+    }
+
+    @Test
     void rootManifestChangeAfterDiscoveryMustFailBeforeLinking() throws Exception {
         Path project = temp.resolve("root-reassignment");
         Path main = source(project, "src/main.ores", "app", """
