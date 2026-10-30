@@ -433,6 +433,50 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void pinnedDependencyManifestCannotEnterViaSymlinkedParentDirectory() throws Exception {
+        Path provider = temp.resolve("checkout");
+        Path providerManifest = billing(provider);
+        Path aliasDirectory = temp.resolve("checkout-alias");
+        try {
+            Files.createSymbolicLink(aliasDirectory, provider);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+
+        Path client = temp.resolve("client");
+        Path main = source(client, "src/main.ores", "client", """
+                import namespace billing as payments from "checkout";
+                pub fnc main(): void {
+                  stdio.println(payments.refund());
+                  return;
+                }
+                """);
+        List<Path> members = List.of(
+                provider.resolve("src/billing/charge.ores"),
+                provider.resolve("src/billing/refund.ores"),
+                provider.resolve("src/billing/balance.ores"),
+                provider.resolve("src/billing/invoice.ores"));
+        Files.writeString(client.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                [namespace_dependencies.checkout]
+                manifest = "../checkout-alias/.ores.pkg.toml"
+                package = "checkout"
+                manifest_sha256 = "%s"
+                sources_sha256 = "%s"
+                """.formatted(
+                PackageNamespaceWorkspace.sha256(Files.readAllBytes(providerManifest)),
+                PackageNamespaceWorkspace.sourceDigest(providerManifest, members)));
+        SecurityException refused = assertThrows(SecurityException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(refused.getMessage().contains("symlinked namespace dependency path"));
+    }
+
+    @Test
     void pinnedSourceMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
         Path providerManifest = billing(provider);

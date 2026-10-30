@@ -99,6 +99,11 @@ final class PackageNamespaceWorkspace {
                     throw new IllegalArgumentException("namespace dependency manifest must be relative .ores.pkg.toml");
                 }
                 Path dependencyManifest = manifest.getParent().resolve(candidate).normalize();
+                // Hash pins authenticate bytes, not filesystem authority.
+                // Reject an alias through a symlinked directory or manifest:
+                // otherwise a mutable symlink could retarget the package
+                // between path validation, digest checking and source admission.
+                requireNoSymlinkComponents(dependencyManifest);
                 if (!Files.isRegularFile(dependencyManifest)) {
                     throw new IllegalArgumentException("namespace dependency manifest not found: " + alias);
                 }
@@ -147,6 +152,18 @@ final class PackageNamespaceWorkspace {
         }
         return new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
                 aliases, rootPackageIds, sourcePins, manifestPins);
+    }
+
+    private static void requireNoSymlinkComponents(Path path) {
+        Path absolute = path.toAbsolutePath().normalize();
+        Path cursor = absolute.getRoot();
+        if (cursor == null) throw new SecurityException("namespace dependency has no absolute root");
+        for (Path component : absolute) {
+            cursor = cursor.resolve(component);
+            if (Files.isSymbolicLink(cursor)) {
+                throw new SecurityException("symlinked namespace dependency path: " + cursor);
+            }
+        }
     }
 
     private static TomlParseResult checkedManifest(Path path) throws IOException {
