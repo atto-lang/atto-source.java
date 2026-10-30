@@ -30,6 +30,21 @@ final class CallbackSourceTypingTest {
     }
 
     @Test
+    void callbackValueSupportsDirectOneShotInvocation() {
+        String source = """
+                async fnc direct_callback() => int {
+                  val ready = Future.from_callback<int>(|completion| -> {
+                    completion(41);
+                    return;
+                  });
+                  return await ready;
+                }
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void callbackResolveRejectsWrongPayloadType() {
         String source = """
                 async fnc bad_callback() => int {
