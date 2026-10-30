@@ -39,6 +39,40 @@ final class ExactScalarMathTest {
     }
 
     @Test
+    void exactUnaryAbsAndNegPreserveExactDomainsAndDecimalScale() {
+        BigInteger huge = BigInteger.ONE.shiftLeft(1024);
+        assertEquals(huge.negate(), ExactScalarMath.neg(huge));
+        assertEquals(huge, ExactScalarMath.abs(huge.negate()));
+        assertEquals(BigInteger.valueOf(-42), ExactScalarMath.neg(42L));
+        assertEquals(BigInteger.valueOf(42), ExactScalarMath.abs(-42L));
+
+        BigDecimal scaled = new BigDecimal("-12.3400");
+        Number absolute = ExactScalarMath.abs(scaled);
+        assertInstanceOf(BigDecimal.class, absolute);
+        assertEquals("12.3400", ((BigDecimal) absolute).toPlainString());
+        assertEquals(4, ((BigDecimal) absolute).scale());
+
+        BigDecimal positive = new BigDecimal("12.3400");
+        Number negated = ExactScalarMath.neg(positive);
+        assertInstanceOf(BigDecimal.class, negated);
+        assertEquals("-12.3400", ((BigDecimal) negated).toPlainString());
+        assertEquals(4, ((BigDecimal) negated).scale());
+
+        assertThrows(IllegalArgumentException.class, () -> ExactScalarMath.abs(-0.0d));
+        assertThrows(IllegalArgumentException.class, () -> ExactScalarMath.neg(0.5f));
+    }
+
+    @Test
+    void exactUnaryOperationsEnforceInputBudgetsBeforeWork() {
+        BigInteger tooLarge = new BigInteger("9".repeat(4097));
+        assertThrows(IllegalArgumentException.class, () -> ExactScalarMath.abs(tooLarge));
+        assertThrows(IllegalArgumentException.class, () -> ExactScalarMath.neg(tooLarge));
+        BigDecimal excessiveScale = new BigDecimal("1e-20000");
+        assertThrows(IllegalArgumentException.class, () -> ExactScalarMath.abs(excessiveScale));
+        assertThrows(IllegalArgumentException.class, () -> ExactScalarMath.neg(excessiveScale));
+    }
+
+    @Test
     void nonterminatingDivideRequiresExplicitRoundingContext() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> ExactScalarMath.evaluate(new BigDecimal("1"), new BigDecimal("3"), '/'));
