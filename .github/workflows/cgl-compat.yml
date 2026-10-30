@@ -2,8 +2,7 @@ name: CGL GraalVM Linux pilot (not RT certification)
 on:
   pull_request:
     paths:
-      - 'scripts/cgl-*'
-      - 'tests/test_cgl_preflight.py'
+      - 'scripts/cgl_preflight.rs'
       - 'pom.xml'
       - 'src/main/java/**'
       - 'stdlib/**'
@@ -39,10 +38,14 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Preflight negative matrix and Linux capabilities
+      - name: Rust CGL negative matrix and Linux capabilities
+        shell: bash
         run: |
-          python3 -m unittest discover -s tests -p test_cgl_preflight.py -v
-          python3 scripts/cgl-preflight.py
+          set -euo pipefail
+          rustc --edition=2021 -D warnings --test scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight-tests"
+          "$RUNNER_TEMP/cgl-preflight-tests" --test-threads=1
+          rustc --edition=2021 -D warnings -O scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight"
+          "$RUNNER_TEMP/cgl-preflight"
       - name: Run Maven tests, build launcher, and execute actual guest source
         run: |
           set -euo pipefail
@@ -74,9 +77,14 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Package native launcher and inspect ELF64
+      - name: Validate Rust CGL gate, package Native Image and inspect ELF64
+        shell: bash
         run: |
+          set -euo pipefail
+          rustc --edition=2021 -D warnings --test scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight-tests"
+          "$RUNNER_TEMP/cgl-preflight-tests" --test-threads=1
+          rustc --edition=2021 -D warnings -O scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight"
           mvn -B -ntp -Pnative-aot -DskipTests package
-          python3 scripts/cgl-preflight.py --binary target/ores-aot
+          "$RUNNER_TEMP/cgl-preflight" --binary target/ores-aot
       - name: Execute native launcher with real Oreslang source
         run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
