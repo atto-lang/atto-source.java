@@ -34,6 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/test-native-build-info-admission.sh
+          bash scripts/test-native-actor-smoke-admission.sh
 
       - name: Set up pinned GraalVM JDK
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
@@ -96,33 +97,11 @@ jobs:
           # Native AOT must identify its concrete execution mode; reject
           # JSON strings, JVM/hybrid impersonation, or multiple documents.
           bash scripts/verify-native-build-info.sh target/ores-aot.build-info.json
-          invalid="$(mktemp --suffix=.ores)"
-          trap 'rm -f "$invalid"' EXIT
-          printf 'define actor BadSyntax as\n  this-is-not-valid-oreslang-@@@\nend\n' > "$invalid"
-          if timeout --kill-after=5s 15s target/ores-aot --check "$invalid" > /dev/null 2> target/ores-aot.invalid.err; then
-            echo 'BAD_COMPILER: invalid source passed --check' >&2
-            exit 1
-          else
-            status=$?
-            case "$status" in
-              124|125|126|127) echo "BAD_COMPILER: syntax challenge infrastructure failure ($status)" >&2; exit 1 ;;
-            esac
-            if test "$status" -ge 128; then
-              echo "BAD_COMPILER: syntax challenge signal failure ($status)" >&2
-              exit 1
-            fi
-          fi
-          test -s target/ores-aot.invalid.err || {
-            echo 'BAD_COMPILER: syntax challenge returned no compiler diagnostic' >&2
-            exit 1
-          }
-          fixture=src/test/resources/parity/actor-step-sequential.ores
-          test -f "$fixture"
-          timeout --kill-after=5s 30s target/ores-aot --check "$fixture"
-          timeout --kill-after=5s 30s target/ores-aot "$fixture" > target/ores-aot.guest.stdout
-          printf complete > target/ores-aot.guest.expected
-          cmp target/ores-aot.guest.expected target/ores-aot.guest.stdout
-          echo 'NATIVE_AOT_ACTOR_GUEST_SMOKE_PASS=1'
+          bash scripts/verify-native-actor-smoke.sh \
+            "$(realpath target/ores-aot)" \
+            src/test/resources/parity/actor-step-sequential.ores \
+            e8d9b1c0a870ff6a8d35ced1acf860f85fd7e42d \
+            complete | tee target/ores-aot.actor-smoke.receipt.txt
       # Same-source-repository artifact only: not permission to mirror compiler
       # bytes or private source across organizations. Security incident #22
       # remains a separate gate. Expiration intentionally limits exposure.
@@ -136,8 +115,7 @@ jobs:
             target/ores-aot.sha256
             target/ores-aot.build-provenance.txt
             target/ores-aot.build-info.json
-            target/ores-aot.guest.stdout
-            target/ores-aot.invalid.err
+            target/ores-aot.actor-smoke.receipt.txt
             target/surefire-reports/TEST-dev.oreslang.launcher.ManagedReferenceBuildInfoTest.xml
             target/surefire-reports/TEST-dev.oreslang.launcher.CompilerCheckModeTest.xml
             target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
