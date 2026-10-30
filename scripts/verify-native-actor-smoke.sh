@@ -42,7 +42,7 @@ timeout --kill-after=5s 15s "$binary" --check "$invalid" \
   fail 'invalid syntax must produce stderr only'
 grep -Fq -- "$invalid:" "$scratch/invalid.stderr" ||
   fail 'missing diagnostic naming the challenged source'
-grep -Eiq ':[0-9]+:[0-9]+: error: .*([[:<:]]expected[[:>:]]|unexpected|syntax|parse|token|invalid character)' \
+grep -Eiq ':[0-9]+:[0-9]+: error: .*(expected|unexpected|syntax|parse|token|invalid character)' \
   "$scratch/invalid.stderr" ||
   fail 'rejection is not recognizably a positioned parser diagnostic'
 
