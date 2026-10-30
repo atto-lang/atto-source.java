@@ -108,6 +108,36 @@ public final class SqlitePersistenceStoreTestMain {
                 }
                 check(rejected,"missing committed event did not block actor restoration");
             }
+            // Corrupted snapshots and events must abort fenced reactivation.
+            try(var store=new SqlitePersistenceStore(file)) {
+                for(String actor:List.of("snapshot-null","snapshot-huge","event-huge"))
+                    store.grantEpoch("tenant-a",actor,1);
+                check(store.commit(List.of(
+                    write("snapshot-null","one",1,0,Kind.SNAPSHOT,5),
+                    write("snapshot-huge","one",1,0,Kind.SNAPSHOT,6),
+                    write("event-huge","one",1,0,Kind.EVENT,7)))
+                    .stream().allMatch(Result::durable),"corruption fixture not durably written");
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate("UPDATE state SET snapshot=NULL WHERE actor='snapshot-null'")==1,
+                    "snapshot NULL fixture failed");
+                check(statement.executeUpdate("UPDATE state SET snapshot=zeroblob(1048577) WHERE actor='snapshot-huge'")==1,
+                    "oversized snapshot fixture failed");
+                check(statement.executeUpdate("UPDATE events SET payload=zeroblob(1048577) WHERE actor='event-huge'")==1,
+                    "oversized event fixture failed");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                for(String actor:List.of("snapshot-null","snapshot-huge","event-huge")) {
+                    boolean rejected=false;
+                    try { store.loadFenced(new Identity("tenant-a",actor,"main"),1); }
+                    catch(java.sql.SQLException expected) {
+                        rejected=expected.getMessage().startsWith("INVALID_ACTOR_") ||
+                            expected.getMessage().contains("REPLAY_BYTES_LIMIT");
+                    }
+                    check(rejected,"malformed persisted actor state was published: "+actor);
+                }
+            }
             Process child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),
                 "-cp",System.getProperty("java.class.path"),SqlitePersistenceStoreTestMain.class.getName(),"child",file.toString())
                 .redirectErrorStream(true).start();
