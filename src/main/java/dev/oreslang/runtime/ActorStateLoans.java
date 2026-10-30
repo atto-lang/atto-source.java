@@ -46,15 +46,38 @@ public final class ActorStateLoans implements AutoCloseable {
      */
     public OresFuture<ExclusiveLoan> acquireAsync(Object handlerIdentity) {
         Objects.requireNonNull(handlerIdentity, "handlerIdentity");
+        return acquireInternal(handlerIdentity, null);
+    }
+
+    /**
+     * Preferred actor-state path. Authority follows the logical execution
+     * across carrier-thread migration but is generation-fenced against stale
+     * scheduler slots and actor-arena incarnations.
+     */
+    public OresFuture<ExclusiveLoan> acquireAsync(ExecutionContext execution) {
+        Objects.requireNonNull(execution, "execution");
+        if (!validStateExecution(execution)) {
+            return OresFuture.failed(new IllegalArgumentException(
+                    "actor state loan requires bound actor execution context"));
+        }
+        return acquireInternal(execution, execution);
+    }
+
+    private OresFuture<ExclusiveLoan> acquireInternal(
+            Object handlerIdentity, ExecutionContext executionOwner) {
         synchronized (monitor) {
             if (closed) return OresFuture.failed(new IllegalStateException("actor state loans closed"));
+            if (executionOwner != null && hasExecutionAuthorityLocked(executionOwner)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "logical execution already holds or awaits a state loan"));
+            }
             if (!owners.add(handlerIdentity)) {
                 return OresFuture.failed(new IllegalStateException(
                         "handler already holds or awaits a state loan"));
             }
             if (active == null && pending.isEmpty()) {
                 try {
-                    ExclusiveLoan loan = createLocked(handlerIdentity);
+                    ExclusiveLoan loan = createLocked(handlerIdentity, executionOwner);
                     return OresFuture.completed(loan);
                 } catch (RuntimeException | Error failure) {
                     owners.remove(handlerIdentity);
@@ -65,13 +88,37 @@ public final class ActorStateLoans implements AutoCloseable {
                 owners.remove(handlerIdentity);
                 return OresFuture.failed(new IllegalStateException("actor state loan queue full"));
             }
-            Pending waiter = new Pending(handlerIdentity);
+            Pending waiter = new Pending(handlerIdentity, executionOwner);
             pending.addLast(waiter);
             return waiter.future;
         }
     }
 
-    private ExclusiveLoan createLocked(Object owner) {
+    private static boolean validStateExecution(ExecutionContext execution) {
+        return execution.executionHandle().isBound() &&
+                execution.allocationDomain().kind() == ExecutionContext.AllocationKind.ACTOR &&
+                execution.allocationDomain().isBound();
+    }
+
+    private static boolean sameExecutionAuthority(
+            ExecutionContext left, ExecutionContext right) {
+        return left != null && right != null &&
+                left.id().equals(right.id()) &&
+                left.executionHandle().equals(right.executionHandle()) &&
+                left.allocationDomain().equals(right.allocationDomain());
+    }
+
+    private boolean hasExecutionAuthorityLocked(ExecutionContext execution) {
+        if (active != null && sameExecutionAuthority(active.executionOwner, execution)) {
+            return true;
+        }
+        for (Pending waiter : pending) {
+            if (sameExecutionAuthority(waiter.executionOwner, execution)) return true;
+        }
+        return false;
+    }
+
+    private ExclusiveLoan createLocked(Object owner, ExecutionContext executionOwner) {
         if (nextEpoch == Long.MAX_VALUE) {
             throw new IllegalStateException("actor state loan epochs exhausted");
         }
@@ -88,7 +135,7 @@ public final class ActorStateLoans implements AutoCloseable {
                 owners.remove(waiter.owner);
                 continue;
             }
-            ExclusiveLoan loan = createLocked(waiter.owner);
+            ExclusiveLoan loan = createLocked(waiter.owner, waiter.executionOwner);
             completions.addLast(() -> {
                 // The Future may have been cancelled after its queue removal.
                 // A losing grant must release its loan and promote the next.
@@ -130,9 +177,11 @@ public final class ActorStateLoans implements AutoCloseable {
 
     private final class Pending {
         final Object owner;
+        final ExecutionContext executionOwner;
         final OresFuture<ExclusiveLoan> future;
-        Pending(Object owner) {
+        Pending(Object owner, ExecutionContext executionOwner) {
             this.owner = owner;
+            this.executionOwner = executionOwner;
             future = new OresFuture<>(() -> {
                 synchronized (monitor) {
                     if (pending.remove(this)) owners.remove(owner);
@@ -143,11 +192,14 @@ public final class ActorStateLoans implements AutoCloseable {
 
     public final class ExclusiveLoan implements AutoCloseable {
         private final Object owner;
+        private final ExecutionContext executionOwner;
         private final long epoch;
         private boolean released;
 
-        private ExclusiveLoan(Object owner, long epoch) {
+        private ExclusiveLoan(
+                Object owner, ExecutionContext executionOwner, long epoch) {
             this.owner = owner;
+            this.executionOwner = executionOwner;
             this.epoch = epoch;
         }
 
@@ -158,6 +210,18 @@ public final class ActorStateLoans implements AutoCloseable {
         public boolean heldBy(Object handlerIdentity) {
             synchronized (monitor) {
                 return !closed && !released && active == this && owner == handlerIdentity;
+            }
+        }
+
+        /**
+         * Value-based logical authority check for a scheduler execution.
+         * Physical Java thread identity is intentionally irrelevant.
+         */
+        public boolean heldBy(ExecutionContext execution) {
+            Objects.requireNonNull(execution, "execution");
+            synchronized (monitor) {
+                return !closed && !released && active == this &&
+                        sameExecutionAuthority(executionOwner, execution);
             }
         }
 
