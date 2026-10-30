@@ -34,8 +34,8 @@
   "runner_capacity_canary_repository": "agent-pontifex-test/agent-pontifex-e2e-tests",
   "runner_capacity_canary_repository_id": 1370782550,
   "runner_capacity_canary_quarantined": true,
-  "runner_capacity_canary_run_id": 41010251509,
-  "runner_capacity_canary_job_id": 123914277235,
+  "runner_capacity_canary_run_id": 41010382689,
+  "runner_capacity_canary_job_id": 123914680747,
   "runner_capacity_canary_result": "success",
   "carrier_exact_head_approved": false,
   "blocking_incidents": [
@@ -53,5 +53,8 @@
   "source_exact_head_approved": false,
   "transfer_authorized": false,
   "status": "hold",
-  "purpose": "review-only source-side receipt separating current-head zero-step evidence, last executed carrier-head evidence, and quarantined synthetic runner-capacity/scrub evidence"
+  "purpose": "review-only source-side receipt separating current-head zero-step evidence, last executed carrier-head evidence, and quarantined synthetic runner-capacity/scrub evidence",
+  "source_branch_protection_provider_result": "upgrade-required",
+  "carrier_branch_protection_provider_result": "upgrade-required",
+  "branch_protection_public_visibility_workaround_allowed": false
 }
