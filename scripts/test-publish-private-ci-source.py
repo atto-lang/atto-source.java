@@ -1332,6 +1332,64 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
 
+    def test_complete_blocking_incident_registry_includes_all_known_carrier_incidents(self):
+        expected = {
+            22: 5832921751,
+            77: 5904679716,
+            127: 5935338521,
+            171: 6042555082,
+            172: 6042602777,
+            198: 6070465058,
+            200: 6071264936,
+        }
+        self.assertEqual(pub.BLOCKING_INCIDENT_IDS, expected)
+        self.assertEqual(pub.BLOCKING_INCIDENTS, tuple(expected))
+
+    def test_all_quarantined_repository_ids_reject_slug_rename(self):
+        expected_ids = {
+            1323575966,
+            1323598260,
+            1412142815,
+            1370782550,
+            1324139596,
+            1350751074,
+        }
+        self.assertEqual(set(pub.QUARANTINED_DESTINATION_IDS), expected_ids)
+        for repository_id in sorted(expected_ids):
+            metadata = {
+                "id": repository_id,
+                "full_name": "renamed-owner/renamed-carrier",
+                "visibility": "private",
+                "private": True,
+                "archived": False,
+                "disabled": False,
+                "fork": False,
+                "default_branch": "main",
+            }
+            with self.subTest(repository_id=repository_id):
+                with patch.object(pub, "gh_api", return_value=metadata):
+                    with self.assertRaisesRegex(
+                        pub.Denied, "repository ID is quarantined"
+                    ):
+                        pub.checked_repo(
+                            "renamed-owner/renamed-carrier", repository_id
+                        )
+
+    def test_quarantined_destination_slugs_are_case_insensitive(self):
+        expected = {
+            "zed-pkg-test/java-app",
+            "scintilla-run-test/gleam-runner-conformance",
+            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+            "agent-pontifex-test/agent-pontifex-e2e-tests",
+            "led-dynamo/leddy-e2e",
+            "claimgraph-test/claimgraph-e2e",
+        }
+        self.assertEqual(
+            {item.casefold() for item in pub.QUARANTINED_DESTINATIONS},
+            expected,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

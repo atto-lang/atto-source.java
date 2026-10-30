@@ -31,8 +31,34 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   if [[ "$key" == "${target,,}" ]]; then approved_id="$numeric_id"; fi
 done < "$policy"
 [[ -n "$approved_id" ]] || fail 'destination is absent from reviewed repository policy'
-[[ "$approved_id" != 1323575966 ]] ||
-  fail 'destination repository ID is quarantined by private-source incident policy'
+
+target_key="${target,,}"
+quarantined_slugs=(
+  "zed-pkg-test/java-app"
+  "scintilla-run-test/gleam-runner-conformance"
+  "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
+  "agent-pontifex-test/agent-pontifex-e2e-tests"
+  "led-dynamo/leddy-e2e"
+  "claimgraph-test/claimgraph-e2e"
+)
+for quarantined_slug in "${quarantined_slugs[@]}"; do
+  [[ "$target_key" != "$quarantined_slug" ]] ||
+    fail 'destination is quarantined by private-source incident policy'
+done
+
+quarantined_ids=(
+  1323575966
+  1323598260
+  1412142815
+  1370782550
+  1324139596
+  1350751074
+)
+for quarantined_id in "${quarantined_ids[@]}"; do
+  [[ "$approved_id" != "$quarantined_id" ]] ||
+    fail 'destination repository ID is quarantined by private-source incident policy'
+done
+
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
 metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
