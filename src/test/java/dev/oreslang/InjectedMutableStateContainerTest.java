@@ -17,8 +17,16 @@ import static org.junit.jupiter.api.Assertions.*;
 final class InjectedMutableStateContainerTest {
     private static final String INVENTORY = """
             define class InventoryState as
-              pub let int available = 10;
-              pub let int reserved = 0;
+              let int available = 10;
+              let int reserved = 0;
+
+              pub available_count(): int {
+                return self.available;
+              }
+
+              pub reserved_count(): int {
+                return self.reserved;
+              }
 
               pub try_reserve(mut self InventoryState)(int amount): bool {
                 if amount < 0; then return false; fi
@@ -74,6 +82,47 @@ final class InjectedMutableStateContainerTest {
                 error::getMessage);
     }
     @Test
+    void readonly_injection_can_observe_an_immutable_scalar_without_mutating_storage() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(INVENTORY + """
+                fnc report(borrow InventoryState state): int {
+                  return state.available_count();
+                }
+                fnc valid(): int {
+                  let mut InventoryState state = new InventoryState();
+                  return report(rt borrow state);
+                }
+                """));
+    }
+
+    @Test
+    void private_state_fields_cannot_be_read_directly_from_injected_callers() {
+        rejectsPrivateField(INVENTORY + """
+                fnc invalid(borrow InventoryState state): int {
+                  return state.available;
+                }
+                """);
+    }
+
+    @Test
+    void private_state_fields_cannot_be_written_directly_by_injected_callers() {
+        rejectsPrivateField(INVENTORY + """
+                fnc invalid(borrow mut InventoryState state): void {
+                  state.reserved = 50;
+                  return;
+                }
+                """);
+    }
+
+    private static void rejectsPrivateField(String source) {
+        var parsed = assertDoesNotThrow(() -> dev.oreslang.parser.Parser.parse(source),
+                "a parser error cannot count as a private-state violation");
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.analyze(parsed));
+        assertTrue(error.getMessage().contains("private field"),
+                error::getMessage);
+    }
+
+    @Test
     void guest_reservation_is_atomic_with_respect_to_its_two_field_invariant() throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
@@ -82,9 +131,9 @@ final class InjectedMutableStateContainerTest {
                       let mut InventoryState state = new InventoryState();
                       const bool first = state.try_reserve(3);
                       const bool invalid = state.try_reserve(20);
-                      stdio.stdout.write(state.available);
+                      stdio.stdout.write(state.available_count());
                       stdio.stdout.write("|");
-                      stdio.stdout.write(state.reserved);
+                      stdio.stdout.write(state.reserved_count());
                       stdio.stdout.write("|");
                       stdio.stdout.write(first);
                       stdio.stdout.write("|");
