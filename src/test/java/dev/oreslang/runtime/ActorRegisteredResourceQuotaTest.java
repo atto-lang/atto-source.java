@@ -184,6 +184,61 @@ final class ActorRegisteredResourceQuotaTest {
         }
     }
 
+    @Test
+    void actorGenericCloseFailureRetainsQuotaAndDeniesFutureLoansUntilTrustedRetry()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var attempts = new AtomicInteger();
+        var checked = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        AutoCloseable physical = () -> {
+            if (attempts.incrementAndGet() == 1)
+                throw new IllegalStateException("native close failed before retirement");
+        };
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        try {
+                            io.register(physical, 19);
+                            assertThrows(SecurityException.class,
+                                    () -> io.unregister(physical),
+                                    "unproven close may not refund actor budget");
+                            assertThrows(IllegalStateException.class,
+                                    () -> io.closeAndUnregister(physical));
+                            assertEquals(1, io.registeredResourceCount());
+                            assertEquals(19L, io.registeredAccountedBytes());
+                            assertThrows(RejectedExecutionException.class,
+                                    () -> io.borrow(physical),
+                                    "failed physical close must fence new loans");
+                            io.closeAndUnregister(physical);
+                            assertEquals(0, io.registeredResourceCount());
+                            assertEquals(0L, io.registeredAccountedBytes());
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+            actor.send("close/retry");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertEquals(2, attempts.get(), "retry must obtain actual close callback");
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
     private static final AtomicReference<Probe> ACTIVE = new AtomicReference<>();
 
     private static final class Probe {
