@@ -70,6 +70,7 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
     if !matches!(machine, 62 | 183) {
         return Err(err("unsupported ELF machine architecture"));
     }
+    let entry = le64(&h, 24);
     let phoff = le64(&h, 32);
     let phnum = le16(&h, 56) as usize;
     if le16(&h, 52) != 64 || le16(&h, 54) != 56 || phnum == 0 || phnum > MAX_PH {
@@ -84,6 +85,7 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
     f.read_exact(&mut table).map_err(|_| err("truncated ELF program-header table"))?;
     let mut has_load = false;
     let mut executable_load = false;
+    let mut entry_in_executable_load = false;
     let mut interpreter: Option<String> = None;
     for ph in table.chunks_exact(56) {
         let kind_ph = le32(ph, 0);
@@ -96,7 +98,6 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
         if kind_ph == 1 {
             has_load = true;
             if flags & 3 == 3 { return Err(err("ELF PT_LOAD has writable executable mapping")); }
-            executable_load |= flags & 1 != 0;
             if off.checked_add(filesz).map_or(true, |end| end > file_len) {
                 return Err(err("ELF PT_LOAD extends beyond file"));
             }
@@ -106,6 +107,13 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
             }
             if align > 1 && (!align.is_power_of_two() || vaddr % align != off % align) {
                 return Err(err("ELF PT_LOAD alignment/offset mismatch"));
+            }
+            if flags & 1 != 0 {
+                if filesz == 0 { return Err(err("ELF executable PT_LOAD has no file-backed bytes")); }
+                executable_load = true;
+                let end = vaddr.checked_add(filesz)
+                    .ok_or_else(|| err("ELF executable PT_LOAD virtual range overflows"))?;
+                if (vaddr..end).contains(&entry) { entry_in_executable_load = true; }
             }
         } else if kind_ph == 0x6474_e551 && flags & 1 != 0 {
             return Err(err("ELF requests executable PT_GNU_STACK"));
@@ -135,6 +143,7 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
     }
     if !has_load { return Err(err("ELF lacks loadable segments")); }
     if !executable_load { return Err(err("ELF lacks an executable PT_LOAD segment")); }
+    if !entry_in_executable_load { return Err(err("ELF entry point is outside file-backed executable PT_LOAD")); }
     if kind == 3 && interpreter.is_none() {
         return Err(err("ET_DYN without interpreter is not admitted by pilot"));
     }
