@@ -9,6 +9,7 @@ on:
       - 'stdlib/decimal.ores'
       - 'examples/native-bigint-reference.ores'
       - 'examples/native-decimal-reference.ores'
+      - 'examples/native-decimal-division-rejected.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DefaultCheckedI64ArithmeticTest.java'
@@ -33,6 +34,7 @@ on:
       - 'stdlib/decimal.ores'
       - 'examples/native-bigint-reference.ores'
       - 'examples/native-decimal-reference.ores'
+      - 'examples/native-decimal-division-rejected.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DefaultCheckedI64ArithmeticTest.java'
@@ -131,6 +133,16 @@ jobs:
           mvn -B -ntp -DskipTests compile
           mvn -B -ntp exec:java -Dexec.args="examples/native-decimal-reference.ores" | tee "${RUNNER_TEMP}/decimal-reference.out"
           grep -Fx 'NATIVE-DECIMAL-REFERENCE-OK' "${RUNNER_TEMP}/decimal-reference.out"
+      - name: Require Decimal division to fail closed before rounding lands
+        run: |
+          set -euo pipefail
+          set +e
+          mvn -B -ntp exec:java -Dexec.args="examples/native-decimal-division-rejected.ores" >"${RUNNER_TEMP}/decimal-div.out" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -F 'division/rounding not implemented' "${RUNNER_TEMP}/decimal-div.out"
+          ! grep -F 'unexpectedly returned' "${RUNNER_TEMP}/decimal-div.out"
       - name: Run real Oreslang testing.run_suite guest refinement
         run: |
           set -euo pipefail
