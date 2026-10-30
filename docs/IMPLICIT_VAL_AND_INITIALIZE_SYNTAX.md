@@ -21,6 +21,8 @@ The old Java spelling `Type field: initializer` previously created a `LET` bindi
 
 Uninitialized fixed fields require complete single-write construction and a no-`self`-escape guarantee. A field-level `final` cannot be assigned twice; a `const` requires a declaration-time constant per existing rules.
 
+A child class with an explicit `initialize(...)`/`constructor(...)` cannot fill an inherited uninitialized fixed slot. The constructor write exception applies only to fixed fields declared by that same class. Because explicit super-constructor chaining is not yet supported, the checker rejects an explicit child initializer if it inherits a fixed field without its own declaration-site initializer. The synthesized positional constructor route retains its separately validated field admission rules.
+
 ## Initializer and callable body surface
 
 The preferred spelling is:
