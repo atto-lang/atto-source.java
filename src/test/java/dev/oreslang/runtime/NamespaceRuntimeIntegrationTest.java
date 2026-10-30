@@ -339,6 +339,68 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void manifestOwnedProviderCanImportDeclaredSiblingInSamePackage() throws Exception {
+        Path project = temp.resolve("checkout");
+        billing(project);
+        source(project, "src/billing/local.ores", "billing", """
+                define module Local as
+                  pub fnc helper(): int { return 7; }
+                end
+                """);
+        Files.writeString(project.resolve("src/billing/charge.ores"), """
+                namespace billing;
+                import module Local from "./local.ores";
+                pub fnc charge(int value): int { return Local.helper(); }
+                """);
+        Path main = source(project, "src/main.ores", "client", """
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  stdio.println(payments.charge(1));
+                  return;
+                }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, Files.readString(manifest).replace(
+                "  \"src/billing/invoice.ores\",",
+                "  \"src/billing/invoice.ores\",\n  \"src/billing/local.ores\",\n  \"src/main.ores\","));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var build = run(main, out);
+        assertEquals(6, build.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("7"));
+    }
+
+    @Test
+    void manifestOwnedProviderCannotImportDeclaredSiblingFromAnotherPackage() throws Exception {
+        Path project = temp.resolve("checkout");
+        billing(project);
+        source(project, "src/foreign.ores", "foreign", """
+                define module Foreign as
+                  pub fnc helper(): int { return 999; }
+                end
+                """);
+        Files.writeString(project.resolve("src/billing/charge.ores"), """
+                namespace billing;
+                import module Foreign from "../foreign.ores";
+                pub fnc charge(int value): int { return Foreign.helper(); }
+                """);
+        Path main = source(project, "src/main.ores", "client", """
+                import namespace billing as payments from "+/";
+                pub fnc main(): void {
+                  stdio.println(payments.refund());
+                  return;
+                }
+                """);
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, Files.readString(manifest).replace(
+                "  \"src/billing/invoice.ores\",",
+                "  \"src/billing/invoice.ores\",\n  \"src/main.ores\",")
+                + "\n[packages.foreign]\nfiles = [\"src/foreign.ores\"]\n");
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(denied.getMessage().contains("undeclared or foreign package source"));
+    }
+
+    @Test
     void manifestOwnedProviderCannotImportUnlistedSiblingSource() throws Exception {
         Path project = temp.resolve("checkout");
         billing(project);
