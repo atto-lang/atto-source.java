@@ -10,6 +10,7 @@ on:
       - 'examples/native-bigint-reference.ores'
       - 'examples/native-bigint-division-zero-rejected.ores'
       - 'examples/native-bigint-resource-rejected.ores'
+      - 'examples/native-bigint-division-resource-rejected.ores'
       - 'examples/native-decimal-reference.ores'
       - 'examples/native-decimal-division-rejected.ores'
       - 'examples/native-decimal-resource-rejected.ores'
@@ -41,6 +42,7 @@ on:
       - 'examples/native-bigint-reference.ores'
       - 'examples/native-bigint-division-zero-rejected.ores'
       - 'examples/native-bigint-resource-rejected.ores'
+      - 'examples/native-bigint-division-resource-rejected.ores'
       - 'examples/native-decimal-reference.ores'
       - 'examples/native-decimal-division-rejected.ores'
       - 'examples/native-decimal-resource-rejected.ores'
@@ -164,13 +166,23 @@ jobs:
           test "$status" -ne 0
           grep -F 'bigint: multiplication exceeds bounded operation policy' "${RUNNER_TEMP}/bigint-resource.out"
           ! grep -F 'unexpectedly admitted' "${RUNNER_TEMP}/bigint-resource.out"
+      - name: Require BigInt 128-limb division work policy
+        run: |
+          set -euo pipefail
+          set +e
+          mvn -B -ntp exec:java -Dexec.args="examples/native-bigint-division-resource-rejected.ores" >"${RUNNER_TEMP}/bigint-div-resource.out" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -F 'bigint: division exceeds bounded 128-limb operation policy' "${RUNNER_TEMP}/bigint-div-resource.out"
+          ! grep -F 'unexpectedly admitted 129 limbs' "${RUNNER_TEMP}/bigint-div-resource.out"
       - name: Execute pure-Oreslang exact Decimal reference
         run: |
           set -euo pipefail
           mvn -B -ntp -DskipTests compile
           mvn -B -ntp exec:java -Dexec.args="examples/native-decimal-reference.ores" | tee "${RUNNER_TEMP}/decimal-reference.out"
           grep -Fx 'NATIVE-DECIMAL-REFERENCE-OK' "${RUNNER_TEMP}/decimal-reference.out"
-      - name: Require Decimal division to fail closed before rounding lands
+      - name: Require nonterminating exact Decimal division to demand context
         run: |
           set -euo pipefail
           set +e
@@ -178,7 +190,7 @@ jobs:
           status=$?
           set -e
           test "$status" -ne 0
-          grep -F 'division/rounding not implemented' "${RUNNER_TEMP}/decimal-div.out"
+          grep -F 'decimal: nonterminating exact division requires context' "${RUNNER_TEMP}/decimal-div.out"
           ! grep -F 'unexpectedly returned' "${RUNNER_TEMP}/decimal-div.out"
       - name: Require Decimal bounded coefficient policy
         run: |
