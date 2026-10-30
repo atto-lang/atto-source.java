@@ -801,9 +801,12 @@ public final class AsyncNativeIo implements AutoCloseable {
             // This check must precede state.unregistered and any quota refund.
             if (actorId != null && state.registeredBy != null
                     && resource instanceof java.net.Socket socket
-                    && !socket.isClosed()) {
+                    && (resource.getClass() != java.net.Socket.class || !socket.isClosed())) {
+                // isClosed() is overrideable on Socket subclasses. Never
+                // accept an actor-controlled override as kernel-handle proof.
+                // Unknown subclasses require trusted-host retirement instead.
                 throw new SecurityException(
-                        "actor-owned native socket must be closed before unregister");
+                        "actor-owned native socket must be plain Socket and closed before unregister");
             }
             // Trusted host cleanup remains permitted; it owns the resource
             // transfer protocol and does not acquire guest actor privileges.
