@@ -15,7 +15,11 @@
     "math_i64_unary": "implemented_unverified",
     "binary64_unary": "implemented_unverified",
     "bigint_unary": "implemented_unverified",
-    "decimal_unary": "implemented_unverified"
+    "decimal_unary": "implemented_unverified",
+    "bigint_div_rem": "implemented_unverified",
+    "bigint_to_i64_checked": "implemented_unverified",
+    "bigint_to_f64_exact": "implemented_unverified",
+    "bigint_to_f64_nearest": "implemented_unverified"
   },
   "evidence": {
     "source_i64": {},
@@ -40,9 +44,22 @@
     },
     "decimal_unary": {
       "scope": "guest decimal carrier exists and ExactScalarMath.abs/neg preserve BigDecimal scale; Math.abs/Math.neg guest overload binding is not yet integrated with this branch"
+    },
+    "bigint_div_rem": {
+      "scope": "ExactScalarMath.divRem/quotient/remainder host carrier substrate; guest BigInt named namespace binding remains to be integrated"
+    },
+    "bigint_to_i64_checked": {
+      "scope": "ExactScalarMath.toLongExact substrate; guest named conversion binding unverified"
+    },
+    "bigint_to_f64_exact": {
+      "scope": "ExactScalarMath.toDoubleExact rejects any rounded or infinite conversion; guest binding unverified"
+    },
+    "bigint_to_f64_nearest": {
+      "scope": "ExactScalarMath.toDoubleNearest is explicit precision-loss API and rejects infinity; guest binding unverified"
     }
   },
   "source_i64_fixture_git_blob_sha": "bbc319c19ecd007109d33592e210091eb267e5a2",
   "source_i64_overflow_fixture_git_blob_sha": "2ce0b0ff5c52e54a788280fd64d67fa8dc32614a",
-  "math_unary_precision_fixture_git_blob_sha": "3249d837ae6bcf6e2c2c23cac872becf92d0c8e0"
+  "math_unary_precision_fixture_git_blob_sha": "3249d837ae6bcf6e2c2c23cac872becf92d0c8e0",
+  "bigint_exact_fixture_git_blob_sha": "b49c7a7d9395f7298e5534c4a6e5b90d4a2a518c"
 }
