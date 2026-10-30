@@ -29,7 +29,8 @@ import java.util.Set;
 final class PackageNamespaceWorkspace {
     record Workspace(List<Path> manifests, List<Path> files, Map<String, String> aliases,
                      Set<String> rootPackageIds, Map<Path, String> dependencySourcePins,
-                     Map<Path, String> dependencyManifestPins) {
+                     Map<Path, String> dependencyManifestPins,
+                     String rootManifestSha256) {
         Workspace {
             manifests = List.copyOf(manifests);
             files = List.copyOf(files);
@@ -63,6 +64,7 @@ final class PackageNamespaceWorkspace {
         LinkedHashMap<Path, String> sourcePins = new LinkedHashMap<>();
         LinkedHashMap<Path, String> manifestPins = new LinkedHashMap<>();
         manifests.add(manifest);
+        String rootManifestSha256 = sha256(Files.readAllBytes(manifest));
         TomlParseResult root = checkedManifest(manifest);
         files.addAll(members(manifest, root));
         LinkedHashSet<String> rootPackageIds = new LinkedHashSet<>();
@@ -151,8 +153,10 @@ final class PackageNamespaceWorkspace {
                 || totalBytes > 64L * 1024 * 1024) {
             throw new IllegalArgumentException("namespace workspace exceeds manifest/source limits");
         }
-        return new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
-                aliases, rootPackageIds, sourcePins, manifestPins);
+        Workspace snapshot = new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
+                aliases, rootPackageIds, sourcePins, manifestPins, rootManifestSha256);
+        verifyRootManifestSnapshot(snapshot);
+        return snapshot;
     }
 
     private static void requireNoSymlinkComponents(Path path) {
@@ -292,8 +296,18 @@ final class PackageNamespaceWorkspace {
      * Re-verify pinned dependency bytes against the *same admitted source text*
      * that the compiler will parse, not just an earlier filesystem read.
      */
+    static void verifyRootManifestSnapshot(Workspace workspace) throws IOException {
+        Path manifest = workspace.manifests().getFirst();
+        if (Files.isSymbolicLink(manifest)
+                || !Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)
+                || !sha256(Files.readAllBytes(manifest)).equals(workspace.rootManifestSha256())) {
+            throw new SecurityException("root namespace manifest changed during admission");
+        }
+    }
+
     static void verifyPinnedSnapshot(Workspace workspace, Map<String, String> admitted)
             throws IOException {
+        verifyRootManifestSnapshot(workspace);
         for (var entry : workspace.dependencySourcePins().entrySet()) {
             Path manifest = entry.getKey();
             String pinnedManifestHash = workspace.dependencyManifestPins().get(manifest);
