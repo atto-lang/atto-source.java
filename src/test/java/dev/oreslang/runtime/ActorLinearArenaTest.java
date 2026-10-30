@@ -224,4 +224,49 @@ final class ActorLinearArenaTest {
         }
     }
 
+    @Test
+    void persistentActorFieldDoesNotExhaustArenaDuringNestedTurnChurn() {
+        try (var arena = new ActorLinearArena(64, 4)) {
+            long persistent = arena.allocateOwned(16);
+            assertNotEquals(0L, persistent);
+            assertTrue(arena.putLong(persistent, 0, 99));
+            int baseline = arena.usedBytes();
+
+            for (int i = 0; i < 20_000; i++) {
+                int mark = arena.cleanupMark();
+                long scratch = arena.allocateOwned(16, 8);
+                assertNotEquals(0L, scratch, "turn scratch must recycle despite a live actor field");
+                assertTrue(arena.putLong(scratch, 0, i));
+                assertEquals(i, arena.getLong(scratch, 0));
+                assertTrue(arena.cleanupTo(mark));
+                assertEquals(baseline, arena.usedBytes(),
+                        "last-in-first-out scratch reclamation returns to stable cursor");
+                assertEquals(99, arena.getLong(persistent, 0));
+            }
+            assertTrue(arena.dropOwned(persistent));
+            assertEquals(0, arena.liveAllocations());
+            assertEquals(0, arena.usedBytes());
+        }
+    }
+
+    @Test
+    void nonTopmostDropNeverReusesStorageOfLiveSuccessor() {
+        try (var arena = new ActorLinearArena(64, 4)) {
+            long persistent = arena.allocate(16);
+            long early = arena.allocate(16);
+            long successor = arena.allocate(16);
+            assertTrue(arena.putLong(successor, 0, 1234L));
+            assertTrue(arena.remove(early));
+            assertEquals(48, arena.usedBytes(),
+                    "dropping a non-top block must not rewind cursor across live data");
+            assertEquals(1234L, arena.getLong(successor, 0));
+            assertTrue(arena.remove(successor));
+            assertEquals(32, arena.usedBytes(),
+                    "only the topmost reservation may be reclaimed");
+            assertEquals(0L, arena.getLong(persistent, 0));
+            assertTrue(arena.remove(persistent));
+            assertEquals(0, arena.usedBytes());
+        }
+    }
+
 }
