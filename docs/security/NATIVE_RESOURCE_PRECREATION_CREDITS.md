@@ -63,6 +63,10 @@ JDK25 Maven:
 mvn test -Dtest=NativeResourceCreationPermitTest,ActorRegisteredResourceQuotaTest,ActorNativeIoIncarnationFenceTest,ActorSubtreeIoQuotaTest,PhysicalIoLoanRevocationTest,AsyncNativeIoTest
 ```
 
+Eight JUnit methods are checked in, including an actual actor self-STOP
+between creation credit and physical registration, with a live handle retained
+until the production actor/native shutdown coordinator joins it.
+
 Required edge cases: capacity exhausted before socket creation; constructor
 failure refund; successful transfer without early refund; stale/cross-context
 ticket rejection; post-STOP quarantine; shutdown waiting for in-flight
