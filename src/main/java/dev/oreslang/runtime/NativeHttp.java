@@ -182,6 +182,11 @@ public final class NativeHttp implements AutoCloseable {
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
             exchange.state.ticket = null;
             exchange.state.claimedNanos = System.nanoTime();
+            // Binding runs only on the authenticated actor dispatch. The
+            // stored request follows the suspended mail, not the thread.
+            if (ActorRuntime.inActorExecution()) {
+                context.actors().bindCurrentHttpExchange(exchange);
+            }
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
             return exchange;
         }
