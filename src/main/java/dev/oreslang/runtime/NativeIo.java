@@ -280,8 +280,20 @@ public final class NativeIo {
                 return new TcpConnection(context, endpoint, socket);
             }
         } catch (Exception failure) {
-            context.nativeIo().unregister(socket);
+            // A registration is a physical actor-owned loan, even if connect
+            // never established a session. Do NOT retire it before closing
+            // the kernel socket: otherwise actor memory and a permission
+            // drain receipt could be published while its handle remains live.
             try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+            if (socket.isClosed()) {
+                try {
+                    context.nativeIo().unregister(socket);
+                } catch (RuntimeException retirementFailure) {
+                    failure.addSuppressed(retirementFailure);
+                }
+            }
+            // A socket that could not be physically closed stays registered
+            // and must be quarantined by context shutdown, not forged retired.
             throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
         }
     }
