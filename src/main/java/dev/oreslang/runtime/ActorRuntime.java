@@ -240,8 +240,9 @@ public final class ActorRuntime implements AutoCloseable {
      * <p>Do not call this from producer callbacks: they have no active
      * ActorExecutionContext and cannot install HTTP request authority.</p>
      */
-    void bindCurrentHttpExchange(NativeHttp.Exchange exchange) {
+    void bindCurrentHttpExchange(NativeHttp.Exchange exchange, String transferToken) {
         Objects.requireNonNull(exchange, "exchange");
+        Objects.requireNonNull(transferToken, "transferToken");
         if (currentActorRuntime() != this) {
             throw new SecurityException("HTTP request binding requires an admitted actor execution");
         }
@@ -253,8 +254,9 @@ public final class ActorRuntime implements AutoCloseable {
         // would deadlock against actor cancellation or teardown.
         Long admittedMessage = CURRENT_HTTP_MAIL_SEQUENCE.get();
         if (cell.stopped.get() || cell.activeMail == null || admittedMessage == null
-                || cell.activeMail.sequence() != admittedMessage.longValue()) {
-            throw new SecurityException("HTTP request binding requires the admitted user mail");
+                || cell.activeMail.sequence() != admittedMessage.longValue()
+                || !transferToken.equals(cell.activeMail.value())) {
+            throw new SecurityException("HTTP claim token must match this exact delivered mail");
         }
         if (cell.activeHttpExchange != null && cell.activeHttpExchange != exchange) {
             throw new SecurityException("one mailbox receive cannot bind multiple HTTP requests");
