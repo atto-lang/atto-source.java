@@ -379,6 +379,7 @@ public final class OresAsyncTrace {
 
     public static Throwable attachGuest(Throwable failure, Trace trace) {
         Objects.requireNonNull(failure, "failure");
+        if (isHostFatal(failure)) return failure;
         if (trace == null) return failure;
 
         synchronized (failure) {
@@ -392,6 +393,7 @@ public final class OresAsyncTrace {
 
     public static Throwable attach(Throwable failure, Trace trace) {
         Objects.requireNonNull(failure, "failure");
+        if (isHostFatal(failure)) return failure;
         if (trace == null) return failure;
 
         /*
@@ -429,6 +431,7 @@ public final class OresAsyncTrace {
      */
     public static Throwable attach(Throwable failure, CallbackSnapshot callback) {
         Objects.requireNonNull(failure, "failure");
+        if (isHostFatal(failure)) return failure;
         if (callback == null) return failure;
 
         synchronized (failure) {
@@ -796,6 +799,12 @@ public final class OresAsyncTrace {
         public synchronized String getMessage() {
             return elidedTraces + " additional Oreslang logical async trace(s) elided";
         }
+    }
+
+    private static boolean isHostFatal(Throwable failure) {
+        return failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError;
     }
 
     private static Frame callerAtCallSite(CallEvent call) {
