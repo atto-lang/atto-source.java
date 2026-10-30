@@ -162,6 +162,68 @@ class NativeHttpTest {
         }
     }
 
+
+    @Test
+    @org.junit.jupiter.api.Timeout(45)
+    void unclaimedTokenFromEarlierMailCannotBeClaimedByNextPooledMessage()
+            throws Exception {
+        run("""
+            define actor Worker as
+              let String unclaimed = "";
+              receive(ActorMail<String> mail): void {
+                if self.unclaimed == ""; then
+                  self.unclaimed = mail.value;
+                  return;
+                fi
+                let bool foreign_mail_rejected = false;
+                try { http.claim(self.unclaimed); }
+                catch (err) { foreign_mail_rejected = true; }
+                val request = http.claim(mail.value);
+                if !foreign_mail_rejected; then
+                  await request.respond(409, "text/plain", "wrong mail was able to claim transfer");
+                  return;
+                fi
+                await request.respond(200, "text/plain", "mail-token-fenced");
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 4, 1024, 5000);
+              val pool = http.handler("Worker").pooled(1);
+              stdio.println(server.port);
+              for (let int i = 0; i < 2; i = i + 1) {
+                val request = await server.accept();
+                val completion = request.completion;
+                pool.dispatch(rt borrow mut request);
+                if i == 1; then await completion; fi
+              }
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+            try (ExecutorService clients = Executors.newFixedThreadPool(2)) {
+                List<Future<HttpResponse<String>>> answers = List.of(
+                        clients.submit(() -> request(port, "POST", "/", "first")),
+                        clients.submit(() -> request(port, "POST", "/", "second")));
+                int accepted = 0;
+                for (Future<HttpResponse<String>> answer : answers) {
+                    try {
+                        HttpResponse<String> response = answer.get(15, TimeUnit.SECONDS);
+                        assertNotEquals(409, response.statusCode(), response.body());
+                        if (response.statusCode() == 200) {
+                            assertEquals("mail-token-fenced", response.body());
+                            accepted++;
+                        }
+                    } catch (ExecutionException connectionClosedDuringUnclaimedAbort) {
+                        // The deliberately unclaimed request may be aborted by shutdown.
+                    }
+                }
+                assertEquals(1, accepted,
+                        "only the current message may claim and answer its HTTP exchange");
+            }
+        });
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
