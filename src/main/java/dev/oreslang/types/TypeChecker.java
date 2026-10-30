@@ -1147,22 +1147,30 @@ public final class TypeChecker {
     private void checkConstructorFixedFieldDefiniteInitialization(
             Ast.ClassDecl klass, Ast.ConstructorDecl constructor) {
         Set<String> required = new LinkedHashSet<>();
+        Set<String> fixed = new LinkedHashSet<>();
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.initializer() == null && field.bindingKind() != Ast.BindingKind.LET) {
+            if (field.initializer() == null) {
+                // Mutable LET needs definite initialization too, but unlike
+                // fixed VAL/FINAL its slot may subsequently be reassigned.
                 required.add(field.name());
+                if (field.bindingKind() != Ast.BindingKind.LET) {
+                    fixed.add(field.name());
+                }
             }
         }
         if (required.isEmpty()) return;
         Set<Set<String>> entry = Set.of(Set.of());
         Set<Set<String>> exits = checkConstructorFlow(
-                klass.name(), constructor.body(), entry, required);
+                klass.name(), constructor.body(), entry, required, fixed);
         for (Set<String> initialized : exits) {
             if (!initialized.containsAll(required)) {
                 Set<String> missing = new LinkedHashSet<>(required);
                 missing.removeAll(initialized);
+                boolean missingFixed = missing.stream().anyMatch(fixed::contains);
                 throw new IllegalArgumentException("constructor for " + klass.name()
-                        + " must initialize fixed field(s) " + missing
-                        + " exactly once on every normal completion path");
+                        + (missingFixed ? " must initialize fixed field(s) "
+                                : " must initialize field(s) ")
+                        + missing + " on every normal completion path");
             }
         }
     }
@@ -1170,13 +1178,13 @@ public final class TypeChecker {
     /** Immutable finite path states; no mutation is shared across CFG arms. */
     private Set<Set<String>> checkConstructorFlow(
             String owner, List<Ast.Stmt> statements,
-            Set<Set<String>> input, Set<String> required) {
+            Set<Set<String>> input, Set<String> required, Set<String> fixed) {
         Set<Set<String>> live = new LinkedHashSet<>(input);
         for (Ast.Stmt stmt : statements) {
             if (live.isEmpty()) break; // unreachable suffix is checked by normal typing
             Set<Set<String>> next = new LinkedHashSet<>();
             for (Set<String> state : live) {
-                next.addAll(checkConstructorStep(owner, stmt, state, required));
+                next.addAll(checkConstructorStep(owner, stmt, state, required, fixed));
             }
             if (next.size() > 512) {
                 throw new IllegalArgumentException("constructor for " + owner
@@ -1188,14 +1196,15 @@ public final class TypeChecker {
     }
 
     private Set<Set<String>> checkConstructorStep(
-            String owner, Ast.Stmt stmt, Set<String> initialized, Set<String> required) {
+            String owner, Ast.Stmt stmt, Set<String> initialized,
+            Set<String> required, Set<String> fixed) {
         if (stmt instanceof Ast.ExprStmt expression) {
             if (expression.expression() instanceof Ast.AssignExpr assignment
                     && assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr root
                     && root.name().equals("self") && required.contains(member.member())) {
-                checkConstructorNoEscape(owner, assignment.value(), initialized, required);
-                if (initialized.contains(member.member())) {
+                checkConstructorNoEscape(owner, assignment.value(), initialized, required, fixed);
+                if (fixed.contains(member.member()) && initialized.contains(member.member())) {
                     throw new IllegalArgumentException("constructor for " + owner
                             + " assigns fixed field '" + member.member()
                             + "' more than once on a reachable path");
@@ -1204,19 +1213,19 @@ public final class TypeChecker {
                 updated.add(member.member());
                 return Set.of(Set.copyOf(updated));
             }
-            checkConstructorNoEscape(owner, expression.expression(), initialized, required);
+            checkConstructorNoEscape(owner, expression.expression(), initialized, required, fixed);
             return Set.of(initialized);
         }
         if (stmt instanceof Ast.BindingStmt binding) {
-            checkConstructorNoEscape(owner, binding.initializer(), initialized, required);
+            checkConstructorNoEscape(owner, binding.initializer(), initialized, required, fixed);
             return Set.of(initialized);
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
-            checkConstructorNoEscape(owner, destructure.initializer(), initialized, required);
+            checkConstructorNoEscape(owner, destructure.initializer(), initialized, required, fixed);
             return Set.of(initialized);
         }
         if (stmt instanceof Ast.ReturnStmt result) {
-            checkConstructorNoEscape(owner, result.value(), initialized, required);
+            checkConstructorNoEscape(owner, result.value(), initialized, required, fixed);
             if (!initialized.containsAll(required)) {
                 throw new IllegalArgumentException("constructor for " + owner
                         + " returns before every fixed field is initialized");
@@ -1224,26 +1233,26 @@ public final class TypeChecker {
             return Set.of(); // explicit return: no successor to this statement
         }
         if (stmt instanceof Ast.BlockStmt block) {
-            return checkConstructorFlow(owner, block.body(), Set.of(initialized), required);
+            return checkConstructorFlow(owner, block.body(), Set.of(initialized), required, fixed);
         }
         if (stmt instanceof Ast.IfStmt conditional) {
             Set<Set<String>> merged = new LinkedHashSet<>();
             for (Ast.IfBranch branch : conditional.branches()) {
-                checkConstructorNoEscape(owner, branch.condition(), initialized, required);
+                checkConstructorNoEscape(owner, branch.condition(), initialized, required, fixed);
                 merged.addAll(checkConstructorFlow(
-                        owner, branch.body(), Set.of(initialized), required));
+                        owner, branch.body(), Set.of(initialized), required, fixed));
             }
             // An absent else is a reachable fallthrough with no field writes.
             merged.addAll(conditional.elseBody().isEmpty()
                     ? Set.of(initialized)
                     : checkConstructorFlow(owner, conditional.elseBody(),
-                            Set.of(initialized), required));
+                            Set.of(initialized), required, fixed));
             return merged;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
             // Deferred callbacks are a publication/capture boundary, even if
             // they happen to run after completion on an ordinary path.
-            checkConstructorNoEscape(owner, defer.expression(), initialized, required);
+            checkConstructorNoEscape(owner, defer.expression(), initialized, required, fixed);
             return Set.of(initialized);
         }
         if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) {
@@ -1255,7 +1264,7 @@ public final class TypeChecker {
         // assignment exactly once. After initialization, admit these constructs
         // only if no nested expression can write a required fixed field.
         if (!initialized.containsAll(required)
-                || constructorContainsFixedWrite(stmt, required)) {
+                || constructorContainsFixedWrite(stmt, fixed)) {
             throw new IllegalArgumentException("constructor for " + owner
                     + " cannot prove fixed-field initialization across "
                     + stmt.getClass().getSimpleName()
@@ -1265,13 +1274,14 @@ public final class TypeChecker {
     }
 
     private void checkConstructorNoEscape(
-            String owner, Object expression, Set<String> initialized, Set<String> required) {
+            String owner, Object expression, Set<String> initialized,
+            Set<String> required, Set<String> fixed) {
         // The flow oracle only counts standalone self.field = value statements.
         // Expression-position assignments (nested values, conditional tests,
         // callbacks, deferred expressions) must never borrow constructor
         // privileges or perform an uncounted second write, even after every
         // required field has been initialized.
-        if (constructorContainsFixedWrite(expression, required)) {
+        if (constructorContainsFixedWrite(expression, fixed)) {
             throw new IllegalArgumentException("constructor for " + owner
                     + " must initialize fixed fields through direct statements,"
                     + " not nested expression assignments");
