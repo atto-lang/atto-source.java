@@ -8910,7 +8910,21 @@ public final class ActorRuntime implements AutoCloseable {
             // STOP first fences new critical loans, then waits for every
             // admitted loan and its synchronous notification to retire.
             // Do not hold lifecycleLock while settling any loan callbacks.
-            stateRegion.close();
+            // Even if a host notification hook fails, STOP must keep sealing
+            // descendants rather than abandoning the subtree half-stopped.
+            try {
+                stateRegion.close();
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable loanCloseFailure) {
+                synchronized (lifecycleLock) {
+                    sourceStopCleanupAborted = true;
+                    recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                            "actor state physical retirement failed; quarantine arena",
+                            loanCloseFailure));
+                    lifecycleLock.notifyAll();
+                }
+            }
             if (scheduleTeardown) schedule();
 
             // Physical sibling teardown may block or queue. All descendants,
