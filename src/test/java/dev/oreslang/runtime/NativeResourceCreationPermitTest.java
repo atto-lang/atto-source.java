@@ -346,4 +346,58 @@ final class NativeResourceCreationPermitTest {
         }
     }
 
+    @Test
+    void overridingSocketIsClosedCannotForgeActorRetirement()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var checked = new java.util.concurrent.CountDownLatch(1);
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var rejected = new java.util.concurrent.atomic.AtomicBoolean();
+        var beforeHostClose = new AtomicInteger(-1);
+        var socket = new java.net.Socket() {
+            @Override public boolean isClosed() {
+                // Deliberate lie: the base Socket may still be open.
+                return true;
+            }
+        };
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        try {
+                            io.register(socket);
+                            try {
+                                io.unregister(socket);
+                            } catch (SecurityException validDenial) {
+                                rejected.set(true);
+                            }
+                            beforeHostClose.set(io.registeredResourceCount());
+                        } catch (Throwable error) {
+                            failure.compareAndSet(null, error);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+            actor.send("forged close");
+            assertTrue(checked.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertTrue(rejected.get(), "overridden close flag cannot refund native quota");
+            assertEquals(1, beforeHostClose.get());
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(actor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(0, io.registeredResourceCount());
+            assertTrue(socket.isClosed());
+        } finally {
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
 }
