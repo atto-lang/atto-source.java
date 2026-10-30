@@ -64,5 +64,41 @@ jobs:
           mvn -B -ntp -Dores.runtime.carriers=native
           -Dtest=CpuScalarSyncV3Test,ExecutionDomainAdmissionTest,CpuGpuTaskV2ContractTest
           test
+      - name: Verify three required JUnit XML reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A Maven exit code alone is not proof that the intended tests ran.
+          for expected in CpuScalarSyncV3Test:11 ExecutionDomainAdmissionTest:11 CpuGpuTaskV2ContractTest:7; do
+            suite="${expected%%:*}"
+            minimum="${expected#*:}"
+            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            [[ -s "$report" ]] || { echo "Missing JUnit report: $report" >&2; exit 1; }
+            header="$(grep -m1 '<testsuite' "$report")"
+            [[ -n "$header" ]] || { echo "Missing testsuite element: $report" >&2; exit 1; }
+            for attribute in tests errors failures skipped; do
+              if [[ "$header" =~ [[:space:]]${attribute}=\"([0-9]+)\" ]]; then
+                count="${BASH_REMATCH[1]}"
+              else
+                echo "Missing ${attribute} attribute in $report" >&2
+                exit 1
+              fi
+              case "$attribute" in
+                tests)
+                  tests_count="$count"
+                  (( 10#$count >= minimum )) || {
+                    echo "Too few tests in $suite: $count < $minimum" >&2
+                    exit 1
+                  }
+                  ;;
+                *) (( 10#$count == 0 )) || {
+                     echo "Nonzero $attribute in $suite: $count" >&2
+                     exit 1
+                   } ;;
+              esac
+            done
+            printf 'VERIFIED_JUNIT|%s|tests=%s|errors=0|failures=0|skipped=0\n' \
+              "$suite" "$tests_count"
+          done
       - name: Run complete JVM verification
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
