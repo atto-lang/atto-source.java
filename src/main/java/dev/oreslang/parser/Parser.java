@@ -22,6 +22,10 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // -1 outside the deliberately restricted synchronous CPU scalar parser.
+    // This counts parseUnary() frames, including nested parenthesized
+    // expressions, so independent lexical limits cannot accumulate.
+    private int scalarCpuRecursiveFrames = -1;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -3857,6 +3861,12 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
+        boolean scalarFrame = scalarCpuRecursiveFrames >= 0;
+        if (scalarFrame && ++scalarCpuRecursiveFrames > 64) {
+            scalarCpuRecursiveFrames--;
+            throw error(peek(), "scalar cpu region exceeds combined recursive parser depth budget");
+        }
+        try {
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
         // token sequence as a single negative literal, without broadening
@@ -3897,7 +3907,14 @@ public final class Parser {
                     // separate 512-node / 64-depth bound after construction.
                     preflightScalarCpuTokens();
                     match(RETURN);
-                    Ast.Expr scalar = parseExpression();
+                    int previousDepth = scalarCpuRecursiveFrames;
+                    scalarCpuRecursiveFrames = 0;
+                    Ast.Expr scalar;
+                    try {
+                        scalar = parseExpression();
+                    } finally {
+                        scalarCpuRecursiveFrames = previousDepth;
+                    }
                     match(SEMICOLON);
                     consume(RBRACE, "scalar cpu { } accepts exactly one closed scalar expression");
                     return new Ast.CpuScalarRegionExpr(scalar);
@@ -3967,6 +3984,9 @@ public final class Parser {
         if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.BLOCKING);
 
         return parsePostfix();
+        } finally {
+            if (scalarFrame) scalarCpuRecursiveFrames--;
+        }
     }
 
     /** Lexer-level work bound before parsing scalar-only cpu { ... }. */
