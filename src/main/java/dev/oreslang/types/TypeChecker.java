@@ -2958,7 +2958,11 @@ public final class TypeChecker {
             }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
-                return typeIntegerIntrinsicCall(integerIntrinsic, call, env, generics, self);
+                return typeIntegerIntrinsicCall("Integer", integerIntrinsic, call, env, generics, self);
+            }
+            String mathIntrinsic = mathIntrinsicName(call, env);
+            if (mathIntrinsic != null) {
+                return typeIntegerIntrinsicCall("Math", mathIntrinsic, call, env, generics, self);
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
@@ -4817,12 +4821,28 @@ public final class TypeChecker {
                 || modules.containsKey("Integer")
                 || findClass("Integer") != null) return null;
         return switch (member.member()) {
-            case "rem", "mod", "pow", "bitXor", "toFloatExact" -> member.member();
+            case "rem", "mod", "pow", "bitXor", "toFloatExact", "abs", "neg" -> member.member();
+            default -> null;
+        };
+    }
+
+    /** Sealed Math unary namespace; lexical/imported/user Math always wins. */
+    private String mathIntrinsicName(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr owner)
+                || !owner.name().equals("Math")
+                || env.lookup("Math") != null
+                || importedNames.contains("Math")
+                || modules.containsKey("Math")
+                || findClass("Math") != null) return null;
+        return switch (member.member()) {
+            case "abs", "neg" -> member.member();
             default -> null;
         };
     }
 
     private Type typeIntegerIntrinsicCall(
+            String owner,
             String name,
             Ast.CallExpr call,
             Env env,
@@ -4830,32 +4850,32 @@ public final class TypeChecker {
             Type self) {
         if (call.typeArgumentsPresent()) {
             throw new IllegalArgumentException(
-                    "Integer." + name + " does not accept type arguments");
+                    owner + "." + name + " does not accept type arguments");
         }
-        if (name.equals("toFloatExact")) {
+        if (name.equals("toFloatExact") || name.equals("abs") || name.equals("neg")) {
             if (call.arguments().size() != 1
                     || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException(
-                        "Integer.toFloatExact expects exactly one int argument");
+                        owner + "." + name + " expects exactly one int argument");
             }
             requireInteger(
                     deref(typeOf(call.arguments().getFirst(), env, generics, self)),
-                    "Integer.toFloatExact argument");
-            return Primitive.FLOAT;
+                    owner + "." + name + " argument");
+            return name.equals("toFloatExact") ? Primitive.FLOAT : Primitive.INT;
         }
         if (call.arguments().size() != 2) {
             throw new IllegalArgumentException(
-                    "Integer." + name + " expects exactly two int arguments");
+                    owner + "." + name + " expects exactly two int arguments");
         }
         for (int i = 0; i < 2; i++) {
             Ast.Expr argument = call.arguments().get(i);
             if (argument instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException(
-                        "Integer." + name + " does not admit spreads");
+                        owner + "." + name + " does not admit spreads");
             }
             requireInteger(
                     deref(typeOf(argument, env, generics, self)),
-                    "Integer." + name + " argument " + (i + 1));
+                    owner + "." + name + " argument " + (i + 1));
         }
         return Primitive.INT;
     }
