@@ -184,9 +184,21 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
     private long nextTicket = 1;
 
     public BoundedQueueRuntime(int capacity) {
+        this(capacity, ChannelRuntime.DEFAULT_MAX_PENDING_REGISTRATIONS);
+    }
+
+    /**
+     * Explicit waiter budget constructor used by constrained targets and
+     * deterministic conformance tests.
+     */
+    public BoundedQueueRuntime(int capacity, int maxPendingRegistrations) {
         if (capacity < 1) {
             throw new IllegalArgumentException(
                     "bounded queue capacity must be positive");
+        }
+        if (maxPendingRegistrations < 1) {
+            throw new IllegalArgumentException(
+                    "bounded queue pending registration budget must be positive");
         }
         long allocated = NEXT_QUEUE_ID.incrementAndGet();
         if (allocated <= 0) {
@@ -194,7 +206,8 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
                     "bounded queue identity space exhausted");
         }
         this.queueId = allocated;
-        this.items = new ChannelRuntime.Channel<>(capacity);
+        this.items =
+                new ChannelRuntime.Channel<>(capacity, maxPendingRegistrations);
     }
 
     public int capacity() {
