@@ -78,4 +78,61 @@ final class ActorStateRwRetirementPublishRaceTest {
             assertEquals(0, loans.pendingCount());
         }
     }
+    @Test
+    void pendingWaiterCloseCallbacksMustDrainBeforePhysicalRetirement()
+            throws Exception {
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        CountDownLatch allowCallbackReturn = new CountDownLatch(1);
+        AtomicInteger retireWakeups = new AtomicInteger();
+        AtomicReference<Throwable> closerFailure = new AtomicReference<>();
+
+        try (ActorStateRwLoans loans =
+                new ActorStateRwLoans(3, retireWakeups::incrementAndGet)) {
+            var activeWriter = loans.acquireWriteAsync(actor(10))
+                    .get(5, TimeUnit.SECONDS);
+            var rejectedReader = loans.acquireReadAsync(actor(11));
+            assertFalse(rejectedReader.isDone());
+            rejectedReader.whenCompleteRuntime((loan, failure) -> {
+                try {
+                    assertNull(loan);
+                    assertNotNull(failure);
+                    callbackEntered.countDown();
+                    assertTrue(allowCallbackReturn.await(10, TimeUnit.SECONDS));
+                } catch (Throwable error) {
+                    closerFailure.set(error);
+                }
+            });
+
+            Thread closer = Thread.ofPlatform()
+                    .name("state-rw-close-waiter-publication")
+                    .start(() -> {
+                        try { loans.close(); }
+                        catch (Throwable failure) { closerFailure.set(failure); }
+                    });
+            try {
+                assertTrue(callbackEntered.await(10, TimeUnit.SECONDS),
+                        "closing waiter subscriber did not enter");
+                activeWriter.close();
+                // The loan is gone, but close() is physically in the middle
+                // of a rejected waiter callback. This is NOT quiescence.
+                assertEquals(0, loans.activeWriterCount());
+                assertEquals(0, loans.pendingCount());
+                assertFalse(loans.physicallyRetired(),
+                        "pending Future callback must pin physical actor retirement");
+                assertEquals(0, retireWakeups.get(),
+                        "actor memory cannot finalize before subscriber exit");
+            } finally {
+                allowCallbackReturn.countDown();
+                closer.join(10_000);
+            }
+
+            assertFalse(closer.isAlive(), "close callback did not unwind");
+            assertNull(closerFailure.get(),
+                    () -> "state close callback failed: " + closerFailure.get());
+            assertTrue(loans.physicallyRetired());
+            assertEquals(1, retireWakeups.get(),
+                    "the physically last close notification delivers one wakeup");
+        }
+    }
+
 }
