@@ -129,6 +129,9 @@ public final class ActorRuntime implements AutoCloseable {
         ActorPermissionScope.PhysicalLease acquirePhysicalLease(String operation) {
             return scope.acquirePhysicalLease(operation);
         }
+        void quarantinePhysicalDrain() {
+            scope.quarantinePhysicalDrain();
+        }
         void requireCapability(IsolatePolicy.Capability capability, String operation) {
             coarsePolicy.require(capability, operation);
         }
@@ -257,6 +260,18 @@ public final class ActorRuntime implements AutoCloseable {
      * a new loan or publish a new handle even if it holds a stale reference
      * to this context-owned AsyncNativeIo.
      */
+    /**
+     * Fail closed when already-running work creates a native handle after
+     * shutdown sealed admissions. The exception path must keep the handle
+     * quarantined, so no scope may claim physical quiescence prematurely.
+     */
+    static void quarantineCurrentPhysicalDrain() {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) turn.permissionScope().quarantinePhysicalDrain();
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.quarantinePhysicalDrain();
+    }
+
     /** Captures an accounting lease for the actual physical worker/resource lifetime. */
     static ActorPermissionScope.PhysicalLease capturePhysicalIoLease(String operation) {
         ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
