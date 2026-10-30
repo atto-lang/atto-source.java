@@ -48,10 +48,16 @@ public final class SqlitePersistenceStoreTestMain {
                 for(var result:results)check(result.toCompletableFuture().get().durable(),"uncommitted actor state");
             }
             try(var store=new SqlitePersistenceStore(file)){
-                var restored=store.load(new Identity("tenant-a","a999","main"));
+                var restored=store.loadFenced(new Identity("tenant-a","a999","main"),1);
                 check(restored.version()==1 && restored.snapshot()[0]==42,"reopen lost snapshot");
                 check(store.commit(List.of(write("a999","op999",1,0,Kind.SNAPSHOT,42))).get(0).status()==Status.DUPLICATE,"dedupe lost");
                 store.grantEpoch("tenant-a","a999",2);
+                boolean staleReadDenied=false;
+                try { store.loadFenced(new Identity("tenant-a","a999","main"),1); }
+                catch (SecurityException expected) { staleReadDenied=true; }
+                check(staleReadDenied,"stale incarnation bypassed fenced recovery read");
+                check(store.loadFenced(new Identity("tenant-a","a999","main"),2).version()==1,
+                        "new incarnation could not restore after epoch rotation");
                 check(store.commit(List.of(write("a999","op999",1,0,Kind.SNAPSHOT,42))).get(0).status()==Status.STALE_EPOCH,"fence bypassed");
                 check(store.commit(List.of(write("a999","event",2,1,Kind.EVENT,65))).get(0).durable(),"journal commit not durable");
                 var replay=store.load(new Identity("tenant-a","a999","main"));
