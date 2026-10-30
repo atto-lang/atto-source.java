@@ -2412,8 +2412,27 @@ public final class ActorRuntime implements AutoCloseable {
                         || (cell.stopped.get()
                                 && !cell.sourceStopCleanupPending
                                 && !cell.sourceStopCleanupActive)) return false;
+                // The TaskRunner, not the producer callback or scheduler
+                // carrier, authenticated this origin on task admission.
+                // On STOP, permit already admitted lexical cleanup, but never
+                // re-install HTTP request access into cleanup continuations.
+                long originSequence = -1L;
+                if (continuation instanceof OresScheduler.SourceTaskTurn sourceTurn) {
+                    SourceMailOrigin origin = sourceTurn.origin();
+                    if (origin.runtime() != this
+                            || !origin.actorId().equals(cell.ref.id())) {
+                        throw new SecurityException("source task belongs to another actor incarnation");
+                    }
+                    if (!cell.stopped.get()) {
+                        if (cell.activeMail == null
+                                || cell.activeMail.sequence() != origin.mailSequence()) {
+                            throw new SecurityException("source task origin is no longer the active user mail");
+                        }
+                        originSequence = origin.mailSequence();
+                    }
+                }
                 if (!cell.sourceTaskMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
+                        MessageEnvelope.continuation(continuation, originSequence))) {
                     throw new IllegalStateException(
                             "actor source continuation mailbox capacity invariant violated for "
                                     + cell.ref.id());
