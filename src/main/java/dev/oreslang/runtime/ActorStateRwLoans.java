@@ -34,6 +34,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private final Map<Authority, StateLoan> readers = new LinkedHashMap<>();
     private final Set<Authority> reserved = new HashSet<>();
     private StateLoan writer;
+    private ExecutionContext.AllocationDomain boundAllocation;
     private long nextEpoch;
     private boolean closed;
     private boolean publishing;
@@ -64,6 +65,12 @@ public final class ActorStateRwLoans implements AutoCloseable {
             if (closed) {
                 return OresFuture.failed(new IllegalStateException(
                         "actor state RW loans closed"));
+            }
+            if (boundAllocation == null) {
+                boundAllocation = execution.allocationDomain();
+            } else if (!boundAllocation.equals(execution.allocationDomain())) {
+                return OresFuture.failed(new IllegalArgumentException(
+                        "actor state RW loans belong to a different actor allocation incarnation"));
             }
             if (!reserved.add(authority)) {
                 return OresFuture.failed(new IllegalStateException(
