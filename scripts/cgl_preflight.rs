@@ -76,7 +76,7 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
         return Err(err("invalid ELF header/program-header sizes"));
     }
     let ph_size = (phnum as u64) * 56;
-    if phoff < 64 || phoff.checked_add(ph_size).is_none_or(|end| end > file_len) {
+    if phoff < 64 || phoff.checked_add(ph_size).map_or(true, |end| end > file_len) {
         return Err(err("ELF program-header table exceeds file"));
     }
     f.seek(SeekFrom::Start(phoff)).map_err(|e| e.to_string())?;
@@ -97,11 +97,11 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
             has_load = true;
             if flags & 3 == 3 { return Err(err("ELF PT_LOAD has writable executable mapping")); }
             executable_load |= flags & 1 != 0;
-            if off.checked_add(filesz).is_none_or(|end| end > file_len) {
+            if off.checked_add(filesz).map_or(true, |end| end > file_len) {
                 return Err(err("ELF PT_LOAD extends beyond file"));
             }
             if memsz < filesz { return Err(err("ELF PT_LOAD file size exceeds memory size")); }
-            if memsz != 0 && vaddr.checked_add(memsz).is_none_or(|end| end == 0) {
+            if memsz != 0 && vaddr.checked_add(memsz).map_or(true, |end| end == 0) {
                 return Err(err("ELF PT_LOAD virtual address range overflows ELF64"));
             }
             if align > 1 && (!align.is_power_of_two() || vaddr % align != off % align) {
@@ -112,7 +112,7 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
         } else if kind_ph == 3 {
             if interpreter.is_some() { return Err(err("ELF has multiple PT_INTERP segments")); }
             if !(2..=MAX_INTERP).contains(&filesz) ||
-               off.checked_add(filesz).is_none_or(|end| end > file_len) {
+               off.checked_add(filesz).map_or(true, |end| end > file_len) {
                 return Err(err("invalid ELF PT_INTERP bounds"));
             }
             let mut raw = vec![0u8; filesz as usize];
@@ -142,7 +142,7 @@ fn inspect_elf(path: &Path) -> Result<Elf, String> {
 }
 #[repr(C)]
 struct Timespec { sec: i64, nano: i64 }
-unsafe extern "C" {
+extern "C" {
     fn sched_getaffinity(pid: i32, size: usize, mask: *mut u8) -> i32;
     fn sched_getscheduler(pid: i32) -> i32;
     fn clock_getres(clock_id: i32, result: *mut Timespec) -> i32;
