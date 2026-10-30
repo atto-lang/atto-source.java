@@ -175,6 +175,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return comments
         return api
 
+    def test_github_timestamp_accepts_canonical_utc_and_rejects_invalid(self):
+        # A valid GitHub timestamp must be accepted before incident closure
+        # is evaluated. An escaped literal \\d breaks every real disposition.
+        parsed = pub.github_timestamp(
+            "2026-10-30T04:05:00Z", "invalid test timestamp"
+        )
+        self.assertEqual(parsed.isoformat(), "2026-10-30T04:05:00+00:00")
+        for candidate in (
+            "2026-10-30T04:05:00+00:00",
+            "2026-02-30T04:05:00Z",
+            "2026-10-30T04:05:00",
+            "not a timestamp",
+        ):
+            with self.subTest(candidate=candidate):
+                with self.assertRaisesRegex(pub.Denied, "invalid test timestamp"):
+                    pub.github_timestamp(candidate, "invalid test timestamp")
+
     def test_blocking_p0_incidents_accept_only_completed_closure(self):
         with patch.object(pub, "gh_api", side_effect=self.incident_api()):
             ORIGINAL_REQUIRE_RESOLVED()
