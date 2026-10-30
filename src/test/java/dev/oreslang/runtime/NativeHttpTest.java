@@ -27,7 +27,8 @@ class NativeHttpTest {
                   return;
                 fi
                 self.handled = self.handled + 1;
-                request.set_header("X-Actor-Handled", self.handled);
+                request.set_header("X-Actor-Handled",
+                    self.handled == 1 ? "1" : (self.handled == 2 ? "2" : "3"));
                 val original = request.request_id;
                 request.set_request_local("trace_id", original);
                 val text = await request.body_text();
