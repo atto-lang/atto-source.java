@@ -1043,8 +1043,29 @@ public final class AsyncNativeIo implements AutoCloseable {
             resourceCloseActive = true;
             try {
                 for (AutoCloseable resource : closing) {
+                    ResourceLeaseState claimed;
+                    synchronized (this) {
+                        claimed = resourceLoans.get(resource);
+                        if (claimed != null && claimed.closeInProgress
+                                && !claimed.closeFailed) {
+                            // A close callback may have begun after the
+                            // earlier join snapshot. It still owns this
+                            // resource: never close it concurrently.
+                            IllegalStateException racing = new IllegalStateException(
+                                    "trusted native resource close still in progress");
+                            if (closeFailure == null) closeFailure = racing;
+                            else closeFailure.addSuppressed(racing);
+                            continue;
+                        }
+                        if (claimed != null) {
+                            claimed.closeInProgress = true;
+                            claimed.closeFailed = false;
+                        }
+                    }
+                    boolean physicallyClosed = false;
                     try {
                         resource.close();
+                        physicallyClosed = true;
                         ActorRuntime.ActorId retired = null;
                         synchronized (this) {
                             ResourceLeaseState lease = resourceLoans.get(resource);
@@ -1054,9 +1075,23 @@ public final class AsyncNativeIo implements AutoCloseable {
                                 deferredUnregister.remove(resource);
                             }
                             resources.remove(resource);
+                            this.notifyAll();
                         }
                         notifyActorRetirement(retired);
                     } catch (Exception failure) {
+                        if (claimed != null) {
+                            synchronized (this) {
+                                if (physicallyClosed) {
+                                    // Never repeat a successfully invoked
+                                    // physical close merely to fix a broken
+                                    // accounting receipt. Quarantine instead.
+                                    recordIncomplete(failure);
+                                } else {
+                                    claimed.closeFailed = true;
+                                }
+                                this.notifyAll();
+                            }
+                        }
                         if (closeFailure == null) closeFailure = failure;
                         else if (closeFailure != failure) closeFailure.addSuppressed(failure);
                     }
