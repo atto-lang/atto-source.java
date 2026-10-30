@@ -7595,6 +7595,29 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, false, true);
                     };
+                    case "attach_callback" -> (Invokable) args -> {
+                        requireOne(args, "Future.attach_callback");
+                        if (!(args.getFirst() instanceof Invokable registrar)) {
+                            throw new IllegalArgumentException(
+                                    "Future.attach_callback expects a callback registrar");
+                        }
+                        return chainFuture(
+                                future,
+                                values -> OresFuture.fromCallback(completion -> {
+                                    @SuppressWarnings("unchecked")
+                                    OresFuture.Callback<Object> callback =
+                                            (OresFuture.Callback<Object>) completion;
+                                    Object returned = registrar.call(List.of(
+                                            values.getFirst(),
+                                            new CallbackFacade(callback)));
+                                    if (returned != null) {
+                                        throw new IllegalArgumentException(
+                                                "Future.attach_callback registrar must return void");
+                                    }
+                                }),
+                                true,
+                                false);
+                    };
                     default -> throw new IllegalArgumentException(
                             "unknown Future instance member " + name);
                 };
