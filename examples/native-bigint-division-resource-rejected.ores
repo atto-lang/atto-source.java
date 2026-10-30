@@ -1,0 +1,14 @@
+import class BigIntValue from '../stdlib/bigint';
+import fnc from_int, div_rem from '../stdlib/bigint';
+
+pub routine main(): void {
+  let List<int> limbs = new List<int>();
+  for (let int i = 0; i < 129; i = i + 1) {
+    limbs.add(1);
+  }
+  val BigIntValue oversized = new BigIntValue(1, 129, limbs);
+  val BigIntValue one = from_int(1);
+  val result = div_rem(&oversized, &one);
+  stdio.stdout.write(result.quotient.signum());
+  rt fail("bigint division resource policy unexpectedly admitted 129 limbs");
+}
