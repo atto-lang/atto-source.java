@@ -132,14 +132,26 @@ final class ActorCriticalStateModeTest {
     }
 
     @Test
-    void criticalReadCannotEmitFromInsideLoan() {
-        String source = actor("""
-                    self.handle_state(critical[read] |s| -> {
-                      self.send("unsafe");
-                    });
-                """);
-        assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
+    void criticalReadAndWriteDenyMessagesLifecycleAndHostIoInsideLoan() {
+        // Both read and exclusive-write callbacks must remain non-suspending
+        // and side-effect bounded. Sending and actor teardown occur only
+        // after the state loan is revoked, never inside its callback.
+        for (String mode : java.util.List.of("read", "write")) {
+            for (String operation : java.util.List.of(
+                    "self.send(\"unsafe\");",
+                    "self.end();",
+                    "stdio.stdout.write(\"unsafe\");")) {
+                String source = actor(
+                        "    self.handle_state(critical[" + mode + "] |s| -> {\\n"
+                                + "      " + operation + "\\n"
+                                + "    });\\n");
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> OresCompiler.parseAndTypeCheck(source),
+                        "critical[" + mode + "] admitted forbidden operation: " + operation);
+                assertNotNull(failure.getMessage());
+            }
+        }
     }
 
     @Test
