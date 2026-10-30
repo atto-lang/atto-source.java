@@ -9,24 +9,12 @@ jobs:
   transactional-claim:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_DB: ores_dispatch_test
-          POSTGRES_HOST_AUTH_METHOD: trust # Ephemeral test-only DB; localhost bind below.
-        ports:
-          - '127.0.0.1:5432:5432'
-        options: >-
-          --health-cmd pg_isready
-          --health-interval=5s --health-timeout=3s --health-retries=12
     env:
       PGHOST: 127.0.0.1
       PGPORT: '5432'
       PGDATABASE: ores_dispatch_test
       ORES_TEST_PG_JDBC_URL: jdbc:postgresql://127.0.0.1:5432/ores_dispatch_test
       ORES_TEST_PG_USER: ores_dispatch_test_runtime
-      ORES_TEST_PG_PASSWORD: ''
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -46,18 +34,52 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client libpostgresql-jdbc-java
+          # Dynamically generated test credentials exist only on this runner.
+          admin_pw="$(openssl rand -hex 32)"
+          role_pw="$(openssl rand -hex 32)"
+          echo "::add-mask::$admin_pw"
+          echo "::add-mask::$role_pw"
+          {
+            echo "ORES_PG_ADMIN_PASSWORD=$admin_pw"
+            echo "ORES_PG_RUNTIME_PASSWORD=$role_pw"
+            echo "ORES_TEST_PG_PASSWORD=$role_pw"
+          } >> "$GITHUB_ENV"
+          docker run -d --name ores-actor-pg-test \
+            -p 127.0.0.1:5432:5432 \
+            -e POSTGRES_DB=ores_dispatch_test \
+            -e POSTGRES_PASSWORD="$admin_pw" \
+            -e POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256" \
+            postgres:17 >/dev/null
+          ready=0
+          for attempt in {1..90}; do
+            if PGPASSWORD="$admin_pw" psql -U postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+          echo "EPHEMERAL_POSTGRES_SCRAM_AUTH_READY"
+
       - name: Create immutable claim schema and EXECUTE-only test role
         run: |
           set -euo pipefail
+          export PGPASSWORD="$ORES_PG_ADMIN_PASSWORD"
           psql -U postgres -v ON_ERROR_STOP=1 -f contracts/v1/agent-dispatch/postgresql/001_actor_dispatch_v1.sql
           psql -U postgres -v ON_ERROR_STOP=1 -f contracts/v1/agent-dispatch/postgresql/002_test_fixture.sql
-          psql -U postgres -v ON_ERROR_STOP=1 -c 'ALTER ROLE ores_dispatch_test_runtime LOGIN'
-          if psql -U ores_dispatch_test_runtime -tAc 'SELECT count(*) FROM ores_dispatch.claim_v1' >/dev/null 2>&1; then
+
+          printf "ALTER ROLE ores_dispatch_test_runtime LOGIN PASSWORD '%s';\n" "$ORES_PG_RUNTIME_PASSWORD" |
+            psql -U postgres -v ON_ERROR_STOP=1
+          PGPASSWORD="$ORES_PG_RUNTIME_PASSWORD" psql -U ores_dispatch_test_runtime -tAc 'SELECT 1' >/dev/null
+          if PGPASSWORD="$ORES_PG_RUNTIME_PASSWORD" psql -U postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
+            echo 'SECURITY_FAILURE runtime can impersonate migration administrator'; exit 2
+          fi
+          if PGPASSWORD="$ORES_PG_RUNTIME_PASSWORD" psql -U ores_dispatch_test_runtime -tAc 'SELECT count(*) FROM ores_dispatch.claim_v1' >/dev/null 2>&1; then
             echo 'SECURITY_FAILURE direct table read granted'; exit 2
           fi
       - name: Compile and execute PostgreSQL host claim tests
         run: |
           set -euo pipefail
+          export PGPASSWORD="$ORES_PG_ADMIN_PASSWORD"
           mkdir -p "$RUNNER_TEMP/pg-dispatch-classes"
           javac -d "$RUNNER_TEMP/pg-dispatch-classes" \
             contracts/v1/agent-dispatch/AgentHostDispatchGate.java \
@@ -85,7 +107,7 @@ jobs:
           test "$denied" -eq 11
           rows=$(psql -U postgres -tAc "SELECT count(*) FROM ores_dispatch.claim_v1 WHERE tenant_id='tenant' AND actor_id='worker' AND dispatch_id='java-process-race'")
           test "$rows" -eq 1
-          if psql -U ores_dispatch_test_runtime -tAc "SELECT count(*) FROM ores_dispatch.runtime_binding_v1" >/dev/null 2>&1; then
+          if PGPASSWORD="$ORES_PG_RUNTIME_PASSWORD" psql -U ores_dispatch_test_runtime -tAc "SELECT count(*) FROM ores_dispatch.runtime_binding_v1" >/dev/null 2>&1; then
             echo 'SECURITY_FAILURE runtime can read actor bindings'; exit 2
           fi
           java -cp "$CP" PgDispatchClaimIntegrationTest probe-hold java-killed >"$RUNNER_TEMP/claim.log" 2>&1 &
@@ -110,3 +132,6 @@ jobs:
           test "$rc" -eq 2
           java -cp "$CP" PgDispatchClaimIntegrationTest probe-newgen java-fresh
           echo 'PG_JAVA_REAL_DB_CLAIM_PASS host_only=true native_guest=false'
+      - name: Destroy ephemeral test database container
+        if: always()
+        run: docker rm -f ores-actor-pg-test >/dev/null 2>&1 || true
