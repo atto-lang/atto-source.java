@@ -310,6 +310,54 @@ final class ActorRegisteredResourceQuotaTest {
         }
     }
 
+    @Test
+    void nativeWorkerAuthorityWithoutOperationThreadLocalIsStillActorOwned()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var captured = new AtomicReference<ActorRuntime.NativeIoAuthority>();
+        var ready = new CountDownLatch(1);
+        var resource = new Resource();
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        captured.set(ActorRuntime.captureNativeIoAuthority());
+                        ready.countDown();
+                    });
+            actor.send("capture");
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            assertNotNull(captured.get());
+            // Simulate a trusted native worker carrying the captured actor
+            // authority outside the active operation-ID ThreadLocal.
+            ActorRuntime.enterNativeIoAuthority(captured.get());
+            try {
+                io.register(resource, 11);
+                assertEquals(1, io.outstandingActorOperations(actor.id()),
+                        "authority-only worker must still charge original actor");
+                assertThrows(SecurityException.class,
+                        () -> io.unregister(resource),
+                        "authority-only worker must not impersonate host ownership");
+                io.closeAndUnregister(resource);
+                assertEquals(0, io.outstandingActorOperations(actor.id()));
+            } finally {
+                ActorRuntime.exitNativeIoAuthority(captured.get());
+            }
+            assertEquals(1, resource.closed.get());
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
     private static final AtomicReference<Probe> ACTIVE = new AtomicReference<>();
 
     private static final class Probe {
