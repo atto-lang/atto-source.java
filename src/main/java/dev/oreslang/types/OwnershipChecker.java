@@ -1268,6 +1268,16 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
+            if (concreteReceiver != null
+                    && (concreteReceiver.name().equals("QueuePush")
+                            || concreteReceiver.name().equals("QueuePop"))
+                    && concreteReceiver.arguments().size() == 1
+                    && member.member().equals("status")) {
+                return new ValueInfo(
+                        Ast.TypeRef.simple("Symbol"),
+                        ValueKind.COPY,
+                        null);
+            }
             if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
                 Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
                 if (valueType == null) {
@@ -1594,6 +1604,22 @@ public final class OwnershipChecker {
             return new ValueInfo(mutexType, factory.name().equals("SharedMutex") ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
 
+        if (call.callee() instanceof Ast.MemberExpr factoryCall
+                && factoryCall.receiver() instanceof Ast.NameExpr factory
+                && factory.name().equals("BoundedQueue")
+                && factoryCall.member().equals("new")
+                && call.typeArguments().size() == 1
+                && (call.arguments().size() == 1 || call.arguments().size() == 2)) {
+            for (Ast.Expr argument : call.arguments()) {
+                checkExpr(argument, scope, false);
+            }
+            Ast.TypeRef queueType = new Ast.TypeRef(
+                    "BoundedQueue",
+                    List.of(call.typeArguments().getFirst()),
+                    false);
+            return new ValueInfo(queueType, ValueKind.COPY, null);
+        }
+
         if (call.callee() instanceof Ast.NameExpr name
                 && (name.name().equals("Some") || name.name().equals("Ok") || name.name().equals("Err"))) {
             if (call.arguments().size() != 1) {
@@ -1731,6 +1757,112 @@ public final class OwnershipChecker {
                 if (receiverState != null) {
                     requireUsable(receiverState, receiverName.name(), false);
                     Ast.TypeRef receiverType = receiverState.type;
+
+                    if (receiverType.name().equals("BoundedQueue")
+                            && receiverType.arguments().size() == 1) {
+                        Ast.TypeRef element = receiverType.arguments().getFirst();
+                        Ast.TypeRef push =
+                                new Ast.TypeRef("QueuePush", List.of(element), false);
+                        Ast.TypeRef pop =
+                                new Ast.TypeRef("QueuePop", List.of(element), false);
+                        switch (member.member()) {
+                            case "new_ticket" -> {
+                                if (call.arguments().isEmpty()) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("QueueTicket"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                            }
+                            case "try_push", "push_async" -> {
+                                if (call.arguments().size() == 2) {
+                                    ValueInfo payload =
+                                            checkExpr(call.arguments().get(0), scope, true);
+                                    if (payload.type != null && payload.type.isBorrow()) {
+                                        throw error("BoundedQueue push requires an owned payload");
+                                    }
+                                    if (containsMutexGuardType(payload.type)) {
+                                        throw error("BoundedQueue cannot transport MutexGuard");
+                                    }
+                                    checkExpr(call.arguments().get(1), scope, false);
+                                    Ast.TypeRef result = member.member().equals("push_async")
+                                            ? new Ast.TypeRef("Future", List.of(push), false)
+                                            : push;
+                                    return new ValueInfo(
+                                            result, kindOfType(result), null);
+                                }
+                            }
+                            case "try_pop" -> {
+                                if (call.arguments().isEmpty()) {
+                                    return new ValueInfo(pop, kindOfType(pop), null);
+                                }
+                            }
+                            case "pop_async" -> {
+                                if (call.arguments().isEmpty()) {
+                                    Ast.TypeRef result =
+                                            new Ast.TypeRef("Future", List.of(pop), false);
+                                    return new ValueInfo(
+                                            result, kindOfType(result), null);
+                                }
+                            }
+                            case "close", "is_closed" -> {
+                                if (call.arguments().isEmpty()) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("bool"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                            }
+                            case "capacity", "generation", "pending_registrations" -> {
+                                if (call.arguments().isEmpty()) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("int"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                            }
+                            default -> {
+                                // TypeChecker owns unknown-member diagnostics.
+                            }
+                        }
+                    }
+
+                    if (receiverType.name().equals("QueueTicket")
+                            && receiverType.arguments().isEmpty()) {
+                        if (call.arguments().isEmpty()) {
+                            return switch (member.member()) {
+                                case "cancel", "is_cancelled", "is_settled" ->
+                                        new ValueInfo(
+                                                Ast.TypeRef.simple("bool"),
+                                                ValueKind.COPY,
+                                                null);
+                                case "generation", "id" ->
+                                        new ValueInfo(
+                                                Ast.TypeRef.simple("int"),
+                                                ValueKind.COPY,
+                                                null);
+                                default -> new ValueInfo(
+                                        Ast.TypeRef.inferred(),
+                                        ValueKind.MOVE_ONLY,
+                                        null);
+                            };
+                        }
+                    }
+
+                    if ((receiverType.name().equals("QueuePush")
+                                    || receiverType.name().equals("QueuePop"))
+                            && receiverType.arguments().size() == 1
+                            && member.member().equals("take_value")
+                            && call.arguments().isEmpty()) {
+                        Ast.TypeRef element = receiverType.arguments().getFirst();
+                        if (!isCopyType(element)) {
+                            move(receiverState, receiverName.name());
+                        }
+                        Ast.TypeRef result =
+                                new Ast.TypeRef("Option", List.of(element), false);
+                        return new ValueInfo(result, kindOfType(result), null);
+                    }
+
                     if ((receiverType.name().equals("Mutex") || receiverType.name().equals("SharedMutex"))
                             && receiverType.arguments().size() == 1) {
                         Ast.TypeRef element = receiverType.arguments().getFirst();
@@ -4099,7 +4231,8 @@ public final class OwnershipChecker {
         if (hasLocalTypeAliasNamed(name)) return none;
         Ast.ClassDecl declaredClass = findClass(name);
         if (declaredClass != null && java.util.Set.of(
-                "ActorRef", "Future", "Channel", "SharedMutex",
+                "ActorRef", "Future", "Channel", "BoundedQueue",
+                "QueueTicket", "QueuePush", "QueuePop", "SharedMutex",
                 "Option", "Result", "IteratorResult",
                 "Array", "List", "Vector", "Slice",
                 "FixedArray", "FixedList",
@@ -4200,6 +4333,32 @@ public final class OwnershipChecker {
             return payload.send()
                     ? new AutoTraitRules.Capabilities(true, true, true)
                     : none;
+        }
+
+        if (name.equals("BoundedQueue")) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities payload =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            // The first-class queue is a compiler/runtime-owned synchronized
+            // handle inside one execution domain, matching Channel<T>.
+            return payload.send()
+                    ? new AutoTraitRules.Capabilities(true, true, true)
+                    : none;
+        }
+
+        if (name.equals("QueueTicket")) {
+            return type.arguments().isEmpty()
+                    ? new AutoTraitRules.Capabilities(true, true, true)
+                    : none;
+        }
+
+        if (name.equals("QueuePush") || name.equals("QueuePop")) {
+            if (type.arguments().size() != 1) return none;
+            // Immutable result views carry payload ownership by value. Their
+            // task-transfer capabilities follow the payload.
+            return taskCaptureCapabilities(
+                    type.arguments().getFirst(), visitingClasses);
         }
 
         if (name.equals("SharedMutex")) {
@@ -4705,7 +4864,11 @@ public final class OwnershipChecker {
                     "bool","Bool","string","String","void",
                     "SelectCase","SelectSet","OptionUnwrapError"
                     -> type.arguments().isEmpty();
-            case "SharedMutex", "Channel" -> type.arguments().size() == 1;
+            case "SharedMutex", "Channel", "BoundedQueue" ->
+                    type.arguments().size() == 1;
+            case "QueueTicket" -> type.arguments().isEmpty();
+            case "QueuePush", "QueuePop" -> type.arguments().size() == 1
+                    && isCopyType(type.arguments().getFirst());
             case "ActorRef" -> isVerifiedActorReference(type);
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
