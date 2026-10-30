@@ -4,7 +4,7 @@ import fnc from_scaled_int, div from '../stdlib/decimal';
 pub routine main(): void {
   val DecimalValue one = from_scaled_int(1, 0);
   val DecimalValue three = from_scaled_int(3, 0);
-  val DecimalContext context = new DecimalContext(10, "half_even", 32);
+  val DecimalContext context = new DecimalContext(10, "HALF_EVEN", 32);
   val DecimalValue impossible = div(&one, &three, &context);
   stdio.stdout.write(impossible.scale);
   rt fail("decimal division unexpectedly returned before reviewed rounding implementation");
