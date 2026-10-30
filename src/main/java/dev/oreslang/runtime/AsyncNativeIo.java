@@ -1096,7 +1096,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                             this.notifyAll();
                         }
                         notifyActorRetirement(retired);
-                    } catch (Exception failure) {
+                    } catch (Exception | Error failure) {
                         if (claimed != null) {
                             synchronized (this) {
                                 if (physicallyClosed) {
