@@ -72,6 +72,27 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     /** A scoped dispatch marker, never persistent request authority. */
     private static final ThreadLocal<Long> CURRENT_HTTP_MAIL_SEQUENCE = new ThreadLocal<>();
+
+    /**
+     * Scratch registration for a scheduler-admitted envelope only. The
+     * authoritative request exchange remains in the owning ActorCell and
+     * must also match its active source-mail sequence. Never inherited by
+     * a producer/foreign callback or by an unbound SourceTask command.
+     */
+    private static final class HttpMailDispatchScope implements AutoCloseable {
+        private final Long previous = CURRENT_HTTP_MAIL_SEQUENCE.get();
+
+        private HttpMailDispatchScope(long sourceMailSequence) {
+            if (sourceMailSequence < 0) CURRENT_HTTP_MAIL_SEQUENCE.remove();
+            else CURRENT_HTTP_MAIL_SEQUENCE.set(sourceMailSequence);
+        }
+
+        @Override
+        public void close() {
+            if (previous == null) CURRENT_HTTP_MAIL_SEQUENCE.remove();
+            else CURRENT_HTTP_MAIL_SEQUENCE.set(previous);
+        }
+    }
     /** Current actor-owned source task's logical quota, never a carrier's quota. */
     private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
             new ThreadLocal<>();
@@ -8613,7 +8634,9 @@ public final class ActorRuntime implements AutoCloseable {
                     // queues above, so it is not effectively final. Bind the
                     // selected envelope to a final resource for deterministic
                     // close/permit release across every dispatch path.
-                    try (MessageEnvelope activeEnvelope = envelope) {
+                    try (MessageEnvelope activeEnvelope = envelope;
+                         HttpMailDispatchScope requestScope =
+                                 new HttpMailDispatchScope(envelope.sequence())) {
                         /*
                          * Linearize queued-work start against stop/cancel.
                          * If cancellation acquired lifecycleLock first, this
