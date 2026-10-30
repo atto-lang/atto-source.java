@@ -213,6 +213,25 @@ final class ActorStateRwLoansTest {
     }
 
     @Test
+    void oldReleasedLoanCannotCertifySuspensionAfterSameExecutionReacquires() {
+        try (var loans = new ActorStateRwLoans(2)) {
+            var owner = actor(7301, 131, 2);
+            var first = loans.acquireReadAsync(owner).join();
+            first.close();
+            assertTrue(first.readyToSuspend(owner));
+
+            var second = loans.acquireWriteAsync(owner).join();
+            assertFalse(first.readyToSuspend(owner),
+                    "old released handle cannot authorize suspension while a new loan is live");
+            assertFalse(second.readyToSuspend(owner));
+
+            second.close();
+            assertTrue(first.readyToSuspend(owner));
+            assertTrue(second.readyToSuspend(owner));
+        }
+    }
+
+    @Test
     void closeFailsPendingAndFencesActiveAuthority() {
         var loans = new ActorStateRwLoans(2);
         var activeContext = actor(7001, 101, 1);
