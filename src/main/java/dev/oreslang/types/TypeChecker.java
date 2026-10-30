@@ -1560,6 +1560,21 @@ public final class TypeChecker {
         for (ResolvedField field : effectiveFieldTargets(
                 klass, nominalClassType(klass), new LinkedHashSet<>())) {
             effectiveFieldNames.add(field.field().name());
+            // A child initializer has no authority to fill a parent's fixed
+            // slot, and explicit super-constructor chaining is unsupported.
+            // Without this gate, constructing the child could publish an
+            // inherited, never-initialized fixed field.
+            if (klass.constructor() != null
+                    && field.owner() != klass
+                    && field.field().bindingKind() != Ast.BindingKind.LET
+                    && field.field().initializer() == null) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name() + "' has an explicit initializer but inherits"
+                                + " uninitialized fixed field '" + field.owner().name()
+                                + "." + field.field().name()
+                                + "'; initialize the field in its declaring class"
+                                + " or use the validated synthesized constructor path");
+            }
         }
         Set<String> effectiveInstanceMethodNames = new LinkedHashSet<>();
         collectInstanceMethodNames(klass, effectiveInstanceMethodNames, new LinkedHashSet<>());
