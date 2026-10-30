@@ -651,7 +651,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                 for (AutoCloseable resource : closing) {
                     try {
                         resource.close();
-                        synchronized (this) { resources.remove(resource); }
+                        synchronized (this) {
+                            resources.remove(resource);
+                            // Shutdown joins all workers and active loans
+                            // before closing handles; release the registration
+                            // receipt only after physical close succeeded.
+                            ResourceLeaseState owner = resourceLoans.remove(resource);
+                            if (owner != null && owner.physicalLease != null
+                                    && incompleteReceipt == null) {
+                                owner.physicalLease.close();
+                            }
+                        }
                     } catch (Exception failure) {
                         if (closeFailure == null) closeFailure = failure;
                         else if (closeFailure != failure) closeFailure.addSuppressed(failure);
