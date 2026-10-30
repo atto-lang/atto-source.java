@@ -1175,6 +1175,39 @@ class PrivateCiV3Test(unittest.TestCase):
             policy.assert_not_called()
             repo.assert_not_called()
 
+    def test_publish_preflight_denial_precedes_carrier_contract(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            with (
+                patch.object(
+                    v3.legacy,
+                    "require_preflight",
+                    side_effect=v3.Denied(
+                        "destination approval was revoked or absent"
+                    ),
+                ) as preflight,
+                patch.object(v3, "authorized_main_sha") as origin,
+                patch.object(v3, "checked_control_plane") as control_plane,
+                patch.object(v3, "checked_contract") as checked_contract,
+                patch.object(v3, "verify_source_pr") as verify_source_pr,
+                patch.object(v3.legacy, "collect_source") as collect_source,
+            ):
+                with self.assertRaisesRegex(
+                    v3.Denied, "destination approval was revoked or absent"
+                ):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                    )
+                preflight.assert_called_once()
+                origin.assert_not_called()
+                control_plane.assert_not_called()
+                checked_contract.assert_not_called()
+                verify_source_pr.assert_not_called()
+                collect_source.assert_not_called()
+
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
         mismatched = dict(carrier, repository_id=carrier["repository_id"] + 1)
