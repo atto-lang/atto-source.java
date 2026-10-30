@@ -97,6 +97,53 @@ final class ReusableLongStateRegionTest {
     }
 
     @Test
+    void physicalLifetimePinsRequireCompletionNotOnlyCancellation() {
+        var region = new ReusableLongStateRegion(1);
+        var other = new ReusableLongStateRegion(1);
+        long owned = region.insert(7);
+        long oldPin = region.pin();
+        assertEquals(1, region.activePins());
+        assertThrows(IllegalStateException.class, () -> other.releasePin(oldPin));
+        assertThrows(IllegalStateException.class, () -> region.releasePin(owned));
+        region.beginRetire(); // STOP or cancellation only fences future admission
+        assertThrows(IllegalStateException.class, region::pin);
+        assertFalse(region.tryClose());
+        assertFalse(region.isClosed());
+        assertEquals(1, region.activePins());
+        region.releasePin(oldPin); // physical Task/FFI completion acknowledgement
+        assertEquals(0, region.activePins());
+        assertThrows(IllegalStateException.class, () -> region.releasePin(oldPin));
+        assertTrue(region.tryClose() && region.isClosed());
+        other.close();
+    }
+
+    @Test
+    void boundedPinLedgerRejectsOverflowAndStaleReusedTickets() {
+        try (var region = new ReusableLongStateRegion(1)) {
+            long[] tickets = new long[64];
+            for (int i = 0; i < tickets.length; i++) tickets[i] = region.pin();
+            assertEquals(64, region.activePins());
+            assertThrows(IllegalStateException.class, region::pin);
+            assertFalse(region.tryClose());
+            for (int i = 1; i < tickets.length; i++) region.releasePin(tickets[i]);
+            // Retirement remains monotonic: no replacement pin is admitted.
+            assertEquals(1, region.activePins());
+            assertThrows(IllegalStateException.class, region::pin);
+            region.releasePin(tickets[0]);
+            assertTrue(region.tryClose());
+        }
+        try (var region = new ReusableLongStateRegion(1)) {
+            long first = region.pin();
+            region.releasePin(first);
+            long second = region.pin();
+            assertNotEquals(first, second);
+            assertThrows(IllegalStateException.class, () -> region.releasePin(first));
+            region.releasePin(second);
+            assertTrue(region.tryClose());
+        }
+    }
+
+    @Test
     void rejectsInvalidCapacity() {
         assertThrows(IllegalArgumentException.class, () -> new ReusableLongStateRegion(0));
         assertThrows(IllegalArgumentException.class, () -> new ReusableLongStateRegion(65_537));
