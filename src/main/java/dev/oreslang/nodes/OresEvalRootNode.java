@@ -9939,6 +9939,14 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
+            if (name.equals("BoundedQueue"))
+                return value instanceof BoundedQueueRuntime<?>;
+            if (name.equals("QueueTicket"))
+                return value instanceof BoundedQueueRuntime.Ticket;
+            if (name.equals("QueuePush"))
+                return value instanceof BoundedQueueRuntime.PushResult<?>;
+            if (name.equals("QueuePop"))
+                return value instanceof BoundedQueueRuntime.PopResult<?>;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
@@ -9971,6 +9979,10 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof BoundedQueueRuntime<?>) return "BoundedQueue";
+            if (value instanceof BoundedQueueRuntime.Ticket) return "QueueTicket";
+            if (value instanceof BoundedQueueRuntime.PushResult<?>) return "QueuePush";
+            if (value instanceof BoundedQueueRuntime.PopResult<?>) return "QueuePop";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
