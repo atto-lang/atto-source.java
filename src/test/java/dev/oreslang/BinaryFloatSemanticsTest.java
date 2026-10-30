@@ -19,14 +19,32 @@ final class BinaryFloatSemanticsTest {
                   val float negative_zero = -0.0;
                   val float negative_infinity = 1.0 / negative_zero;
                   val float nan = 0.0 / 0.0;
+                  val int beyond_exact_binary64 = 9007199254740993;
+                  val float rounded_boundary = 9007199254740992.0;
 
                   stdio.stdout.write(binary_sum == 0.3);
                   stdio.stdout.write("|");
                   stdio.stdout.write(negative_zero == 0.0);
                   stdio.stdout.write("|");
+                  stdio.stdout.write(negative_zero <= 0.0);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(negative_zero >= 0.0);
+                  stdio.stdout.write("|");
                   stdio.stdout.write(negative_infinity < 0.0);
                   stdio.stdout.write("|");
                   stdio.stdout.write(nan == nan);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(nan < 1.0);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(nan <= 1.0);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(nan > 1.0);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(nan >= 1.0);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(beyond_exact_binary64 == rounded_boundary);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(beyond_exact_binary64 > rounded_boundary);
                   return;
                 }
                 """;
@@ -39,7 +57,7 @@ final class BinaryFloatSemanticsTest {
             context.eval(source);
         }
 
-        assertEquals("false|true|true|false",
+        assertEquals("false|true|true|true|true|false|false|false|false|false|false|true",
                 stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 }
