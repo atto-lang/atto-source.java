@@ -40,9 +40,15 @@ public final class PgDispatchClaimIntegrationTest {
         String user=Objects.requireNonNull(System.getenv("ORES_TEST_PG_USER"));
         String pass=Objects.requireNonNull(System.getenv("ORES_TEST_PG_PASSWORD"));
         var db=new PostgresActorDispatchClaim(new DriverDataSource(url,user,pass));
-        if (args.length>0 && (args[0].equals("probe") || args[0].equals("probe-hold"))) {
+        if (args.length>0 && (args[0].equals("probe") || args[0].equals("probe-hold") ||
+                args[0].equals("probe-newgen"))) {
             if(args.length!=2) throw new IllegalArgumentException("probe dispatch id");
-            if (!db.claimOnce(request(args[1],"b".repeat(64)))) System.exit(2);
+            var candidate=request(args[1],"b".repeat(64));
+            if (args[0].equals("probe-newgen"))
+                candidate=new AgentHostDispatchGate.Scope("tenant","worker",8,10,
+                    "c".repeat(40),args[1],"b".repeat(64),
+                    System.currentTimeMillis()+300_000,1024,24);
+            if (!db.claimOnce(candidate)) System.exit(2);
             if (args[0].equals("probe-hold")) {
                 System.out.println("CLAIM_COMMITTED");
                 System.out.flush();
