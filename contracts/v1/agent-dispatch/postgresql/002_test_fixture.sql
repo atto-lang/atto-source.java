@@ -1,5 +1,5 @@
 -- TEST-ONLY role/fixture for an isolated ephemeral PostgreSQL service.
--- Never run this file in production. No real credentials or guest access.
+-- No stored credentials; CI provisions login separately at execution time.
 CREATE ROLE ores_dispatch_test_runtime NOLOGIN;
 GRANT USAGE ON SCHEMA ores_dispatch TO ores_dispatch_test_runtime;
 GRANT EXECUTE ON FUNCTION ores_dispatch.claim_once_v1(
