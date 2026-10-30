@@ -277,10 +277,10 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
     /**
      * Scheduler-friendly pending push.
      *
-     * <p>The returned Future completes with an ordinary PushStatus. Cancelling
-     * that returned Future delegates to the same ticket cancellation authority,
-     * so there is still only one cancellation race against the underlying
-     * channel write.</p>
+     * <p>The returned Future is observation/await-only for cancellation
+     * purposes. QueueTicket is the sole cancellation authority. Keeping one
+     * cancellation capability avoids re-entrant outer-Future settlement races
+     * while the underlying channel cancellation publishes synchronously.</p>
      */
     public OresFuture<PushStatus> pushAsync(T value, Ticket ticket) {
         Objects.requireNonNull(value, "value");
@@ -306,7 +306,7 @@ public final class BoundedQueueRuntime<T> implements AutoCloseable {
         }
 
         OresFuture<PushStatus> result =
-                new OresFuture<>(ticket::cancel, () -> { });
+                new OresFuture<>(() -> false, () -> { });
 
         pending.whenCompleteRuntime((ignored, failure) -> {
             if (failure == null) {
