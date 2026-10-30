@@ -22,7 +22,7 @@ final class ActorLinearArenaLifecycleTest {
                 assertTrue(slice.usedBytes() >= 1024);
 
                 for (int i = 0; i < 1_000; i++) {
-                    int mark = arena.cleanupMark();
+                    long mark = arena.cleanupMark();
                     long handle = arena.allocateOwned(16, 8);
                     assertNotEquals(ActorLinearArena.INVALID_HANDLE, handle);
                     assertTrue(arena.putLong(handle, 0, i));
