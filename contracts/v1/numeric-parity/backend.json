@@ -22,7 +22,14 @@
     "bigint_to_f64_nearest": "implemented_unverified",
     "decimal_round_context": "implemented_unverified",
     "decimal_to_f64_exact": "implemented_unverified",
-    "decimal_to_f64_nearest": "implemented_unverified"
+    "decimal_to_f64_nearest": "implemented_unverified",
+    "binary64_strict_profile": "implemented_unverified",
+    "binary64_next_after": "unsupported_explicit",
+    "binary64_ulp": "unsupported_explicit",
+    "binary64_approx_eq": "unsupported_explicit",
+    "binary64_fma": "unsupported_explicit",
+    "binary64_sqrt": "unsupported_explicit",
+    "binary64_transcendentals": "unsupported_explicit"
   },
   "evidence": {
     "source_i64": {},
@@ -68,11 +75,34 @@
     },
     "decimal_to_f64_nearest": {
       "scope": "ExactScalarMath.toDoubleNearest explicitly admits precision loss and rejects infinity; guest binding unverified"
+    },
+    "binary64_strict_profile": {
+      "scope": "IEEE ordering, signed zero and finite literal behavior are implemented; optimizer/constant-fold execution evidence is still required"
+    },
+    "binary64_next_after": {
+      "scope": "strict floating contract pinned; public Math.next_after not implemented"
+    },
+    "binary64_ulp": {
+      "scope": "strict floating contract pinned; public Math.ulp not implemented"
+    },
+    "binary64_approx_eq": {
+      "scope": "strict floating contract pinned; public Math.approx_eq not implemented"
+    },
+    "binary64_fma": {
+      "scope": "strict floating contract pinned; explicit fused Math.fma not implemented"
+    },
+    "binary64_sqrt": {
+      "scope": "strict floating contract pinned; correctly-rounded Math.sqrt capability not established"
+    },
+    "binary64_transcendentals": {
+      "scope": "no measured per-function ULP evidence; host libm is not accepted as parity proof"
     }
   },
   "source_i64_fixture_git_blob_sha": "bbc319c19ecd007109d33592e210091eb267e5a2",
   "source_i64_overflow_fixture_git_blob_sha": "2ce0b0ff5c52e54a788280fd64d67fa8dc32614a",
   "math_unary_precision_fixture_git_blob_sha": "3249d837ae6bcf6e2c2c23cac872becf92d0c8e0",
   "bigint_exact_fixture_git_blob_sha": "b49c7a7d9395f7298e5534c4a6e5b90d4a2a518c",
-  "decimal_precision_fixture_git_blob_sha": "3bbb44277f3816add53da40a1e161e466ab162b1"
+  "decimal_precision_fixture_git_blob_sha": "3bbb44277f3816add53da40a1e161e466ab162b1",
+  "binary_floating_fixture_git_blob_sha": "4f5a8da960f017f9254872cccd565cfff5fc8f33",
+  "numeric_public_api_fixture_git_blob_sha": "1b0f0295de78ce7d33b2dc0b07eed3cc78cf6983"
 }
