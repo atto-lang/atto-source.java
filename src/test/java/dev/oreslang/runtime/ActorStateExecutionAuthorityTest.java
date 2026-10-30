@@ -75,6 +75,16 @@ final class ActorStateExecutionAuthorityTest {
     }
 
     @Test
+    void erasedExecutionContextCannotBypassBoundAuthorityChecks() {
+        try (var loans = new ActorStateLoans(2)) {
+            Object erasedUnbound = ExecutionContext.actor(
+                    7, 1001, 9, 3, 11, 0, 0);
+            assertTrue(loans.acquireAsync(erasedUnbound).isCompletedExceptionally());
+            assertEquals(0, loans.activeCount());
+        }
+    }
+
+    @Test
     void distinctExecutionsRemainFifoAndExclusive() {
         try (var loans = new ActorStateLoans(2)) {
             var firstExecution = actor(1001, 41, 6, 11);
