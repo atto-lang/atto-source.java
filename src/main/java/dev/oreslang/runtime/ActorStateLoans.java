@@ -46,6 +46,11 @@ public final class ActorStateLoans implements AutoCloseable {
      */
     public OresFuture<ExclusiveLoan> acquireAsync(Object handlerIdentity) {
         Objects.requireNonNull(handlerIdentity, "handlerIdentity");
+        // Do not let a caller erase the static type to bypass execution
+        // generation / actor-allocation authority checks.
+        if (handlerIdentity instanceof ExecutionContext execution) {
+            return acquireAsync(execution);
+        }
         return acquireInternal(handlerIdentity, null);
     }
 
