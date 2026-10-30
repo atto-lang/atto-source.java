@@ -155,6 +155,8 @@ public final class ActorNativeArena implements AutoCloseable {
     private int tail;
     private long committed;
     private long allocated;
+    /** CONTROL must attest physical retirement before arena-wide reclaim. */
+    private boolean retired;
     private boolean closed;
     private boolean cleanupComplete;
     private boolean cleanupInProgress;
@@ -167,6 +169,9 @@ public final class ActorNativeArena implements AutoCloseable {
         this.checkOwner = Objects.requireNonNull(checkOwner);
         this.budget = Objects.requireNonNull(budget);
     }
+
+    /** Runtime CONTROL-only retirement signal. Not a guest-accessible operation. */
+    synchronized void retire() { retired = true; }
 
     /** Fixed field names are layout metadata; values are stored only in native slots. */
     public synchronized Map<String, Object> fields(List<String> names, Object uninitialized) {
@@ -542,7 +547,7 @@ public final class ActorNativeArena implements AutoCloseable {
      * Memory is provisioned lazily so idle actors need no 64-KiB reservation.
      */
     public synchronized ActorLinearMemory linearMemory(int initialPages, int maxPages) {
-        checkAccess();
+        checkAdmission();
         if (initialPages < 0 || maxPages < 0 || maxPages > ActorLinearMemory.MAX_PAGES
                 || initialPages > maxPages) {
             throw new IllegalArgumentException("invalid actor linear memory initial/maximum pages");
@@ -756,7 +761,7 @@ public final class ActorNativeArena implements AutoCloseable {
 
     /** Primitive access path for dense stores: no per-element Java objects or codecs. */
     public synchronized Region region(int bytes) {
-        checkAccess();
+        checkAdmission();
         if (bytes <= 0 || bytes > limit - committed) {
             throw new IllegalArgumentException("native region exceeds actor arena budget");
         }
@@ -1045,6 +1050,11 @@ public final class ActorNativeArena implements AutoCloseable {
         checkOwner.run();
     }
 
+    private void checkAdmission() {
+        checkAccess();
+        if (retired) throw new IllegalStateException("native actor arena admission is retired");
+    }
+
     private long reserveActorOffset(int bytes, int alignment) {
         if (bytes < 0 || alignment <= 0 || (alignment & (alignment - 1)) != 0) {
             throw new IllegalArgumentException("invalid actor-relative allocation");
@@ -1056,6 +1066,7 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     private long allocate(int bytes) {
+        checkAdmission();
         if (bytes < 0) throw new IllegalArgumentException("negative native allocation");
         // Even a zero-field object has a native identity allocation.
         int size = Math.max(8, Math.addExact(bytes, 7) & ~7);
@@ -1436,6 +1447,7 @@ public final class ActorNativeArena implements AutoCloseable {
      */
     @Override public synchronized void close() {
         if (cleanupComplete) return;
+        if (!retired) throw new IllegalStateException("native arena close requires runtime retirement");
         if (cleanupInProgress) throw new IllegalStateException("recursive native arena cleanup");
         for (Region region : regions) {
             if (region.readLeases != 0) {
