@@ -38,10 +38,45 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private long nextEpoch;
     private boolean closed;
     private boolean publishing;
+    private final Runnable retirementWakeup;
+    private boolean retirementWakeupDelivered;
 
     public ActorStateRwLoans(int maxPending) {
+        this(maxPending, () -> { });
+    }
+
+    /**
+     * Host/runtime constructor. Wakeup fires only after close() seals new
+     * admission and the final physical reader/writer/completion retires.
+     */
+    public ActorStateRwLoans(int maxPending, Runnable retirementWakeup) {
         if (maxPending < 0) throw new IllegalArgumentException("negative state RW queue capacity");
         this.maxPending = maxPending;
+        this.retirementWakeup = Objects.requireNonNull(
+                retirementWakeup, "retirementWakeup");
+    }
+
+    /** Nonblocking physical-retirement receipt for ActorRuntime finalization. */
+    public boolean physicallyRetired() {
+        synchronized (monitor) {
+            return physicallyRetiredLocked();
+        }
+    }
+
+    private boolean physicallyRetiredLocked() {
+        return closed && writer == null && readers.isEmpty()
+                && pending.isEmpty() && completions.isEmpty() && !publishing;
+    }
+
+    private void maybeWakeRetirement() {
+        boolean wake = false;
+        synchronized (monitor) {
+            if (physicallyRetiredLocked() && !retirementWakeupDelivered) {
+                retirementWakeupDelivered = true;
+                wake = true;
+            }
+        }
+        if (wake) retirementWakeup.run();
     }
 
     public OresFuture<StateLoan> acquireReadAsync(ExecutionContext execution) {
@@ -297,6 +332,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 promoteLocked();
             }
             publish();
+            maybeWakeRetirement();
         }
     }
 
@@ -314,7 +350,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
             waiter.future.failFromRuntime(new IllegalStateException(
                     "actor state RW loans closed"));
         }
-        // Active loans remain physically held until handler cleanup closes them,
-        // but heldBy() fences state access immediately after close().
+        // Active loans remain physically held until handler cleanup closes them;
+        // logical close merely fences further state access.
+        maybeWakeRetirement();
     }
 }
