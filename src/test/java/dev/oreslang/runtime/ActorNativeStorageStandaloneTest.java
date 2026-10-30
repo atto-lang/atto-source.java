@@ -16,6 +16,49 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(30)
 final class ActorNativeStorageStandaloneTest {
     @Test
+    void retirementRejectsNewNativeFacadesAndCapabilitiesWithoutRevokingExistingReads() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        ActorNativeArena arena = arena(256 * 1024, charged, owner);
+        Object uninitialized = new Object();
+        Map<String, Object> fields = arena.fields(List.of("value"), uninitialized);
+        fields.put("value", 37L);
+        ActorNativeArena.NativeValue backing = (ActorNativeArena.NativeValue) fields;
+        ActorNativeArena.NativeValue facade = new ActorNativeArena.NativeValue() {
+            @Override public ActorNativeArena nativeArena() { return arena; }
+            @Override public long nativeOffset() { return backing.nativeOffset(); }
+        };
+        ActorNativeArena.NativeCapability preexisting = () -> arena;
+        arena.registerNativeFacade(facade, backing);
+        arena.issueNativeCapability(preexisting);
+
+        long before = charged.get();
+        arena.retire();
+        // Existing admitted payloads may be inspected during CONTROL cleanup.
+        assertEquals(37L, fields.get("value"));
+        assertEquals(before, charged.get());
+
+        ActorNativeArena.NativeValue lateFacade = new ActorNativeArena.NativeValue() {
+            @Override public ActorNativeArena nativeArena() { return arena; }
+            @Override public long nativeOffset() { return backing.nativeOffset(); }
+        };
+        ActorNativeArena.NativeCapability lateCapability = () -> arena;
+        assertThrows(IllegalStateException.class,
+                () -> arena.registerNativeFacade(lateFacade, backing));
+        assertThrows(IllegalStateException.class,
+                () -> arena.issueNativeCapability(lateCapability));
+        assertThrows(IllegalStateException.class, () -> arena.nativeList());
+        assertThrows(IllegalStateException.class, () -> arena.valueCell(4L, uninitialized));
+        assertThrows(IllegalStateException.class, () -> arena.taskFrame());
+        assertEquals(37L, fields.get("value"), "denied issuance cannot alter live state");
+        assertEquals(before, charged.get(), "denied issuance cannot charge new bytes");
+
+        arena.close();
+        assertEquals(0L, charged.get());
+        assertThrows(IllegalStateException.class, () -> fields.get("value"));
+    }
+
+    @Test
     void liveArenaCannotBeClosedBeforeRuntimeRetirement() {
         AtomicLong charged = new AtomicLong();
         AtomicBoolean owner = new AtomicBoolean(true);
