@@ -404,4 +404,96 @@ final class OresAsyncTraceTest {
     }
 
 
+
+    @Test
+    void callbackSnapshotCrossesForeignCarrierWithoutAcquiringTraceLease() throws Exception {
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("callback_owner", site(120)));
+        java.util.concurrent.atomic.AtomicReference<Throwable> producerFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> observedFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        OresAsyncTrace.CallbackSnapshot callback;
+        try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(trace)) {
+            callback = OresAsyncTrace.captureCallback(
+                    OresAsyncTrace.BoundaryKind.CALLBACK_ADAPTER,
+                    site(121));
+            assertNotNull(callback);
+            assertSame(trace, OresAsyncTrace.current());
+
+            Thread producer = new Thread(() -> {
+                try {
+                    assertNull(OresAsyncTrace.current(),
+                            "producer carrier must not inherit mutable guest trace authority");
+                    IllegalStateException failure =
+                            new IllegalStateException("foreign callback failed");
+                    OresAsyncTrace.attach(failure, callback);
+                    assertNull(OresAsyncTrace.current(),
+                            "attaching immutable callback evidence must not install a Trace");
+                    observedFailure.set(failure);
+                } catch (Throwable failure) {
+                    producerFailure.set(failure);
+                }
+            });
+            producer.start();
+            producer.join();
+
+            assertNull(producerFailure.get(),
+                    () -> "foreign callback trace attach failed: " + producerFailure.get());
+            assertSame(trace, OresAsyncTrace.current(),
+                    "source carrier must retain its existing execution lease");
+        }
+        assertNull(OresAsyncTrace.current());
+
+        Throwable failure = observedFailure.get();
+        assertNotNull(failure);
+        OresAsyncTrace.LogicalAsyncStackTrace logical = assertInstanceOf(
+                OresAsyncTrace.LogicalAsyncStackTrace.class,
+                failure.getSuppressed()[0]);
+        assertTrue(logical.logicalTrace().contains("--- callback-adapter"));
+        assertTrue(logical.logicalTrace().contains("callback_owner"));
+        assertTrue(logical.logicalTrace().contains("trace-test.ores:121:7"));
+    }
+
+    @Test
+    void callbackSnapshotIsImmutableBoundedAndDeduplicated() {
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("callback_snapshot", site(130)));
+        OresAsyncTrace.CallbackSnapshot callback;
+        try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(trace)) {
+            for (int i = 0; i < 200; i++) {
+                trace.awaitAt(new OresAsyncTrace.SourceSite(
+                        "callback-history.ores",
+                        i + 1,
+                        1,
+                        "cb"));
+            }
+            callback = OresAsyncTrace.captureCallback(
+                    OresAsyncTrace.BoundaryKind.IO_COMPLETION,
+                    site(131));
+            assertNotNull(callback);
+            assertTrue(callback.logicalTrace().contains("--- io-completion"));
+            assertTrue(callback.logicalTrace().contains("older async trace events elided"));
+
+            trace.awaitAt(site(132));
+            assertFalse(callback.logicalTrace().contains("trace-test.ores:132:7"),
+                    "later mutable trace changes must not alter the callback snapshot");
+        }
+
+        IllegalStateException failure = new IllegalStateException("dedupe");
+        OresAsyncTrace.attach(failure, callback);
+        OresAsyncTrace.attach(failure, callback);
+        assertEquals(1, failure.getSuppressed().length,
+                "the same immutable callback snapshot must attach exactly once");
+    }
+
+    @Test
+    void callbackSnapshotCaptureOutsideGuestTraceReturnsNull() {
+        assertNull(OresAsyncTrace.current());
+        assertNull(OresAsyncTrace.captureCallback(
+                OresAsyncTrace.BoundaryKind.CALLBACK_ADAPTER,
+                site(140)));
+    }
+
 }
