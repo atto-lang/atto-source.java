@@ -238,8 +238,16 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         try(PreparedStatement q=db.prepareStatement("SELECT version,snapshot_version,snapshot_schema,snapshot FROM state WHERE tenant=? AND actor=? AND slot=?")) {
             bindKey(q,id);
             try(ResultSet r=q.executeQuery()){
-                if(r.next()){version=r.getLong(1);snapshotVersion=r.getLong(2);snapshotSchema=r.getInt(3);
-                    byte[] bytes=r.getBytes(4);if(bytes!=null)snapshot=bytes;}
+                if(r.next()){
+                    version=r.getLong(1);snapshotVersion=r.getLong(2);snapshotSchema=r.getInt(3);
+                    byte[] bytes=r.getBytes(4);
+                    if(version<0 || snapshotVersion<0 || snapshotVersion>version || snapshotSchema<0 ||
+                       (snapshotVersion>0 && (snapshotSchema==0 || bytes==null)) ||
+                       (snapshotVersion==0 && (snapshotSchema!=0 || bytes!=null)) ||
+                       (bytes!=null && bytes.length>1048576))
+                        throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                    if(bytes!=null)snapshot=bytes;
+                }
             }
         }
         List<Event> events=new ArrayList<>();
@@ -247,6 +255,7 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             bindKey(q,id);q.setLong(4,snapshotVersion);
             try(ResultSet r=q.executeQuery()){
                 long expected=snapshotVersion;
+                long replayBytes=0;
                 while(r.next()){
                     long next=r.getLong(1);
                     int eventSchema=r.getInt(2);
@@ -254,6 +263,9 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                         throw new SQLException("INCOMPLETE_ACTOR_JOURNAL");
                     byte[] payload=r.getBytes(3);
                     if(payload==null)throw new SQLException("NULL_ACTOR_EVENT");
+                    if(payload.length>1048576 || payload.length>16777216L-replayBytes)
+                        throw new SQLException("ACTOR_EVENT_REPLAY_BYTES_LIMIT");
+                    replayBytes+=payload.length;
                     events.add(new Event(next,eventSchema,payload));
                     if(events.size()>10000)throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
                     expected=next;
