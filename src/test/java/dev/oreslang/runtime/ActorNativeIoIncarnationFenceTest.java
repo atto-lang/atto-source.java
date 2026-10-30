@@ -61,6 +61,15 @@ final class ActorNativeIoIncarnationFenceTest {
                     firstAuthority.get().reserveIo("stale worker submit"));
             assertThrows(SecurityException.class, () ->
                     firstAuthority.get().requireActive("stale worker dispatch"));
+            var staleResource = assertThrows(SecurityException.class, () ->
+                    firstAuthority.get().requirePermission(
+                            RuntimePermissions.Permission.ENV, "PUBLIC_KEY",
+                            "stale named-resource check"));
+            assertTrue(staleResource.getMessage().contains("actor incarnation"));
+            var staleListener = assertThrows(SecurityException.class, () ->
+                    firstAuthority.get().requireNetworkListen(
+                            "127.0.0.1:0", "stale listener check"));
+            assertTrue(staleListener.getMessage().contains("actor incarnation"));
             try (var live = siblingAuthority.get().reserveIo("sibling remains alive")) {
                 assertNotNull(live);
             }
@@ -91,6 +100,14 @@ final class ActorNativeIoIncarnationFenceTest {
                                     captured.reserveIo("after self STOP"));
                             assertThrows(SecurityException.class, () ->
                                     captured.requireActive("after self STOP"));
+                            var denied = assertThrows(SecurityException.class, () ->
+                                    ActorRuntime.requireCurrentActorPermission(
+                                            RuntimePermissions.Permission.ENV,
+                                            "PUBLIC_KEY", "after self STOP"));
+                            assertTrue(denied.getMessage().contains("actor incarnation"));
+                            assertThrows(SecurityException.class, () ->
+                                    ActorRuntime.requireCurrentActorAuthorityActive(
+                                            "new native resource after self STOP"));
                         } catch (Throwable failure) {
                             terminalError.compareAndSet(null, failure);
                         } finally {
