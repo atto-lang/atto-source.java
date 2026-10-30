@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.LongUnaryOperator;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Preallocated, bounded host scalar region with no mandatory managed object
@@ -18,6 +19,10 @@ import java.util.function.LongUnaryOperator;
  */
 public final class ReusableLongStateRegion implements AutoCloseable {
     private static final int MAX_CAPACITY = 65_536;
+    private static final int MAX_DOMAIN = 0xFF_FFFF;
+    private static final int MAX_GENERATION = 0xFF_FFFF;
+    private static final AtomicInteger NEXT_DOMAIN = new AtomicInteger(1);
+    private final int domain;
     private final long[] values;
     private final int[] generations;
     private final boolean[] live;
@@ -33,6 +38,11 @@ public final class ReusableLongStateRegion implements AutoCloseable {
         if (capacity < 1 || capacity > MAX_CAPACITY) {
             throw new IllegalArgumentException("capacity outside bounded region");
         }
+        int allocated = NEXT_DOMAIN.getAndIncrement();
+        if (allocated <= 0 || allocated > MAX_DOMAIN) {
+            throw new IllegalStateException("region identity namespace exhausted");
+        }
+        domain = allocated;
         values = new long[capacity];
         generations = new int[capacity];
         live = new boolean[capacity];
@@ -40,7 +50,9 @@ public final class ReusableLongStateRegion implements AutoCloseable {
         Arrays.fill(generations, 1);
     }
 
-    /** Generation in high 32 bits and slot in low 32 bits. Neither is a pointer. */
+    /** Handle: 24-bit nonreused domain, 24-bit generation, 16-bit slot.
+     * Overflow fails closed rather than authorizing an ABA collision.
+     * Handles are not cryptographic capabilities and must not cross trust boundaries. */
     public synchronized long insert(long value) {
         requireAdmitting();
         final int slot;
@@ -50,14 +62,15 @@ public final class ReusableLongStateRegion implements AutoCloseable {
             if (nextSlot >= values.length) throw new IllegalStateException("region is full");
             slot = nextSlot++;
         }
-        if (live[slot] || generations[slot] == 0) {
+        if (live[slot] || generations[slot] == 0 || generations[slot] > MAX_GENERATION) {
             throw new IllegalStateException("invalid reused region slot");
         }
         values[slot] = value;
         live[slot] = true;
         ++liveCount;
-        return (Integer.toUnsignedLong(generations[slot]) << 32)
-                | Integer.toUnsignedLong(slot);
+        return ((long) domain << 40)
+                | ((long) generations[slot] << 16)
+                | (long) slot;
     }
 
     /** Primitive scalar read; produces no borrowed Java wrapper or view. */
@@ -91,7 +104,7 @@ public final class ReusableLongStateRegion implements AutoCloseable {
     /** Releases one scalar, zeroes it, and permanently rejects stale handles. */
     public synchronized void remove(long handle) {
         int slot = requireLive(handle);
-        if (generations[slot] == -1) {
+        if (generations[slot] == MAX_GENERATION) {
             throw new IllegalStateException("region handle generation exhausted");
         }
         live[slot] = false;
@@ -141,10 +154,13 @@ public final class ReusableLongStateRegion implements AutoCloseable {
 
     private int requireLive(long handle) {
         requireAdmitting();
-        long rawSlot = handle & 0xFFFF_FFFFL;
-        if (rawSlot >= nextSlot) throw new IllegalStateException("invalid region slot");
-        int slot = (int) rawSlot;
-        if (!live[slot] || generations[slot] != (int) (handle >>> 32)) {
+        int handleDomain = (int) (handle >>> 40);
+        int slot = (int) (handle & 0xFFFFL);
+        int generation = (int) ((handle >>> 16) & 0xFF_FFFFL);
+        if (handleDomain != domain || slot >= nextSlot || generation == 0) {
+            throw new IllegalStateException("foreign or invalid region handle");
+        }
+        if (!live[slot] || generations[slot] != generation) {
             throw new IllegalStateException("foreign or stale region handle");
         }
         return slot;
