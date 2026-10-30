@@ -5,6 +5,8 @@ on:
     paths:
       - 'stdlib/core.ores'
       - 'stdlib/math.ores'
+      - 'stdlib/bigint.ores'
+      - 'examples/native-bigint-reference.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DefaultCheckedI64ArithmeticTest.java'
@@ -24,6 +26,8 @@ on:
     paths:
       - 'stdlib/core.ores'
       - 'stdlib/math.ores'
+      - 'stdlib/bigint.ores'
+      - 'examples/native-bigint-reference.ores'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DefaultCheckedI64ArithmeticTest.java'
@@ -109,6 +113,12 @@ jobs:
           set -e
           test "$status" -ne 0
           ! grep -F 'wrapped instead of overflowing' "${RUNNER_TEMP}/math-overflow.out"
+      - name: Execute pure-Oreslang bounded BigInt reference
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java -Dexec.args="examples/native-bigint-reference.ores" | tee "${RUNNER_TEMP}/bigint-reference.out"
+          grep -Fx 'NATIVE-BIGINT-REFERENCE-OK' "${RUNNER_TEMP}/bigint-reference.out"
       - name: Run real Oreslang testing.run_suite guest refinement
         run: |
           set -euo pipefail
