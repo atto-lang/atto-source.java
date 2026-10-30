@@ -73,6 +73,62 @@ final class ExactScalarMathTest {
     }
 
     @Test
+    void namedBigIntDivisionUsesTruncationTowardZeroAndDividendSignedRemainder() {
+        for (long[] values : new long[][]{
+                {7, 3, 2, 1},
+                {-7, 3, -2, -1},
+                {7, -3, -2, 1},
+                {-7, -3, 2, -1}
+        }) {
+            BigInteger a = BigInteger.valueOf(values[0]);
+            BigInteger b = BigInteger.valueOf(values[1]);
+            ExactScalarMath.IntegerDivision result = ExactScalarMath.divRem(a, b);
+            assertEquals(BigInteger.valueOf(values[2]), result.quotient());
+            assertEquals(BigInteger.valueOf(values[3]), result.remainder());
+            assertEquals(a, result.quotient().multiply(b).add(result.remainder()));
+            assertTrue(result.remainder().abs().compareTo(b.abs()) < 0);
+            assertEquals(result.quotient(), ExactScalarMath.quotient(a, b));
+            assertEquals(result.remainder(), ExactScalarMath.remainder(a, b));
+        }
+
+        BigInteger huge = BigInteger.ONE.shiftLeft(256).add(BigInteger.valueOf(12345));
+        BigInteger divisor = BigInteger.ONE.shiftLeft(128);
+        ExactScalarMath.IntegerDivision large = ExactScalarMath.divRem(huge, divisor);
+        assertEquals(BigInteger.ONE.shiftLeft(128), large.quotient());
+        assertEquals(BigInteger.valueOf(12345), large.remainder());
+        assertThrows(ArithmeticException.class,
+                () -> ExactScalarMath.divRem(BigInteger.ONE, BigInteger.ZERO));
+    }
+
+    @Test
+    void bigIntNarrowingAndBinary64ConversionAreExplicit() {
+        assertEquals(Long.MAX_VALUE,
+                ExactScalarMath.toLongExact(BigInteger.valueOf(Long.MAX_VALUE)));
+        assertEquals(Long.MIN_VALUE,
+                ExactScalarMath.toLongExact(BigInteger.valueOf(Long.MIN_VALUE)));
+        assertThrows(ArithmeticException.class, () ->
+                ExactScalarMath.toLongExact(BigInteger.ONE.shiftLeft(63)));
+        assertThrows(ArithmeticException.class, () ->
+                ExactScalarMath.toLongExact(BigInteger.ONE.shiftLeft(63).negate()
+                        .subtract(BigInteger.ONE)));
+
+        BigInteger exactly = BigInteger.ONE.shiftLeft(53);
+        assertEquals(0x4340000000000000L,
+                Double.doubleToRawLongBits(ExactScalarMath.toDoubleExact(exactly)));
+        BigInteger inexact = exactly.add(BigInteger.ONE);
+        assertThrows(ArithmeticException.class, () ->
+                ExactScalarMath.toDoubleExact(inexact));
+        assertEquals(0x4340000000000000L,
+                Double.doubleToRawLongBits(ExactScalarMath.toDoubleNearest(inexact)));
+
+        BigInteger tooLargeForFiniteBinary64 = BigInteger.ONE.shiftLeft(2000);
+        assertThrows(ArithmeticException.class, () ->
+                ExactScalarMath.toDoubleExact(tooLargeForFiniteBinary64));
+        assertThrows(ArithmeticException.class, () ->
+                ExactScalarMath.toDoubleNearest(tooLargeForFiniteBinary64));
+    }
+
+    @Test
     void nonterminatingDivideRequiresExplicitRoundingContext() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> ExactScalarMath.evaluate(new BigDecimal("1"), new BigDecimal("3"), '/'));
