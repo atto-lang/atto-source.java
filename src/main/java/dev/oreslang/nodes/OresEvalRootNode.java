@@ -8354,8 +8354,12 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Byte || value instanceof Short
                     || value instanceof Integer || value instanceof Long;
             if (name.equals("decimal")) return value instanceof java.math.BigDecimal;
-            if (name.equals("float") || name.equals("f32") || name.equals("f64"))
-                return value instanceof Float || value instanceof Double;
+            if (name.equals("f32")) {
+                throw new IllegalArgumentException(
+                        "f32 runtime identity is disabled until binary32 has distinct storage and rounding");
+            }
+            if (name.equals("float") || name.equals("f64"))
+                return value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
             if (name.equals("Symbol") && findClass("Symbol") == null)
