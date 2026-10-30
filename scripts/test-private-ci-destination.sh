@@ -21,6 +21,11 @@ if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
 fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
+# Test the REAL jq filter and its JSON type checks rather than only TSV data.
+if [[ -n "${MOCK_RESPONSE_JSON:-}" ]]; then
+  printf '%s\n' "$MOCK_RESPONSE_JSON" | jq -r "${4:-}"
+  exit
+fi
 printf '%s\t%s\t%s\t%s\t%s\t%s%s\n' \
   "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" \
   "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_ARCHIVED:-false}" \
@@ -46,6 +51,22 @@ expect_wrapper_reject() {
   test ! -e "$MOCK_EXEC_LOG"
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
+# Real JSON-to-TSV conversion: only primitive booleans and numeric IDs
+# are admissible, not strings with the same printable representation.
+export MOCK_RESPONSE_JSON='{"full_name":"trusted/ci","visibility":"private","private":true,"id":246810,"archived":false,"disabled":false}'
+expect_ok trusted/ci
+for invalid_json in \
+  '{"full_name":"trusted/ci","visibility":"private","private":"true","id":246810,"archived":false,"disabled":false}' \
+  '{"full_name":"trusted/ci","visibility":"private","private":true,"id":"246810","archived":false,"disabled":false}' \
+  '{"full_name":"trusted/ci","visibility":"private","private":true,"id":246810,"archived":"false","disabled":false}' \
+  '{"full_name":"trusted/ci","visibility":"private","private":true,"id":246810,"archived":false,"disabled":"false"}' \
+  '{"full_name":"trusted/ci","visibility":"private","private":true,"id":246810,"archived":false}' \
+  '{"full_name":"trusted/ci","visibility":"private","private":true,"id":246810,"archived":false,"disabled":null}'; do
+  export MOCK_RESPONSE_JSON="$invalid_json"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+done
+unset MOCK_RESPONSE_JSON
 expect_ok trusted/ci
 # A repository may be private and correctly identified but unsafe for export
 # when archived, disabled, or the corresponding API field is null/unknown.
