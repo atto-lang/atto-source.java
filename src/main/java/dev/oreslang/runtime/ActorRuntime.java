@@ -2468,6 +2468,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "suspended source receive requires an executing actor turn");
         }
 
+        final long sourceMailSequence;
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(cell.ref);
             if (cell.sourceReceiveSuspended) {
@@ -2480,9 +2481,9 @@ public final class ActorRuntime implements AutoCloseable {
                         "only an active user-mail receive may suspend the actor mailbox");
             }
             cell.sourceReceiveSuspended = true;
+            sourceMailSequence = cell.activeMail.sequence();
         }
 
-        final long sourceMailSequence = cell.activeMail.sequence();
         future.whenCompleteRuntime((ignored, failure) -> {
             if (!enqueueContinuation(cell.ref.id(), () -> {
                 long completedSequence;
