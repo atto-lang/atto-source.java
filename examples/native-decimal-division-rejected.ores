@@ -1,11 +1,10 @@
-import class DecimalValue, DecimalContext from '../stdlib/decimal';
-import fnc from_scaled_int, div from '../stdlib/decimal';
+import class DecimalValue from '../stdlib/decimal';
+import fnc from_scaled_int, div_exact from '../stdlib/decimal';
 
 pub routine main(): void {
   val DecimalValue one = from_scaled_int(1, 0);
   val DecimalValue three = from_scaled_int(3, 0);
-  val DecimalContext context = new DecimalContext(10, "HALF_EVEN", 32);
-  val DecimalValue impossible = div(&one, &three, &context);
+  val DecimalValue impossible = div_exact(&one, &three);
   stdio.stdout.write(impossible.scale);
-  rt fail("decimal division unexpectedly returned before reviewed rounding implementation");
+  rt fail("decimal nonterminating exact division unexpectedly returned");
 }
