@@ -38,7 +38,7 @@ fn open_no_follow(path: &Path) -> Result<File, String> {
         .open(path).map_err(|e| format!("cannot open file: {e}"))
 }
 fn rt_flag(path: &Path) -> Option<bool> {
-    let mut f = open_no_follow(path).ok()?;
+    let f = open_no_follow(path).ok()?;
     if !f.metadata().ok()?.is_file() { return None; }
     let mut raw = Vec::new();
     f.take(8).read_to_end(&mut raw).ok()?;
