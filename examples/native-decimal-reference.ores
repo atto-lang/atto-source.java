@@ -35,9 +35,9 @@ pub routine main(): void {
   require(equal(&restored, &three_tenths), "decimal abs/neg exactness");
   require(compare(&negative, &three_tenths) < 0, "decimal signed comparison");
 
-  val DecimalContext context = new DecimalContext(34, "half_even", 64);
+  val DecimalContext context = new DecimalContext(34, "HALF_EVEN", 64);
   require(context.precision == 34, "decimal context precision");
-  require(context.rounding == "half_even", "decimal context rounding");
+  require(context.rounding == "HALF_EVEN", "decimal context rounding");
   require(context.max_scale == 64, "decimal context max scale");
 
   stdio.stdout.println("NATIVE-DECIMAL-REFERENCE-OK");
