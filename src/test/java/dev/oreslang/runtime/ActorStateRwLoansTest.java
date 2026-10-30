@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -229,6 +230,33 @@ final class ActorStateRwLoansTest {
             assertTrue(first.readyToSuspend(owner));
             assertTrue(second.readyToSuspend(owner));
         }
+    }
+
+    @Test
+    void retirementWakeupFiresOnceOnlyAfterAllPhysicalReadersRelease() {
+        var notifications = new AtomicInteger();
+        var loans = new ActorStateRwLoans(3, notifications::incrementAndGet);
+        var first = loans.acquireReadAsync(actor(7401, 141, 1)).join();
+        var second = loans.acquireReadAsync(actor(7402, 142, 1)).join();
+        var queued = loans.acquireWriteAsync(actor(7403, 143, 1));
+
+        loans.close();
+        assertTrue(queued.isCompletedExceptionally());
+        assertFalse(loans.physicallyRetired());
+        assertEquals(0, notifications.get());
+
+        first.close();
+        assertFalse(loans.physicallyRetired());
+        assertEquals(0, notifications.get());
+
+        second.close();
+        assertTrue(loans.physicallyRetired());
+        assertEquals(1, notifications.get());
+        second.close();
+        first.close();
+        loans.close();
+        assertEquals(1, notifications.get(),
+                "retirement notification must be delivered at most once");
     }
 
     @Test
