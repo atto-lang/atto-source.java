@@ -317,7 +317,10 @@ public final class ActorStateRwLoans implements AutoCloseable {
             // appear free to suspend while another execution owns this loan.
             if (!authority.equals(authority(execution))) return false;
             synchronized (monitor) {
-                return released;
+                // A previously released handle is not proof that this same
+                // execution has no *new* active or queued loan. Consult the
+                // current ledger as well as the physical release receipt.
+                return released && !reserved.contains(authority);
             }
         }
 
