@@ -15,16 +15,20 @@ define module decimal_math as
     pub val int max_scale;
 
     pub constructor(int precision, String rounding, int max_scale) {
-      if precision < 1 || precision > 4096; do
+      if precision < 1 || precision > 1024; do
         rt fail("decimal: precision outside bounded context");
       fi
       if max_scale < 0 || max_scale > 256; do
         rt fail("decimal: max_scale outside bounded context");
       fi
-      if rounding != "half_even"
-          && rounding != "half_up"
-          && rounding != "down"
-          && rounding != "up"; do
+      if rounding != "HALF_EVEN"
+          && rounding != "HALF_UP"
+          && rounding != "HALF_DOWN"
+          && rounding != "UP"
+          && rounding != "DOWN"
+          && rounding != "CEILING"
+          && rounding != "FLOOR"
+          && rounding != "UNNECESSARY"; do
         rt fail("decimal: unsupported rounding mode");
       fi
       self.precision = precision;
@@ -40,6 +44,12 @@ define module decimal_math as
     pub constructor(BigIntValue coefficient, int scale) {
       if scale < 0 || scale > 256; do
         rt fail("decimal: scale outside bounded domain");
+      fi
+      // Keep every DecimalValue inside the coefficient width that all current
+      // exact add/sub/mul/scale-alignment algorithms can process predictably.
+      // The future primitive may expose larger profiles explicitly.
+      if coefficient.limb_count() > 256; do
+        rt fail("decimal: coefficient exceeds bounded limb policy");
       fi
       self.coefficient = coefficient;
       self.scale = scale;
@@ -71,6 +81,9 @@ define module decimal_math as
     fi
 
     val BigIntValue factor = ten_power(target_scale - value.scale);
+    if value.coefficient.limb_count() + factor.limb_count() > 257; do
+      rt fail("decimal: scale alignment exceeds bounded coefficient policy");
+    fi
     return bigint_math.mul(&value.coefficient, &factor);
   }
 
@@ -128,6 +141,11 @@ define module decimal_math as
     val int result_scale = left.scale + right.scale;
     if result_scale > 256; do
       rt fail("decimal: multiplication exceeds bounded scale policy");
+    fi
+    // An n-limb by m-limb nonzero product needs at least n+m-1 limbs.
+    // Reject before schoolbook work when the result cannot fit this profile.
+    if left.coefficient.limb_count() + right.coefficient.limb_count() > 257; do
+      rt fail("decimal: multiplication exceeds bounded coefficient policy");
     fi
     return new DecimalValue(
       bigint_math.mul(&left.coefficient, &right.coefficient),
