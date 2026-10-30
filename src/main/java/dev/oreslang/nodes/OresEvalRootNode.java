@@ -11017,14 +11017,17 @@ public final class OresEvalRootNode extends RootNode {
     private static final class ActorStateLoanView {
         private final OresObject object;
         private final Set<String> fields;
+        private final ActorRuntime.StatePermit permit;
         private boolean active = true;
 
         private final boolean writable;
 
-        private ActorStateLoanView(OresObject object, Set<String> fields, boolean writable) {
+        private ActorStateLoanView(OresObject object, Set<String> fields,
+                boolean writable, ActorRuntime.StatePermit permit) {
             this.object = Objects.requireNonNull(object, "actor state object");
             this.fields = Set.copyOf(fields);
             this.writable = writable;
+            this.permit = Objects.requireNonNull(permit, "runtime-minted state permit");
             if (this.fields.isEmpty()) {
                 throw new IllegalArgumentException(
                         "self.handle_state requires an actor with a state { ... } schema");
@@ -11037,7 +11040,20 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.FieldDecl field : object.klass.fields()) {
                 if (isActorStateSchemaField(field)) fields.add(field.name());
             }
-            return new ActorStateLoanView(object, fields, writable);
+            // The schema is checked before opening a runtime loan. The
+            // actor Runtime mints incarnation-bound execution/handle IDs.
+            if (fields.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "self.handle_state requires an actor with a state { ... } schema");
+            }
+            ActorRuntime.StatePermit permit =
+                    object.owner.context.actors().acquireCurrentActorStatePermit(writable);
+            try {
+                return new ActorStateLoanView(object, fields, writable, permit);
+            } catch (RuntimeException | Error failure) {
+                permit.close();
+                throw failure;
+            }
         }
 
         private static void requireActorOwnership(OresObject object) {
@@ -11059,6 +11075,7 @@ public final class OresEvalRootNode extends RootNode {
             // Never reuse a lexical view from another actor, physical carrier,
             // hot-reload incarnation or supervisor callback.
             requireActorOwnership(object);
+            permit.requireHeld(false);
         }
 
         private Ast.FieldDecl requireField(String name) {
@@ -11106,6 +11123,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "critical[read] state loan cannot mutate actor state");
             }
+            permit.requireHeld(true);
             if (field.bindingKind() != Ast.BindingKind.LET) {
                 throw new IllegalArgumentException(
                         "actor state field '" + object.klass.name() + "." + name
@@ -11115,7 +11133,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void revoke() {
+            if (!active) return;
             active = false;
+            // Release the *physical* ledger receipt as the lexical callback
+            // exits. A revoked view alone is not an actor arena lifetime pin.
+            permit.close();
         }
 
         @Override public String toString() {
