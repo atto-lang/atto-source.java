@@ -60,7 +60,7 @@ final class CglActorMessageTraceIntegrationTest {
             assertTrue(source.awaitTermination(3, TimeUnit.SECONDS));
             trace.sealAfterActorsStopped();
             var result = trace.snapshot();
-            assertTrue(result.hasCompleteCapture());
+            assertTrue(result.hasCompleteCapture(2));
             assertEquals(2, result.samples().size());
             assertEquals(0, result.dropped());
             assertEquals(0, result.invalid());
