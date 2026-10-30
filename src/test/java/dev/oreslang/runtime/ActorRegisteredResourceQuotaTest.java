@@ -185,6 +185,30 @@ final class ActorRegisteredResourceQuotaTest {
     }
 
     @Test
+    void contextShutdownRetainsNativeResourceWhenCloseThrowsErrorThenRetries()
+            throws Exception {
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var attempts = new AtomicInteger();
+        AutoCloseable physical = () -> {
+            if (attempts.incrementAndGet() == 1)
+                throw new AssertionError("fatal native close callback");
+        };
+        io.register(physical, 9);
+        try {
+            assertThrows(IllegalStateException.class, io::close,
+                    "Error must be aggregated instead of bypassing quarantine");
+            assertEquals(1, io.registeredResourceCount());
+            assertEquals(9L, io.registeredAccountedBytes());
+            io.close();
+            assertEquals(0, io.registeredResourceCount());
+            assertEquals(0L, io.registeredAccountedBytes());
+            assertEquals(2, attempts.get());
+        } finally {
+            try { io.close(); } catch (IllegalStateException ignored) { }
+        }
+    }
+
+    @Test
     void actorGenericCloseFailureRetainsQuotaAndDeniesFutureLoansUntilTrustedRetry()
             throws Exception {
         var policy = IsolatePolicy.developer();
