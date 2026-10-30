@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 APPROVAL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$")
@@ -263,6 +264,18 @@ def gh_api_list(route):
     return data
 
 
+def github_timestamp(value, label):
+    """Parse GitHub's canonical UTC second-resolution timestamp."""
+    if (not isinstance(value, str)
+            or not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z", value)):
+        raise Denied(label)
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise Denied(label) from exc
+    return parsed.replace(tzinfo=timezone.utc)
+
+
 def checked_repo(repository, expected_repository_id=None):
     result = gh_api("repos/" + repository)
     if (not isinstance(result.get("full_name"), str)
@@ -320,6 +333,10 @@ def require_resolved_blocking_incidents():
             raise Denied(
                 "blocking P0 incident #" + str(number) + " remains unresolved"
             )
+        closed_at = github_timestamp(
+            issue.get("closed_at"),
+            "blocking P0 incident close timestamp invalid",
+        )
         comments = gh_api_list(
             "repos/" + BLOCKING_INCIDENT_REPO + "/issues/"
             + str(number) + "/comments?per_page=100"
@@ -333,22 +350,57 @@ def require_resolved_blocking_incidents():
                 + " disposition comments exceed single-page audit bound"
             )
         marker = INCIDENT_DISPOSITION_MARKER + " issue=#" + str(number)
-        approved = False
+        reviewer_comments = []
+        seen_comment_ids = set()
         for comment in comments:
             if not isinstance(comment, dict):
                 raise Denied("blocking P0 incident comment shape invalid")
+            comment_id = comment.get("id")
             user = comment.get("user")
             body = comment.get("body")
-            if (isinstance(user, dict)
-                    and user.get("id") == INCIDENT_DISPOSITION_REVIEWER_ID
-                    and user.get("login") == INCIDENT_DISPOSITION_REVIEWER
-                    and isinstance(body, str)
-                    and marker in {line.strip() for line in body.splitlines()}):
-                approved = True
-        if not approved:
+            if (type(comment_id) is not int or comment_id <= 0
+                    or comment_id in seen_comment_ids
+                    or not isinstance(user, dict)
+                    or not isinstance(body, str)):
+                raise Denied("blocking P0 incident comment identity invalid")
+            seen_comment_ids.add(comment_id)
+            created_at = github_timestamp(
+                comment.get("created_at"),
+                "blocking P0 incident comment timestamp invalid",
+            )
+            updated_at = github_timestamp(
+                comment.get("updated_at"),
+                "blocking P0 incident comment timestamp invalid",
+            )
+            if updated_at < created_at:
+                raise Denied("blocking P0 incident comment timestamp invalid")
+            if (user.get("id") == INCIDENT_DISPOSITION_REVIEWER_ID
+                    and isinstance(user.get("login"), str)
+                    and user["login"].casefold()
+                    == INCIDENT_DISPOSITION_REVIEWER.casefold()):
+                reviewer_comments.append(
+                    (updated_at, comment_id, body)
+                )
+        if not reviewer_comments:
             raise Denied(
                 "blocking P0 incident #" + str(number)
                 + " lacks independent security disposition"
+            )
+        reviewer_comments.sort(key=lambda item: (item[0], item[1]))
+        disposition_at, _comment_id, disposition_body = reviewer_comments[-1]
+        if disposition_at < closed_at:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " disposition predates current closure"
+            )
+        # The latest security-owner comment is authoritative. Requiring the
+        # complete body to be the marker prevents prose/code examples from
+        # accidentally authorizing transfer and lets any later reviewer
+        # comment revoke authorization fail-closed.
+        if disposition_body.strip() != marker:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " latest independent security disposition is absent or revoked"
             )
 
 
