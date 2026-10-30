@@ -1,0 +1,62 @@
+import class BigIntValue from '../stdlib/bigint';
+import fnc from_int, abs, neg, compare, equal, add, sub, mul from '../stdlib/bigint';
+
+fnc require(bool condition, String message): void {
+  if !condition; do
+    rt fail(message);
+  fi
+  return;
+}
+
+pub routine main(): void {
+  val BigIntValue zero = from_int(0);
+  require(zero.signum() == 0, "bigint zero sign");
+  require(zero.limb_count() == 0, "bigint zero canonical length");
+
+  val BigIntValue minimum = from_int(-9223372036854775808);
+  require(minimum.signum() == -1, "bigint minimum sign");
+  require(minimum.limb_count() == 4, "bigint minimum limb count");
+  require(minimum.limb_at(0) == 0, "bigint minimum limb 0");
+  require(minimum.limb_at(1) == 0, "bigint minimum limb 1");
+  require(minimum.limb_at(2) == 0, "bigint minimum limb 2");
+  require(minimum.limb_at(3) == 32768, "bigint minimum high limb");
+
+  val BigIntValue maximum = from_int(9223372036854775807);
+  val BigIntValue one = from_int(1);
+  val BigIntValue beyond_i64 = add(&maximum, &one);
+  require(beyond_i64.signum() == 1, "bigint max+1 sign");
+  require(beyond_i64.limb_count() == 4, "bigint max+1 limb count");
+  require(beyond_i64.limb_at(0) == 0, "bigint max+1 limb 0");
+  require(beyond_i64.limb_at(1) == 0, "bigint max+1 limb 1");
+  require(beyond_i64.limb_at(2) == 0, "bigint max+1 limb 2");
+  require(beyond_i64.limb_at(3) == 32768, "bigint max+1 high limb");
+
+  val BigIntValue negative = from_int(-42);
+  val BigIntValue positive = from_int(17);
+  val BigIntValue sum = add(&negative, &positive);
+  require(sum.signum() == -1, "bigint mixed-sign addition sign");
+  require(sum.limb_count() == 1 && sum.limb_at(0) == 25,
+          "bigint mixed-sign addition magnitude");
+
+  val BigIntValue difference = sub(&positive, &negative);
+  require(difference.signum() == 1, "bigint subtraction sign");
+  require(difference.limb_count() == 1 && difference.limb_at(0) == 59,
+          "bigint subtraction magnitude");
+
+  val BigIntValue doubled_max = mul(&maximum, &from_int(2));
+  require(doubled_max.signum() == 1, "bigint multiplication sign");
+  require(doubled_max.limb_count() == 4, "bigint multiplication limb count");
+  require(doubled_max.limb_at(0) == 65534, "bigint multiplication low limb");
+  require(doubled_max.limb_at(1) == 65535, "bigint multiplication limb 1");
+  require(doubled_max.limb_at(2) == 65535, "bigint multiplication limb 2");
+  require(doubled_max.limb_at(3) == 65535, "bigint multiplication high limb");
+
+  val BigIntValue abs_minimum = abs(&minimum);
+  val BigIntValue neg_minimum = neg(&minimum);
+  require(equal(&abs_minimum, &neg_minimum), "bigint abs/neg minimum parity");
+  require(compare(&minimum, &zero) < 0, "bigint signed comparison");
+  require(compare(&beyond_i64, &maximum) > 0, "bigint cross-i64 comparison");
+
+  stdio.stdout.println("NATIVE-BIGINT-REFERENCE-OK");
+  return;
+}
