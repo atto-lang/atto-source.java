@@ -245,6 +245,12 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
+        // A completion callback may close the last loan while publishing is
+        // true. Its local retirement check then correctly sees a publisher
+        // still in flight and declines to wake. Recheck AFTER publishing is
+        // cleared or actor memory can remain pinned forever with no future
+        // event left to perform the retirement handoff.
+        maybeWakeRetirement();
         if (firstFailure != null) {
             if (firstFailure instanceof Error fatal) throw fatal;
             if (firstFailure instanceof RuntimeException failure) throw failure;
@@ -359,12 +365,18 @@ public final class ActorStateRwLoans implements AutoCloseable {
             pending.clear();
             for (Pending waiter : abandoned) reserved.remove(waiter.authority);
         }
-        for (Pending waiter : abandoned) {
-            waiter.future.failFromRuntime(new IllegalStateException(
-                    "actor state RW loans closed"));
+        try {
+            for (Pending waiter : abandoned) {
+                waiter.future.failFromRuntime(new IllegalStateException(
+                        "actor state RW loans closed"));
+            }
+        } finally {
+            // A user/runtime completion may throw while close() is failing
+            // queued waiters. The last physical receipt still needs to be
+            // visible to the retiring actor even on that exceptional path.
+            maybeWakeRetirement();
         }
         // Active loans remain physically held until handler cleanup closes them;
         // logical close merely fences further state access.
-        maybeWakeRetirement();
     }
 }
