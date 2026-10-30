@@ -63,6 +63,17 @@ define module bigint_math as
     }
   end
 
+  pub define class BigIntDivRem as
+    pub val BigIntValue quotient;
+    pub val BigIntValue remainder;
+
+    pub constructor(BigIntValue quotient, BigIntValue remainder) {
+      self.quotient = quotient;
+      self.remainder = remainder;
+    }
+  end
+
+
   fnc trimmed_used(&List<int> limbs): int {
     let int used = limbs.size;
     for (let int i = used - 1; i >= 0; i = i - 1) {
@@ -331,6 +342,117 @@ define module bigint_math as
       sign = -1;
     fi
     return new BigIntValue(sign, used, out);
+  }
+
+
+  fnc bit_length(&BigIntValue value): int {
+    if value.signum() == 0; do
+      return 0;
+    fi
+    val int high = value.limb_at(value.limb_count() - 1);
+    for (let int bit = 15; bit >= 0; bit = bit - 1) {
+      if ((high & (1 << bit)) != 0); do
+        return ((value.limb_count() - 1) * 16) + bit + 1;
+      fi
+    }
+    rt fail("bigint: canonical nonzero high limb has no set bit");
+    return 0;
+  }
+
+  fnc bit_at(&BigIntValue value, int bit_index): int {
+    if bit_index < 0; do
+      rt fail("bigint: negative bit index");
+    fi
+    val int limb_index = bit_index >>> 4;
+    if limb_index >= value.limb_count(); do
+      return 0;
+    fi
+    val int offset = bit_index & 15;
+    return (value.limb_at(limb_index) >>> offset) & 1;
+  }
+
+  fnc shift_left_one(&BigIntValue value): BigIntValue {
+    if value.signum() == 0; do
+      return zero();
+    fi
+    let List<int> out = new List<int>();
+    let int carry = 0;
+    for (let int i = 0; i < value.limb_count(); i = i + 1) {
+      let int total = (value.limb_at(i) * 2) + carry;
+      if total >= 65536; do
+        total = total - 65536;
+        carry = 1;
+      else
+        carry = 0;
+      fi
+      out.add(total);
+    }
+    if carry != 0; do
+      if out.size >= 1024; do
+        rt fail("bigint: shift exceeds bounded limb policy");
+      fi
+      out.add(carry);
+    fi
+    return new BigIntValue(value.signum(), out.size, out);
+  }
+
+  // Binary long division over canonical magnitudes. This intentionally has a
+  // tighter bound than add/sub so runtime work remains reviewable.
+  pub fnc div_rem(
+    &BigIntValue dividend,
+    &BigIntValue divisor
+  ): BigIntDivRem {
+    if divisor.signum() == 0; do
+      rt fail("bigint: division by zero");
+    fi
+    if dividend.signum() == 0; do
+      return new BigIntDivRem(zero(), zero());
+    fi
+    if dividend.limb_count() > 128 || divisor.limb_count() > 128; do
+      rt fail("bigint: division exceeds bounded operation policy");
+    fi
+
+    val BigIntValue dividend_magnitude = abs(&dividend);
+    val BigIntValue divisor_magnitude = abs(&divisor);
+    val BigIntValue one = from_int(1);
+    let BigIntValue quotient = zero();
+    let BigIntValue remainder = zero();
+
+    val int bits = bit_length(&dividend_magnitude);
+    for (let int bit = bits - 1; bit >= 0; bit = bit - 1) {
+      quotient = shift_left_one(&quotient);
+      remainder = shift_left_one(&remainder);
+
+      if bit_at(&dividend_magnitude, bit) != 0; do
+        remainder = add(&remainder, &one);
+      fi
+
+      if compare(&remainder, &divisor_magnitude) >= 0; do
+        remainder = sub(&remainder, &divisor_magnitude);
+        quotient = add(&quotient, &one);
+      fi
+    }
+
+    // Oreslang integer division contract: truncate toward zero and give the
+    // remainder the dividend's sign.
+    if quotient.signum() != 0 && dividend.signum() != divisor.signum(); do
+      quotient = neg(&quotient);
+    fi
+    if remainder.signum() != 0 && dividend.signum() < 0; do
+      remainder = neg(&remainder);
+    fi
+
+    return new BigIntDivRem(quotient, remainder);
+  }
+
+  pub fnc div(&BigIntValue dividend, &BigIntValue divisor): BigIntValue {
+    val BigIntDivRem result = div_rem(&dividend, &divisor);
+    return result.quotient;
+  }
+
+  pub fnc rem(&BigIntValue dividend, &BigIntValue divisor): BigIntValue {
+    val BigIntDivRem result = div_rem(&dividend, &divisor);
+    return result.remainder;
   }
 
 end
