@@ -129,6 +129,38 @@ final class ExactScalarMathTest {
     }
 
     @Test
+    void decimalRoundingAndBinary64ConversionAreExplicit() {
+        assertEquals(new BigDecimal("2"),
+                ExactScalarMath.round(new BigDecimal("2.5"),
+                        new MathContext(1, RoundingMode.HALF_EVEN)));
+        assertEquals(new BigDecimal("4"),
+                ExactScalarMath.round(new BigDecimal("3.5"),
+                        new MathContext(1, RoundingMode.HALF_EVEN)));
+        assertEquals(new BigDecimal("-2"),
+                ExactScalarMath.round(new BigDecimal("-2.5"),
+                        new MathContext(1, RoundingMode.HALF_EVEN)));
+        assertThrows(IllegalArgumentException.class, () ->
+                ExactScalarMath.round(BigDecimal.ONE, MathContext.UNLIMITED));
+
+        assertEquals(0x3fe0000000000000L,
+                Double.doubleToRawLongBits(
+                        ExactScalarMath.toDoubleExact(new BigDecimal("0.5"))));
+        assertThrows(ArithmeticException.class, () ->
+                ExactScalarMath.toDoubleExact(new BigDecimal("0.1")));
+        assertEquals(0x3fb999999999999aL,
+                Double.doubleToRawLongBits(
+                        ExactScalarMath.toDoubleNearest(new BigDecimal("0.1"))));
+        assertThrows(ArithmeticException.class, () ->
+                ExactScalarMath.toDoubleExact(new BigDecimal("9007199254740993")));
+        assertEquals(0x4340000000000000L,
+                Double.doubleToRawLongBits(
+                        ExactScalarMath.toDoubleNearest(
+                                new BigDecimal("9007199254740993"))));
+        assertThrows(ArithmeticException.class, () ->
+                ExactScalarMath.toDoubleNearest(new BigDecimal("1e1000")));
+    }
+
+    @Test
     void nonterminatingDivideRequiresExplicitRoundingContext() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> ExactScalarMath.evaluate(new BigDecimal("1"), new BigDecimal("3"), '/'));
