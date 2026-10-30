@@ -2962,7 +2962,7 @@ public final class TypeChecker {
             }
             String mathIntrinsic = mathIntrinsicName(call, env);
             if (mathIntrinsic != null) {
-                return typeIntegerIntrinsicCall("Math", mathIntrinsic, call, env, generics, self);
+                return typeMathIntrinsicCall(mathIntrinsic, call, env, generics, self);
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
@@ -4839,6 +4839,30 @@ public final class TypeChecker {
             case "abs", "neg" -> member.member();
             default -> null;
         };
+    }
+
+    private Type typeMathIntrinsicCall(
+            String name,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "Math." + name + " does not accept type arguments");
+        }
+        if (call.arguments().size() != 1
+                || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+            throw new IllegalArgumentException(
+                    "Math." + name + " expects exactly one numeric argument");
+        }
+        Type operand = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+        if (operand == Primitive.INT || operand == Primitive.FLOAT) {
+            return operand;
+        }
+        throw new IllegalArgumentException(
+                "Math." + name + " requires int or float; exact BigInt/Decimal "
+                        + "overloads are unavailable until their source types are enabled");
     }
 
     private Type typeIntegerIntrinsicCall(
