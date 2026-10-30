@@ -191,7 +191,7 @@ final class BoundedQueueRuntimeTest {
     }
 
     @Test
-    void cancellingReturnedPushFutureUsesSameAdmissionAuthority() {
+    void pushFutureCannotBypassTicketCancellationAuthority() {
         BoundedQueueRuntime<Integer> queue = new BoundedQueueRuntime<>(1);
         assertEquals(
                 BoundedQueueRuntime.PushStatus.ADMITTED,
@@ -202,8 +202,15 @@ final class BoundedQueueRuntimeTest {
                 queue.pushAsync(1, ticket);
         assertEquals(1, queue.pendingRegistrations());
 
-        assertTrue(push.cancel(false));
+        assertFalse(push.cancel(false));
+        assertFalse(ticket.isCancelled());
+        assertEquals(1, queue.pendingRegistrations());
+
+        assertTrue(queue.cancel(ticket));
         assertTrue(ticket.isCancelled());
+        assertEquals(
+                BoundedQueueRuntime.PushStatus.CANCELLED,
+                push.join());
         assertEquals(0, queue.pendingRegistrations());
 
         BoundedQueueRuntime.PopResult<Integer> seed = queue.tryPop();
