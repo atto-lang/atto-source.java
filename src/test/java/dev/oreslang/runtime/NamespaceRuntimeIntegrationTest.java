@@ -636,6 +636,39 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void sourceDigestAuthenticatesExactManifestMembersNotCallerSubset() throws Exception {
+        Path project = temp.resolve("digest-member-set");
+        Path manifest = billing(project);
+        List<Path> members = List.of(
+                project.resolve("src/billing/charge.ores"),
+                project.resolve("src/billing/refund.ores"),
+                project.resolve("src/billing/balance.ores"),
+                project.resolve("src/billing/invoice.ores"));
+        // The digest is independent of manifest member enumeration order,
+        // but its exact set is fixed by the authenticated manifest.
+        String expected = PackageNamespaceWorkspace.sourceDigest(manifest, members);
+        assertEquals(expected, PackageNamespaceWorkspace.sourceDigest(
+                manifest, List.of(members.get(3), members.get(2),
+                        members.get(1), members.get(0))));
+
+        Path unlisted = source(project, "src/billing/hidden.ores", "billing",
+                "pub fnc hidden(): int { return 99; }");
+        SecurityException foreign = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.sourceDigest(manifest, List.of(unlisted)));
+        assertTrue(foreign.getMessage().contains("not manifest-listed"));
+
+        SecurityException omitted = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.sourceDigest(manifest, members.subList(0, 3)));
+        assertTrue(omitted.getMessage().contains("source set differs from manifest members"));
+
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceWorkspace.sourceDigest(manifest,
+                        List.of(members.get(0), members.get(1), members.get(2),
+                                members.get(3), members.get(0))));
+        assertTrue(duplicate.getMessage().contains("duplicate namespace digest source"));
+    }
+
+    @Test
     void sourceDigestRejectsFilesOutsideAuthenticatedProjectRoot() throws Exception {
         Path project = temp.resolve("digest-boundary");
         Path manifest = billing(project);
