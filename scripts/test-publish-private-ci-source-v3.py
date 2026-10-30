@@ -787,6 +787,59 @@ class PrivateCiV3Test(unittest.TestCase):
                     with self.assertRaisesRegex(v3.Denied, error):
                         v3.checked_carrier_main("trusted/ci", carrier)
 
+    def test_carrier_protection_change_during_attestation_is_rejected(self):
+        carrier = contract()
+        protection = {
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
+                "required_approving_review_count": 1,
+                "bypass_pull_request_allowances": {
+                    "users": [], "teams": [], "apps": [],
+                },
+            },
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["private-ci-carrier"],
+                "checks": [],
+            },
+            "required_conversation_resolution": {"enabled": True},
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        changed = json.loads(json.dumps(protection))
+        changed["required_status_checks"]["contexts"] = [
+            "different-required-check"
+        ]
+        protection_reads = iter((protection, changed))
+
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return {
+                    "name": "main",
+                    "protected": True,
+                    "commit": {"sha": BASE},
+                }
+            if route == "repos/trusted/ci/branches/main/protection":
+                return next(protection_reads)
+            if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
+                return {
+                    "path": ".github/CODEOWNERS",
+                    "type": "file",
+                    "encoding": "base64",
+                    "content": base64.b64encode(CARRIER_CODEOWNERS).decode(),
+                    "sha": CARRIER_CODEOWNERS_BLOB,
+                }
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(
+                v3.Denied, "protection changed during attestation"
+            ):
+                v3.checked_carrier_main("trusted/ci", carrier)
+
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
             '{"schema":1,"schema":1,"carriers":{"trusted/ci":{'
@@ -956,6 +1009,10 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=good_api),
             patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ),
+            patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
             ),
@@ -1023,6 +1080,10 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ),
+            patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
             ) as source_pr_check,
@@ -1046,6 +1107,10 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ),
+            patch.object(
                 v3, "verify_source_pr",
                 side_effect=v3.Denied("source PR security owner approval is stale or revoked"),
             ),
@@ -1055,6 +1120,55 @@ class PrivateCiV3Test(unittest.TestCase):
                     Path("."), "trusted/ci", POLICY, carrier,
                     1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
                 )
+
+    def test_authorize_write_rechecks_carrier_protection_each_write(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return {
+                    "name": "main",
+                    "commit": {"sha": carrier["base_sha"]},
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3, "checked_carrier_main",
+                side_effect=v3.Denied(
+                    "carrier main protection changed during attestation"
+                ),
+            ) as carrier_guard,
+            patch.object(v3, "verify_source_pr") as source_pr_check,
+            patch.object(v3, "revalidate_source_governance") as governance,
+        ):
+            with self.assertRaisesRegex(
+                v3.Denied, "protection changed during attestation"
+            ):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                )
+        carrier_guard.assert_called_once_with("trusted/ci", carrier)
+        source_pr_check.assert_not_called()
+        governance.assert_not_called()
 
     def test_revalidate_source_governance_rejects_authority_change(self):
         carrier = contract()
