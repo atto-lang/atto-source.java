@@ -94,6 +94,61 @@ final class NativeRegistrationRetirementTest {
     }
 
     @Test
+    void separateRegistrationOwnerAndBorrowingActorRetireIndependently() throws Exception {
+        try (var io = new AsyncNativeIo(2);
+             var runtime = new ActorRuntime();
+             var socket = new Socket()) {
+            runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+            io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+            CountDownLatch registered = new CountDownLatch(1);
+            CountDownLatch borrowed = new CountDownLatch(1);
+            var physicalBorrow = new AtomicReference<AsyncNativeIo.IoLoan>();
+            var failure = new AtomicReference<Throwable>();
+            var owner = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                try {
+                    io.register(socket);
+                } catch (Throwable caught) {
+                    failure.compareAndSet(null, caught);
+                } finally {
+                    registered.countDown();
+                }
+            });
+            owner.send("register");
+            assertTrue(registered.await(3, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            var borrower = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                try {
+                    physicalBorrow.set(io.borrow(socket));
+                } catch (Throwable caught) {
+                    failure.compareAndSet(null, caught);
+                } finally {
+                    borrowed.countDown();
+                }
+            });
+            borrower.send("borrow");
+            assertTrue(borrowed.await(3, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertNotEquals(owner.id(), borrower.id());
+            assertEquals(1, io.outstandingActorOperations(owner.id()));
+            assertEquals(1, io.outstandingActorOperations(borrower.id()));
+            owner.cancel();
+            borrower.cancel();
+            assertFalse(owner.done().isDone());
+            assertFalse(borrower.done().isDone());
+            socket.close();
+            io.unregister(socket);
+            assertEquals(1, io.outstandingActorOperations(owner.id()),
+                    "registered owner cannot be released by another actor's outstanding borrow");
+            assertEquals(1, io.outstandingActorOperations(borrower.id()));
+            physicalBorrow.get().close();
+            assertTrue(owner.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(borrower.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, io.outstandingActorOperations(owner.id()));
+            assertEquals(0, io.outstandingActorOperations(borrower.id()));
+        }
+    }
+
+    @Test
     void failedConnectCleanupClosesSocketBeforeRegistrationRetirement() throws Exception {
         try (var io = new AsyncNativeIo(1);
              var runtime = new ActorRuntime()) {
