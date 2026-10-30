@@ -458,6 +458,13 @@ public final class NativeHttp implements AutoCloseable {
             if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
             if (generation != state.generation || !owner.equals(state.owner)) throw new IllegalStateException("HTTP exchange has moved");
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
+            // Once claimed, this exchange is bound to one logical user-mail
+            // receive, not to all later messages delivered to the same actor.
+            // Before claim, the pending transfer token is still outstanding.
+            if (ActorRuntime.inActorExecution() && state.ticket == null
+                    && state.claimedNanos != 0L) {
+                context.actors().requireCurrentHttpExchange(this);
+            }
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
             synchronized (state) {
