@@ -2819,6 +2819,40 @@ public final class TypeChecker {
                 return new Named("SelectSet", List.of());
             }
 
+            if (call.callee() instanceof Ast.MemberExpr futureFactoryCall
+                    && futureFactoryCall.receiver() instanceof Ast.NameExpr futureFactory
+                    && futureFactory.name().equals("Future")
+                    && futureFactoryCall.member().equals("from_callback")) {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Future.from_callback expects exactly one callback registrar");
+                }
+                if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr registrar)) {
+                    throw new IllegalArgumentException(
+                            "Future.from_callback requires an inline callback registrar");
+                }
+                if (registrar.async()) {
+                    throw new IllegalArgumentException(
+                            "Future.from_callback registrar cannot be async; it must register and return");
+                }
+                if (call.typeArguments().size() > 1) {
+                    throw new IllegalArgumentException(
+                            "Future.from_callback accepts at most one result type argument");
+                }
+                Type resultType = call.typeArguments().isEmpty()
+                        ? Unknown.INSTANCE
+                        : resolve(call.typeArguments().getFirst(), generics, self);
+                validateLambdaAgainstExpected(
+                        registrar,
+                        new Function(
+                                List.of(new Named("Callback", List.of(resultType))),
+                                Primitive.VOID),
+                        env,
+                        generics,
+                        self);
+                return new Named("Future", List.of(resultType));
+            }
+
             if (call.callee() instanceof Ast.MemberExpr futureCall
                     && futureCall.receiver() instanceof Ast.NameExpr futureFactory
                     && futureFactory.name().equals("Future")
