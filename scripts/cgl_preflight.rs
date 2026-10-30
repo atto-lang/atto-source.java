@@ -390,21 +390,21 @@ mod tests {
         assert!(inspect_elf(&file.path.with_extension("missing")).is_err());
     }
     #[test] fn rejects_malformed_interpreter_segments() {
-        let mut invalid = elf(62, 5, None, 3, Some(b"/bin/sh\\0"));
+        let mut invalid = elf(62, 5, None, 3, Some(b"/bin/sh\0"));
         // The fixture has one PT_LOAD followed by PT_INTERP.
         let offset = 64 + 56;
         put64(&mut invalid, offset + 32, u64::MAX);
         assert!(Fixture::new(&invalid).inspect().is_err());
-        let mut invalid = elf(62, 5, None, 3, Some(b"/bin/sh\\0"));
-        invalid[64 + 2 * 56 - 1] = 1; // corrupt final interpreter byte
+        let mut invalid = elf(62, 5, None, 3, Some(b"/bin/sh\0"));
+        *invalid.last_mut().unwrap() = 1; // remove required interpreter terminator
         assert!(Fixture::new(&invalid).inspect().is_err());
     }
     #[test] fn rejects_unsafe_rt_flag_encodings() {
-        for raw in [b"1\\n\\n".as_slice(), b"1\\0", b"true", b"1 ", b"0 ", b"\\n"] {
+        for raw in [b"1\n\n".as_slice(), b"1\0", b"true", b"1 ", b"0 ", b"\n"] {
             let file = Fixture::new(raw);
             assert_eq!(rt_flag(&file.path), None);
         }
-        let file = Fixture::new(b"1\\n");
+        let file = Fixture::new(b"1\n");
         let link = file.path.with_extension("link");
         std::os::unix::fs::symlink(&file.path, &link).unwrap();
         assert_eq!(rt_flag(&link), None);
