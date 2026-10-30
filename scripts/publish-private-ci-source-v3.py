@@ -56,6 +56,8 @@ MAX_CONTRACT = 64 * 1024
 MAX_PLAN = 64 * 1024
 RECEIPT_TTL = dt.timedelta(hours=24)
 SOURCE_REPOSITORY_ID = 1400792274
+SOURCE_HANDOFF_JOURNAL_SCHEMA = "ores-private-ci-handoff-journal-v1"
+SOURCE_HANDOFF_JOURNAL_MARKER = "PRIVATE_CI_HANDOFF_V3"
 CONTROL_PLANE_PATHS = (
     "scripts/check-private-ci-destination.sh",
     "scripts/run-in-private-ci-destination.sh",
@@ -1080,6 +1082,70 @@ def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id)
     return True
 
 
+def _validate_source_handoff_comment(comment, expected_body):
+    if not isinstance(comment, dict):
+        raise Denied("source handoff journal response shape invalid")
+    comment_id = comment.get("id")
+    user = comment.get("user")
+    body = comment.get("body")
+    if (type(comment_id) is not int or comment_id <= 0
+            or not isinstance(user, dict)
+            or type(user.get("id")) is not int
+            or user.get("id") <= 0
+            or not isinstance(user.get("login"), str)
+            or not user["login"].strip()
+            or body != expected_body):
+        raise Denied("source handoff journal response identity invalid")
+    created_at = github_timestamp(
+        comment.get("created_at"), "source handoff journal timestamp invalid"
+    )
+    updated_at = github_timestamp(
+        comment.get("updated_at"), "source handoff journal timestamp invalid"
+    )
+    if created_at != updated_at:
+        raise Denied("source handoff journal comment was edited")
+    return {
+        "comment_id": comment_id,
+        "author_id": user["id"],
+        "author_login": user["login"],
+        "created_at": created_at.isoformat().replace("+00:00", "Z"),
+        "body_sha256": hashlib.sha256(
+            expected_body.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def record_source_handoff_journal(source_pr, journal):
+    """Persist and re-read the source-side trust anchor for a carrier handoff.
+
+    The carrier can self-consistently forge carrier refs. Evidence is therefore
+    not authoritative unless the successful publisher invocation also returns
+    this exact private-source comment ID and digest. The comment is required to
+    remain unedited; postflight evidence must re-read it by ID.
+    """
+    if (not isinstance(source_pr, int) or isinstance(source_pr, bool)
+            or source_pr <= 0 or not isinstance(journal, dict)):
+        raise Denied("source handoff journal input invalid")
+    body = (
+        SOURCE_HANDOFF_JOURNAL_MARKER + " "
+        + canonical_bytes(journal).decode("ascii")
+    )
+    created = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/issues/{source_pr}/comments",
+        method="POST",
+        payload={"body": body},
+    )
+    metadata = _validate_source_handoff_comment(created, body)
+    confirmed = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/issues/comments/"
+        + str(metadata["comment_id"])
+    )
+    confirmed_metadata = _validate_source_handoff_comment(confirmed, body)
+    if confirmed_metadata != metadata:
+        raise Denied("source handoff journal changed during confirmation")
+    return metadata
+
+
 def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
@@ -1315,6 +1381,37 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         require_exact_ref(
             repository, authorization, commit_sha, contract["repository_id"]
         )
+
+        # Carrier refs alone are not authoritative evidence because a
+        # carrier-side writer can create self-consistent refs. Re-attest every
+        # mutable source/destination gate once more, then journal the exact
+        # handoff back to the private source PR. Postflight evidence must bind
+        # to the returned source comment ID and body digest.
+        auth()
+        journal = {
+            "schema": SOURCE_HANDOFF_JOURNAL_SCHEMA,
+            "source_authority_sha": authority_sha,
+            "source_policy_fingerprint": approved_policy,
+            "carrier_contract_sha256": canonical_digest(contract),
+            "receipt_sha256": receipt_digest,
+            "expires_at": receipt["expires_at"],
+            "source": {
+                "repo": legacy.SOURCE_REPO,
+                "repo_id": source_repo_id,
+                "pr": source_pr,
+                "head_sha": source_commit,
+                "root_tree_sha": source_tree,
+            },
+            "carrier": {
+                "repo": repository,
+                "repo_id": contract["repository_id"],
+                "base_sha": contract["base_sha"],
+                "commit_sha": commit_sha,
+                "payload_ref": branch,
+                "authorization_ref": authorization,
+            },
+        }
+        journal_metadata = record_source_handoff_journal(source_pr, journal)
     except BaseException as exc:
         # Ref POSTs can succeed server-side before the client observes a
         # response. Cleanup therefore applies to interrupts and unexpected
@@ -1351,6 +1448,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         "source_tree": source_tree,
         "manifest_sha256": manifest_sha256,
         "receipt_sha256": receipt_digest,
+        "source_journal_comment_id": journal_metadata["comment_id"],
+        "source_journal_author_id": journal_metadata["author_id"],
+        "source_journal_body_sha256": journal_metadata["body_sha256"],
         "files": len(files),
     }
 
