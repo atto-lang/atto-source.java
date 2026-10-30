@@ -378,8 +378,11 @@ def require_resolved_blocking_incidents():
                     and isinstance(user.get("login"), str)
                     and user["login"].casefold()
                     == INCIDENT_DISPOSITION_REVIEWER.casefold()):
+                # GitHub comment creation order is immutable. Sorting by
+                # updated_at lets an edited old approval supersede a newer
+                # revocation, so order by creation time and comment ID.
                 reviewer_comments.append(
-                    (updated_at, comment_id, body)
+                    (created_at, comment_id, updated_at, body)
                 )
         if not reviewer_comments:
             raise Denied(
@@ -387,7 +390,7 @@ def require_resolved_blocking_incidents():
                 + " lacks independent security disposition"
             )
         reviewer_comments.sort(key=lambda item: (item[0], item[1]))
-        disposition_at, _comment_id, disposition_body = reviewer_comments[-1]
+        _created_at, _comment_id, disposition_at, disposition_body = reviewer_comments[-1]
         if disposition_at < closed_at:
             raise Denied(
                 "blocking P0 incident #" + str(number)
@@ -397,7 +400,7 @@ def require_resolved_blocking_incidents():
         # complete body to be the marker prevents prose/code examples from
         # accidentally authorizing transfer and lets any later reviewer
         # comment revoke authorization fail-closed.
-        if disposition_body.strip() != marker:
+        if disposition_body != marker:
             raise Denied(
                 "blocking P0 incident #" + str(number)
                 + " latest independent security disposition is absent or revoked"
