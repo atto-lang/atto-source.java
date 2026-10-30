@@ -3611,6 +3611,8 @@ public final class TypeChecker {
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            Type callbackMember = builtinCallbackMember(sumReceiver, member.member());
+            if (callbackMember != null) return callbackMember;
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
@@ -5377,6 +5379,7 @@ public final class TypeChecker {
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("Callback")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
@@ -5460,7 +5463,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Iterator")
+                || named.name().equals("Future") || named.name().equals("Callback")
+                || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
@@ -6388,6 +6392,22 @@ public final class TypeChecker {
                 }
                 yield new Function(List.of(), element);
             }
+            default -> null;
+        };
+    }
+
+    private Type builtinCallbackMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)
+                || !named.name().equals("Callback")
+                || named.arguments().size() != 1) {
+            return null;
+        }
+        Type element = named.arguments().getFirst();
+        return switch (member) {
+            case "resolve" -> new Function(List.of(element), Primitive.VOID);
+            case "reject" -> new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+            case "cancel" -> new Function(List.of(), Primitive.VOID);
+            case "is_done" -> new Function(List.of(), Primitive.BOOL);
             default -> null;
         };
     }
