@@ -142,8 +142,8 @@ public final class AsyncNativeIo implements AutoCloseable {
             // Callback retirement is part of physical ownership. A corrupt
             // receipt quarantines the scope rather than forging a drain.
             if (incompleteReceipt == null) {
-                if (physicalLease != null) physicalLease.close();
-                if (registrationLease != null) registrationLease.close();
+                retireScopedPhysicalLease(physicalLease);
+                retireScopedPhysicalLease(registrationLease);
             }
         }
     }
@@ -310,7 +310,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 recordIncomplete(notificationFailure);
                 throw notificationFailure;
             } finally {
-                if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+                retireScopedPhysicalLease(physicalLease);
             }
         }
         return result;
@@ -401,7 +401,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 try {
                     notifyActorRetirement(retireActor);
                 } finally {
-                    if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+                    retireScopedPhysicalLease(physicalLease);
                 }
             }
             if (failure instanceof VirtualMachineError fatal) throw fatal;
@@ -444,7 +444,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                         try {
                             notifyActorRetirement(retireActor);
                         } finally {
-                            if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+                            retireScopedPhysicalLease(physicalLease);
                         }
                     }
                 });
@@ -453,6 +453,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                 // and quarantine the context rather than forging retirement.
                 recordIncomplete(startFailure);
             }
+        }
+    }
+
+    /** Corrupt/replayed physical receipts invalidate all future actor-DONE proofs. */
+    private void retireScopedPhysicalLease(ActorPermissionScope.PhysicalLease lease) {
+        if (lease == null || incompleteReceipt != null) return;
+        try {
+            lease.close();
+        } catch (RuntimeException | Error failure) {
+            recordIncomplete(failure);
+            throw failure;
         }
     }
 
@@ -555,9 +566,7 @@ public final class AsyncNativeIo implements AutoCloseable {
             } else {
                 resourceLoans.remove(resource);
                 retireActor = decrementActorOperationLocked(state.registeredBy);
-                if (state.physicalLease != null && incompleteReceipt == null) {
-                    state.physicalLease.close();
-                }
+                retireScopedPhysicalLease(state.physicalLease);
             }
         }
         // The final registration must notify lifecycle outside our monitor.
@@ -704,9 +713,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                                 ActorRuntime.ActorId finalOwner =
                                         decrementActorOperationLocked(owner.registeredBy);
                                 if (finalOwner != null) registrationRetirements.add(finalOwner);
-                                if (owner.physicalLease != null && incompleteReceipt == null) {
-                                    owner.physicalLease.close();
-                                }
+                                retireScopedPhysicalLease(owner.physicalLease);
                             }
                         }
                     } catch (Exception failure) {
