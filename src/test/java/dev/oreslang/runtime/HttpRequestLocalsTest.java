@@ -44,8 +44,11 @@ final class HttpRequestLocalsTest {
                 () -> locals.set("healthy", "😀".repeat(300)));
         assertEquals("ok", locals.get("healthy"));
         assertEquals(1, locals.size());
-        for (int i = 0; i < 8; i++) locals.set("big" + i, "x".repeat(1024));
-        assertThrows(IllegalStateException.class, () -> locals.set("too_large_total", "a"));
+        // Eight 1023-byte values plus the initial two bytes fit in 8192;
+        // the next seven-byte value crosses the aggregate limit.
+        for (int i = 0; i < 8; i++) locals.set("big" + i, "x".repeat(1023));
+        assertThrows(IllegalStateException.class,
+                () -> locals.set("too_large_total", "1234567"));
         assertEquals(9, locals.size());
     }
 
