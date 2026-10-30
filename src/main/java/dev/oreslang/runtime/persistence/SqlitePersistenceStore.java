@@ -145,8 +145,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
     }
     /**
      * Called only by the trusted batch writer after commit(). The receipt
-     * alone never authorizes state publication. Both the current epoch fence
-     * and the exact durable operation record are read in one SQLite snapshot.
+     * alone never authorizes state publication. The current epoch fence and durable operation record share one
+     * short SQLite IMMEDIATE transaction, serialized with competing writers.
      */
     @Override public synchronized boolean verifyDurableCommit(Write write, Result receipt)
             throws SQLException {
@@ -163,7 +163,9 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                 || !receipt.operationId().equals(write.operationId())
                 || write.expectedVersion() == Long.MAX_VALUE
                 || receipt.version() != write.expectedVersion() + 1L) return false;
-        execute("BEGIN");
+        // Serialize the epoch check and persisted operation witness against
+        // concurrent writers; the actor carrier never invokes this JDBC path.
+        begin();
         try {
             boolean valid = false;
             if (epoch(id) == write.epoch()) {
