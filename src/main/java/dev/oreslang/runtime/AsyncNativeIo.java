@@ -885,7 +885,9 @@ public final class AsyncNativeIo implements AutoCloseable {
             synchronized (this) {
                 state.closeFailed = true;
                 // Keep closeInProgress set to deny all new borrows. An
-                // explicit same-owner retry is allowed above.
+                // explicit same-owner retry is allowed above. The shutdown
+                // join may now attempt its own trusted physical-close retry.
+                this.notifyAll();
             }
             throw failure;
         }
@@ -1001,7 +1003,9 @@ public final class AsyncNativeIo implements AutoCloseable {
                         // subscriber has returned. Wait only to the deadline.
                         while ((!pending.isEmpty() || !controls.isEmpty()
                                 || pendingResourceCreations != 0
-                                || resourceLoans.values().stream().anyMatch(x -> x.active != 0))
+                                || resourceLoans.values().stream().anyMatch(
+                                        x -> x.active != 0
+                                                || (x.closeInProgress && !x.closeFailed)))
                                 && incompleteReceipt == null) {
                             wait = deadline - System.nanoTime();
                             if (wait <= 0) break;
@@ -1009,7 +1013,9 @@ public final class AsyncNativeIo implements AutoCloseable {
                         }
                         joined = pending.isEmpty() && controls.isEmpty()
                                 && pendingResourceCreations == 0
-                                && resourceLoans.values().stream().noneMatch(x -> x.active != 0)
+                                && resourceLoans.values().stream().noneMatch(
+                                        x -> x.active != 0
+                                                || (x.closeInProgress && !x.closeFailed))
                                 && incompleteReceipt == null;
                     }
                 }
