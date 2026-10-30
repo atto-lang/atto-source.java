@@ -104,5 +104,9 @@ jobs:
           psql -U postgres -v ON_ERROR_STOP=1 -c "UPDATE ores_dispatch.actor_fence_v1 SET actor_generation=8, activation_epoch=10, exact_revision=repeat('c',40) WHERE tenant_id='tenant' AND actor_id='worker'"
           rc=0
           java -cp "$CP" PgDispatchClaimIntegrationTest probe java-after-fence || rc=$?
+          # New generation is authorized, but an old logical effect cannot replay.
+          rc=0
+          java -cp "$CP" PgDispatchClaimIntegrationTest probe-newgen java-killed || rc=$?
           test "$rc" -eq 2
+          java -cp "$CP" PgDispatchClaimIntegrationTest probe-newgen java-fresh
           echo 'PG_JAVA_REAL_DB_CLAIM_PASS host_only=true native_guest=false'
