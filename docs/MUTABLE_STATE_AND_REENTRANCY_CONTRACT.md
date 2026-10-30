@@ -136,8 +136,9 @@ shared-mode wrapper must protect the entire invariant.
 
 `InjectedMutableStateContainerTest` now exercises: exclusively owned
 two-field mutation across cooperation without a mutex; borrowed injection
-into a mutating method; and rejection of a read-only borrow attempting that
-method. These are admission tests; no actor reentrancy, automatic injection
+into a mutating method; rejection of a read-only borrow attempting that
+method, and exact-output Graal guest execution of validated two-field
+reservation including an overdraw refusal. These are admission tests; no actor reentrancy, automatic injection
 framework, partition optimizer, or shared-state synchronization is implied.
 
 A next-step shared container should be an opaque owning handle with distinct
@@ -148,7 +149,7 @@ escapes its task/actor.
 
 ## Java baseline regression scope
 
-LocalMutableStateBoundaryTest has 13 tests, plus five MutexLockOrderAdmissionTest cases and three InjectedMutableStateContainerTest cases: local scalar and exclusive heap
+LocalMutableStateBoundaryTest has 13 tests, plus five MutexLockOrderAdmissionTest cases and four InjectedMutableStateContainerTest cases: local scalar and exclusive heap
 mutation, lexical loan retirement, synchronous exclusive parameter access,
 conflicting local loans, local-reference return/capture, cooperation with a
 live read/write loan, live/released guard admission, and one exact-output
@@ -161,7 +162,7 @@ rejection from satisfying the suite.
 
 Run with JDK 25 and the repository's GraalVM dependencies:
 
-    mvn -B -ntp -Dtest=LocalMutableStateBoundaryTest,MutexLockOrderAdmissionTest -DfailIfNoTests=true test
+    mvn -B -ntp -Dtest=LocalMutableStateBoundaryTest,MutexLockOrderAdmissionTest,InjectedMutableStateContainerTest -DfailIfNoTests=true test
 
 Then run the existing ownership, mutex, actor-state, and source-cooperation
 regressions, full verify, and Native Image gates. No skipped-only or zero-step
