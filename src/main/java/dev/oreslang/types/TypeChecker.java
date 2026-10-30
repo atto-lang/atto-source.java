@@ -4789,6 +4789,7 @@ public final class TypeChecker {
                 && isMathIntrinsicName(member.member())
                 && env.lookup("Math") == null
                 && !modules.containsKey("Math")
+                && findClass("Math") == null
                 && !importedNames.contains("Math")) {
             return member.member();
         }
