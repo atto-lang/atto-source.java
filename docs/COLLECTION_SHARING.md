@@ -52,6 +52,14 @@ These are complementary boundaries. `Send` of an owned record does not
 authorize a borrowed reference or a retained writable alias to cross lanes.
 `SharedMutex` only justifies sharing **through** its protected interface.
 
+
+A dedicated source fixture also passes a mutable `infer struct` into a
+`structural {value: int}` readonly parameter, reads synchronously, and
+continues mutating the caller-owned struct. Negative companions attempt
+to capture that readonly parameter in an independent Task or publish
+it via `rt share`. The intended failure is the ownership boundary,
+not parser rejection.
+
 ## Exact-head merge verification
 
 Run the **unmodified** branch source with JDK 21 or newer:
