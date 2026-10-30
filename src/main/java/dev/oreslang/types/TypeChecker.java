@@ -3336,6 +3336,40 @@ public final class TypeChecker {
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
+                    if (named.name().equals("Future")
+                            && named.arguments().size() == 1
+                            && member.member().equals("attach_callback")) {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "Future.attach_callback expects exactly one callback registrar");
+                        }
+                        if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr registrar)) {
+                            throw new IllegalArgumentException(
+                                    "Future.attach_callback requires an inline callback registrar");
+                        }
+                        if (registrar.async()) {
+                            throw new IllegalArgumentException(
+                                    "Future.attach_callback registrar cannot be async; it must register and return");
+                        }
+                        if (call.typeArguments().size() > 1) {
+                            throw new IllegalArgumentException(
+                                    "Future.attach_callback accepts at most one result type argument");
+                        }
+                        Type resultType = call.typeArguments().isEmpty()
+                                ? Unknown.INSTANCE
+                                : resolve(call.typeArguments().getFirst(), generics, self);
+                        validateLambdaAgainstExpected(
+                                registrar,
+                                new Function(
+                                        List.of(
+                                                named.arguments().getFirst(),
+                                                new Named("Callback", List.of(resultType))),
+                                        Primitive.VOID),
+                                env,
+                                generics,
+                                self);
+                        return new Named("Future", List.of(resultType));
+                    }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
                             && member.member().equals("with_lock")) {
