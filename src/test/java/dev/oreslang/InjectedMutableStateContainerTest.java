@@ -6,6 +6,8 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -120,6 +122,18 @@ final class InjectedMutableStateContainerTest {
                 () -> OresCompiler.analyze(parsed));
         assertTrue(error.getMessage().contains("private field"),
                 error::getMessage);
+    }
+
+    @Test
+    void repository_native_state_container_example_executes_without_java_state_helpers()
+            throws Exception {
+        String source = Files.readString(Path.of("examples", "state-container-injection.ores"));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
+            context.eval(Source.newBuilder("ores", source, "state-container-injection.ores").build());
+        }
+        assertEquals("7|3|true|false", out.toString(StandardCharsets.UTF_8));
     }
 
     @Test
