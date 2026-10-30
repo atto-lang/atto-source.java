@@ -1,0 +1,173 @@
+import module bigint_math from './bigint';
+
+// Pure-Oreslang exact decimal reference foundation.
+//
+// The reserved primitive `decimal` remains compiler-rejected until every
+// backend has a distinct exact base-10 representation. DecimalValue is the
+// executable semantic reference: arbitrary-precision integer coefficient plus
+// a nonnegative decimal scale. No binary float conversion is used.
+define module decimal_math as
+
+  pub define class DecimalContext as
+    pub val int precision;
+    pub val String rounding;
+    pub val int max_scale;
+
+    pub constructor(int precision, String rounding, int max_scale) {
+      if precision < 1 || precision > 4096; do
+        rt fail("decimal: precision outside bounded context");
+      fi
+      if max_scale < 0 || max_scale > 256; do
+        rt fail("decimal: max_scale outside bounded context");
+      fi
+      if rounding != "half_even"
+          && rounding != "half_up"
+          && rounding != "down"
+          && rounding != "up"; do
+        rt fail("decimal: unsupported rounding mode");
+      fi
+      self.precision = precision;
+      self.rounding = rounding;
+      self.max_scale = max_scale;
+    }
+  end
+
+  pub define class DecimalValue as
+    pub val bigint_math.BigIntValue coefficient;
+    pub val int scale;
+
+    pub constructor(bigint_math.BigIntValue coefficient, int scale) {
+      if scale < 0 || scale > 256; do
+        rt fail("decimal: scale outside bounded domain");
+      fi
+      self.coefficient = coefficient;
+      self.scale = scale;
+    }
+  end
+
+  fnc ten_power(int exponent): bigint_math.BigIntValue {
+    if exponent < 0 || exponent > 256; do
+      rt fail("decimal: power-of-ten exponent outside bounded domain");
+    fi
+    let bigint_math.BigIntValue value = bigint_math.from_int(1);
+    val bigint_math.BigIntValue ten = bigint_math.from_int(10);
+    for (let int i = 0; i < exponent; i = i + 1) {
+      value = bigint_math.mul(&value, &ten);
+    }
+    return value;
+  }
+
+  fnc coefficient_at_scale(
+    &DecimalValue value,
+    int target_scale
+  ): bigint_math.BigIntValue {
+    if target_scale < value.scale; do
+      rt fail("decimal: target scale cannot discard precision");
+    fi
+    if target_scale == value.scale; do
+      return bigint_math.add(&value.coefficient, &bigint_math.from_int(0));
+    fi
+
+    val bigint_math.BigIntValue factor = ten_power(target_scale - value.scale);
+    return bigint_math.mul(&value.coefficient, &factor);
+  }
+
+  pub fnc from_int(int value): DecimalValue {
+    return new DecimalValue(bigint_math.from_int(value), 0);
+  }
+
+  // Construct coefficient * 10^-scale exactly. The coefficient is copied
+  // through BigInt arithmetic by callers; no binary floating conversion exists.
+  pub fnc from_scaled_int(int coefficient, int scale): DecimalValue {
+    return new DecimalValue(bigint_math.from_int(coefficient), scale);
+  }
+
+  pub fnc abs(&DecimalValue value): DecimalValue {
+    return new DecimalValue(bigint_math.abs(&value.coefficient), value.scale);
+  }
+
+  pub fnc neg(&DecimalValue value): DecimalValue {
+    return new DecimalValue(bigint_math.neg(&value.coefficient), value.scale);
+  }
+
+  pub fnc add(&DecimalValue left, &DecimalValue right): DecimalValue {
+    let int target_scale = left.scale;
+    if right.scale > target_scale; do
+      target_scale = right.scale;
+    fi
+
+    val bigint_math.BigIntValue left_coefficient =
+      coefficient_at_scale(&left, target_scale);
+    val bigint_math.BigIntValue right_coefficient =
+      coefficient_at_scale(&right, target_scale);
+    return new DecimalValue(
+      bigint_math.add(&left_coefficient, &right_coefficient),
+      target_scale
+    );
+  }
+
+  pub fnc sub(&DecimalValue left, &DecimalValue right): DecimalValue {
+    let int target_scale = left.scale;
+    if right.scale > target_scale; do
+      target_scale = right.scale;
+    fi
+
+    val bigint_math.BigIntValue left_coefficient =
+      coefficient_at_scale(&left, target_scale);
+    val bigint_math.BigIntValue right_coefficient =
+      coefficient_at_scale(&right, target_scale);
+    return new DecimalValue(
+      bigint_math.sub(&left_coefficient, &right_coefficient),
+      target_scale
+    );
+  }
+
+  pub fnc mul(&DecimalValue left, &DecimalValue right): DecimalValue {
+    val int result_scale = left.scale + right.scale;
+    if result_scale > 256; do
+      rt fail("decimal: multiplication exceeds bounded scale policy");
+    fi
+    return new DecimalValue(
+      bigint_math.mul(&left.coefficient, &right.coefficient),
+      result_scale
+    );
+  }
+
+  pub fnc equal(&DecimalValue left, &DecimalValue right): bool {
+    let int target_scale = left.scale;
+    if right.scale > target_scale; do
+      target_scale = right.scale;
+    fi
+
+    val bigint_math.BigIntValue left_coefficient =
+      coefficient_at_scale(&left, target_scale);
+    val bigint_math.BigIntValue right_coefficient =
+      coefficient_at_scale(&right, target_scale);
+    return bigint_math.equal(&left_coefficient, &right_coefficient);
+  }
+
+  pub fnc compare(&DecimalValue left, &DecimalValue right): int {
+    let int target_scale = left.scale;
+    if right.scale > target_scale; do
+      target_scale = right.scale;
+    fi
+
+    val bigint_math.BigIntValue left_coefficient =
+      coefficient_at_scale(&left, target_scale);
+    val bigint_math.BigIntValue right_coefficient =
+      coefficient_at_scale(&right, target_scale);
+    return bigint_math.compare(&left_coefficient, &right_coefficient);
+  }
+
+  // Deliberately fail closed. Exact decimal division must either terminate or
+  // consume an explicit DecimalContext with a reviewed rounding algorithm.
+  pub fnc div(
+    &DecimalValue left,
+    &DecimalValue right,
+    &DecimalContext context
+  ): DecimalValue {
+    rt fail("decimal: division/rounding not implemented in reference foundation");
+    return from_int(0);
+  }
+
+end
