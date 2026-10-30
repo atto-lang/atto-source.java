@@ -141,6 +141,51 @@ public final class BatchPersistenceSidecarTestMain {
             String valid = new String(Character.toChars(0x1F642));
             new Identity("tenant-1", valid, "main");
         });
+        test("forged durable store receipt cannot publish a commit", () -> {
+            Store forged = new Store() {
+                public void grantEpoch(String tenant, String actor, long epoch) {}
+                public List<Result> commit(List<Write> writes) {
+                    Write write = writes.get(0);
+                    return List.of(new Result(write.operationId(), Status.COMMITTED,
+                            write.expectedVersion() + 1L, true));
+                }
+                // No durable operation ledger. Default proof must fail closed.
+            };
+            try (var sidecar = new BatchPersistenceSidecar(
+                    "tenant-1", forged, 4, 4096, 64, 4, 512, 5000)) {
+                var result = sidecar.submit(write("a", "counterfeit", 1, 0));
+                sidecar.drain().toCompletableFuture().join();
+                boolean unknown = false;
+                try { get(result); }
+                catch (CompletionException e) {
+                    unknown = e.getCause() instanceof AdmissionException ae
+                            && ae.code.equals("OUTCOME_UNKNOWN");
+                }
+                check(unknown, "unverified durable provider receipt was accepted");
+            }
+        });
+        test("incorrect non-durable committed version cannot bypass CAS contract", () -> {
+            Store wrongVersion = new Store() {
+                public void grantEpoch(String tenant, String actor, long epoch) {}
+                public List<Result> commit(List<Write> writes) {
+                    Write write = writes.get(0);
+                    return List.of(new Result(write.operationId(), Status.COMMITTED,
+                            write.expectedVersion() + 2L, false));
+                }
+            };
+            try (var sidecar = new BatchPersistenceSidecar(
+                    "tenant-1", wrongVersion, 4, 4096, 64, 4, 512, 5000)) {
+                var result = sidecar.submit(write("a", "wrong-version", 1, 0));
+                sidecar.drain().toCompletableFuture().join();
+                boolean unknown = false;
+                try { get(result); }
+                catch (CompletionException e) {
+                    unknown = e.getCause() instanceof AdmissionException ae
+                            && ae.code.equals("OUTCOME_UNKNOWN");
+                }
+                check(unknown, "store published commit with mismatched version");
+            }
+        });
         test("provider failure reports unknown not guaranteed abort", () -> {
             Store faulty=new Store() {
                 public void grantEpoch(String t,String a,long e) {}
