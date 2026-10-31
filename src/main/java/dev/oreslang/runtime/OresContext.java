@@ -117,7 +117,8 @@ public final class OresContext implements AutoCloseable {
                     isolatePolicy,
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
-                    vm::executeControl);
+                    vm::executeControl,
+                    runtimePermissions);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
@@ -186,6 +187,8 @@ public final class OresContext implements AutoCloseable {
             String api) {
         requireCapability(permission.capability(), api);
         runtimePermissions.require(permission, resource, api);
+        ActorRuntime.requireCurrentActorPermission(
+                permission, resource, api);
     }
 
     static void requireEffectiveCapability(
