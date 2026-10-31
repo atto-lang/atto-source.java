@@ -58,7 +58,12 @@ final class DbWalAsyncAdmissionTest {
             assertTrue(queuedGate.beginWrite());
             var started = io.submitWithNonStartHook("running", () -> {
                 entered.countDown();
-                release.await();
+                // Shutdown interrupts workers. A non-cooperative kernel
+                // operation may ignore that interrupt and must remain pinned.
+                while (release.getCount() != 0) {
+                    try { release.await(20, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { }
+                }
                 try {
                     return 1;
                 } finally {
