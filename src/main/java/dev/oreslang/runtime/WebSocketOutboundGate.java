@@ -104,9 +104,15 @@ final class WebSocketOutboundGate {
             } else if (heldControlCount >= controlCapacity) {
                 throw new RejectedExecutionException("WebSocket CONTROL quota exhausted");
             }
-            if (heldControlCount >= controlCapacity) {
-                throw new RejectedExecutionException("WebSocket CONTROL quota exhausted");
-            }
+            // RFC6455 close is the terminal CONTROL action. A reserved close
+            // slot must remain available even when the sole physical writer
+            // is sending a PONG and already holds every ordinary CONTROL
+            // credit. Otherwise accepting CLOSE would set 'closing', drop
+            // pending USER messages, then reject the only CLOSE response.
+            //
+            // At most one CLOSE can be queued: 'closing' is set before
+            // publication and subsequent admission fails. Waiting PONGs
+            // were discarded above, so this transient extra slot is bounded.
             write = new Write(frame);
             control.addLast(write);
             heldControlCount++;
