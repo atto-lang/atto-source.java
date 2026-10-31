@@ -340,10 +340,56 @@ final class WebSocketLoopbackListenerTest {
                 owner.stop();
                 owner.done().get(5, TimeUnit.SECONDS);
                 assertTrue(claim.revoked(), "stopped actor has no live send claim");
-                // This first slice only revokes logical authority. The host
-                // supervisor still owns physical socket retirement.
+                // No supervisor call to connection.close(). A bounded shared
+                // host retirement worker must physically release the socket.
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.activeConnectionCount() != 0
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertEquals(0, listener.activeConnectionCount(),
+                        "actor finalization must retire the idle physical connection");
+                assertEquals(-1, client.getInputStream().read());
+                assertThrows(SecurityException.class,
+                        () -> connection.sendTextAsync("revoked"));
+                connection.close(); // idempotent and does not return a second permit.
+            }
+        }
+    }
+
+    @Test
+    void idleActorStopPhysicallyRetiresPeerWithoutAReadOrWrite() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var runtime = new ActorRuntime();
+             var listener = listen(io, port, 1)) {
+            var actor = runtime.<String>spawnPrivate(
+                    () -> (message, context) -> { });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                var claim = connection.claimActor(runtime, actor);
+                assertEquals(1, listener.activeConnectionCount());
+                actor.stop();
+                actor.done().get(5, TimeUnit.SECONDS);
+                assertTrue(claim.revoked());
+
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.activeConnectionCount() > 0
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertEquals(0, listener.activeConnectionCount(),
+                        "idle terminated owner must not retain socket or connection slot");
+                assertEquals(-1, client.getInputStream().read());
+                assertThrows(SecurityException.class, claim::requireOwnerTurn);
+                // Even a stale physical Connection object cannot be rebound.
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.claimActor(runtime, actor));
                 connection.close();
-                assertEquals(0, listener.activeConnectionCount());
             }
         }
     }
