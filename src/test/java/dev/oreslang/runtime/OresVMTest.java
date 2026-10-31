@@ -10,6 +10,50 @@ import org.junit.jupiter.api.Test;
 final class OresVMTest {
 
     @Test
+    void failedCloseRetryMustRecheckRealPhysicalStopCarrierExit() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var exited = new java.util.concurrent.CountDownLatch(1);
+        OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+        try {
+            vm.executePhysicalStop(() -> {
+                entered.countDown();
+                try {
+                    boolean done = false;
+                    while (!done) {
+                        try {
+                            done = release.await(25, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException ignored) {
+                            // The worker retains its physical STOP lease even
+                            // after shutdownNow requests interruption.
+                        }
+                    }
+                } finally {
+                    exited.countDown();
+                }
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            IllegalStateException incomplete =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            IllegalStateException.class, vm::close);
+            assertTrue(incomplete.getMessage().contains("carrier teardown incomplete"),
+                    () -> "unexpected first-close failure: " + incomplete);
+            assertEquals(1L, exited.getCount(),
+                    "the first close may not claim an interrupted running job exited");
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    () -> vm.executePhysicalStop(() -> { }));
+        } finally {
+            release.countDown();
+        }
+        assertTrue(exited.await(3, TimeUnit.SECONDS));
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(vm::close,
+                "the second close must recheck actual CONTROL and physical-stop termination");
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(vm::close,
+                "repeated successful close must remain idempotent");
+    }
+
+    @Test
     void shutdownNowReportsQueuedPhysicalStopNeverStartedExactlyOnce()
             throws Exception {
         var runningEntered = new java.util.concurrent.CountDownLatch(1);
