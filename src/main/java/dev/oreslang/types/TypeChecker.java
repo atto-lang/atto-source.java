@@ -1702,6 +1702,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor init must contain exactly 'return state { ... };'");
                 }
+                if (method.parameters().size() > 32) {
+                    throw new IllegalArgumentException(
+                            "actor init exceeds the bounded 32-argument runtime ABI");
+                }
                 java.util.Set<String> params = new java.util.HashSet<>();
                 for (Ast.Param param : method.parameters()) {
                     if (param.mutable() || param.structural() || param.type().isBorrow()
@@ -1727,6 +1731,15 @@ public final class TypeChecker {
                     if (field.initializer() != null) {
                         throw new IllegalArgumentException(
                                 "actor init supplies a complete state; declaration field initializers are forbidden");
+                    }
+                    if (field.type() == null || field.type().isBorrow()
+                            || field.type().inferArguments()
+                            || !field.type().arguments().isEmpty()
+                            || !java.util.Set.of("int", "bool", "float", "string", "String")
+                                    .contains(field.type().name())) {
+                        throw new IllegalArgumentException(
+                                "actor init state field '" + field.name()
+                                        + "' requires the proven scalar-only state ABI");
                     }
                     stateFields.put(field.name(), field);
                 }
