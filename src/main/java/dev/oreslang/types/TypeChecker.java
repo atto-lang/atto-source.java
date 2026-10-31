@@ -2872,7 +2872,8 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr console
                     && console.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("stdio") && env.lookup("stdio") == null
-                    && (console.member().equals("print") || console.member().equals("println"))) {
+                    && (console.member().equals("print") || console.member().equals("println")
+                        || console.member().equals("println_async"))) {
                 if (call.typeArgumentsPresent() || call.arguments().isEmpty()
                         || call.arguments().size() > 32) {
                     throw new IllegalArgumentException("stdio." + console.member()
@@ -2884,9 +2885,10 @@ public final class TypeChecker {
                     }
                     typeOf(argument, env, generics, self);
                 }
-                return Primitive.VOID;
+                return console.member().equals("println_async")
+                        ? new Named("Future", List.of(Primitive.VOID)) : Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "log", env)) {
+            if (isBuiltinStdoutCall(call, "log", env) || isBuiltinStdoutCall(call, "log_async", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -2897,9 +2899,11 @@ public final class TypeChecker {
                         typeOf(argument, env, generics, self);
                     }
                 }
-                return Primitive.VOID;
+                return isBuiltinStdoutCall(call, "log_async", env)
+                        ? new Named("Future", List.of(Primitive.VOID)) : Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "logList", env)) {
+            if (isBuiltinStdoutCall(call, "logList", env)
+                    || isBuiltinStdoutCall(call, "logList_async", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.logList does not accept call-site type arguments");
                 }
@@ -2907,7 +2911,8 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("stdio.stdout.logList expects exactly one array/list/tuple argument");
                 }
                 requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
-                return Primitive.VOID;
+                return isBuiltinStdoutCall(call, "logList_async", env)
+                        ? new Named("Future", List.of(Primitive.VOID)) : Primitive.VOID;
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
