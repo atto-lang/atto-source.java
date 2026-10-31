@@ -273,4 +273,65 @@ final class ActorStateRwLoansTest {
         active.close();
         assertEquals(0, loans.activeWriterCount());
     }
+
+    @Test
+    void sameLogicalExecutionCannotAcquireThroughAnotherSlotHandle() {
+        try (var loans = new ActorStateRwLoans(4)) {
+            var original = actor(7501, 151, 5);
+            var rematerialized = actor(7501, 152, 6);
+            var active = loans.acquireReadAsync(original).join();
+            assertTrue(loans.acquireReadAsync(rematerialized).isCompletedExceptionally());
+            assertTrue(loans.acquireWriteAsync(rematerialized).isCompletedExceptionally());
+            assertEquals(1, loans.activeReaderCount());
+            assertEquals(0, loans.pendingCount());
+            active.close();
+        }
+    }
+
+    @Test
+    void oneExecutionSlotCannotServeTwoLiveLogicalExecutions() {
+        try (var loans = new ActorStateRwLoans(4)) {
+            var original = actor(7601, 161, 5);
+            var conflicting = actor(7602, 161, 5);
+            var active = loans.acquireReadAsync(original).join();
+            assertTrue(loans.acquireReadAsync(conflicting).isCompletedExceptionally());
+            assertTrue(loans.acquireWriteAsync(conflicting).isCompletedExceptionally());
+            assertEquals(1, loans.activeReaderCount());
+            active.close();
+        }
+    }
+
+    @Test
+    void oldReleasedLoanCannotAuthorizeSuspensionAfterExecutionChangesSlot() {
+        try (var loans = new ActorStateRwLoans(4)) {
+            var original = actor(7701, 171, 4);
+            var rematerialized = actor(7701, 172, 5);
+            var old = loans.acquireReadAsync(original).join();
+            old.close();
+            assertTrue(old.readyToSuspend(original));
+            var current = loans.acquireWriteAsync(rematerialized).join();
+            assertFalse(old.readyToSuspend(original),
+                    "an old loan must not certify a newly acquired logical execution");
+            assertFalse(current.readyToSuspend(rematerialized));
+            current.close();
+            assertTrue(old.readyToSuspend(original));
+        }
+    }
+
+    @Test
+    void pendingReservationAlsoFencesLogicalExecutionAndSlot() {
+        try (var loans = new ActorStateRwLoans(4)) {
+            var blocker = loans.acquireWriteAsync(actor(7801, 181, 1)).join();
+            var queued = loans.acquireReadAsync(actor(7802, 182, 1));
+            assertFalse(queued.isDone());
+            assertTrue(loans.acquireWriteAsync(actor(7802, 183, 2))
+                    .isCompletedExceptionally());
+            assertTrue(loans.acquireReadAsync(actor(7803, 182, 1))
+                    .isCompletedExceptionally());
+            assertEquals(1, loans.pendingCount());
+            blocker.close();
+            queued.join().close();
+            assertEquals(0, loans.pendingCount());
+        }
+    }
 }
