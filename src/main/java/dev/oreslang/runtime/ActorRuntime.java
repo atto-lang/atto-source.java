@@ -6492,6 +6492,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
+                || value instanceof ActorRuntime.PermissionDelegation
                 || value instanceof ActorRuntime.ContinuationTarget) {
             throw new SecurityException(
                     "actor lifecycle capabilities are execution-domain local and cannot cross actor mailboxes");
