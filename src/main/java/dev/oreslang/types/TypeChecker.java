@@ -8650,6 +8650,8 @@ public final class TypeChecker {
             Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return;
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init")) continue;
             if (!method.isStatic()) names.add(method.name());
         }
         for (Ast.TypeRef parentRef : klass.parents()) {
@@ -8774,6 +8776,10 @@ public final class TypeChecker {
 
         Map<CallableSelector, CallableTarget> local = new LinkedHashMap<>();
         for (Ast.MethodDecl method : klass.methods()) {
+            // Reserved init belongs to the actor bootstrap ABI, not the
+            // dynamically inherited or overloaded callable-slot registry.
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init")) continue;
             CallableSelector selector = CallableSelector.of(method);
             CallableTarget previous = local.putIfAbsent(selector, new CallableTarget(klass, method));
             if (previous != null) {
