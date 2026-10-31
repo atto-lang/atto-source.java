@@ -143,7 +143,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
             if (pending.isEmpty() && canGrantLocked(access)) {
                 try {
                     return OresFuture.completed(
-                            createLocked(authority, access));
+                            createLocked(authority, access, null));
                 } catch (RuntimeException | Error failure) {
                     unreserveLocked(authority);
                     throw failure;
@@ -162,7 +162,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
             // cancellation or promotion eventually removes the queue node.
             // This fences every terminal-CAS / producer-promotion race.
             terminalNotificationsInFlight++;
-            trackNotificationDrain(waiter.future);
+            trackNotificationDrain(waiter);
             return waiter.future;
         }
     }
@@ -226,11 +226,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
         return writer == null;
     }
 
-    private StateLoan createLocked(Authority authority, Access access) {
+    private StateLoan createLocked(Authority authority, Access access, Pending owner) {
         if (nextEpoch == Long.MAX_VALUE) {
             throw new IllegalStateException("actor state RW loan epochs exhausted");
         }
-        StateLoan loan = new StateLoan(authority, access, ++nextEpoch);
+        StateLoan loan = new StateLoan(authority, access, ++nextEpoch, owner);
         if (access == Access.WRITE) {
             if (writer != null || !readers.isEmpty()) {
                 throw new IllegalStateException("state RW writer grant overlaps live loan");
@@ -241,6 +241,9 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 throw new IllegalStateException("state RW reader grant overlaps authority");
             }
         }
+        // A queued Future's authority belongs to both the granted loan
+        // and its terminal notification drain; neither may release it alone.
+        if (owner != null) owner.loan = loan;
         return loan;
     }
 
@@ -259,14 +262,14 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 // entered pending. Its cancellation CAS may precede its hook;
                 // removing the node here does not retire the notification pin.
                 pending.removeFirst();
-                unreserveLocked(head.authority);
+                head.abandoned = true;
                 continue;
             }
 
             if (head.access == Access.WRITE) {
                 if (!readers.isEmpty()) return;
                 pending.removeFirst();
-                StateLoan loan = createLocked(head.authority, Access.WRITE);
+                StateLoan loan = createLocked(head.authority, Access.WRITE, head);
                 completions.addLast(() -> {
                     if (!head.future.completeFromRuntime(loan)) loan.close();
                 });
@@ -276,7 +279,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
             // Head reader is eligible whenever no writer is active. Admit the
             // entire contiguous reader cohort, then stop before the next writer.
             pending.removeFirst();
-            StateLoan loan = createLocked(head.authority, Access.READ);
+            StateLoan loan = createLocked(head.authority, Access.READ, head);
             completions.addLast(() -> {
                 if (!head.future.completeFromRuntime(loan)) loan.close();
             });
@@ -321,18 +324,31 @@ public final class ActorStateRwLoans implements AutoCloseable {
         }
     }
 
-    private void trackNotificationDrain(OresFuture<?> future) {
-        future.whenNotificationsDrainedRuntime(() -> {
-            // Future.cancellationHookFailureFromRuntime() is stable after the
-            // winning cancel hook and its terminal notification drain. Its
-            // failure is otherwise captured, not thrown to the caller.
-            Throwable revocationFailure = future.cancellationHookFailureFromRuntime();
+    private void trackNotificationDrain(Pending waiter) {
+        waiter.future.whenNotificationsDrainedRuntime(() -> {
+            // A successful promotion may close its physical loan from inside
+            // one callback while other callbacks still run. Conversely,
+            // cancellation/close can remove the queued node before its
+            // terminal hook or callbacks finish. The authority is reusable
+            // only after BOTH the loan (if granted) and notifications drain.
+            Throwable revocationFailure = waiter.future.cancellationHookFailureFromRuntime();
             synchronized (monitor) {
                 if (revocationFailure != null && retirementQuarantineCause == null) {
                     retirementQuarantineCause = revocationFailure;
                 }
-                if (terminalNotificationsInFlight <= 0) {
-                    throw new IllegalStateException("state RW terminal notification ledger corrupted");
+                if (terminalNotificationsInFlight <= 0 || waiter.notificationsDrained) {
+                    throw new IllegalStateException("state RW notification receipt ledger corrupted");
+                }
+                waiter.notificationsDrained = true;
+                if (waiter.abandoned || (waiter.loan != null && waiter.loan.released)) {
+                    unreserveLocked(waiter.authority);
+                } else if (waiter.loan == null) {
+                    // A terminal Future with neither abandonment nor a loan
+                    // lacks an accountable physical owner. Quarantine it.
+                    if (retirementQuarantineCause == null) {
+                        retirementQuarantineCause = new IllegalStateException(
+                                "state RW terminal waiter has no retirement owner");
+                    }
                 }
                 terminalNotificationsInFlight--;
             }
@@ -344,6 +360,10 @@ public final class ActorStateRwLoans implements AutoCloseable {
         final Authority authority;
         final Access access;
         final OresFuture<StateLoan> future;
+        // All mutable members below are protected by the outer monitor.
+        StateLoan loan;
+        boolean abandoned;
+        boolean notificationsDrained;
 
         Pending(Authority authority, Access access) {
             this.authority = authority;
@@ -353,10 +373,9 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 synchronized (monitor) {
                     removed = pending.remove(this);
                     if (removed) {
-                        unreserveLocked(authority);
-                        // Queue admission already retained the Future's
-                        // terminal notification pin, including this CAS/hook
-                        // window and any promotion race.
+                        // Keep the execution ID and raw slot reserved until
+                        // OresFuture completes its physical notification drain.
+                        abandoned = true;
                         promoteLocked();
                     }
                 }
@@ -369,12 +388,14 @@ public final class ActorStateRwLoans implements AutoCloseable {
         private final Authority authority;
         private final Access access;
         private final long epoch;
+        private final Pending owner;
         private boolean released;
 
-        private StateLoan(Authority authority, Access access, long epoch) {
+        private StateLoan(Authority authority, Access access, long epoch, Pending owner) {
             this.authority = authority;
             this.access = access;
             this.epoch = epoch;
+            this.owner = owner;
         }
 
         public Access access() { return access; }
@@ -433,7 +454,12 @@ public final class ActorStateRwLoans implements AutoCloseable {
                                 "actor state RW reader ownership corrupted");
                     }
                 }
-                unreserveLocked(authority);
+                // Direct grants own their reservation outright. For queued
+                // grants, a callback may still run after the loan is closed;
+                // keep its authority fenced until the Future receipt.
+                if (owner == null || owner.notificationsDrained) {
+                    unreserveLocked(authority);
+                }
                 promoteLocked();
             }
             publish();
@@ -449,7 +475,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
             closed = true;
             abandoned = new ArrayDeque<>(pending);
             pending.clear();
-            for (Pending waiter : abandoned) unreserveLocked(waiter.authority);
+            for (Pending waiter : abandoned) {
+                // The queued Future retains this authority through failure
+                // notification drain, even though the queue slot is freed.
+                waiter.abandoned = true;
+            }
             // Every abandoned Future already has a terminal drain pin from
             // queue admission; shutdown must neither add nor duplicate one.
         }
