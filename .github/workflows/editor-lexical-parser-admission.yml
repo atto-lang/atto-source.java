@@ -3,6 +3,12 @@ name: editor-lexical-parser-admission
 on:
   pull_request:
     paths:
+      - "src/main/java/dev/oreslang/parser/Lexer.java"
+      - "src/main/java/dev/oreslang/parser/Token.java"
+      - "src/main/java/dev/oreslang/parser/Parser.java"
+      - "src/main/java/dev/oreslang/parser/TemplateLiterals.java"
+      - "src/main/java/dev/oreslang/runtime/OresSymbol.java"
+      - "pom.xml"
       - "src/test/java/dev/oreslang/parser/EditorLexicalParserAdmissionTest.java"
       - "src/test/resources/contracts/editor-syntax/v1/editor-lexical-contract.json"
       - ".github/workflows/editor-lexical-parser-admission.yml"
@@ -36,6 +42,9 @@ jobs:
           test -z "$(git ls-files --others --exclude-standard)"
           echo "SOURCE_HEAD=$EXPECTED_SHA"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          test "$(git hash-object src/test/resources/contracts/editor-syntax/v1/editor-lexical-contract.json)" = e9dbf3b6fad5562b7ca6df631ab3c45f478480ba
+          git hash-object src/main/java/dev/oreslang/parser/{Lexer,Parser,Token,TemplateLiterals}.java
+          git hash-object src/main/java/dev/oreslang/runtime/OresSymbol.java
       - name: Set up source-local GraalVM JDK 25
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
