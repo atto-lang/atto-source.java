@@ -264,6 +264,9 @@ public final class NativeIo {
     }
 
     public static TcpConnection connect(OresContext context, String host, int port) {
+        // Compatibility API: this path owns java.net.Socket and may park.
+        // Strict NIO callers must use connectAsync() below.
+        NioOnlyPolicy.requireLegacyAllowed("network.connect");
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("network.connect host cannot be blank");
         }
@@ -304,6 +307,7 @@ public final class NativeIo {
         }
 
         public String readLine() {
+            NioOnlyPolicy.requireLegacyAllowed("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 return reader.readLine();
@@ -313,6 +317,7 @@ public final class NativeIo {
         }
 
         public void writeText(String value) {
+            NioOnlyPolicy.requireLegacyAllowed("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 writer.write(value);
