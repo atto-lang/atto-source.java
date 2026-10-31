@@ -261,3 +261,35 @@ or guest compiler evidence. The `ActorPhysicalTurnGate` source is unchanged
 from the earlier exact-source smoke, but that older combined smoke does not
 cover the current region mutation-fence blob. The new workflow is still
 runner-admission-blocked, so hosted exact-head proof remains pending.
+
+
+## First-worker queue-overflow admission and JDK25 integration gate
+
+`AsyncNativeIoTest.executorQueueOverflowRefundsExactPrivateActorLoanAndPhysicalWorkStillPinsMemory`
+now emits two distinct actor messages to make its precondition **deterministic**.
+The first message starts an I/O worker and the host waits until
+`firstEntered` is signaled; only after actual physical worker entry does
+the host send the second message, which submits the bounded queued operation
+and then the rejected third operation. A new assertion checks the queued
+operation has not begun before the first worker exits. This avoids
+the former race where scheduling all three within one actor turn could
+reject the intended second operation instead of the third.
+
+The exact source-repository workflow
+`.github/workflows/actor-state-region-physical-turn.yml` now includes two
+independent jobs:
+
+- `exact-production-host`: JDK 21 source-only physical-turn and scalar
+  region smoke tests.
+- `integrated-actor-lifetime-junit`: pinned GraalVM 25.3/JDK 25 Maven
+  tests for `AsyncNativeIoTest`, `ActorPhysicalTurnGateTest`,
+  `ActorAsyncFinalizationBarrierTest` and
+  `ReusableLongStateRegionTest`. The checkout verifies the exact PR
+  head; `contents: read` and `persist-credentials: false` prevent
+  credential persistence. No cross-org source checkout is authorized.
+
+**Verification status:** workflow [run 41230475966](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41230475966)
+discovered both jobs, but each failed **before** any runner assignment,
+with zero steps. The integrated JUnit regression is **authored but not
+executed** on the current head. Older JDK21 standalone local evidence
+does not certify this new integration test.
