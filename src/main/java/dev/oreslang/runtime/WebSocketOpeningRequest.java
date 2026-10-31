@@ -227,7 +227,7 @@ public final class WebSocketOpeningRequest {
                         "WebSocket request target contains malformed percent escape");
             }
             int decoded = (high << 4) | low;
-            if (decoded == 0 || decoded == '\r' || decoded == '\n'
+            if (decoded <= 0x20 || decoded == '/' || decoded == '%'
                     || decoded == '\\' || decoded == 0x7f) {
                 throw new IllegalArgumentException(
                         "WebSocket request target encodes forbidden delimiter/control data");
@@ -266,6 +266,7 @@ public final class WebSocketOpeningRequest {
                             "Host IPv6 literal contains unsupported syntax");
                 }
             }
+            requireIpv6Literal(literal);
             String suffix = host.substring(close + 1);
             if (!suffix.isEmpty()) {
                 if (suffix.charAt(0) != ':' || suffix.length() == 1) {
@@ -296,6 +297,74 @@ public final class WebSocketOpeningRequest {
             }
         }
         if (colon >= 0) requirePort(host.substring(colon + 1));
+    }
+
+    /**
+     * Validate an IP-literal without hostname lookup. Character filtering is
+     * insufficient: e.g. "[:]" and "[2001:::1]" contain only allowed
+     * characters but are not IPv6 addresses.
+     */
+    private static void requireIpv6Literal(String literal) {
+        if (!literal.contains(":") || literal.contains(":::")
+                || (literal.startsWith(":") && !literal.startsWith("::"))
+                || (literal.endsWith(":") && !literal.endsWith("::"))
+                || literal.indexOf("::") != literal.lastIndexOf("::")) {
+            throw new IllegalArgumentException("Host contains malformed IPv6 literal");
+        }
+
+        boolean compressed = literal.contains("::");
+        String[] groups = literal.split(":", -1);
+        int hextets = 0;
+        for (int i = 0; i < groups.length; i++) {
+            String group = groups[i];
+            if (group.isEmpty()) {
+                if (!compressed) {
+                    throw new IllegalArgumentException("Host contains malformed IPv6 literal");
+                }
+                continue;
+            }
+            if (group.indexOf('.') >= 0) {
+                if (i != groups.length - 1) {
+                    throw new IllegalArgumentException("Host IPv4 tail must be last");
+                }
+                String[] octets = group.split("\\.", -1);
+                if (octets.length != 4) {
+                    throw new IllegalArgumentException("Host contains invalid embedded IPv4");
+                }
+                for (String octet : octets) {
+                    if (octet.isEmpty() || octet.length() > 3
+                            || (octet.length() > 1 && octet.charAt(0) == '0')) {
+                        throw new IllegalArgumentException("Host contains invalid embedded IPv4");
+                    }
+                    int number = 0;
+                    for (int j = 0; j < octet.length(); j++) {
+                        char ch = octet.charAt(j);
+                        if (ch < '0' || ch > '9') {
+                            throw new IllegalArgumentException("Host contains invalid embedded IPv4");
+                        }
+                        number = 10 * number + (ch - '0');
+                    }
+                    if (number > 255) {
+                        throw new IllegalArgumentException("Host contains invalid embedded IPv4");
+                    }
+                }
+                hextets += 2;
+            } else {
+                if (group.length() > 4) {
+                    throw new IllegalArgumentException("Host contains oversized IPv6 hextet");
+                }
+                for (int j = 0; j < group.length(); j++) {
+                    if (Character.digit(group.charAt(j), 16) < 0) {
+                        throw new IllegalArgumentException("Host contains invalid IPv6 hextet");
+                    }
+                }
+                hextets++;
+            }
+        }
+
+        if (compressed ? hextets >= 8 : hextets != 8) {
+            throw new IllegalArgumentException("Host contains invalid IPv6 width");
+        }
     }
 
     private static void requirePort(String rawPort) {
