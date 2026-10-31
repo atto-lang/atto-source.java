@@ -354,12 +354,48 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 if (retired.get() || closed.get() || actorOwnership == null) {
                     throw new SecurityException("WebSocket actor connection retired");
                 }
+                if (reading.get() || writerActive.get() || outbound.hasPending()
+                        || protocol.state() != WebSocketSessionState.State.OPEN
+                        || protocol.hasPendingUserState()) {
+                    throw new RejectedExecutionException(
+                            "WebSocket transfer requires drained read, write and USER state");
+                }
                 return actorOwnership.transferHost(oldHandle, authenticatedTenant,
                         currentOwner, nextOwner, nextAlive);
             }
         }
 
+        /** Raw host operation is unavailable after actor ownership is bound. */
         OresFuture<WebSocketSessionState.Action> readAsync() {
+            synchronized (lifecycleLock) {
+                if (actorOwnership != null) {
+                    throw new SecurityException("actor-owned WebSocket requires authenticated read");
+                }
+                return readAsyncInternal(null);
+            }
+        }
+
+        /**
+         * Trusted host bridge only. No guest-supplied tenant/actor address.
+         * The lease remains held across queued submission and the complete
+         * native socket borrow, including cancellation and close races.
+         */
+        OresFuture<WebSocketSessionState.Action> readForActorAsync(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime.ActorAddress authenticatedCaller) {
+            synchronized (lifecycleLock) {
+                var ownerLoan = acquireActorLease(handle, tenant, authenticatedCaller);
+                try {
+                    return readAsyncInternal(ownerLoan);
+                } catch (RuntimeException | Error failure) {
+                    ownerLoan.close();
+                    throw failure;
+                }
+            }
+        }
+
+        private OresFuture<WebSocketSessionState.Action> readAsyncInternal(
+                WebSocketActorConnectionLease.Loan ownerLoan) {
             if (ActorRuntime.inActorExecution()) {
                 throw new SecurityException("WebSocket raw read belongs to host I/O");
             }
@@ -402,8 +438,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             outbound.enqueueControl(opcode, action.payload());
                             wakeWriter();
                         }
-                        if (retired.get()) {
-                            throw new IOException("WebSocket retired before incoming read publication");
+                        if (retired.get()
+                                || (ownerLoan != null && !ownerLoan.enqueueIfCurrent(() -> { }))) {
+                            throw new IOException("WebSocket owner retired before read publication");
                         }
                         return action;
                     } catch (IOException | RuntimeException failure) {
@@ -411,13 +448,21 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         throw failure;
                     } finally {
                         reading.set(false);
+                        // Completion belongs to the physical I/O worker.
+                        // No Future cancellation or observer can release it.
+                        if (ownerLoan != null) ownerLoan.close();
                     }
                 });
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | Error failure) {
                 reading.set(false);
+                if (ownerLoan != null) ownerLoan.close();
                 throw failure;
             }
-            if (future.isDone() && !workStarted.get()) reading.set(false);
+            if (future.isDone() && !workStarted.get()) {
+                // Admission rejected synchronously: no native worker started.
+                reading.set(false);
+                if (ownerLoan != null) ownerLoan.close();
+            }
             return future;
         }
 
@@ -443,10 +488,65 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 throw new SecurityException("WebSocket send belongs to host I/O");
             }
             requireNet.accept(endpoint, "websocket.send");
-            if (retired.get() || protocol.state() != WebSocketSessionState.State.OPEN) {
-                throw new RejectedExecutionException("WebSocket is closing or retired");
+            WebSocketOutboundGate.Write write;
+            synchronized (lifecycleLock) {
+                if (actorOwnership != null) {
+                    throw new SecurityException("actor-owned WebSocket requires authenticated send");
+                }
+                if (retired.get() || closed.get()
+                        || protocol.state() != WebSocketSessionState.State.OPEN) {
+                    throw new RejectedExecutionException("WebSocket is closing or retired");
+                }
+                write = outbound.enqueueUser(opcode, payload);
             }
-            WebSocketOutboundGate.Write write = outbound.enqueueUser(opcode, payload);
+            wakeWriter();
+            return write.receipt();
+        }
+
+        OresFuture<Void> sendTextForActorAsync(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime.ActorAddress authenticatedCaller, String text) {
+            Objects.requireNonNull(text, "text");
+            if (text.length() > maxFrameBytes) {
+                throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
+            }
+            return sendForActor(WebSocketFrameCodec.OPCODE_TEXT,
+                    text.getBytes(StandardCharsets.UTF_8),
+                    handle, tenant, authenticatedCaller);
+        }
+
+        OresFuture<Void> sendBinaryForActorAsync(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime.ActorAddress authenticatedCaller, byte[] payload) {
+            return sendForActor(WebSocketFrameCodec.OPCODE_BINARY,
+                    Objects.requireNonNull(payload, "payload"),
+                    handle, tenant, authenticatedCaller);
+        }
+
+        private OresFuture<Void> sendForActor(int opcode, byte[] payload,
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime.ActorAddress authenticatedCaller) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket native send requires host bridge");
+            }
+            requireNet.accept(endpoint, "websocket.send");
+            WebSocketOutboundGate.Write write;
+            synchronized (lifecycleLock) {
+                if (retired.get() || closed.get()
+                        || protocol.state() != WebSocketSessionState.State.OPEN) {
+                    throw new RejectedExecutionException("WebSocket is closing or retired");
+                }
+                var ownerLoan = acquireActorLease(handle, tenant, authenticatedCaller);
+                try {
+                    write = outbound.enqueueUser(opcode, payload, ownerLoan);
+                } catch (RuntimeException | Error failure) {
+                    ownerLoan.close();
+                    throw failure;
+                }
+            }
+            // If the native admission is rejected, close retires all queued
+            // writes and returns their actor loans; an active writer returns
+            // its own loan strictly after its native SocketChannel operation.
             wakeWriter();
             return write.receipt();
         }
