@@ -6846,6 +6846,9 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ChannelRuntime.SelectPlan plan) {
                 return plan.selectSetSnapshot();
             }
+            if (value instanceof GuestDynamicSelectPlan plan) {
+                return plan.delegate().selectSetSnapshot();
+            }
             if (value instanceof ChannelRuntime.DynamicSelectPlan<?> plan) {
                 return plan.selectSetSnapshot();
             }
@@ -8235,19 +8238,21 @@ public final class OresEvalRootNode extends RootNode {
                             "unknown DynamicSelectPlan factory member " + name);
                 };
             }
-            if (receiver instanceof ChannelRuntime.DynamicSelectPlan<?> plan) {
+            if (receiver instanceof GuestDynamicSelectPlan guest) {
+                ChannelRuntime.DynamicSelectPlan<?> plan = guest.delegate();
                 return switch (name) {
                     case "put" -> (Invokable) args -> {
                         requireTwo(args, "DynamicSelectPlan.put");
                         @SuppressWarnings("unchecked")
                         ChannelRuntime.DynamicSelectPlan<Object> typed =
                                 (ChannelRuntime.DynamicSelectPlan<Object>) plan;
-                        typed.put(args.get(0), requireSelectCase(args.get(1)));
+                        typed.put(guest.checkedKey(args.get(0)),
+                                requireSelectCase(args.get(1)));
                         return null;
                     };
                     case "remove" -> (Invokable) args -> {
                         requireOne(args, "DynamicSelectPlan.remove");
-                        return plan.remove(args.getFirst());
+                        return plan.remove(guest.checkedKey(args.getFirst()));
                     };
                     case "version" -> (Invokable) args -> {
                         requireZero(args, "DynamicSelectPlan.version");
@@ -11240,17 +11245,50 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
+    /**
+     * Source int values are represented as long but Java plan slots are Integer.
+     * Preserve the origin of an empty or cleared plan so later mutations cannot
+     * silently split key identity between Long(0) and Integer(0).
+     */
+    private record GuestDynamicSelectPlan(
+            ChannelRuntime.DynamicSelectPlan<?> delegate,
+            boolean listKeys) {
+        private Object checkedKey(Object value) {
+            if (!listKeys) {
+                if (!(value instanceof String)) {
+                    throw new IllegalArgumentException(
+                            "map-backed DynamicSelectPlan requires string keys");
+                }
+                return value;
+            }
+            if (!(value instanceof Number number)) {
+                throw new IllegalArgumentException(
+                        "list-backed DynamicSelectPlan requires int keys");
+            }
+            int key = Math.toIntExact(number.longValue());
+            if (number.doubleValue() != (double) key) {
+                throw new IllegalArgumentException(
+                        "list-backed DynamicSelectPlan key must be a whole int");
+            }
+            return key;
+        }
+    }
+
     private record DynamicSelectPlanFactory(Evaluator owner) {
         private Object fromList(List<Object> args) {
             requireOne(args, "DynamicSelectPlan.from_list");
-            return ChannelRuntime.DynamicSelectPlan.fromList(
-                    owner.asSelectCaseList(args.getFirst()));
+            return new GuestDynamicSelectPlan(
+                    ChannelRuntime.DynamicSelectPlan.fromList(
+                            owner.asSelectCaseList(args.getFirst())),
+                    true);
         }
 
         private Object fromMap(List<Object> args) {
             requireOne(args, "DynamicSelectPlan.from_map");
-            return ChannelRuntime.DynamicSelectPlan.fromMap(
-                    owner.asSelectCaseMap(args.getFirst()));
+            return new GuestDynamicSelectPlan(
+                    ChannelRuntime.DynamicSelectPlan.fromMap(
+                            owner.asSelectCaseMap(args.getFirst())),
+                    false);
         }
     }
 
