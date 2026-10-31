@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Optional;
 import java.nio.charset.StandardCharsets;
 import java.util.Set;
+import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
@@ -265,11 +267,94 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         private final AtomicBoolean reading = new AtomicBoolean();
         private final AtomicBoolean writerActive = new AtomicBoolean();
         private final AtomicBoolean retired = new AtomicBoolean();
+        // Guarded by lifecycleLock. Never published directly to guest source.
+        private WebSocketActorConnectionLease actorOwnership;
         private final WebSocketOutboundGate outbound =
                 new WebSocketOutboundGate(maxFrameBytes, 16,
                         maxFrameBytes * 16, 4, this::close);
 
         private Connection(Socket socket) { this.socket = socket; }
+
+        /**
+         * Trusted host/supervisor publication only. ActorRef supplies full
+         * runtime identity and incarnation; tenant provenance MUST have been
+         * verified by the eventual guest bridge before calling this method.
+         */
+        WebSocketActorConnectionLease.Handle bindActor(
+                UUID authenticatedTenant, ActorRuntime.ActorRef<?> actor) {
+            Objects.requireNonNull(actor, "actor ref");
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket bind belongs to supervisor");
+            }
+            return bindActorHost(authenticatedTenant,
+                    actor.address(), actor::isAlive);
+        }
+
+        /** Package-private host test seam; never callable from guest values. */
+        WebSocketActorConnectionLease.Handle bindActorHost(
+                UUID authenticatedTenant, ActorRuntime.ActorAddress owner,
+                BooleanSupplier ownerAlive) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket host bind inside actor execution");
+            }
+            synchronized (lifecycleLock) {
+                if (retired.get() || closed.get()
+                        || !activeConnections.contains(this)) {
+                    throw new RejectedExecutionException("WebSocket connection retired");
+                }
+                if (actorOwnership != null) {
+                    throw new RejectedExecutionException("WebSocket connection already bound");
+                }
+                var ledger = WebSocketActorConnectionLease.bindHost(
+                        authenticatedTenant, owner, ownerAlive);
+                actorOwnership = ledger;
+                return ledger.issue();
+            }
+        }
+
+        /**
+         * Trusted host only: the authenticated caller is derived from the
+         * runtime ActorRef, never from a guest-provided ActorAddress. The
+         * returned loan belongs to one actual I/O operation, whose physical
+         * worker MUST close it only after completing its native resource loan.
+         */
+        WebSocketActorConnectionLease.Loan acquireActorLease(
+                WebSocketActorConnectionLease.Handle handle,
+                UUID authenticatedTenant, ActorRuntime.ActorAddress authenticatedCaller) {
+            synchronized (lifecycleLock) {
+                if (retired.get() || closed.get() || actorOwnership == null) {
+                    throw new SecurityException("WebSocket actor connection unavailable");
+                }
+                return actorOwnership.acquire(
+                        handle, authenticatedTenant, authenticatedCaller);
+            }
+        }
+
+        WebSocketActorConnectionLease.Handle transferActor(
+                WebSocketActorConnectionLease.Handle oldHandle,
+                UUID authenticatedTenant, ActorRuntime.ActorAddress currentOwner,
+                ActorRuntime.ActorRef<?> nextOwner) {
+            Objects.requireNonNull(nextOwner, "next actor");
+            return transferActorHost(oldHandle, authenticatedTenant,
+                    currentOwner, nextOwner.address(), nextOwner::isAlive);
+        }
+
+        /** Trusted host seam; transfer requires no unretired physical loans. */
+        WebSocketActorConnectionLease.Handle transferActorHost(
+                WebSocketActorConnectionLease.Handle oldHandle,
+                UUID authenticatedTenant, ActorRuntime.ActorAddress currentOwner,
+                ActorRuntime.ActorAddress nextOwner, BooleanSupplier nextAlive) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket transfer belongs to host scheduler");
+            }
+            synchronized (lifecycleLock) {
+                if (retired.get() || closed.get() || actorOwnership == null) {
+                    throw new SecurityException("WebSocket actor connection retired");
+                }
+                return actorOwnership.transferHost(oldHandle, authenticatedTenant,
+                        currentOwner, nextOwner, nextAlive);
+            }
+        }
 
         OresFuture<WebSocketSessionState.Action> readAsync() {
             if (ActorRuntime.inActorExecution()) {
@@ -424,7 +509,13 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         }
 
         @Override public void close() {
-            if (!retired.compareAndSet(false, true)) return;
+            // Serialize ledger revocation with host binding, transfer, and
+            // authorization. The socket close itself must happen OUTSIDE the
+            // lifecycle lock: it can wake the selector/native I/O worker.
+            synchronized (lifecycleLock) {
+                if (!retired.compareAndSet(false, true)) return;
+                if (actorOwnership != null) actorOwnership.revoke();
+            }
             protocol.transportClosed();
             try { socket.close(); }
             catch (IOException failure) {
