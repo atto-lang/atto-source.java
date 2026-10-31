@@ -1124,10 +1124,11 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
-                    if (argument instanceof Ast.IndexExpr) {
-                        throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
+                    Ast.Expr transferPlace = unwrappedMoveProjection(argument);
+                    if (transferPlace instanceof Ast.IndexExpr) {
+                        throw error("E_MOVE_UNPROVEN: rt take cannot move an indexed projection without an invalidation ledger; move the containing owner");
                     }
-                    if (argument instanceof Ast.MemberExpr member) {
+                    if (transferPlace instanceof Ast.MemberExpr member) {
                         Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
                         if (ownerClass != null) {
                             Ast.FieldDecl slot = findField(
@@ -1136,16 +1137,14 @@ public final class OwnershipChecker {
                                 throw error("cannot rt take immutable/final class field '"
                                         + ownerClass.name() + "." + member.member() + "'");
                             }
-                            if (slot != null && !hasCopyPolicy(slot.annotations(), "NoCopy")) {
-                                // No partial-move ledger exists even for an
-                                // unannotated LET field: accepting a transfer
-                                // here would leave a live original owner.
-                                throw error("E_MOVE_UNPROVEN: rt take of class field '"
-                                        + ownerClass.name() + "." + member.member()
-                                        + "' lacks projection invalidation proof; "
-                                        + "move the entire class owner instead");
-                            }
                         }
+                        // A member selection must never be assumed to transfer
+                        // ownership: without an invalidation ledger, a second
+                        // owner could be fabricated, including through a cast
+                        // or imported/unknown receiver.
+                        throw error("E_MOVE_UNPROVEN: rt take of member projection '"
+                                + member.member()
+                                + "' lacks invalidation proof; move the containing owner instead");
                     }
                     // A field projection is not a new owned value. In particular an
                     // @NoCopy field must not be reclassified as a forbidden COPY
@@ -4771,6 +4770,16 @@ public final class OwnershipChecker {
         Ast.ClassDecl actorTarget = findClass(target.name());
         return actorTarget != null
                 && actorTarget.actorKind() != Ast.ActorKind.NONE;
+    }
+
+    private Ast.Expr unwrappedMoveProjection(Ast.Expr expression) {
+        if (expression instanceof Ast.CastExpr cast) {
+            return unwrappedMoveProjection(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return unwrappedMoveProjection(spread.expression());
+        }
+        return expression;
     }
 
     /** A policy on any owning projection prevents laundering via a nested field. */
