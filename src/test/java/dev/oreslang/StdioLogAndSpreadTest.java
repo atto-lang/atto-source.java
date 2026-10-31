@@ -50,6 +50,21 @@ final class StdioLogAndSpreadTest {
     }
 
     @Test
+    void asyncLoggingAndFlushRequireStdoutCapability() {
+        var denied = IsolatePolicy.strictFaas()
+                .withoutCapabilities(IsolatePolicy.Capability.STDOUT);
+        for (String expression : java.util.List.of(
+                "stdio.stdout.log_async(\\\"secret\\\")",
+                "stdio.stdout.logList_async(arr[\\\"secret\\\"])",
+                "stdio.flush_async_logs()")) {
+            var program = TypeChecker.check(Parser.parse(
+                    "pub routine main():void{" + expression + ";return;}"));
+            assertThrows(SecurityException.class,
+                    () -> CapabilityChecker.check(program, denied), expression);
+        }
+    }
+
+    @Test
     void asyncVariadicLogCannotBeReifiedWithoutAnExplicitLambda() {
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
