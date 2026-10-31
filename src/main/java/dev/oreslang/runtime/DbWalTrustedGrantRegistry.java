@@ -15,6 +15,17 @@ import java.util.Objects;
  * This is an internal registry, not a public native guest capability.
  */
 final class DbWalTrustedGrantRegistry {
+    /**
+     * A host-supplied tenant/shard authorization decision. The default
+     * context constructor DENIES ALL until a trusted database host service
+     * explicitly configures a real authenticated mapping. The callback must
+     * be bounded/nonblocking; never dispatch guest code under this monitor.
+     */
+    @FunctionalInterface
+    interface HostTenantAdmission {
+        boolean allows(ActorRuntime.ActorId actor, int tenantId, int shardId);
+    }
+
     private record Shard(int tenantId, int shardId) { }
     private enum Phase { ACTIVE, DRAINING, RETIRED }
 
@@ -59,17 +70,26 @@ final class DbWalTrustedGrantRegistry {
     }
 
     private final ActorRuntime runtime;
+    private final HostTenantAdmission tenantAdmission;
     private final Map<Shard, Grant> owners = new HashMap<>();
     private boolean sealed;
 
     DbWalTrustedGrantRegistry(ActorRuntime runtime) {
+        this(runtime, (actor, tenant, shard) -> false);
+    }
+
+    DbWalTrustedGrantRegistry(ActorRuntime runtime,
+            HostTenantAdmission tenantAdmission) {
         this.runtime = Objects.requireNonNull(runtime);
+        this.tenantAdmission = Objects.requireNonNull(tenantAdmission);
     }
 
     synchronized Grant issueForCurrentActor(int tenantId, int shardId, int generation) {
         ActorRuntime.ActorId actor = currentActor();
-        if (sealed || tenantId <= 0 || shardId < 0 || generation <= 0)
-            throw new SecurityException("WAL shard grant issuance denied");
+        if (sealed || tenantId <= 0 || shardId < 0 || generation <= 0
+                || !tenantAdmission.allows(actor, tenantId, shardId))
+            throw new SecurityException(
+                    "WAL shard grant denied: no trusted tenant/shard admission");
         Shard shard = new Shard(tenantId, shardId);
         // Even a draining previous generation prevents a new incarnation
         // from admitting writes until verified physical close+release.
