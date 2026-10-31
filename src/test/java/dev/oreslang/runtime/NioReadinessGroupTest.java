@@ -85,6 +85,16 @@ final class NioReadinessGroupTest {
 
             assertTrue(admitted.cancel(false));
             assertTrue(admitted.isCancelled());
+            assertTrue(group.awaitIdle(5, TimeUnit.SECONDS),
+                    "cancellation must retire channel ownership");
+            assertEquals(0, group.pendingCount());
+
+            OresFuture<Integer> rearmed =
+                    group.watch(firstSource, SelectionKey.OP_READ);
+            assertFalse(rearmed.isDone(),
+                    "the same channel must be reusable after cancellation retirement");
+            assertTrue(rearmed.cancel(false));
+            assertTrue(group.awaitIdle(5, TimeUnit.SECONDS));
         } finally {
             group.close();
             assertTrue(group.awaitStopped(5, TimeUnit.SECONDS));
