@@ -207,12 +207,15 @@ public final class AsyncNativeIo implements AutoCloseable {
                     CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
                     ActorRuntime.enterNativeIoAuthority(ioAuthority);
                     permissionAuthorityEntered = ioAuthority != null;
-                    if (ioAuthority != null) {
-                        ioAuthority.requireActive(operation);
-                    }
                     long workPerf = CorePerf.start();
                     T value;
                     try {
+                        // A queued worker must revalidate delegated authority at
+                        // the physical start boundary. Revocation may win after
+                        // queue admission but before work.call().
+                        if (ioAuthority != null) {
+                            ioAuthority.requireActive(operation);
+                        }
                         value = work.call();
                     } catch (Throwable failure) {
                         CoreLog.record(
