@@ -2,8 +2,10 @@ package dev.oreslang.runtime;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.BiConsumer;
 
 /**
@@ -56,9 +58,14 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                 requireOperational();
                 if (acknowledged)
                     throw new IllegalStateException("duplicate physical completion receipt");
-                // The mailbox's authenticated host completion path is the
-                // capacity/sequence commit. On failure preserve the reservation.
+                // A legacy bare sequence acknowledgement is never sufficient
+                // to release a tracked physical operation's identity.
+                if (!trackedPhysicalSequences.contains(sequence))
+                    throw new IllegalStateException("stale or unregistered physical receipt");
+                // Capacity/sequence commit first: retain both physical identity
+                // and reservation on any failure, so retry is fail-closed.
                 mailbox.complete(sequence);
+                trackedPhysicalSequences.remove(sequence);
                 acknowledged = true;
                 releaseIfCompleted();
             }
@@ -240,6 +247,9 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     // until every in-flight physical submit returns or throws. Tracked async
     // submissions stay pinned through the authenticated physical completion.
     private int physicalSubmissions;
+    // Authenticated callback identity for async paths: bare sequence completion
+    // cannot acknowledge one of these in-flight physical deliveries.
+    private final Set<Long> trackedPhysicalSequences = new HashSet<>();
     private boolean poisoned;
     private boolean closed;
 
@@ -377,6 +387,8 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             if (envelope == null) return false;
             try {
                 completion = new PhysicalCompletion(envelope.messageSequence());
+                if (!trackedPhysicalSequences.add(envelope.messageSequence()))
+                    throw new IllegalStateException("duplicate tracked physical sequence");
             } catch (RuntimeException | Error allocationFailure) {
                 poisoned = true;
                 throw allocationFailure; // Envelope already dispatched; never replay.
@@ -402,6 +414,9 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     void complete(long messageSequence) {
         synchronized (lock) {
             requireOperational();
+            if (trackedPhysicalSequences.contains(messageSequence))
+                throw new IllegalStateException(
+                        "tracked physical message requires its own completion receipt");
             mailbox.complete(messageSequence);
         }
     }
