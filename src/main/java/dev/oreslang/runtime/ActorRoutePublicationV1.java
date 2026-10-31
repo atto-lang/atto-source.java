@@ -33,7 +33,7 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     @FunctionalInterface
     interface TrackedSubmit<R> {
         void submit(R physicalRoute, LogicalActorProxyMailboxV1.Envelope envelope,
-                    PhysicalCompletion completion);
+                    ActorRoutePublicationV1<R>.PhysicalCompletion completion);
     }
 
     /**
