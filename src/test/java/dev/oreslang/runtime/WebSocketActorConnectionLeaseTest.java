@@ -131,40 +131,39 @@ final class WebSocketActorConnectionLeaseTest {
 
     @Test
     void queuedDeliveryIsAtomicAgainstRevokeAndNeverRunsAfterIt() throws Exception {
-        var tenant = UUID.randomUUID();
-        var a = actor(UUID.randomUUID(), 1);
-        var ledger = WebSocketActorConnectionLease.bindHost(tenant, a, () -> true);
-        var handle = ledger.issue();
-        var loan = ledger.acquire(handle, tenant, a);
-        var entered = new CountDownLatch(1);
-        var release = new CountDownLatch(1);
-        var results = new AtomicInteger();
-        Thread sender = Thread.ofVirtual().start(() ->
-                loan.enqueueIfCurrent(() -> {
-                    entered.countDown();
-                    try {
-                        if (!release.await(3, TimeUnit.SECONDS)) {
-                            throw new AssertionError("enqueue release timed out");
-                        }
-                    } catch (InterruptedException ex) {
-                        Thread.currentThread().interrupt();
-                        throw new AssertionError(ex);
+        for (int round = 0; round < 32; round++) {
+            var tenant = UUID.randomUUID();
+            var a = actor(UUID.randomUUID(), 1);
+            var ledger = WebSocketActorConnectionLease.bindHost(tenant, a, () -> true);
+            var handle = ledger.issue();
+            var loan = ledger.acquire(handle, tenant, a);
+            var start = new CountDownLatch(1);
+            var results = new AtomicInteger();
+            var queued = new AtomicBoolean();
+            Thread sender = Thread.ofVirtual().start(() -> {
+                try {
+                    if (!start.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("enqueue start timed out");
                     }
-                    results.incrementAndGet();
-                }));
-        assertTrue(entered.await(2, TimeUnit.SECONDS));
-        var revoked = new AtomicBoolean();
-        Thread stopper = Thread.ofVirtual().start(() -> revoked.set(ledger.revoke()));
-        release.countDown();
-        sender.join(3000);
-        stopper.join(3000);
-        assertFalse(sender.isAlive());
-        assertFalse(stopper.isAlive());
-        assertTrue(revoked.get());
-        assertEquals(1, results.get());
-        assertFalse(loan.mayDeliver(handle, tenant, a));
-        assertFalse(loan.enqueueIfCurrent(results::incrementAndGet));
-        loan.close();
+                    // Callback is a bounded, nonblocking queue publication;
+                    // it must never execute guest work or wait under ledger
+                    // lock. A simultaneous revoke can win before this call.
+                    queued.set(loan.enqueueIfCurrent(results::incrementAndGet));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            });
+            start.countDown();
+            assertTrue(ledger.revoke());
+            sender.join(2000);
+            assertFalse(sender.isAlive(), "enqueue race worker did not retire");
+            assertEquals(queued.get() ? 1 : 0, results.get());
+            assertFalse(loan.mayDeliver(handle, tenant, a));
+            assertFalse(loan.enqueueIfCurrent(results::incrementAndGet));
+            loan.close();
+            assertEquals(0, ledger.outstandingLoans());
+        }
     }
 
     @Test
