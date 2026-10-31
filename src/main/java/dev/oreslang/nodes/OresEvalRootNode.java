@@ -6766,6 +6766,39 @@ public final class OresEvalRootNode extends RootNode {
                     case "outputs" -> actorRef.outputs();
                     case "id" -> actorRef.id();
                     case "kind" -> actorRef.kind();
+                    case "grant_producer" -> (Invokable) args -> {
+                        if (args.size() != 2
+                                || !(args.get(0) instanceof Long
+                                        || args.get(0) instanceof Integer)
+                                || !(args.get(1) instanceof ActorRuntime.ActorRef<?> producerRef)) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef.grant_producer requires int and ActorRef<T>");
+                        }
+                        long rawSlot = ((Number) args.get(0)).longValue();
+                        if (rawSlot < 0 || rawSlot > 1) {
+                            throw new IllegalArgumentException(
+                                    "queue producer slot must be 0 or 1");
+                        }
+                        context.actors().grantCurrentQueueProducer(
+                                actorRef, (int) rawSlot, producerRef);
+                        return null;
+                    };
+                    case "revoke_producer" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.revoke_producer");
+                        if (!(args.getFirst() instanceof Long
+                                || args.getFirst() instanceof Integer)) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef.revoke_producer expects an int slot");
+                        }
+                        long rawSlot = ((Number) args.getFirst()).longValue();
+                        if (rawSlot < 0 || rawSlot > 1) {
+                            throw new IllegalArgumentException(
+                                    "queue producer slot must be 0 or 1");
+                        }
+                        context.actors().revokeCurrentQueueProducer(
+                                actorRef, (int) rawSlot);
+                        return null;
+                    };
                     case "send" -> (Invokable) args -> {
                         requireOne(args, "ActorRef.send");
                         typedRef.send(args.getFirst());
