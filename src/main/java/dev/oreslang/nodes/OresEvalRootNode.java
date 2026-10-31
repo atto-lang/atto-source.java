@@ -394,6 +394,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 Map<CallableSelector, Ast.MethodDecl> local = new HashMap<>();
                 for (Ast.MethodDecl method : klass.methods()) {
+                    // init never becomes a callable vtable slot: the runtime
+                    // consumes its checked, pure state expression once during
+                    // actor startup, before any user mailbox turn.
+                    if (klass.actorKind() != Ast.ActorKind.NONE
+                            && method.name().equals("init")) continue;
                     CallableSelector selector = CallableSelector.of(method);
                     if (local.putIfAbsent(selector, method) != null) {
                         throw new IllegalArgumentException(
