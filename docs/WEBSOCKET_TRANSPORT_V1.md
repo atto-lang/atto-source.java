@@ -280,6 +280,39 @@ globally bounded memory, selector/runtime execution evidence or backend parity. 
 branch draft until authorized exact-head CI records nonzero steps and
 independent review is complete.
 
+## Host-side actor-incarnation claim foundation (draft, NOT_EXECUTED)
+
+A package-private `WebSocketActorClaim` now binds one accepted connection to
+one exact live `ActorRuntime.ActorRef` incarnation. A supervisor/host must
+issue the claim; actor carriers cannot self-issue or rebind it. The actor
+runtime checks the **reference identity**, generation, runtime affinity,
+termination state, and the currently active actor mailbox turn. Holding an
+actor ID or a Java object reference on a non-actor thread is not authority.
+
+Once a physical connection is claimed, USER sends are accepted only from that
+actor's active turn; ordinary host sends and sends by another actor fail
+closed. The connection cannot be claimed again, even after actor termination.
+Transport `close()` atomically revokes the claim; the actor's finalization
+Future also logically revokes it, without doing blocking socket I/O or
+running transport cleanup on the actor carrier. Scoped NET authorization and
+the existing bounded asynchronous writer still apply.
+
+This is **not yet a safe end-to-end guest API**. There is no source-level
+`WebSocketServer`/`WebSocketConnection` builtin, generation-aware guest
+handle table, async actor receive bridge, guaranteed **physical socket
+retirement on actor stop** when the peer is idle, or global outbound quota.
+A bounded supervisor-owned physical cleanup dispatcher and a race-safe
+revocation/queued-write fence are required before exposing this claim to guest
+source. In particular, an already-in-flight network write may finish while
+an actor is stopping; actor death alone must not be represented as physical
+socket closure. No actor guest, Graal Native Image, or multi-backend execution
+is claimed by these authored host tests.
+
+`WebSocketActorClaimTest` authors four actor-runtime checks (owner turn,
+foreign actor/runtime, stopped owner, and self-claim denial). The listener
+loopback suite also authors a host-bound actor-turn send over a real TCP
+connection. These require approved exact-head CI before they are evidence.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
