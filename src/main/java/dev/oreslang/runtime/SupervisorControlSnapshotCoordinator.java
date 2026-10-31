@@ -138,7 +138,10 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
     private void execute(Request request, Object session, String tenantId,
                          long generation, int maxNodes, int maxDepth,
                          long timeoutNanos) {
-        request.started.set(true);
+        if (!request.started.compareAndSet(false, true)) {
+            request.result.completeExceptionally(new SnapshotFailure("CONTROL_DUPLICATE_TURN"));
+            return; // the first physical execution retains release ownership
+        }
         try {
             if (Thread.currentThread() == request.callerThread) {
                 throw new SnapshotFailure("INLINE_CONTROL_DISPATCH_FORBIDDEN");
