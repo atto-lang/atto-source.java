@@ -1,10 +1,14 @@
 package dev.oreslang.runtime;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.SocketTimeoutException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Single accepted-socket HTTP/1.1 -> RFC6455 upgrade boundary.
@@ -59,10 +63,29 @@ final class WebSocketRawUpgrade {
                     || !accepted.getInetAddress().isLoopbackAddress()) {
                 throw new SecurityException("raw WebSocket upgrade requires loopback peer");
             }
-            accepted.setSoTimeout(limits.handshakeTimeoutMillis());
+            // A socket SO_TIMEOUT alone is a per-read idle deadline: a peer
+            // could send one byte just before each timeout and monopolize the
+            // I/O worker for minutes. Enforce a single absolute head deadline.
+            long deadline = System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(limits.handshakeTimeoutMillis());
+            InputStream boundedHead = new FilterInputStream(accepted.getInputStream()) {
+                @Override public int read() throws IOException {
+                    long left = deadline - System.nanoTime();
+                    if (left <= 0L) {
+                        throw new SocketTimeoutException("WebSocket opening head deadline expired");
+                    }
+                    long millis = Math.max(1L,
+                            TimeUnit.NANOSECONDS.toMillis(left) + 1L);
+                    accepted.setSoTimeout((int) Math.min(millis, 30_000L));
+                    int value = in.read();
+                    if (System.nanoTime() > deadline) {
+                        throw new SocketTimeoutException("WebSocket opening head deadline expired");
+                    }
+                    return value;
+                }
+            };
             WebSocketOpeningRequest.Request request = WebSocketOpeningRequest.read(
-                    accepted.getInputStream(),
-                    limits.maxHeaderBytes(), limits.maxHeaderCount());
+                    boundedHead, limits.maxHeaderBytes(), limits.maxHeaderCount());
             if (!request.host().equals(expectedHost)) {
                 throw new SecurityException("WebSocket Host does not match listener authority");
             }
@@ -79,6 +102,7 @@ final class WebSocketRawUpgrade {
             accepted.getOutputStream().write(
                     response.getBytes(StandardCharsets.US_ASCII));
             accepted.getOutputStream().flush();
+            accepted.setSoTimeout(limits.handshakeTimeoutMillis());
             // Leave a bounded read timeout in force. A later connection owner
             // may narrow this bound but must not silently reset it to infinity.
             return new Admission(request.target(), origin);
