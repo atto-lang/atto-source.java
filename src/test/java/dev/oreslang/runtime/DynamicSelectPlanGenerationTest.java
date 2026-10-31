@@ -225,6 +225,22 @@ final class DynamicSelectPlanGenerationTest {
                 () -> ChannelRuntime.DynamicSelectPlan.fromList(oversized));
         assertThrows(IllegalArgumentException.class,
                 () -> ChannelRuntime.SelectPlan.fromList(oversized));
+
+        Map<Integer, ChannelRuntime.SelectCase> withNullKey = new LinkedHashMap<>();
+        withNullKey.put(null, ChannelRuntime.read(channel));
+        assertThrows(NullPointerException.class,
+                () -> ChannelRuntime.SelectPlan.fromMap(withNullKey));
+        assertThrows(NullPointerException.class,
+                () -> ChannelRuntime.DynamicSelectPlan.fromMap(withNullKey));
+
+        Map<Integer, ChannelRuntime.SelectCase> tooMany = new LinkedHashMap<>();
+        for (int i = 0; i <= ChannelRuntime.MAX_SELECT_CASES; i++) {
+            tooMany.put(i, ChannelRuntime.read(channel));
+        }
+        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+                () -> ChannelRuntime.SelectPlan.fromMap(tooMany));
+        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+                () -> ChannelRuntime.DynamicSelectPlan.fromMap(tooMany));
     }
 
 }
