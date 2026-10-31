@@ -88,7 +88,12 @@ final class PinnedNamespaceSharedCorpusTest {
         corpus.sources().put(ENTRY,
             "import ns a from \"pkg:foo\";\n"
           + "pub fnc main(): int { return a.aggregate(21); }\n");
-        assertThrows(RuntimeException.class, () -> execute(corpus, "other@1"));
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> execute(corpus, "other@1"));
+        assertTrue(rejected.getMessage().contains("export")
+                        || rejected.getMessage().contains("namespace"),
+                "unrelated execution failure must not satisfy package isolation: "
+                        + rejected.getMessage());
     }
 
     @Test
@@ -97,7 +102,7 @@ final class PinnedNamespaceSharedCorpusTest {
         String id = "foo/src/compute/aggregation.ores";
         corpus.sources().put(id, corpus.sources().get(id)
                 .replace("pub fnc aggregate", "fnc aggregate"));
-        assertThrows(RuntimeException.class, () -> execute(corpus, "foo@1"));
+        assertThrows(IllegalArgumentException.class, () -> execute(corpus, "foo@1"));
     }
 
     @Test
@@ -105,11 +110,13 @@ final class PinnedNamespaceSharedCorpusTest {
         Corpus wrongArity = sourceCorpus();
         wrongArity.sources().put(ENTRY, wrongArity.sources().get(ENTRY)
                 .replace("a.aggregate(21)", "a.aggregate()"));
-        assertThrows(RuntimeException.class, () -> execute(wrongArity, "foo@1"));
+        assertThrows(IllegalArgumentException.class, () -> execute(wrongArity, "foo@1"));
         Corpus missingPin = sourceCorpus();
-        assertThrows(RuntimeException.class, () ->
+        var missing = assertThrows(IllegalArgumentException.class, () ->
             PinnedNamespaceProgramRunner.run(
                 missingPin.sources(), missingPin.owners(), Map.of(), ENTRY,
                 IsolatePolicy.developer(), ExecutionProfile.serverJit()));
+        assertTrue(missing.getMessage().contains("undeclared or unpinned"),
+                missing.getMessage());
     }
 }
