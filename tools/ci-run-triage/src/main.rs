@@ -231,7 +231,7 @@ where F: FnMut(&str)->Result<Value,String> {
         check_pr(&fetch(path)?,sha,n)?;
     }
     let parsed=all.iter().map(parse_job).collect::<Result<Vec<_>,_>>()?;
-    let models=parsed.iter().map(ParsedJob::as_model).collect::<Vec<_>>();
+    let models=parsed.iter().map(|p| p.as_model()).collect::<Vec<_>>();
     let (category,details)=core::assess(&run,&models,sha,pr.is_some())
         .map_err(|_|"invalid or inconsistent run/job evidence".to_string())?;
     let safe_jobs=details.iter().zip(&parsed).map(|(d,j)|serde_json::json!({
