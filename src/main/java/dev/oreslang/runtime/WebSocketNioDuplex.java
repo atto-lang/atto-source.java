@@ -155,7 +155,13 @@ final class WebSocketNioDuplex {
         return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMillis);
     }
 
-    static void requireBeforeDeadline(long deadline) throws SocketTimeoutException {
+    static void requireBeforeDeadline(long deadline) throws IOException {
+        // A worker retired/cancelled before it reached select() must not issue
+        // even one new physical read/write because channel readiness happened
+        // to be immediately available. Actor carriers never use this helper.
+        if (Thread.currentThread().isInterrupted()) {
+            throw new ClosedByInterruptException();
+        }
         if (deadline - System.nanoTime() <= 0) {
             throw new SocketTimeoutException("WebSocket NIO absolute deadline expired");
         }
