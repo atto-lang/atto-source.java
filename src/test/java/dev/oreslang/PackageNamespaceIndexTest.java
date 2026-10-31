@@ -316,6 +316,36 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void directAndSnapshotIndexRejectSymlinkBeforeDotDotInManifestPath() throws IOException {
+        Path project = temporary.resolve("direct-dotdot-real");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, project, "src/file.ores", "billing",
+                "pub fnc charge(): int { return 1; }");
+        Path genuine = manifest(project, "checkout", List.of("src/file.ores"));
+
+        Path elsewhere = temporary.resolve("index-jump-target/inside");
+        Files.createDirectories(elsewhere);
+        Path alias = temporary.resolve("direct-dotdot-jump");
+        try {
+            Files.createSymbolicLink(alias, elsewhere);
+        } catch (UnsupportedOperationException | IOException | SecurityException denied) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not support symlink fixture");
+        }
+        // Lexical normalization points at genuine, but actual filesystem
+        // traversal follows the alias before '..'.
+        Path disguised = alias.resolve("../direct-dotdot-real/.ores.pkg.toml");
+        assertEquals(genuine, disguised.toAbsolutePath().normalize());
+        SecurityException direct = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.load(List.of(disguised), sources, Map.of()));
+        assertTrue(direct.getMessage().contains("unaliased path"), direct.getMessage());
+        SecurityException snapshot = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.loadFromSnapshots(
+                        Map.of(disguised, Files.readString(genuine)), sources, Map.of()));
+        assertTrue(snapshot.getMessage().contains("unaliased path"), snapshot.getMessage());
+    }
+
+    @Test
     void directIndexRejectsOversizedAndMalformedUtf8ManifestBeforeParsing() throws IOException {
         Path directory = temporary.resolve("direct-manifest-budget");
         Path ownedManifest = manifest(directory, "checkout", List.of("src/file.ores"));
