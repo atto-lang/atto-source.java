@@ -8,6 +8,8 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java'
       - 'src/main/java/dev/oreslang/runtime/ActorUpgradePreflightV1.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
       - 'src/main/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1.java'
       - 'src/test/java/dev/oreslang/runtime/ActorUpgradeEpochGateTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorUpgradePreflightCurrentMainTest.java'
@@ -42,13 +44,13 @@ jobs:
           cache: maven
       - name: Run focused actor JUnit regression
         run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorUpgradePreflightCurrentMainTest,ActorRoutePublicationV1Test,LogicalActorProxyMailboxV1Test,LogicalActorProxyUpgradeWatermarkTest -DfailIfNoTests=true test
-      - name: Verify 24 actor-drain, failure-quarantine and no-drop shutdown regressions
+      - name: Verify 26 actor carrier, Task and no-drop shutdown regressions
         shell: bash
         run: |
           set -euo pipefail
           report=target/surefire-reports/TEST-dev.oreslang.runtime.ActorRoutePublicationV1Test.xml
           test -s "$report"
-          head -c 1000 "$report" | grep -Eq 'tests="24"'
+          head -c 1000 "$report" | grep -Eq 'tests="26"'
           head -c 1000 "$report" | grep -q 'errors="0"'
           head -c 1000 "$report" | grep -q 'failures="0"'
           head -c 1000 "$report" | grep -q 'skipped="0"'
