@@ -2417,6 +2417,31 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     return switch (member.member()) {
+                        case "grant_producer" -> {
+                            if (call.arguments().size() != 2) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.grant_producer expects int slot and ActorRef<T> producer");
+                            }
+                            Type slot = deref(typeOf(call.arguments().get(0), env, generics, self));
+                            Type producer = deref(typeOf(call.arguments().get(1), env, generics, self));
+                            if (slot != Primitive.INT
+                                    || !(producer instanceof Named producerRef)
+                                    || !producerRef.name().equals("ActorRef")
+                                    || producerRef.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.grant_producer requires int and ActorRef<T>");
+                            }
+                            yield Primitive.VOID;
+                        }
+                        case "revoke_producer" -> {
+                            if (call.arguments().size() != 1
+                                    || deref(typeOf(call.arguments().getFirst(),
+                                            env, generics, self)) != Primitive.INT) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.revoke_producer requires one int slot");
+                            }
+                            yield Primitive.VOID;
+                        }
                         case "send" -> {
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
