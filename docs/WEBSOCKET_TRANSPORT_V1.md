@@ -491,12 +491,15 @@ The existing actor-finalization callback already revokes only the exact
 currently bound actor generation (`revokeIfOwner`) and enqueues a host-only
 CONTROL close operation. A saturated CONTROL pool previously launched a
 **new virtual thread per failed retirement admission**. The fallback now
-uses one shared daemon host-sweep worker, which drains up to 32 deduplicated
-already-owned connections per interval. There is no new connection, actor
-carrier, or cleanup thread per revoked connection. An entry is removed after
-the connection-close attempt; the existing native-I/O resource ledger still
-owns any pending physical loan. The shared fallback is best effort under a
-blocked host close, not a verified hard-real-time or globally fair scheduler.
+uses one shared daemon host-sweep worker with a deduplicating set and
+FIFO admission queue, draining up to 32 already-owned connections per
+interval. There is no new connection, actor carrier, or cleanup thread per
+revoked connection. FIFO bounds overtaking among queued requests when the
+single worker makes progress; it does not cap the total number of listeners
+or guarantee fairness under a blocked OS close. Queue entries are removed
+after the connection-close attempt; the native-I/O resource ledger still
+owns pending physical loans. The fallback is **not** a hard-real-time
+retirement mechanism or a complete process-wide memory budget.
 
 The actor USER delivery handoff now distinguishes rejection of an
 unauthorized/foreign actor handle (which must not close a healthy socket)
@@ -530,3 +533,13 @@ conformance. Do not promote or merge without authorized exact-head CI.
 The first source consumer remains
 `oreslang-websocket-server-demo.ores`; it must stay bootstrap-only until the
 upgrade, connection and actor-lifecycle layers execute end to end.
+
+A **source-free Java 21 local concurrency model** of this retirement
+algorithm was compiled and executed for six total passes (one initial and
+five additional) with 1,000 deduplicated retirement events per pass.
+A later FIFO-focused revision ran five further passes with 200 ordered
+requests and the same 1,000-event concurrency batch each time. All model
+passes reported success. The model is a synthetic contract probe, **not**
+compilation or execution of this private source tree, JDK25/GraalVM, the
+actual loopback JUnit cases, or Native Image. Never promote runtime
+claims from this model result alone.
