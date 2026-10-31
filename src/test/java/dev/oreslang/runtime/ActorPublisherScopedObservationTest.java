@@ -237,4 +237,64 @@ final class ActorPublisherScopedObservationTest {
             assertEquals(0L, runtime.sharedMemoryBytes());
         }
     }
+    @Test
+    void scopedSubscriptionsHaveFinitePerObserverQuotaAndRefundOnClose()
+            throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy bounded = new IsolatePolicy(
+                base.capabilities(), base.maxHeapBytes(), 1, base.maxWallTime());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus bus = group.events();
+            bus.defineTopic("quota", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            CountDownLatch publishersJoined = new CountDownLatch(2);
+            ActorRuntime.ActorRef<Integer> a = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        join.join();
+                        publishersJoined.countDown();
+                    });
+            ActorRuntime.ActorRef<Integer> b = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        join.join();
+                        publishersJoined.countDown();
+                    });
+            a.send(1);
+            b.send(1);
+            assertTrue(publishersJoined.await(5, TimeUnit.SECONDS));
+
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> observer = runtime.spawnShared(
+                    bounded, () -> (message, context) -> {
+                        try {
+                            join.join();
+                            ActorEventBus.Subscription<Integer> first =
+                                    bus.subscribePublisher("quota", a);
+                            assertTrue(first == bus.<Integer>subscribePublisher("quota", a),
+                                    "idempotent subscribe must not consume another lease");
+                            assertThrows(IllegalStateException.class,
+                                    () -> bus.subscribePublisher("quota", b),
+                                    "mailbox policy with one credit bounds publisher leases");
+                            assertEquals(1, bus.topics().getFirst().subscribers());
+                            first.close();
+                            ActorEventBus.Subscription<Integer> second =
+                                    bus.subscribePublisher("quota", b);
+                            assertFalse(second.closed());
+                            group.leaveCurrent();
+                            assertTrue(second.closed());
+                            assertEquals(0, bus.topics().getFirst().subscribers());
+                        } catch (Throwable failure) {
+                            error.set(failure);
+                        } finally {
+                            done.countDown();
+                        }
+                    });
+            observer.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertNull(error.get());
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
 }
