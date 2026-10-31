@@ -37,16 +37,35 @@ final class ReusableLongStateRegionTest {
     void callbackCannotReenterOrRetireStorageWhileWriting() {
         var region = new ReusableLongStateRegion(1);
         long h = region.insert(42);
-        region.update(h, value -> {
+        assertThrows(IllegalStateException.class, () -> region.update(h, value -> {
             assertThrows(IllegalStateException.class, () -> region.read(h));
             assertThrows(IllegalStateException.class, () -> region.write(h, 4));
             assertThrows(IllegalStateException.class, () -> region.remove(h));
             assertFalse(region.tryClose());
             assertTrue(region.isRetiring());
             return value + 1;
-        });
+        }), "STOP inside a reentrant callback must veto its pending write");
         assertEquals(1, region.size());
         assertThrows(IllegalStateException.class, () -> region.read(h));
+        assertTrue(region.tryClose());
+        assertTrue(region.isClosed());
+    }
+
+    @Test
+    void reentrantBeginRetireAbortsMutationButDoesNotStealPhysicalTaskPin() {
+        var region = new ReusableLongStateRegion(1);
+        long h = region.insert(19);
+        long pin = region.pin();
+        assertThrows(IllegalStateException.class, () ->
+                region.update(h, previous -> {
+                    region.beginRetire();
+                    return previous + 1;
+                }));
+        assertTrue(region.isRetiring());
+        assertEquals(1, region.size());
+        assertEquals(1, region.activePins());
+        assertFalse(region.tryClose(), "a logical STOP cannot retire a live Task pin");
+        region.releasePin(pin);
         assertTrue(region.tryClose());
         assertTrue(region.isClosed());
     }
