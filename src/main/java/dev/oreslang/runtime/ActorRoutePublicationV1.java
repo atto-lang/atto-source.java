@@ -7,6 +7,7 @@ import java.util.HexFormat;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 /**
  * Trusted CONTROL-only, SHARED-only logical ActorRef publication authority.
@@ -53,6 +54,14 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         private PhysicalCompletion(long sequence) { this.sequence = sequence; }
         long messageSequence() { return sequence; }
 
+        /** Retain physical ownership and fence DATA if the actual actor fails. */
+        void quarantine(Throwable failure) {
+            Objects.requireNonNull(failure, "physical actor failure");
+            synchronized (lock) {
+                poisoned = true;
+            }
+        }
+
         void acknowledge() {
             synchronized (lock) {
                 requireOperational();
@@ -87,6 +96,42 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             --physicalSubmissions;
             released = true;
         }
+    }
+
+    /**
+     * Trusted host bridge to a real SHARED ActorRuntime mailbox. A successful
+     * ActorRef.send() only admits the message; the runtime's drain() Future
+     * is the evidence that all messages preceding that barrier completed.
+     * Never acknowledge a tracked dispatch at enqueue time.
+     *
+     * The decoder is a trusted canonical payload adapter: ActorRuntime may
+     * freeze arrays as immutable lists, so the caller chooses its actor's
+     * actual message type. This does not establish guest Task/FFI quiescence,
+     * durable state migration, or physical isolate reclamation.
+     */
+    static <M> TrackedSubmit<ActorRuntime.ActorRef<M>> actorRuntimeDrainSubmitter(
+            Function<byte[], M> decode) {
+        Objects.requireNonNull(decode, "trusted message decoder");
+        return (physicalRoute, envelope, completion) -> {
+            Objects.requireNonNull(physicalRoute, "trusted actor route");
+            M message = Objects.requireNonNull(
+                    decode.apply(envelope.payload()), "decoded actor message");
+            // Neither ActorRef.send() nor caller-return licenses retirement.
+            physicalRoute.send(message);
+            OresFuture<Void> drained = Objects.requireNonNull(
+                    physicalRoute.drain(), "runtime actor drain future");
+            drained.whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) {
+                    completion.quarantine(failure);
+                    return;
+                }
+                try {
+                    completion.acknowledge();
+                } catch (RuntimeException | Error inconsistentReceipt) {
+                    completion.quarantine(inconsistentReceipt);
+                }
+            });
+        };
     }
 
     static final class StateSnapshot {
