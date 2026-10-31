@@ -145,4 +145,65 @@ final class CopyPolicyCompilerTest {
                 () -> Parser.parse("@NoCopy(level=2) define class Config as end"));
         assertTrue(ex.getMessage().contains("E_COPY_ANNOTATION"), ex.getMessage());
     }
+
+    @Test
+    void nestedNoCopyFieldCannotBeLaunderedThroughProjection() {
+        String source = """
+                define class Inner as
+                  @NoCopy
+                  pub val int secret = 4;
+                end
+                define class Outer as
+                  pub val Inner inner = new Inner();
+                end
+                fnc bad(Outer outer): int {
+                  return rt copy outer.inner.secret;
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("E_COPY_FORBIDDEN"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Inner.secret"), ex.getMessage());
+    }
+
+    @Test
+    void legacyShareCannotBypassNoCopyFieldPolicy() {
+        String source = HEADER + """
+                fnc bad(Vault vault): int {
+                  return rt share vault.token;
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("E_COPY_FORBIDDEN"), ex.getMessage());
+    }
+
+    @Test
+    void ordinaryFieldReadDoesNotTriggerExplicitCopyWarning() {
+        String source = """
+                define class Config as
+                  @WarnOnCopy
+                  pub val int version = 1;
+                end
+                fnc readVersion(Config config): int {
+                  return config.version;
+                }
+                """;
+        OresCompiler.AnalysisResult result =
+                assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckWithDiagnostics(source));
+        assertTrue(result.warnings().stream().noneMatch(
+                warning -> warning.contains("W_COPY_DISCOURAGED")), result.warnings().toString());
+    }
+
+    @Test
+    void copyPolicyOnModuleOrFunctionIsRejected() {
+        for (String source : new String[] {
+                "@NoCopy define module stuff as end",
+                "@NoCopy fnc f(): void { return; }"
+        }) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(ex.getMessage().contains("E_COPY_ANNOTATION"), ex.getMessage());
+        }
+    }
 }
