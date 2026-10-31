@@ -178,6 +178,52 @@ final class HotReloadCurrentMainTransactionTest {
         }
     }
 
+    // White-box fault injection for the synchronous entrypoint lease. These
+    // two checks are host preflight gates, NOT a real Graal or Task quiescence
+    // test. The latter still requires an independently executed race suite.
+    private static void simulateEntrypointInFlight(
+            HotReloadManager.Generation generation, boolean inFlight)
+            throws ReflectiveOperationException {
+        var field = generation.getClass().getDeclaredField("executing");
+        field.setAccessible(true);
+        synchronized (generation) {
+            field.setBoolean(generation, inFlight);
+        }
+    }
+
+    @Test
+    void shutdownRejectsExecutingGenerationWithoutLosingRegistry() throws Exception {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var candidate = manager.load("busy-shutdown.ores", GOOD);
+            simulateEntrypointInFlight(candidate, true);
+            try {
+                assertThrows(IllegalStateException.class, manager::close);
+                assertSame(candidate, manager.active("busy-shutdown.ores"));
+                assertFalse(candidate.closed());
+                assertEquals(1, manager.liveGenerations());
+            } finally {
+                simulateEntrypointInFlight(candidate, false);
+            }
+        }
+    }
+
+    @Test
+    void retirementRejectsExecutingGenerationWithoutLosingRoute() throws Exception {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var candidate = manager.load("busy-retirement.ores", GOOD);
+            simulateEntrypointInFlight(candidate, true);
+            try {
+                assertThrows(IllegalStateException.class,
+                        () -> manager.retire(candidate.id()));
+                assertSame(candidate, manager.active("busy-retirement.ores"));
+                assertFalse(candidate.closed());
+                assertEquals(1, manager.liveGenerations());
+            } finally {
+                simulateEntrypointInFlight(candidate, false);
+            }
+        }
+    }
+
     @Test
     void unverifiedDeclaredDependenciesAreRejectedEvenWithValidSource() {
         var compiled = compiledGood();
