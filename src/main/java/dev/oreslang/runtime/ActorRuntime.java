@@ -5296,6 +5296,7 @@ public final class ActorRuntime implements AutoCloseable {
      * additionally fence new physical admissions before using this to upgrade.
      */
     public OresFuture<Void> physicalDrain(ActorRef<?> ref) {
+        requireSupervisorContext("inspect physical actor drain");
         requireCallerRuntimeAffinity("inspect physical actor drain");
         Objects.requireNonNull(ref, "ref");
         if (!ref.ownedBy(this))
@@ -7291,11 +7292,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean physicalDrainedThroughLocked(long target) {
+            // Mailbox counters belong to a DIFFERENT monitor. Reading them
+            // under lifecycleLock alone would race producer admission and
+            // could incorrectly certify an idle actor while mail is queued.
+            final boolean mailboxEmpty;
+            synchronized (mailboxAccountingLock) {
+                mailboxEmpty = queuedMessages == 0 && queuedContinuations == 0
+                        && queuedUserMessages == 0;
+            }
             return lastProcessedUserMessageSequence >= target
                     && !carrierActive && activeTurns == 0
                     && !scheduled.get() && !sourceReceiveSuspended
-                    && queuedMessages == 0 && queuedContinuations == 0
-                    && queuedUserMessages == 0
+                    && mailboxEmpty
                     && pendingOperations.isEmpty()
                     && (sourceScheduler == null
                             || !sourceScheduler.hasLivePhysicalTasks());
