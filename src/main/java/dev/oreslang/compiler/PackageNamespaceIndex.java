@@ -62,16 +62,7 @@ public final class PackageNamespaceIndex {
         if (manifests == null) throw new IllegalArgumentException("manifests cannot be null");
         LinkedHashMap<Path, String> snapshots = new LinkedHashMap<>();
         for (Path manifest : manifests) {
-            Path canonical = manifest.toAbsolutePath().normalize();
-            // Do not canonicalize an alias before inspecting it. The public
-            // direct-index entry point must reject a symlinked manifest just
-            // like workspace discovery, including symlinked parent paths.
-            if (!".ores.pkg.toml".equals(canonical.getFileName().toString())
-                    || Files.isSymbolicLink(canonical)
-                    || !Files.isRegularFile(canonical, LinkOption.NOFOLLOW_LINKS)
-                    || !canonical.equals(canonical.toRealPath())) {
-                throw new SecurityException("namespace manifest is not a regular unaliased path");
-            }
+            Path canonical = checkedManifestPath(manifest);
             // Bound the read itself, not a previous stat: manifests can grow
             // concurrently and Files.readString() allocates without a limit.
             byte[] bytes;
@@ -135,15 +126,9 @@ public final class PackageNamespaceIndex {
         Map<NamespaceKey, Set<String>> providers = new LinkedHashMap<>();
         Set<String> packageIds = new LinkedHashSet<>();
         for (Map.Entry<Path, String> snapshot : fixedSnapshots.entrySet()) {
-            Path manifestReal = snapshot.getKey().toAbsolutePath().normalize();
-            if (!".ores.pkg.toml".equals(manifestReal.getFileName().toString())) {
-                throw new IllegalArgumentException("expected .ores.pkg.toml: " + manifestReal);
-            }
-            if (Files.isSymbolicLink(manifestReal)
-                    || !Files.isRegularFile(manifestReal)
-                    || !manifestReal.equals(manifestReal.toRealPath())) {
-                throw new SecurityException("namespace manifest path identity changed");
-            }
+            // A directly supplied snapshot must satisfy the same raw-path
+            // checks as the standalone index loader.
+            Path manifestReal = checkedManifestPath(snapshot.getKey());
             String content = snapshot.getValue();
             if (content == null || content.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024 * 1024) {
                 throw new IllegalArgumentException("invalid immutable namespace manifest text");
@@ -336,6 +321,35 @@ public final class PackageNamespaceIndex {
             throw new IllegalArgumentException("ambiguous exported namespace symbol " + key
                     + " from " + old.sourceUnitId() + " and " + symbol.sourceUnitId());
         }
+    }
+
+    private static Path checkedManifestPath(Path manifest) throws IOException {
+        // Checking only after normalize() erases a hostile alias/.. component.
+        Path raw = manifest.toAbsolutePath();
+        Path cursor = raw.getRoot();
+        if (cursor == null) throw new SecurityException("namespace manifest has no filesystem root");
+        for (Path part : raw) {
+            String name = part.toString();
+            if (".".equals(name)) continue;
+            if ("..".equals(name)) {
+                cursor = cursor.getParent();
+                if (cursor == null) {
+                    throw new SecurityException("namespace manifest path traverses filesystem root");
+                }
+                continue;
+            }
+            cursor = cursor.resolve(part);
+            if (Files.isSymbolicLink(cursor)) {
+                throw new SecurityException("namespace manifest is not a regular unaliased path: " + cursor);
+            }
+        }
+        Path canonical = raw.normalize();
+        if (!".ores.pkg.toml".equals(canonical.getFileName().toString())
+                || !Files.isRegularFile(canonical, LinkOption.NOFOLLOW_LINKS)
+                || !canonical.equals(canonical.toRealPath())) {
+            throw new SecurityException("namespace manifest is not a regular unaliased path");
+        }
+        return canonical;
     }
 
     private static Path boundedRelative(Path base, String value, Path boundary) throws IOException {
