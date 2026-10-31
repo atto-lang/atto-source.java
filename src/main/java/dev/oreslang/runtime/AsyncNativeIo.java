@@ -28,7 +28,8 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     public <T> OresFuture<T> submit(OresContext context,
             RuntimePermissions.Permission permission, String operation, Callable<T> work) {
-        // Actor-local authority must be checked before leaving its execution turn.
+        // Actor-local authority and physical-lifetime admission must both occur
+        // before the operation leaves its actor execution turn.
         context.requireCapability(permission.capability(), operation);
         return submit(operation, work);
     }
@@ -38,26 +39,59 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submitControl("socket.close_async", work);
     }
 
-    synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
-        return submit(operation, work, controls, 16);
+    <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
+        return submit(
+                operation,
+                work,
+                controls,
+                16,
+                captureActorPhysicalLease(operation));
     }
 
-    synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
-        return submit(operation, work, pending, capacity);
+    <T> OresFuture<T> submit(String operation, Callable<T> work) {
+        return submit(
+                operation,
+                work,
+                pending,
+                capacity,
+                captureActorPhysicalLease(operation));
     }
 
-    private <T> OresFuture<T> submit(String operation, Callable<T> work,
-            Set<OresFuture<?>> admitted, int limit) {
+    private ActorRuntime.ActorPhysicalLease captureActorPhysicalLease(
+            String operation) {
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        if (runtime == null) return null;
+        return runtime.acquireCurrentActorPhysicalLifetime(
+                "native-io:" + operation);
+    }
+
+    private <T> OresFuture<T> submit(
+            String operation,
+            Callable<T> work,
+            Set<OresFuture<?>> admitted,
+            int limit,
+            ActorRuntime.ActorPhysicalLease actorLease) {
         // Cancellation cannot promise rollback of a filesystem mutation. The
-        // operation remains owned by the context until completion or context close.
+        // physical actor lease therefore survives Future settlement and context
+        // close until the worker itself exits and terminal callbacks drain.
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        if (closed || admitted.size() >= limit) {
-            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
-            result.failFromRuntime(new RejectedExecutionException(
-                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
+        synchronized (this) {
+            if (closed || admitted.size() >= limit) {
+                CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
+                result.failFromRuntime(new RejectedExecutionException(
+                        closed
+                                ? "I/O context closed"
+                                : "I/O admission capacity exhausted"));
+            } else {
+                admitted.add(result);
+            }
+        }
+
+        if (result.isDone()) {
+            if (actorLease != null) actorLease.retire();
             return result;
         }
-        admitted.add(result);
+
         long queued = CorePerf.start();
         try {
             workers.execute(() -> {
@@ -68,9 +102,18 @@ public final class AsyncNativeIo implements AutoCloseable {
                     value = work.call();
                 } catch (Throwable failure) {
                     CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
-                    synchronized (this) { admitted.remove(result); }
-                    SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
-                    result.failFromRuntime(failure);
+                    synchronized (this) {
+                        admitted.remove(result);
+                    }
+                    SourceBoundaryTrace.record(
+                            failure, "native:io", operation, "I/O");
+                    try {
+                        result.failFromRuntime(failure);
+                        if (actorLease != null) actorLease.retire();
+                    } catch (RuntimeException | Error publicationFailure) {
+                        if (actorLease != null) actorLease.fail(publicationFailure);
+                        throw publicationFailure;
+                    }
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                     if (failure instanceof LinkageError fatal) throw fatal;
@@ -78,13 +121,25 @@ public final class AsyncNativeIo implements AutoCloseable {
                 } finally {
                     CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
                 }
-                synchronized (this) { admitted.remove(result); }
-                result.completeFromRuntime(value);
+
+                synchronized (this) {
+                    admitted.remove(result);
+                }
+                try {
+                    result.completeFromRuntime(value);
+                    if (actorLease != null) actorLease.retire();
+                } catch (RuntimeException | Error publicationFailure) {
+                    if (actorLease != null) actorLease.fail(publicationFailure);
+                    throw publicationFailure;
+                }
             });
         } catch (RuntimeException failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
-            admitted.remove(result);
+            synchronized (this) {
+                admitted.remove(result);
+            }
             result.failFromRuntime(failure);
+            if (actorLease != null) actorLease.retire();
         }
         return result;
     }
