@@ -5,7 +5,22 @@
 set -euo pipefail
 
 : "${EXPECTED_SOURCE_TREE:?Set the complete source Git tree SHA}"
-actual_tree="$(git rev-parse --verify 'HEAD^{tree}')"
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+# A private carrier keeps the Oreslang source in ./source so its own
+# workflows run without executing the mirrored source workflows.
+# Only the known root and nested layouts are admitted.
+source_path="${SOURCE_SUBTREE_PATH:-.}"
+case "$source_path" in
+  .) actual_tree="$(git rev-parse --verify 'HEAD^{tree}')" ;;
+  source) actual_tree="$(git rev-parse --verify 'HEAD:source')" ;;
+  *) echo "FAIL: unsupported source subtree path" >&2; exit 47 ;;
+esac
+if [[ "$(git cat-file -t "$actual_tree")" != "tree" ]]; then
+  echo "FAIL: checked-out source path is not a Git tree" >&2
+  exit 47
+fi
 if [[ "$actual_tree" != "$EXPECTED_SOURCE_TREE" ]]; then
   echo "FAIL: source-tree mismatch expected=$EXPECTED_SOURCE_TREE actual=$actual_tree" >&2
   exit 40
@@ -15,6 +30,7 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   echo "FAIL: unclean carrier checkout; source-tree proof invalid" >&2
   exit 41
 fi
+cd "$source_path"
 
 java_version="$(java -version 2>&1)"
 if ! grep -Eqi 'GraalVM' <<<"$java_version"; then
