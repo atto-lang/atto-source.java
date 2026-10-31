@@ -292,26 +292,37 @@ actor ID or a Java object reference on a non-actor thread is not authority.
 Once a physical connection is claimed, USER sends are accepted only from that
 actor's active turn; ordinary host sends and sends by another actor fail
 closed. The connection cannot be claimed again, even after actor termination.
-Transport `close()` atomically revokes the claim; the actor's finalization
-Future also logically revokes it, without doing blocking socket I/O or
-running transport cleanup on the actor carrier. Scoped NET authorization and
+Transport `close()` atomically revokes the claim. Actor finalization also
+revokes it using a brief admission monitor without executing socket I/O or
+running Future completion callbacks on the actor carrier. A shared daemon
+host-retirement executor (one physical worker, one cancellable fixed-delay
+sweep per open listener) scans the listener's at-most-16 registered children
+and closes any connection whose claimed actor is stopped or revoked. Listener
+shutdown cancels its sweep and independently retires all children. This
+provides automatic physical cleanup for idle actors without per-connection
+threads, subject to host-worker scheduling and OS close completion.
+The claim's monitor also fences USER admission together with the bounded
+`WebSocketOutboundGate.enqueueUser`: a USER write is either admitted
+before revoke or rejected after revoke. Scoped NET authorization and
 the existing bounded asynchronous writer still apply.
 
 This is **not yet a safe end-to-end guest API**. There is no source-level
 `WebSocketServer`/`WebSocketConnection` builtin, generation-aware guest
-handle table, async actor receive bridge, guaranteed **physical socket
-retirement on actor stop** when the peer is idle, or global outbound quota.
-A bounded supervisor-owned physical cleanup dispatcher and a race-safe
-revocation/queued-write fence are required before exposing this claim to guest
-source. In particular, an already-in-flight network write may finish while
-an actor is stopping; actor death alone must not be represented as physical
-socket closure. No actor guest, Graal Native Image, or multi-backend execution
-is claimed by these authored host tests.
+handle table, async actor receive bridge, strict global outbound quota,
+or proven fairness under many concurrent listener sweeps. The host-only
+retirement sweep must still be exercised under stalled I/O and concurrent
+shutdown: it is not a kernel-level hard-real-time close guarantee. Already
+admitted or in-flight bytes can race with actor finalization, and successful
+Future settlement is not physical-loan retirement. A source-level API must
+also ensure no guest handle can bypass this ownership gate. No actor guest,
+Graal Native Image, or multi-backend execution is claimed by these authored
+host tests.
 
-`WebSocketActorClaimTest` authors four actor-runtime checks (owner turn,
-foreign actor/runtime, stopped owner, and self-claim denial). The listener
-loopback suite also authors a host-bound actor-turn send over a real TCP
-connection. These require approved exact-head CI before they are evidence.
+`WebSocketActorClaimTest` now authors five actor-runtime checks (owner
+turn, foreign actor/runtime, stopped owner, self-claim denial, and admission
+after revoke). Listener tests require automatic idle actor-stop socket
+retirement and the host-bound actor-turn TCP send. These still require an
+approved exact-head CI execution receipt before they are evidence.
 
 ## Not yet implemented
 
