@@ -47,6 +47,16 @@ final class ActorPermissionUnifiedRetirementTest {
                         harness.io.submit(
                                 "delegated-held-worker",
                                 () -> {
+                                    // Native I/O authority carries only the
+                                    // delegated permission/physical-lifetime
+                                    // identity. It must not become an actor turn
+                                    // or host/supervisor capability.
+                                    assertFalse(ActorRuntime.inActorExecution());
+                                    assertTrue(ActorRuntime.currentActorId().isEmpty());
+                                    assertThrows(
+                                            SecurityException.class,
+                                            () -> turn.runtime().createActorGroup());
+
                                     harness.workerStarted.countDown();
                                     if (!harness.releaseWorker.await(
                                             5, TimeUnit.SECONDS)) {
@@ -265,6 +275,7 @@ final class ActorPermissionUnifiedRetirementTest {
                         "child finalized before native worker lease retired");
 
                 harness.releaseWorker.countDown();
+                worker.get(5, TimeUnit.SECONDS);
 
                 assertTrue(
                         parent.awaitTermination(5, TimeUnit.SECONDS),
