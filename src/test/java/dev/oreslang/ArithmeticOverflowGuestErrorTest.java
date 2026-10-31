@@ -171,6 +171,48 @@ final class ArithmeticOverflowGuestErrorTest {
     }
 
     @Test
+    void everyCheckedOperationPreservesGuestErrorAcrossFunctionBoundary() {
+        // Runtime arguments prevent proving the contract only through literal
+        // constant folding in the caller or a single Math intrinsic.
+        String[][] cases = {
+                {"add", "return lhs + rhs;", "9223372036854775807", "1"},
+                {"subtract", "return lhs - rhs;", "-9223372036854775808", "1"},
+                {"multiply", "return lhs * rhs;", "3037000500", "3037000500"},
+                {"negate", "return -lhs;", "-9223372036854775808", "0"},
+                {"Math.abs", "return Math.abs(lhs);", "-9223372036854775808", "0"},
+                {"Math.neg", "return Math.neg(lhs);", "-9223372036854775808", "0"}
+        };
+        for (String[] testCase : cases) {
+            String guest = """
+                    pub fnc checked(int lhs, int rhs): int {
+                      %s
+                    }
+                    pub fnc main(): int {
+                      try {
+                        return checked(%s, %s);
+                      } catch (err) {
+                        if err is type ArithmeticOverflowError {
+                          if err is type Error {
+                            return 42;
+                          } else {
+                            return 2;
+                          } fi
+                        } else {
+                          return 1;
+                        } fi
+                      } finally {
+                      }
+                    }
+                    """.formatted(testCase[1], testCase[2], testCase[3]);
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                assertEquals(42L, context.eval(OresLanguage.ID, guest).asLong(),
+                        "guest overflow ABI lost across " + testCase[0] + " call");
+            }
+        }
+    }
+
+    @Test
     void uncaughtOverflowReportsGuestErrorIdentity() {
         String guest = "pub fnc main():int{return Math.neg(-9223372036854775808);}";
         try (Context context = Context.newBuilder(OresLanguage.ID)

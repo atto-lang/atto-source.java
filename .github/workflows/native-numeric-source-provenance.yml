@@ -1,15 +1,11 @@
 name: Native numeric source provenance
 
+# This low-cost, source-only integrity check should produce a real status on
+# every PR (including test-only changes) and on protected-main submissions.
 on:
   pull_request:
-    paths:
-      - 'stdlib/math.ores'
-      - 'stdlib/bigint.ores'
-      - 'stdlib/decimal.ores'
-      - 'contracts/v1/numeric-error-abi.json'
-      - 'contracts/v1/native-error-slot-v1.h'
-      - 'ci/verify-native-numeric-source.sh'
-      - '.github/workflows/native-numeric-source-provenance.yml'
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,10 +14,25 @@ permissions:
 jobs:
   verify-canonical-native-sources:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify checkout is exact source head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Verify exact canonical Git blobs
         shell: bash
         run: bash ci/verify-native-numeric-source.sh

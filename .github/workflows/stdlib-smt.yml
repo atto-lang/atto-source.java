@@ -23,6 +23,8 @@ on:
       - 'src/test/java/dev/oreslang/NumericPrecisionAdmissionTest.java'
       - 'src/test/java/dev/oreslang/TreeShakerTest.java'
       - 'src/test/java/dev/oreslang/MathIntrinsicSemanticsTest.java'
+      - 'src/test/java/dev/oreslang/ArithmeticOverflowGuestErrorTest.java'
+      - 'src/test/java/dev/oreslang/NumericErrorAbiTest.java'
       - 'src/test/java/dev/oreslang/FloatCarrierSemanticsTest.java'
       - 'src/test/java/dev/oreslang/FloatFieldCarrierSemanticsTest.java'
       - 'stdlib/trace.ores'
@@ -55,6 +57,8 @@ on:
       - 'src/test/java/dev/oreslang/NumericPrecisionAdmissionTest.java'
       - 'src/test/java/dev/oreslang/TreeShakerTest.java'
       - 'src/test/java/dev/oreslang/MathIntrinsicSemanticsTest.java'
+      - 'src/test/java/dev/oreslang/ArithmeticOverflowGuestErrorTest.java'
+      - 'src/test/java/dev/oreslang/NumericErrorAbiTest.java'
       - 'src/test/java/dev/oreslang/FloatCarrierSemanticsTest.java'
       - 'src/test/java/dev/oreslang/FloatFieldCarrierSemanticsTest.java'
       - 'stdlib/trace.ores'
@@ -127,7 +131,7 @@ jobs:
       - name: Verify default checked i64 arithmetic in real Graal guest
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest,BinaryFloatSemanticsTest,NumericPrecisionAdmissionTest,MathIntrinsicSemanticsTest,FloatCarrierSemanticsTest,FloatFieldCarrierSemanticsTest,TreeShakerTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=DefaultCheckedI64ArithmeticTest,BinaryFloatSemanticsTest,NumericPrecisionAdmissionTest,MathIntrinsicSemanticsTest,FloatCarrierSemanticsTest,FloatFieldCarrierSemanticsTest,TreeShakerTest,ArithmeticOverflowGuestErrorTest,NumericErrorAbiTest -DfailIfNoTests=true test
       - name: Execute native Oreslang Math refinement and MIN overflow boundary
         run: |
           set -euo pipefail
