@@ -234,3 +234,37 @@ This is **host execution, NOT exact-head full Maven/JUnit/JDK25/GraalVM
 or .ores guest evidence**. The live actor does not yet call this runtime
 binding, and authenticated tenant issuance, sequence/idempotency persistence,
 parent directory sync and WAL replay/ACK remain absent.
+
+
+## Stage 1.7 — locked-host single-generation recovery preflight (31 Oct)
+
+`DbWalReplayV1.scan` performs read-only bounded ODB1 v1 scanning of
+a single-generation segment with one reused 1118-byte buffer and one
+reused `ByteBuffer`. It validates every complete frame's tenant,
+generation, Adler32 and bounds; sequence must start at 1 and increase
+without gaps; operation IDs must increase strictly. A final short
+header or incomplete frame returns an `incompleteTail` report with
+last complete byte offset, **without truncation or state publication**.
+Complete frame corruption, mixed generation, duplicate or reordered
+operation IDs, and gaps raise an error. There is no transaction replay,
+checkpoint or guest durable ACK. The physically locked
+`DbDurableWalFile.scanRecovery(tenant,segmentGeneration)` path requires
+an opened, non-uncertain file and an independently authenticated,
+exclusive shard-recovery fence held by its host caller.
+
+`DbWalReplayV1Test` covers fresh file reopening, partial terminal
+record detection without mutation, full-record checksum corruption,
+duplicate op ID, sequence gap and tenant/generation mismatch through
+both scanner and locked owner. **Tracked JUnit authored, not executed**.
+
+For independently executed **local Java 21** source-exact evidence,
+`DbWalFrameV1.java` Git blob `dfe689a40cca7c52f3134d4ad23bfab634c572b5`,
+`DbWalReplayV1.java` `7aa518e3525cc70dbbd2bb36f554a025c6e42351`,
+and `DbDurableWalFile.java` `21b8fc43478c4852cc3c4833adf13f9fabf826f5`
+were checked by local `git hash-object` and compiled with
+`javac --release 21 -Xlint:all -Werror`. A separate executable host
+harness completed fresh reopen, valid records, truncated tail,
+checksum corruption, duplicate/reordered op, sequence gap,
+cross-tenant denial and locked owner scan: `JAVA_WAL_REPLAY_HOST_PASS`.
+This is isolated host evidence, NOT complete exact-tree Maven,
+JDK25, Graal Native Image or guest .ores execution.
