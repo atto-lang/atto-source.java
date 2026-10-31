@@ -8596,7 +8596,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                             } finally {
                                 if (trace != null) {
-                                    trace.record(ref.id().value(), mail.sequence(),
+                                    trace.record(ref.id().value(), ref.generation(), mail.sequence(),
                                             handlerEnterNanos, System.nanoTime(),
                                             codeExecutor != null);
                                 }
