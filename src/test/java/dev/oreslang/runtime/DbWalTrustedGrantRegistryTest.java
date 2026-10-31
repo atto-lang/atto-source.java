@@ -23,6 +23,7 @@ final class DbWalTrustedGrantRegistryTest {
             var issued = new CountDownLatch(1);
             var foreignRejected = new CountDownLatch(1);
             var duplicateRejected = new CountDownLatch(1);
+            var drainingConflictRejected = new CountDownLatch(1);
             var drained = new CountDownLatch(1);
             var reissued = new CountDownLatch(1);
             var first = runtime.<String>spawnShared(() -> (message, context) -> {
@@ -50,6 +51,10 @@ final class DbWalTrustedGrantRegistryTest {
                         assertThrows(IllegalStateException.class,
                                 () -> registry.issueForCurrentActor(11, 3, 8));
                         duplicateRejected.countDown();
+                    } else if (message.equals("draining_conflict")) {
+                        assertThrows(IllegalStateException.class,
+                                () -> registry.issueForCurrentActor(11, 3, 8));
+                        drainingConflictRejected.countDown();
                     } else if (message.equals("issue")) {
                         secondGrant.set(registry.issueForCurrentActor(11, 3, 8));
                         reissued.countDown();
@@ -58,6 +63,7 @@ final class DbWalTrustedGrantRegistryTest {
                     secondError.compareAndSet(null, failure);
                     foreignRejected.countDown();
                     duplicateRejected.countDown();
+                    drainingConflictRejected.countDown();
                     reissued.countDown();
                 }
             });
@@ -83,7 +89,10 @@ final class DbWalTrustedGrantRegistryTest {
             assertNull(firstError.get());
             assertEquals(1, registry.activeShardCount(),
                     "a draining shard cannot be reissued to a new generation");
-            assertThrows(IllegalStateException.class,
+            second.send("draining_conflict");
+            assertTrue(drainingConflictRejected.await(3, TimeUnit.SECONDS));
+            assertNull(secondError.get());
+            assertThrows(SecurityException.class,
                     () -> registry.issueForCurrentActor(11, 3, 8),
                     "host calls outside actor must be rejected");
             firstGrant.get().physicalRetire();
