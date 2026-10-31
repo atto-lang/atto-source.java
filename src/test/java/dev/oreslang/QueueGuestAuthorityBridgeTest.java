@@ -1,0 +1,91 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Exact-source guest checks for a deny-by-default queue authority intrinsic. */
+final class QueueGuestAuthorityBridgeTest {
+    @Test
+    void hostMailCannotAcquireStructuredSupervisorPrivilegesByPayload() throws Exception {
+        String program = """
+                define serial actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val bool close_allowed = self.queue_authorized(4, -1);
+                    val bool forged_send = self.queue_authorized(1, 0);
+                    val bool invalid_kind = self.queue_authorized(99, 0);
+                    self.send(close_allowed);
+                    self.send(forged_send);
+                    self.send(invalid_kind);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.ready;
+                  worker.send("i am supervisor");
+                  val a = (await worker.outputs.next()).value.unwrap();
+                  val b = (await worker.outputs.next()).value.unwrap();
+                  val c = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(a.value);
+                  stdio.stdout.write(",");
+                  stdio.stdout.write(b.value);
+                  stdio.stdout.write(",");
+                  stdio.stdout.write(c.value);
+                  await worker.done;
+                  return;
+                }
+                """;
+        assertEquals("false,false,false", run(program));
+    }
+
+    @Test
+    void actorSelfAuthorizationRejectsWrongArgumentsAtTypecheck() {
+        String source = """
+                define serial actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.queue_authorized(4, "producer 0");
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("queue_authorized"), error.getMessage());
+    }
+
+    @Test
+    void actorSelfAuthorizationRejectsMissingArgumentsAtTypecheck() {
+        String source = """
+                define serial actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.queue_authorized(4);
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("queue_authorized"), error.getMessage());
+    }
+
+    private static String run(String program) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID,
+                    program, "queue-guest-authority.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+}
