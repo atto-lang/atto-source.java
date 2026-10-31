@@ -73,11 +73,15 @@ public final class TenantIsolateManager implements AutoCloseable {
         private synchronized void discard() { buffer.reset(); }
     }
 
+    /** Host-observable lifecycle, never proof of physical protection. */
+    public enum TenantState { ACTIVE, RETIRING, QUARANTINED }
+
     private static final class Tenant {
         private final TenantHandle handle;
         private final Context context;
         private final BoundedOutput output;
-        private boolean retiring;
+        private volatile TenantState state = TenantState.ACTIVE;
+        private boolean physicallyClosed;
 
         private Tenant(TenantHandle handle, Context context, BoundedOutput output) {
             this.handle = handle;
@@ -143,7 +147,9 @@ public final class TenantIsolateManager implements AutoCloseable {
         }
         Tenant tenant = lookup(handle);
         synchronized (tenant) {
-            if (tenant.retiring) throw new IllegalStateException("TENANT_RETIRING");
+            if (tenant.state != TenantState.ACTIVE) {
+                throw new IllegalStateException("TENANT_NOT_ACTIVE: " + tenant.state);
+            }
             tenant.output.discard();
             tenant.context.eval(source);
             return tenant.output.drain();
@@ -175,17 +181,41 @@ public final class TenantIsolateManager implements AutoCloseable {
             if (tenant == null || tenant.handle != handle) {
                 throw new SecurityException("INVALID_TENANT_HANDLE");
             }
+            // SEAL BEFORE WAITING for a potentially stalled guest evaluation.
+            // Otherwise a newly admitted eval can race ahead of tenant close.
+            if (tenant.state == TenantState.ACTIVE) tenant.state = TenantState.RETIRING;
         }
         synchronized (tenant) {
-            tenant.retiring = true;
+            if (tenant.physicallyClosed) {
+                throw new SecurityException("INVALID_TENANT_HANDLE");
+            }
             // OresContext.close() owns the physical actor/Task/native-I/O
             // retirement barrier. On failure, retain context + actor heaps
             // strongly reachable in this registry for quarantine/retry.
-            tenant.context.close();
+            try {
+                tenant.context.close();
+                tenant.physicallyClosed = true;
+            } catch (RuntimeException | Error failure) {
+                tenant.state = TenantState.QUARANTINED;
+                throw failure;
+            }
         }
         synchronized (this) {
             tenants.remove(handle.tenantId, tenant);
         }
+    }
+
+    /** Host-only diagnostic for a current handle, including quarantined tenants. */
+    public synchronized TenantState tenant_state(TenantHandle handle) {
+        require_host_turn();
+        if (handle == null || handle.owner != this) {
+            throw new SecurityException("INVALID_TENANT_HANDLE");
+        }
+        Tenant tenant = tenants.get(handle.tenantId);
+        if (tenant == null || tenant.handle != handle) {
+            throw new SecurityException("INVALID_TENANT_HANDLE");
+        }
+        return tenant.state;
     }
 
     public synchronized int tenant_count() { return tenants.size(); }
@@ -197,7 +227,11 @@ public final class TenantIsolateManager implements AutoCloseable {
         synchronized (this) {
             sealed = true;
             pending = new ArrayList<>(tenants.size());
-            for (Tenant tenant : tenants.values()) pending.add(tenant.handle);
+            // Publish retirement of ALL tenants before waiting on any one.
+            for (Tenant tenant : tenants.values()) {
+                if (tenant.state == TenantState.ACTIVE) tenant.state = TenantState.RETIRING;
+                pending.add(tenant.handle);
+            }
         }
         RuntimeException first = null;
         for (TenantHandle handle : pending) {
