@@ -33,6 +33,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private final ArrayDeque<Runnable> completions = new ArrayDeque<>();
     private final Map<Authority, StateLoan> readers = new LinkedHashMap<>();
     private final Set<Authority> reserved = new HashSet<>();
+    // These separate identity fences prevent a rematerialized task from
+    // acquiring twice by changing its slot, or a reused slot from serving
+    // two different logical tasks at the same time.
+    private final Set<ExecutionContext.ExecutionId> reservedExecutions = new HashSet<>();
+    private final Set<ExecutionContext.ExecutionHandle> reservedHandles = new HashSet<>();
     private StateLoan writer;
     private ExecutionContext.AllocationDomain boundAllocation;
     private long nextEpoch;
@@ -65,7 +70,9 @@ public final class ActorStateRwLoans implements AutoCloseable {
 
     private boolean physicallyRetiredLocked() {
         return closed && writer == null && readers.isEmpty()
-                && pending.isEmpty() && completions.isEmpty() && !publishing;
+                && pending.isEmpty() && completions.isEmpty() && !publishing
+                && reserved.isEmpty() && reservedExecutions.isEmpty()
+                && reservedHandles.isEmpty();
     }
 
     private void maybeWakeRetirement() {
@@ -107,9 +114,9 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 return OresFuture.failed(new IllegalArgumentException(
                         "actor state RW loans belong to a different actor allocation incarnation"));
             }
-            if (!reserved.add(authority)) {
+            if (!reserveLocked(authority)) {
                 return OresFuture.failed(new IllegalStateException(
-                        "logical execution already holds or awaits a state RW loan"));
+                        "logical execution or execution slot already holds or awaits a state RW loan"));
             }
 
             if (pending.isEmpty() && canGrantLocked(access)) {
@@ -117,13 +124,13 @@ public final class ActorStateRwLoans implements AutoCloseable {
                     return OresFuture.completed(
                             createLocked(authority, access));
                 } catch (RuntimeException | Error failure) {
-                    reserved.remove(authority);
+                    unreserveLocked(authority);
                     throw failure;
                 }
             }
 
             if (pending.size() >= maxPending) {
-                reserved.remove(authority);
+                unreserveLocked(authority);
                 return OresFuture.failed(new IllegalStateException(
                         "actor state RW loan queue full"));
             }
@@ -157,6 +164,29 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 execution.id(),
                 execution.executionHandle(),
                 execution.allocationDomain());
+    }
+
+    // All identity indexes are changed together while holding monitor.
+    // The execution-id fence also prevents an old released handle from
+    // claiming that a newly rematerialized execution can safely suspend.
+    private boolean reserveLocked(Authority candidate) {
+        if (reserved.contains(candidate)
+                || reservedExecutions.contains(candidate.id())
+                || reservedHandles.contains(candidate.handle())) {
+            return false;
+        }
+        reserved.add(candidate);
+        reservedExecutions.add(candidate.id());
+        reservedHandles.add(candidate.handle());
+        return true;
+    }
+
+    private void unreserveLocked(Authority authority) {
+        if (!reserved.remove(authority)
+                || !reservedExecutions.remove(authority.id())
+                || !reservedHandles.remove(authority.handle())) {
+            throw new IllegalStateException("state RW execution reservation ledger corrupted");
+        }
     }
 
     private boolean canGrantLocked(Access access) {
@@ -196,7 +226,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
             Pending head = pending.peekFirst();
             if (head.future.isCancelled()) {
                 pending.removeFirst();
-                reserved.remove(head.authority);
+                unreserveLocked(head.authority);
                 continue;
             }
 
@@ -266,7 +296,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 synchronized (monitor) {
                     removed = pending.remove(this);
                     if (removed) {
-                        reserved.remove(authority);
+                        unreserveLocked(authority);
                         promoteLocked();
                     }
                 }
@@ -320,7 +350,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 // A previously released handle is not proof that this same
                 // execution has no *new* active or queued loan. Consult the
                 // current ledger as well as the physical release receipt.
-                return released && !reserved.contains(authority);
+                return released && !reservedExecutions.contains(authority.id())
+                        && !reservedHandles.contains(authority.handle());
             }
         }
 
@@ -341,7 +372,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
                                 "actor state RW reader ownership corrupted");
                     }
                 }
-                reserved.remove(authority);
+                unreserveLocked(authority);
                 promoteLocked();
             }
             publish();
@@ -357,7 +388,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
             closed = true;
             abandoned = new ArrayDeque<>(pending);
             pending.clear();
-            for (Pending waiter : abandoned) reserved.remove(waiter.authority);
+            for (Pending waiter : abandoned) unreserveLocked(waiter.authority);
         }
         for (Pending waiter : abandoned) {
             waiter.future.failFromRuntime(new IllegalStateException(
