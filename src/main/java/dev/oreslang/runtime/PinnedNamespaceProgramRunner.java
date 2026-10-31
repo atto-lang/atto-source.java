@@ -104,6 +104,28 @@ public final class PinnedNamespaceProgramRunner {
                 }
             }
 
+            // Register public sibling calls using only the verified exact
+            // (package-instance, namespace) grouping. Source order and
+            // directory names confer no authority, and a same-spelling
+            // namespace in another package cannot enter this table.
+            for (PackageNamespaceLinker.Namespace namespace :
+                    verified.namespaceGraph().namespaces().values()) {
+                List<String> owned = new ArrayList<>(namespace.sourceUnits());
+                owned.sort(String::compareTo);
+                for (String caller : owned) {
+                    Value executable = executables.get(caller);
+                    if (executable == null)
+                        throw new IllegalArgumentException(
+                                "verified namespace provider missing from pinned code inventory");
+                    for (PackageNamespaceLinker.Export exported : namespace.exports()) {
+                        if (caller.equals(exported.sourceUnitId())) continue;
+                        executable.execute(
+                                OresEvalRootNode.REGISTER_NAMESPACE_PROVIDER_MEMBER_COMMAND,
+                                exported.name(), exported.arity(), exported.sourceUnitId());
+                    }
+                }
+            }
+
             // Link all checked units before invoking any initializer. The
             // package graph adds all namespace sources to initialization deps.
             for (String id : ids)
