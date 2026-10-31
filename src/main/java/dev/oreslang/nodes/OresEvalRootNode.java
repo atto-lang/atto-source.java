@@ -939,6 +939,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init"))
+                throw new SecurityException(
+                        "actor init is a once-only runtime lifecycle, not guest-callable");
             return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
         }
 
