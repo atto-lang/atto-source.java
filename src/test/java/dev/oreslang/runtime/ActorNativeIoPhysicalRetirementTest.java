@@ -273,4 +273,150 @@ final class ActorNativeIoPhysicalRetirementTest {
     }
 
 
+
+    @Test
+    void actorOwnedGenericHandleCannotUnregisterWithoutVerifiableCloseWitness()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.DispatcherConfig(2, 2, 8, 64));
+             AsyncNativeIo io = new AsyncNativeIo(1)) {
+            CountDownLatch registered = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger closeCount =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AutoCloseable resource = closeCount::incrementAndGet;
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    actorContext -> (message, context) -> {
+                        io.register(resource);
+                        registered.countDown();
+                    });
+
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            actor.stop();
+
+            assertThrows(
+                    SecurityException.class,
+                    () -> io.unregister(resource),
+                    "generic actor-owned handle has no verifiable close witness");
+            assertFalse(actor.done().isDone());
+
+            io.close();
+
+            assertEquals(1, closeCount.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.done().isDone());
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
+    @Test
+    void failedSocketCloseKeepsReceiptPinnedUntilExplicitRetrySucceeds()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 64));
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        java.util.concurrent.atomic.AtomicInteger closeAttempts =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        java.net.Socket socket = new java.net.Socket() {
+            @Override
+            public synchronized void close() throws java.io.IOException {
+                int attempt = closeAttempts.incrementAndGet();
+                if (attempt <= 2) {
+                    throw new java.io.IOException(
+                            "injected physical close failure " + attempt);
+                }
+                super.close();
+            }
+        };
+
+        CountDownLatch registered = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.PrivateMemoryBlock> memory =
+                new AtomicReference<>();
+        ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                actorContext -> {
+                    ActorRuntime.PrivateMemoryBlock block =
+                            actorContext.privateMemory()
+                                    .orElseThrow()
+                                    .allocatePrivateBytes(32);
+                    block.writeInt(0, 401);
+                    memory.set(block);
+                    return (message, context) -> {
+                        io.register(socket);
+                        registered.countDown();
+                    };
+                });
+
+        try {
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            actor.stop();
+
+            IllegalStateException failedClose = assertThrows(
+                    IllegalStateException.class,
+                    io::close);
+            assertTrue(
+                    failedClose.getMessage().contains(
+                            "resource close failed"));
+            assertEquals(2, closeAttempts.get(),
+                    "shutdown wakeup + post-join close should both have failed");
+            assertFalse(socket.isClosed());
+            assertFalse(actor.done().isDone());
+            assertFalse(memory.get().closed());
+            assertEquals(1, runtime.actorCount());
+
+            io.close();
+
+            assertEquals(3, closeAttempts.get());
+            assertTrue(socket.isClosed());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(memory.get().closed());
+            assertTrue(actor.done().isDone());
+            assertEquals(0, runtime.actorCount());
+        } finally {
+            try { io.close(); } catch (RuntimeException ignored) { }
+            try { socket.close(); } catch (java.io.IOException ignored) { }
+            actor.stop();
+            runtime.close();
+        }
+    }
+
+    @Test
+    void contextJoinClosesNativeRegistrationBeforePublishingActorDone()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 64));
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        java.util.concurrent.atomic.AtomicInteger closeCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        AutoCloseable resource = closeCount::incrementAndGet;
+        CountDownLatch registered = new CountDownLatch(1);
+
+        ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                actorContext -> (message, context) -> {
+                    io.register(resource);
+                    registered.countDown();
+                });
+
+        try {
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+
+            OresContext.joinActorsAndNativeIo(runtime, io);
+
+            assertEquals(1, closeCount.get());
+            assertTrue(actor.done().isDone(),
+                    "context join must not return before actor DONE");
+            assertEquals(0, runtime.actorCount());
+        } finally {
+            try { io.close(); } catch (RuntimeException ignored) { }
+            runtime.close();
+        }
+    }
+
+
 }
