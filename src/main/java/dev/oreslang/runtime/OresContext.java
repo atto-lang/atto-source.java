@@ -37,7 +37,6 @@ public final class OresContext implements AutoCloseable {
     // Stages that finished must not be closed twice during a retry after
     // another stage fails; all state is owned by closeInProgress.
     private final AuxiliaryCloseStages auxiliaryCloseStages = new AuxiliaryCloseStages();
-    private boolean stdioDrainCompleted;
     private boolean sharedCodeImagesClosed;
     private boolean garbageCollectorClosed;
     private boolean outputFlushed;
@@ -536,19 +535,22 @@ public final class OresContext implements AutoCloseable {
         private boolean httpClosed;
         private boolean asyncRuntimeClosed;
         private boolean vmClosed;
+        private boolean stdioDrained;
 
-        RuntimeException closeRemaining(
-                Runnable closeHttp, Runnable closeAsyncRuntime, Runnable closeVm) {
+        void closeRemaining(
+                Runnable closeHttp, Runnable closeAsyncRuntime,
+                Runnable closeVm, Runnable drainStdio) {
             java.util.Objects.requireNonNull(closeHttp);
             java.util.Objects.requireNonNull(closeAsyncRuntime);
             java.util.Objects.requireNonNull(closeVm);
-            RuntimeException failure = null;
+            java.util.Objects.requireNonNull(drainStdio);
+            RuntimeException auxiliaryFailure = null;
             if (!httpClosed) {
                 try {
                     closeHttp.run();
                     httpClosed = true;
                 } catch (RuntimeException httpFailure) {
-                    failure = httpFailure;
+                    auxiliaryFailure = httpFailure;
                 }
             }
             if (!asyncRuntimeClosed) {
@@ -556,8 +558,10 @@ public final class OresContext implements AutoCloseable {
                     closeAsyncRuntime.run();
                     asyncRuntimeClosed = true;
                 } catch (RuntimeException asyncFailure) {
-                    if (failure == null) failure = asyncFailure;
-                    else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
+                    if (auxiliaryFailure == null) auxiliaryFailure = asyncFailure;
+                    else if (auxiliaryFailure != asyncFailure) {
+                        auxiliaryFailure.addSuppressed(asyncFailure);
+                    }
                 }
             }
             if (!vmClosed) {
@@ -565,11 +569,37 @@ public final class OresContext implements AutoCloseable {
                     closeVm.run();
                     vmClosed = true;
                 } catch (RuntimeException vmFailure) {
-                    if (failure == null) failure = vmFailure;
-                    else if (failure != vmFailure) failure.addSuppressed(vmFailure);
+                    if (auxiliaryFailure == null) auxiliaryFailure = vmFailure;
+                    else if (auxiliaryFailure != vmFailure) {
+                        auxiliaryFailure.addSuppressed(vmFailure);
+                    }
                 }
             }
-            return failure;
+
+            // Shutdown admission and actor/native retirement were already
+            // fenced. The bounded drain must run even after auxiliary failure,
+            // without allowing final synchronous stdout flush or graph release.
+            RuntimeException logFailure = null;
+            if (!stdioDrained) {
+                try {
+                    drainStdio.run();
+                    stdioDrained = true;
+                } catch (RuntimeException failedDrain) {
+                    logFailure = failedDrain;
+                }
+            }
+            if (auxiliaryFailure != null) {
+                if (logFailure != null && auxiliaryFailure != logFailure) {
+                    auxiliaryFailure.addSuppressed(logFailure);
+                }
+                throw new IllegalStateException(
+                        "Oreslang context auxiliary shutdown incomplete; context quarantined",
+                        auxiliaryFailure);
+            }
+            if (logFailure != null) {
+                throw new IllegalStateException(
+                        "Oreslang logging drain incomplete; context quarantined", logFailure);
+            }
         }
     }
 
@@ -607,34 +637,8 @@ public final class OresContext implements AutoCloseable {
                     "Oreslang context cleanup incomplete; physical state quarantined",
                     incomplete);
         }
-        RuntimeException auxiliaryFailure = auxiliaryCloseStages.closeRemaining(
-                http::close, asyncRuntime::close, vm::close);
-
-        // We already joined actors/native I/O and sealed stdout admission.
-        // Always attempt the bounded writer drain, even if an auxiliary close
-        // failed. This must never release quarantine or final-flush stdout
-        // while the auxiliary stage is incomplete.
-        RuntimeException logFailure = null;
-        if (!stdioDrainCompleted) {
-            try {
-                asyncStdio.close();
-                stdioDrainCompleted = true;
-            } catch (RuntimeException failedDrain) {
-                logFailure = failedDrain;
-            }
-        }
-        if (auxiliaryFailure != null) {
-            if (logFailure != null && auxiliaryFailure != logFailure) {
-                auxiliaryFailure.addSuppressed(logFailure);
-            }
-            throw new IllegalStateException(
-                    "Oreslang context auxiliary shutdown incomplete; context quarantined",
-                    auxiliaryFailure);
-        }
-        if (logFailure != null) {
-            throw new IllegalStateException(
-                    "Oreslang logging drain incomplete; context quarantined", logFailure);
-        }
+        auxiliaryCloseStages.closeRemaining(
+                http::close, asyncRuntime::close, vm::close, asyncStdio::close);
 
         // The remaining teardown stages are also one-shot on success. On
         // failure they remain retryable while the whole context stays pinned.
