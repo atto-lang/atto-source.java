@@ -13,9 +13,11 @@ import java.util.function.Function;
 /**
  * Package-private, one-shot staging gate for a future source-actor init ABI.
  *
- * <p>This class is deliberately NOT wired to source spawn yet. It provides
- * the runtime-side complete-state and no-early-publication protocol while
- * the parser/typed HIR/effect checker still reject user-defined init hooks.
+ * <p>This class is deliberately NOT wired to source spawn yet. The
+ * scalar-only init compiler candidate instead validates a separate temporary
+ * state map during actor startup. This gate is a host model for a future
+ * complete-state/no-early-publication protocol; it is not proof that current
+ * provisional ActorRef creation satisfies that protocol.
  * It is not an actor heap, a capability validator, or a substitute for the
  * native actor runtime's physical allocation and generation admission.
  *
