@@ -42,13 +42,13 @@ jobs:
           cache: maven
       - name: Run focused actor JUnit regression
         run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorUpgradePreflightCurrentMainTest,ActorRoutePublicationV1Test,LogicalActorProxyMailboxV1Test,LogicalActorProxyUpgradeWatermarkTest -DfailIfNoTests=true test
-      - name: Verify 23 host actor drain and no-drop shutdown regressions
+      - name: Verify 24 actor-drain, failure-quarantine and no-drop shutdown regressions
         shell: bash
         run: |
           set -euo pipefail
           report=target/surefire-reports/TEST-dev.oreslang.runtime.ActorRoutePublicationV1Test.xml
           test -s "$report"
-          head -c 1000 "$report" | grep -Eq 'tests="23"'
+          head -c 1000 "$report" | grep -Eq 'tests="24"'
           head -c 1000 "$report" | grep -q 'errors="0"'
           head -c 1000 "$report" | grep -q 'failures="0"'
           head -c 1000 "$report" | grep -q 'skipped="0"'
