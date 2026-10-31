@@ -204,7 +204,10 @@ final class ActorPermissionScope {
         for (ActorPermissionScope layer = this;
              layer != null;
              layer = layer.parent) {
-            layer.restrictions.requireNetworkListen(resource, operation);
+            layer.restrictions.require(
+                    RuntimePermissions.Permission.NET,
+                    resource,
+                    operation);
         }
         requireActive(operation);
     }
