@@ -376,7 +376,7 @@ final class CopyPolicyCompilerTest {
     }
 
     @Test
-    void returningMoveOnlyClassFieldCannotDuplicateItsOwner() {
+    void returningOrdinaryClassFieldAliasDoesNotClone() {
         String source = """
                 define class Resource as
                   pub val int token = 8;
@@ -388,13 +388,11 @@ final class CopyPolicyCompilerTest {
                   return holder.resource;
                 }
                 """;
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(failure.getMessage().contains("E_MOVE_UNPROVEN"), failure.getMessage());
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
-    void passingMoveOnlyClassFieldByValueCannotDuplicateItsOwner() {
+    void passingOrdinaryClassFieldAliasDoesNotClone() {
         String source = """
                 define class Resource as
                   pub val int token = 8;
@@ -408,9 +406,7 @@ final class CopyPolicyCompilerTest {
                   return;
                 }
                 """;
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(failure.getMessage().contains("E_MOVE_UNPROVEN"), failure.getMessage());
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
