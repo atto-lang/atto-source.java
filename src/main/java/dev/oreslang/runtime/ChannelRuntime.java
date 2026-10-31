@@ -580,6 +580,16 @@ public final class ChannelRuntime {
             return new SelectPlan(SelectSet.from(cases));
         }
 
+        /** List order is the stable case-index order; the list is copied. */
+        public static SelectPlan fromList(List<? extends SelectCase> cases) {
+            return new SelectPlan(SelectSet.from(Objects.requireNonNull(cases, "cases")));
+        }
+
+        /**
+         * Map iteration order determines case indexes; keys are not returned
+         * by this immutable plan. Use DynamicSelectPlan.fromMap for keyed
+         * results with a pinned generation and stable result keys.
+         */
         public static SelectPlan fromMap(Map<?, ? extends SelectCase> cases) {
             return new SelectPlan(SelectSet.fromMap(cases));
         }
@@ -640,6 +650,40 @@ public final class ChannelRuntime {
             for (Map.Entry<? extends K, ? extends SelectCase> entry : initial.entrySet()) {
                 put(entry.getKey(), entry.getValue());
             }
+        }
+
+        /**
+         * Build a mutable plan from ordered, zero-based list case slots.
+         * Slots use Integer keys so a keyed result identifies the original
+         * list index, not the position after later put/remove mutations.
+         *
+         * The input is consumed once without retaining its collection.
+         * Descriptors are still subject to normal ownership restrictions:
+         * a reusable write case must not capture a move-only payload.
+         */
+        public static DynamicSelectPlan<Integer> fromList(
+                List<? extends SelectCase> initial) {
+            Objects.requireNonNull(initial, "initial");
+            DynamicSelectPlan<Integer> plan = new DynamicSelectPlan<>();
+            int index = 0;
+            for (SelectCase selectCase : initial) {
+                if (index >= MAX_SELECT_CASES) {
+                    throw new SelectAdmissionException(
+                            "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
+                }
+                plan.put(index++, selectCase);
+            }
+            return plan;
+        }
+
+        /**
+         * Map iteration order defines the initial case order; use an ordered
+         * map such as LinkedHashMap for reproducible FAIR/PRIORITY behavior.
+         * Keys are retained in the versioned snapshot, not in a live input map.
+         */
+        public static <K> DynamicSelectPlan<K> fromMap(
+                Map<? extends K, ? extends SelectCase> initial) {
+            return new DynamicSelectPlan<>(initial);
         }
 
         /**
