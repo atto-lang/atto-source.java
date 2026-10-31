@@ -197,6 +197,61 @@ final class DirectNamedLiteralCallExecutionTest {
     }
 
     @Test
+    void threeArgumentPermutationRetainsLexicalEffectsAndDeclaredAbi() throws Exception {
+        String source = """
+                pub fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 4;
+                }
+                pub fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 2;
+                }
+                pub fnc third(): int {
+                    stdio.stdout.write("C");
+                    return 3;
+                }
+                pub fnc combine(int a, int b, int c): int { return a * 100 + b * 10 + c; }
+                pub routine main(): void {
+                    stdio.stdout.write(combine(b: second(), c: third(), a: first()));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "named-three-slot-lexical.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("BCA423", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void checkedThreeSlotPermutationMapsDenseSourceIndexesWithoutRunningGuestCode() {
+        Ast.Program program = Parser.parse("""
+                pub fnc combine(int a, int b, int c): int { return a * 100 + b * 10 + c; }
+                """);
+        Ast.FunctionDecl target = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.StagedCallExpr staged = new Ast.StagedCallExpr(
+                new Ast.NameExpr("combine"), java.util.List.of(), false,
+                java.util.List.of(
+                        Ast.CallArgument.named("b",
+                                new Ast.CallExpr(new Ast.NameExpr("second"), java.util.List.of())),
+                        Ast.CallArgument.named("c",
+                                new Ast.CallExpr(new Ast.NameExpr("third"), java.util.List.of())),
+                        Ast.CallArgument.named("a",
+                                new Ast.CallExpr(new Ast.NameExpr("first"), java.util.List.of()))));
+        OptionalCallShapeBinder.Plan plan =
+                OptionalCallShapeBinder.directScalarBindingPlan(staged, target);
+        assertEquals(2, plan.sourceIndex(0));
+        assertEquals(0, plan.sourceIndex(1));
+        assertEquals(1, plan.sourceIndex(2));
+        assertTrue(OptionalCallShapeBinder.isReorderedNamedCall(plan));
+    }
+
+    @Test
     void reorderedNamedCallsWithArgumentBearingNestedEffectsStayRejected() {
         String source = """
                 pub fnc identity(int value): int { return value; }
