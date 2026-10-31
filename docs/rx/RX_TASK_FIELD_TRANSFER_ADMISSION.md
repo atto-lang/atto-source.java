@@ -33,3 +33,56 @@ runtime gate; it must not be advertised as an atomic cross-carrier gate.
 
 No private source export is authorized by this change. Tests run in
 the source org only unless the security approval gate is met.
+
+
+## Runtime ownership fix proposed on this draft branch
+
+`OresEvalRootNode.Evaluator` previously evaluated the `Ast.MemberExpr`
+and then invoked `applyRuntimeOwnership("take", value)`, an identity
+operation. For a mutable class slot this returned the same move-only
+Task again on a second call; the lexical ownership checker alone
+could not prevent repeated `holder.take_task()` calls.
+
+The patch adds an evaluator-private `MOVED_FIELD` sentinel and a
+single shared `takeClassField` path. Both synchronous and suspendable
+`rt take` evaluate the receiver once, verify class-field visibility
+and `LET` binding, then consume the slot under the field-map lock.
+A second move or read of a moved slot now throws
+`IllegalStateException: ... was already moved`. Reassignment through
+the ordinary mutable field path can reinitialize the slot.
+
+The regular member getter and the invocation-field read reject moved
+fields. Reads and mutable writes participating in these paths are
+synchronized on the same backing field map. No guest invokable is
+called while holding the field-map lock.
+
+Two additional real polyglot JUnit tests demand:
+- a second `holder.take_task()` fail closed;
+- a read of the field through another class method after `take_task()`
+  fail closed, either by checked ownership rejection or the runtime sentinel.
+
+**Limitations:** No exact-head JUnit, Maven, ASan/TSan, GraalVM native
+image or full compiler guest-suite run has executed yet. This narrow
+class-field guard is not a generic per-object borrow checker or a
+proof that every collection/struct projection has equivalent move
+semantics. Concurrency and actor-scope retirement still need separate
+admission. The patch is review-only and must remain draft.
+
+## Runner evidence and private source-transfer policy
+
+The repository's `.github/private-ci-approved-repositories.txt`
+at source main had zero approved destinations on 2026-10-31 and
+requires independent `@ORESoftware` review for carrier export.
+
+The separate `zed-pkg-test/java-app` source-free admission probe
+[PR #239](https://github.com/zed-pkg-test/java-app/pull/239)
+transferred **no private source**. It produced zero workflow runs
+from the API-created branch/PR event and was closed unmerged. An
+historically stepful October 16 Actions run in that carrier
+is not evidence of current runner availability.
+
+Do not mirror this private Java branch to an unapproved org. The next
+necessary executable gate is a source-side runner that can execute
+`mvn -B -ntp -P '!native-thread-unix' -Dtest=RxTaskFieldTransferAdmissionTest test`
+at the exact tested head; keep test admission `NOT_EXECUTED`
+until real JUnit steps and output are retrieved.
