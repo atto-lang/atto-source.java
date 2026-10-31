@@ -11,6 +11,10 @@ on:
       - 'src/main/java/dev/oreslang/types/V3SourceContractFingerprint.java'
       - 'src/main/java/dev/oreslang/types/DefaultArgumentPolicy.java'
       - 'src/main/java/dev/oreslang/types/OptionalCallShapeBinder.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/types/ReturnCleanupChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/ast/Ast.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/test/java/dev/oreslang/V3DefaultBudgetAdmissionTest.java'
@@ -22,6 +26,8 @@ on:
       - 'src/test/java/dev/oreslang/V3DefaultArgValsAdmissionTest.java'
       - 'src/test/java/dev/oreslang/DefaultAnnotationAdmissionTest.java'
       - 'src/test/java/dev/oreslang/DefaultArgumentPolicyTest.java'
+      - 'src/test/java/dev/oreslang/OptionalCallShapeBinderTest.java'
+      - 'src/test/java/dev/oreslang/DirectNamedLiteralCallExecutionTest.java'
       - '.github/workflows/default-parameter-compiler-conformance.yml'
   workflow_dispatch:
 
@@ -43,7 +49,7 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Check actual compiler test classes on this PR head
+      - name: Check actual compiler and source-order named-call tests on this PR head
         run: |
           java --version
-          mvn -B -ntp -Dtest=V3CallPreviewProofFlagTest,V3SourceContractFingerprintBudgetTest,V3ZeroArgumentCallRegressionTest,V3ScalarDefaultProgramNormalizerTest,V3DefaultBudgetAdmissionTest,V3ScalarDefaultLiteralLoweringTest,V3DefaultArgValsAdmissionTest,DefaultAnnotationAdmissionTest,DefaultArgumentPolicyTest test
+          mvn -B -ntp -DfailIfNoTests=true -Dtest=V3CallPreviewProofFlagTest,V3SourceContractFingerprintBudgetTest,V3ZeroArgumentCallRegressionTest,V3ScalarDefaultProgramNormalizerTest,V3DefaultBudgetAdmissionTest,V3ScalarDefaultLiteralLoweringTest,V3DefaultArgValsAdmissionTest,DefaultAnnotationAdmissionTest,DefaultArgumentPolicyTest,OptionalCallShapeBinderTest,DirectNamedLiteralCallExecutionTest test
