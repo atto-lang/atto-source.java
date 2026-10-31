@@ -150,18 +150,29 @@ final class ActorInitReservedAdmissionTest {
 
     @Test
     void actorRefInitTransferRemainsFailClosed() {
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                         define actor Store as
                           state { let int x = 0; }
+                          receive(ActorMail<String> mail): void {
+                            self.end();
+                            return;
+                          }
                         end
                         define actor NeedsStore as
                           state { val ActorRef<Store> store; }
                           init(store: ActorRef<Store>) -> state {
                             return state { store: store };
                           }
+                          receive(ActorMail<String> mail): void {
+                            self.end();
+                            return;
+                          }
                         end
                         """));
+        assertTrue(rejected.getMessage().contains("scalar ABI"),
+                rejected.getMessage());
     }
 
     @Test
@@ -169,7 +180,9 @@ final class ActorInitReservedAdmissionTest {
     void namedArgumentsBindByLabelNotCallerPosition() throws Exception {
         String twoParameterActor = ACTOR
                 .replace("init(seed: int)", "init(phase: int, seed: int)")
-                .replace("phase: 0", "phase: phase");
+                .replace("phase: 0", "phase: phase")
+                .replace("observed = \"initialized\";",
+                        "if s.phase == 3; do observed = \"initialized\"; fi");
         String program = main("spawn Worker(seed: 7, phase: 3)")
                 .replace(ACTOR, twoParameterActor);
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
