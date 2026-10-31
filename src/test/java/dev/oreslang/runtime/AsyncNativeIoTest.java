@@ -385,6 +385,7 @@ class AsyncNativeIoTest {
             CountDownLatch releaseCarrier = new CountDownLatch(1);
             CountDownLatch nativeInsideWorker = new CountDownLatch(1);
             CountDownLatch releaseNative = new CountDownLatch(1);
+            CountDownLatch nativeRetired = new CountDownLatch(1);
             CountDownLatch admittedNative = new CountDownLatch(1);
             var holdNextPhysicalTurn = new java.util.concurrent.atomic.AtomicBoolean();
             ActorRuntime.TurnExecutor turnExecutor = turn -> {
@@ -410,7 +411,10 @@ class AsyncNativeIoTest {
                          new ActorRuntime.DispatcherConfig(1, 1, 8, 64),
                          turnExecutor)) {
                 runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
-                io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+                io.setActorLoanRetiredListener(id -> {
+                    runtime.onNativeIoLoanRetired(id);
+                    nativeRetired.countDown();
+                });
                 var actor = runtime.<String>spawnPrivateTrusted(
                         factory -> (message, context) -> {
                             io.submit("native-held-for-physical-join", () -> {
@@ -433,10 +437,10 @@ class AsyncNativeIoTest {
                             "STOP must not reclaim a private actor with two physical owners");
                     if (nativeFinishesFirst) {
                         releaseNative.countDown();
-                        // Physical worker completion is observable independently
-                        // of actor finalization, which remains carrier-fenced.
-                        assertTrue(io.submitControl("native-drain-probe", () -> 1)
-                                .get(3, TimeUnit.SECONDS) == 1);
+                        // Wait for the exact native actor-loan retirement
+                        // callback, not an unrelated CONTROL worker probe.
+                        assertTrue(nativeRetired.await(3, TimeUnit.SECONDS));
+                        assertEquals(0, io.outstandingActorOperations(actor.id()));
                         assertFalse(actor.done().isDone(),
                                 "native I/O completion must not bypass the occupied carrier");
                         releaseCarrier.countDown();
