@@ -173,11 +173,17 @@ final class ActorPermissionScope {
             }
             return new PhysicalLease(chain);
         } catch (RuntimeException | Error failure) {
+            List<Runnable> callbacks = new ArrayList<>();
             for (int i = acquired - 1; i >= 0; --i) {
-                synchronized (chain[i]) {
-                    chain[i].activePhysicalReceipts--;
+                ActorPermissionScope node = chain[i];
+                boolean notify;
+                synchronized (node) {
+                    node.activePhysicalReceipts--;
+                    notify = node.issueIfReadyLocked();
                 }
+                if (notify) callbacks.add(node.stateChanged);
             }
+            for (Runnable callback : callbacks) callback.run();
             throw failure;
         }
     }
