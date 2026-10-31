@@ -1138,6 +1138,18 @@ public final class OwnershipChecker {
                             }
                         }
                     }
+                    // A field projection is not a new owned value. In particular an
+                    // @NoCopy field must not be reclassified as a forbidden COPY
+                    // merely because rt take consumes its operand. Unlike a
+                    // whole-owner move, partial moves currently have no field
+                    // invalidation ledger. Reject until that proof exists.
+                    CopyPolicyProjection moveProjection = copyProjectionPolicy(argument, scope);
+                    if (moveProjection != null && moveProjection.noCopy()) {
+                        throw error("E_MOVE_UNPROVEN: rt take of @NoCopy field '"
+                                + moveProjection.origin()
+                                + "' requires projection-level move/invalidation proof; "
+                                + "rt take the containing owner instead");
+                    }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
                             || (taken.type != null && taken.type.isBorrow())) {
@@ -4776,6 +4788,20 @@ public final class OwnershipChecker {
     }
 
     private CopyPolicyProjection copyProjectionPolicy(Ast.Expr expr, Scope scope) {
+        // Explicit casts and syntax-only spreads cannot wash away the
+        // ownership policy attached to a logical source place. A cast which
+        // creates a distinct value still needs explicit audited lowering.
+        if (expr instanceof Ast.CastExpr cast) {
+            return copyProjectionPolicy(cast.value(), scope);
+        }
+        if (expr instanceof Ast.SpreadExpr spread) {
+            return copyProjectionPolicy(spread.expression(), scope);
+        }
+        if (expr instanceof Ast.UnaryExpr unary
+                && !unary.operator().equals("&")
+                && !unary.operator().equals("&mut")) {
+            return copyProjectionPolicy(unary.operand(), scope);
+        }
         Ast.Expr receiver;
         String fieldName;
         if (expr instanceof Ast.MemberExpr member) {
