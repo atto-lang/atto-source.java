@@ -114,10 +114,11 @@ fn violation(s: State) -> Option<&'static str> {
         if (lease == FREE) != executing[actor].is_empty() {
             return Some("lease disagrees with physical executor");
         }
-        if let Some(&worker) = executing[actor].first() {
-            if lease != worker as i8 {
-                return Some("execution owner disagrees with lease");
-            }
+        if executing[actor]
+            .first()
+            .is_some_and(|&worker| lease != worker as i8)
+        {
+            return Some("execution owner disagrees with lease");
         }
     }
 
