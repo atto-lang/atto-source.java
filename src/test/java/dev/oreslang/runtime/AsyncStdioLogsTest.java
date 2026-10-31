@@ -73,6 +73,58 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void acceptedFlushBarrierOutlivesCloseAdmissionRace() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer blocked = new Writer() {
+            @Override public void write(char[] chars, int offset, int length) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) throw new IOException("test sink timeout");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, true));
+        java.util.concurrent.CompletableFuture<Void> closer = null;
+        try {
+            OresFuture<Void> acceptedRecord = logs.logAsync("accepted\n");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            OresFuture<Void> acceptedBarrier = logs.flushAsync();
+            closer = java.util.concurrent.CompletableFuture.runAsync(logs::close);
+
+            // Do not rely on timing to guess whether close() fenced admission.
+            // While the sink remains blocked, poll only until its explicit
+            // closed error is observed, never before releasing the test latch.
+            boolean admissionClosed = false;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!admissionClosed && System.nanoTime() < deadline) {
+                try {
+                    logs.flushAsync();
+                } catch (IllegalStateException closed) {
+                    admissionClosed = closed.getMessage().contains("closed");
+                    if (!admissionClosed) throw closed;
+                }
+                if (!admissionClosed) Thread.sleep(5);
+            }
+            assertTrue(admissionClosed, "close must promptly fence new flush admission");
+            assertFalse(acceptedRecord.isDone(), "sink has not completed the accepted record");
+            assertFalse(acceptedBarrier.isDone(), "existing barrier must wait for the record");
+            assertThrows(IllegalStateException.class, () -> logs.logAsync("late\n"));
+        } finally {
+            release.countDown();
+            if (closer != null) closer.get(8, TimeUnit.SECONDS);
+        }
+        // Once close wins, existing accepted Futures still settle normally.
+        // A second close must be idempotent after physical drain completion.
+        logs.close();
+    }
+
+    @Test
     void callerNeverWaitsForBlockedOutputSink() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch unblock = new CountDownLatch(1);
