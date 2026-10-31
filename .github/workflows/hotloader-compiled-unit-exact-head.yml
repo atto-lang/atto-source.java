@@ -1,0 +1,77 @@
+name: Hot-loader compiled-unit admission exact head
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/hotloader-compiled-unit-exact-head.yml'
+      - 'src/main/java/dev/oreslang/runtime/HotReloadManager.java'
+      - 'src/test/java/dev/oreslang/HotReloadCompiledUnitAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/HotReloadTransactionalPublicationTest.java'
+      - 'pom.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compiled-unit-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR head without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Pin source and verify required tests exist
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          test -f src/test/java/dev/oreslang/HotReloadCompiledUnitAdmissionTest.java
+          test -f src/test/java/dev/oreslang/HotReloadTransactionalPublicationTest.java
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run source-backed admission and transactional publication JUnit
+        run: >-
+          mvn -B -ntp
+          -Dtest=HotReloadCompiledUnitAdmissionTest,HotReloadTransactionalPublicationTest
+          -DfailIfNoTests=true test
+      - name: Reject missing, failed or skipped JUnit reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for spec in HotReloadCompiledUnitAdmissionTest:4 HotReloadTransactionalPublicationTest:4; do
+            class="${spec%%:*}"
+            minimum="${spec##*:}"
+            report="target/surefire-reports/TEST-dev.oreslang.${class}.xml"
+            test -s "$report"
+            count="$(sed -nE 's/.*tests="([0-9]+)".*/\1/p' "$report" | head -n 1)"
+            test -n "$count"
+            test "$count" -ge "$minimum"
+            grep -q 'errors="0"' "$report"
+            grep -q 'failures="0"' "$report"
+            grep -q 'skipped="0"' "$report"
+          done
+          echo "Host/JUnit admission receipts at exact head:"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+      - name: Upload actual JUnit receipts (not native AOT proof)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hotloader-unit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/surefire-reports/TEST-dev.oreslang.HotReloadCompiledUnitAdmissionTest.xml
+            target/surefire-reports/TEST-dev.oreslang.HotReloadTransactionalPublicationTest.xml
+          if-no-files-found: error
+          retention-days: 7
