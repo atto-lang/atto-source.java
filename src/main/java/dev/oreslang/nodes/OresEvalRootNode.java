@@ -4069,8 +4069,15 @@ public final class OresEvalRootNode extends RootNode {
                         throw new SecurityException(
                                 "queue authorization is actor-self-only with two int arguments");
                     }
-                    int opcode = Math.toIntExact(((Number) args.get(0)).longValue());
-                    int producer = Math.toIntExact(((Number) args.get(1)).longValue());
+                    long rawOpcode = ((Number) args.get(0)).longValue();
+                    long rawProducer = ((Number) args.get(1)).longValue();
+                    if (rawOpcode < 0 || rawOpcode > 6 || rawProducer < -1
+                            || rawProducer > 1) {
+                        return object.owner.invokableInvocation(
+                                ignored -> false, List.of());
+                    }
+                    int opcode = (int) rawOpcode;
+                    int producer = (int) rawProducer;
                     return object.owner.invokableInvocation(
                             ignored -> object.owner.context.actors()
                                     .isCurrentQueueCommandAuthorized(opcode, producer),
@@ -5471,8 +5478,15 @@ public final class OresEvalRootNode extends RootNode {
                             throw new SecurityException(
                                     "queue authorization is actor-self-only with two int arguments");
                         }
-                        int opcode = Math.toIntExact(((Number) args.get(0)).longValue());
-                        int producer = Math.toIntExact(((Number) args.get(1)).longValue());
+                        long rawOpcode = ((Number) args.get(0)).longValue();
+                        long rawProducer = ((Number) args.get(1)).longValue();
+                        if (rawOpcode < 0 || rawOpcode > 6 || rawProducer < -1
+                                || rawProducer > 1) {
+                            return object.owner.invokableInvocation(
+                                    ignored -> false, List.of());
+                        }
+                        int opcode = (int) rawOpcode;
+                        int producer = (int) rawProducer;
                         return object.owner.invokableInvocation(
                                 ignored -> object.owner.context.actors()
                                         .isCurrentQueueCommandAuthorized(opcode, producer),
