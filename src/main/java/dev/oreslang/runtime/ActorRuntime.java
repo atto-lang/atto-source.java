@@ -5522,11 +5522,26 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Validate an incarnation-scoped actor address at the admission fence.
+     * ActorId alone is diagnostic identity; a stale generation is never
+     * observation authority, even if an id is reused by a future backend.
+     */
+    boolean isLiveActorAddress(ActorAddress address) {
+        Objects.requireNonNull(address, "address");
+        if (!runtimeInstanceId.equals(address.runtimeId())) return false;
+        ActorCell<?> cell = actors.get(address.actorId());
+        return cell != null
+                && !cell.stopped.get()
+                && cell.ref.generation() == address.generation()
+                && cell.ref.kind() == address.kind();
+    }
+
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
         ActorCell<?> cell = actors.get(ref.id());
-        return cell != null && !cell.stopped.get();
+        return cell != null && cell.ref == ref && !cell.stopped.get();
     }
 
     public void stop(ActorRef<?> ref) {
