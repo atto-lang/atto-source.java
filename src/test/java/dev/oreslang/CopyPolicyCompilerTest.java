@@ -317,4 +317,19 @@ final class CopyPolicyCompilerTest {
                 () -> OresCompiler.parseAndTypeCheck(source));
         assertTrue(ex.getMessage().contains("immutable/final"), ex.getMessage());
     }
+
+    @Test
+    void castWrappedOrdinaryFieldMoveCannotEvadeLedgerRequirement() {
+        String source = """
+                define class Holder as
+                  pub let int id = 42;
+                end
+                fnc bad(Holder holder): int {
+                  return rt take (holder.id as int);
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("E_MOVE_UNPROVEN"), ex.getMessage());
+    }
 }
