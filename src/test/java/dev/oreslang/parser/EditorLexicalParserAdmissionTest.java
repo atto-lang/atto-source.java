@@ -159,6 +159,14 @@ final class EditorLexicalParserAdmissionTest {
         assertThrows(IllegalArgumentException.class,
                 () -> lex("#\"" + over256 + "\""));
 
+        // Admission must be bounded during decoding, before the closing quote.
+        // Earlier builds accumulated the entire attacker-controlled literal
+        // and only then invoked OresSymbol's normalization budget check.
+        IllegalArgumentException hugeName = assertThrows(IllegalArgumentException.class,
+                () -> lex("#\"" + "a".repeat(250_000)));
+        assertTrue(hugeName.getMessage().contains("normalization budget"),
+                "oversized quoted Symbol must reject before scanning to EOF");
+
         // Decoded controls, invisible format characters and malformed UTF-16
         // are rejected even when their source is ASCII escape text.
         for (String source : List.of(
@@ -173,6 +181,24 @@ final class EditorLexicalParserAdmissionTest {
         String nested = "/*".repeat(128) + "throw #ready" + "*/".repeat(128) + " return";
         assertEquals(List.of(RETURN, EOF), types(nested));
         assertThrows(IllegalArgumentException.class, () -> lex("/* outer /* inner */"));
+
+        // Inclusive 4,096 comment depth, then a bounded hard rejection.
+        String maxComment = "/*".repeat(4_096) + "throw #ready"
+                + "*/".repeat(4_096) + " return";
+        assertEquals(List.of(RETURN, EOF), types(maxComment));
+        String tooDeep = "/*".repeat(4_097) + "throw #ready"
+                + "*/".repeat(4_097);
+        IllegalArgumentException deepError = assertThrows(
+                IllegalArgumentException.class, () -> lex(tooDeep));
+        assertTrue(deepError.getMessage().contains("nesting limit"));
+
+        // The nested-comment limit applies inside template interpolation too.
+        String backtick = String.valueOf((char) 96);
+        String interpolation = backtick + "$" + "{" + "/*".repeat(4_097)
+                + "ignored" + "*/".repeat(4_097) + " 1 }" + backtick;
+        IllegalArgumentException templateError = assertThrows(
+                IllegalArgumentException.class, () -> lex(interpolation));
+        assertTrue(templateError.getMessage().contains("nesting limit"));
 
         // 'nb-select' is a special lexer compound; a longer identifier must
         // not be consumed as an accidental matching prefix.
