@@ -12,6 +12,19 @@ import static org.junit.jupiter.api.Assertions.*;
 final class DbDurableWalFileTest {
     @TempDir Path root;
 
+    @Test void invalidOpenParametersFailBeforeAnyShardReservation() {
+        assertThrows(IllegalArgumentException.class,
+                () -> DbDurableWalFile.requireValidOpenArguments("../escape", 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> DbDurableWalFile.requireValidOpenArguments("nested/wal", 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> DbDurableWalFile.requireValidOpenArguments("wal.odb", 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> DbDurableWalFile.requireValidOpenArguments("..", 1));
+        assertDoesNotThrow(
+                () -> DbDurableWalFile.requireValidOpenArguments("wal.odb", 1));
+    }
+
     @Test void onlyCompletedForceReturnsAReceipt() throws Exception {
         byte[] frame = new byte[31];
         Arrays.fill(frame, (byte)0x5a);
