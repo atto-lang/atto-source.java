@@ -1615,6 +1615,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         public synchronized boolean permits(QueueOperation operation, int slot) {
             Objects.requireNonNull(operation, "queue operation");
+            boolean producerCommand = operation == QueueOperation.SEND
+                    || operation == QueueOperation.CANCEL;
+            if (producerCommand ? slot < 0 || slot >= producerGrants.length
+                    : slot != -1) return false;
             ActorId sender = admittedSender();
             ActorCell<?> senderCell = actors.get(sender);
             return switch (operation) {
@@ -1663,6 +1667,10 @@ public final class ActorRuntime implements AutoCloseable {
             default -> null;
         };
         if (operation == null) return false;
+        boolean producerCommand = operation == QueueOperation.SEND
+                || operation == QueueOperation.CANCEL;
+        if (producerCommand ? producerSlot < 0 || producerSlot > 1
+                : producerSlot != -1) return false;
         if (actor.queueAuthority == null) {
             actor.queueAuthority = new QueueCommandAuthority(actor);
         }
