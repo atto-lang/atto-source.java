@@ -319,6 +319,65 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void executorQueueOverflowRefundsExactPrivateActorLoanAndPhysicalWorkStillPinsMemory()
+            throws Exception {
+        // Three admission slots, but only one physical worker and one queued
+        // work slot. The third operation reaches the real executor rejection
+        // path after the actor loan has already been reserved.
+        try (var io = new AsyncNativeIo(3, 1, 1);
+             var runtime = new ActorRuntime()) {
+            runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+            io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            CountDownLatch secondEntered = new CountDownLatch(1);
+            CountDownLatch releaseSecond = new CountDownLatch(1);
+            CountDownLatch submissionsFinished = new CountDownLatch(1);
+            var rejected = new java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>>();
+            var actor = runtime.<String>spawnPrivateTrusted(factory -> (mail, turn) -> {
+                io.submit("physical-first", () -> {
+                    firstEntered.countDown();
+                    releaseFirst.await();
+                    return 1;
+                });
+                io.submit("queued-second", () -> {
+                    secondEntered.countDown();
+                    releaseSecond.await();
+                    return 2;
+                });
+                rejected.set(io.submit("reject-overflow", () -> {
+                    throw new AssertionError("rejected native work started");
+                }));
+                submissionsFinished.countDown();
+            });
+            try {
+                actor.ready().get(3, TimeUnit.SECONDS);
+                actor.send("start");
+                assertTrue(submissionsFinished.await(3, TimeUnit.SECONDS));
+                assertTrue(firstEntered.await(3, TimeUnit.SECONDS));
+                assertInstanceOf(RejectedExecutionException.class,
+                        assertThrows(ExecutionException.class,
+                                () -> rejected.get().get(3, TimeUnit.SECONDS)).getCause());
+                assertEquals(2, io.outstandingActorOperations(actor.id()),
+                        "only physically admitted/queued work may retain private actor state");
+                actor.cancel();
+                assertFalse(actor.done().isDone(),
+                        "executor rejection must not prematurely reclaim actor memory");
+                releaseFirst.countDown();
+                assertTrue(secondEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(actor.done().isDone(),
+                        "the queued native operation remains a physical owner");
+                releaseSecond.countDown();
+                assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+                assertEquals(0, io.outstandingActorOperations(actor.id()));
+                assertTrue(io.actorPhysicallyRetired(actor.id()));
+            } finally {
+                releaseFirst.countDown();
+                releaseSecond.countDown();
+            }
+        }
+    }
+
     @Test void equalButDistinctNativeResourcesRetireIndependently()
             throws Exception {
         var io = new AsyncNativeIo(2);
