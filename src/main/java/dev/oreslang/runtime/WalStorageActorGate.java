@@ -8,6 +8,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Host-internal actor-incarnation check for the WAL physical owner.
@@ -127,6 +128,9 @@ final class WalStorageActorGate {
         private final byte[] submittedDigest;
         private final int operation;
         private final int sequence;
+        // A physical sync witness can authorize at most one logical state
+        // transition. This is not a persisted deduplication ledger.
+        private final AtomicBoolean checkedOnce = new AtomicBoolean();
 
         private Pending(WalStorageActorGate issuer,
                         CompletionStage<WalStorageFileOwner.SyncReceipt> stage,
@@ -177,6 +181,12 @@ final class WalStorageActorGate {
                 || receipt.sequence() != pending.sequence
                 || !MessageDigest.isEqual(pending.submittedDigest, receipt.sha256())) {
             throw new SecurityException("WAL completion is not this authenticated sync");
+        }
+        // Only spend the receipt after all identity and source-content checks
+        // pass. If a guest continuation retries a successful verification,
+        // deny the duplicate instead of publishing two logical commits.
+        if (!pending.checkedOnce.compareAndSet(false, true)) {
+            throw new SecurityException("WAL sync receipt already verified");
         }
     }
 
