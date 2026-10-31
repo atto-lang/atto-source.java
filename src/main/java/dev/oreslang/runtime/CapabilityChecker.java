@@ -404,9 +404,12 @@ public final class CapabilityChecker {
                 }
                 return;
             }
-            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
+            if (!Set.of("copy", "take", "borrow", "share", "mut_share", "cooperate", "fail").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
+            }
+            if (runtime.operation().equals("mut_share")) {
+                require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "rt mut share");
             }
             if (runtime.operation().equals("cooperate") && isZeroAuthorityAdversarial(policy)) {
                 throw new SecurityException(
