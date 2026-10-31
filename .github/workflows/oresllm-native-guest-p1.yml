@@ -43,8 +43,8 @@ jobs:
           echo "BLOB_VERIFIED=9/9"
           integrated=contracts/oresllm-p1/integrated/tests/native-integrated-train.ores
           test -f "$integrated" && test ! -L "$integrated"
-          test "$(git hash-object "$integrated")" = "e2d0427092ad7e7249b5275893439865b6f4fc78"
-          echo "INTEGRATED_FIXTURE_BLOB_VERIFIED=e2d0427092ad7e7249b5275893439865b6f4fc78"
+          test "$(git hash-object "$integrated")" = "7591b0440dfc6a3917bba221d9dea99ce566312e"
+          echo "INTEGRATED_FIXTURE_BLOB_VERIFIED=7591b0440dfc6a3917bba221d9dea99ce566312e"
           git rev-parse HEAD
       - name: Build the actual Java compiler and runtime
         shell: bash
