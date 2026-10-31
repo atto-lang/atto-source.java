@@ -18,6 +18,9 @@ import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -27,6 +30,41 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * host I/O worker may hold the accept loan and each connection read loan.
  */
 final class WebSocketLoopbackListener implements AutoCloseable {
+    /**
+     * Emergency host-only cleanup lane for native CONTROL rejection.
+     * One daemon worker for all listeners; at most one queue entry per
+     * existing physical Connection. No thread or task per connection.
+     * This queue is only a fallback: ordinary shutdown uses AsyncNativeIo.
+     */
+    private static final Set<Connection> DEFERRED_HOST_CLOSES =
+            ConcurrentHashMap.newKeySet();
+    private static final ScheduledThreadPoolExecutor HOST_RETIREMENT =
+            new ScheduledThreadPoolExecutor(1, task -> {
+                Thread carrier = new Thread(task, "ores-websocket-host-retirement");
+                carrier.setDaemon(true);
+                return carrier;
+            });
+
+    static {
+        HOST_RETIREMENT.setRemoveOnCancelPolicy(true);
+        HOST_RETIREMENT.scheduleWithFixedDelay(() -> {
+            // Process up to 32 retired connections per pass. Each entry
+            // references an already-owned socket, so there is no new
+            // socket/worker admission on the fallback path.
+            int visited = 0;
+            for (Connection connection : DEFERRED_HOST_CLOSES) {
+                if (++visited > 32) break;
+                try {
+                    connection.close();
+                } catch (RuntimeException | Error failure) {
+                    // Socket-close errors are accounted by Connection.close;
+                    // AsyncNativeIo retains responsibility for physical loans.
+                } finally {
+                    DEFERRED_HOST_CLOSES.remove(connection);
+                }
+            }
+        }, 25, 25, TimeUnit.MILLISECONDS);
+    }
     private final AsyncNativeIo nativeIo;
     private final BiConsumer<String, String> requireNet;
     private final ServerSocket server;
@@ -339,16 +377,12 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         return null;
                     });
             if (dispatched.isCompletedExceptionally()) {
-                // A refused CONTROL slot cannot strand an idle accepted peer.
-                // At most maxConnections (<=16) connections can reach this
-                // one-shot fallback for a listener. It runs host cleanup only.
-                try {
-                    Thread.ofVirtual().name("ores-ws-retire-").start(this::close);
-                } catch (RuntimeException | Error allocationFailure) {
-                    // Keep logical authority sealed, with native-I/O owner
-                    // retaining the socket for its eventual context sweep.
-                    // No physical completion is asserted here.
-                }
+                // A saturated CONTROL pool must not spawn one virtual thread
+                // per connection or ever close a socket on an actor carrier.
+                // The single host sweeper owns this pending close; duplicate
+                // notifications collapse to one identity entry. Context
+                // shutdown separately retains and sweeps physical loans.
+                if (!retired.get()) DEFERRED_HOST_CLOSES.add(this);
             }
         }
 
@@ -769,24 +803,31 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 throw new SecurityException("WebSocket poll requires host scheduler");
             }
             requireNet.accept(endpoint, "websocket.poll");
-            synchronized (lifecycleLock) {
-                var loan = acquireActorLease(handle, tenant, authenticatedCaller);
-                try {
-                    var next = protocol.pollUserMessage();
-                    if (next.isEmpty()) return false;
-                    // No actor guest code may execute in this callback.
-                    // Failure to enqueue causes connection close to avoid
-                    // silently losing an admitted USER message.
-                    if (!loan.enqueueIfCurrent(() -> trustedEnqueue.accept(next.orElseThrow()))) {
-                        throw new SecurityException("WebSocket actor retired before dispatch");
+            boolean loanAcquired = false;
+            try {
+                synchronized (lifecycleLock) {
+                    var loan = acquireActorLease(handle, tenant, authenticatedCaller);
+                    loanAcquired = true;
+                    try {
+                        var next = protocol.pollUserMessage();
+                        if (next.isEmpty()) return false;
+                        // No actor guest code may execute in this callback.
+                        // Failure to enqueue requires host-side retirement;
+                        // never call Socket.close while holding lifecycleLock.
+                        if (!loan.enqueueIfCurrent(() -> trustedEnqueue.accept(next.orElseThrow()))) {
+                            throw new SecurityException("WebSocket actor retired before dispatch");
+                        }
+                        return true;
+                    } finally {
+                        loan.close();
                     }
-                    return true;
-                } catch (RuntimeException failure) {
-                    close();
-                    throw failure;
-                } finally {
-                    loan.close();
                 }
+            } catch (RuntimeException failure) {
+                // An invalid/foreign handle is a rejected admission, not a
+                // reason to close an otherwise healthy connection. Only an
+                // error AFTER acquiring a valid lease retires the socket.
+                if (loanAcquired) requestActiveWriteAbort();
+                throw failure;
             }
         }
 
@@ -812,6 +853,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             activeConnections.remove(this);
                         }
                         connections.release();
+                        DEFERRED_HOST_CLOSES.remove(this);
                     }
                 }
             }
