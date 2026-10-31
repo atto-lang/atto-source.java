@@ -2,6 +2,8 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -13,6 +15,8 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(25)
 final class DbWalTrustedGrantRegistryTest {
+    @TempDir Path root;
+
     @Test void shardIsReservedAcrossDrainUntilPhysicalRelease() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var registry = new DbWalTrustedGrantRegistry(runtime);
@@ -87,6 +91,11 @@ final class DbWalTrustedGrantRegistryTest {
             assertTrue(issued.await(3, TimeUnit.SECONDS));
             assertNull(firstError.get());
             assertNotNull(firstGrant.get());
+            var firstWal = DbDurableWalFile.openHostOnly(root, "first.wal", 7);
+            firstGrant.get().bindPhysicalFile(firstWal);
+            assertThrows(SecurityException.class,
+                    () -> firstGrant.get().bindPhysicalFile(firstWal),
+                    "a shard must have one physical file owner");
             assertTrue(firstGrant.get().issuedBy(registry));
             assertFalse(firstGrant.get().issuedBy(
                     new DbWalTrustedGrantRegistry(runtime)),
@@ -113,15 +122,28 @@ final class DbWalTrustedGrantRegistryTest {
             assertThrows(SecurityException.class,
                     () -> registry.issueForCurrentActor(11, 3, 8),
                     "host calls outside actor must be rejected");
-            firstGrant.get().physicalRetire();
+            var physical = new DbWalAuthorityLifecycle();
+            assertThrows(IllegalStateException.class,
+                    () -> firstGrant.get().physicalRetire(firstWal, physical),
+                    "cannot release a shard while its WAL file is open");
+            assertTrue(physical.requestDrain());
+            assertTrue(physical.beginClose());
+            physical.physicalCloseRetired();
+            assertThrows(IllegalStateException.class,
+                    () -> firstGrant.get().physicalRetire(firstWal, physical),
+                    "lifecycle state alone is insufficient while file is open");
+            firstWal.close();
+            firstGrant.get().physicalRetire(firstWal, physical);
             assertEquals(0, registry.activeShardCount());
             assertThrows(IllegalStateException.class,
-                    () -> firstGrant.get().physicalRetire());
+                    () -> firstGrant.get().physicalRetire(firstWal, physical));
 
             second.send("issue");
             assertTrue(reissued.await(3, TimeUnit.SECONDS));
             assertNull(secondError.get());
             assertNotNull(secondGrant.get());
+            var secondWal = DbDurableWalFile.openHostOnly(root, "second.wal", 8);
+            secondGrant.get().bindPhysicalFile(secondWal);
             assertEquals(8, secondGrant.get().generation());
             assertEquals(1, registry.activeShardCount());
             first.send("stale");
@@ -133,6 +155,7 @@ final class DbWalTrustedGrantRegistryTest {
             second.send("sealed");
             assertTrue(sealedDenied.await(3, TimeUnit.SECONDS));
             assertNull(secondError.get());
+            secondWal.close();
         }
     }
 }
