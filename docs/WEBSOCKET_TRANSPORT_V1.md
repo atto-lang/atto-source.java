@@ -1,7 +1,8 @@
 # WebSocket transport v1
 
-Status: **frame-codec foundation only**. No source-level listener, upgrade, actor
-connection handle, or production WebSocket server is claimed by this change.
+Status: **host-only protocol/NIO foundation; not executed as Oreslang guest**.
+No source-level actor connection handle or production WebSocket server is
+claimed by this change.
 
 ## Layering
 
@@ -209,9 +210,9 @@ masked-frame payload. A peer slowly supplying partial payload bytes cannot
 keep extending the socket's per-read idle timeout indefinitely. The current
 frame deadline uses the configured handshake timeout and should be split
 into independently configured read and write deadlines once the native
-actor API is integrated. The outbound HTTP 101 response still writes through the accepted Socket's
-classic output stream without a dedicated absolute write deadline. It must be
-migrated to bounded nonblocking NIO before production or guest promotion.
+actor API is integrated. The original classic read/write path remains available
+only to the separate raw accepted-Socket host fixture; production loopback
+listener sockets are now channel-backed and use the NIO paths below.
 
 ## First host-only serialized outbound slice (2026-10-31)
 
@@ -234,13 +235,34 @@ the wire. Deadline expiration or writer failure closes the socket and retires
 pending outbound admissions. A canceled *running* write also closes the
 socket; Future settlement is not physical loan retirement.
 
-The write deadline is enforced by a bounded listener-local scheduler that
-closes a classic blocking Socket; it does not make Socket.getOutputStream()
-kernel-nonblocking. True SocketChannel/selector-based outbound writes,
-independent write vs handshake deadlines, a deadline on HTTP 101, cross-peer
-memory accounting, cancellation-aware actor generation/claim semantics and
-real source-level guest transport remain required. This stage is host-only,
-and the authored outbound tests still need exact-head execution.
+## Host-only selector transport slice (2026-10-31)
+
+The listener now accepts through a blocking `ServerSocketChannel` adapter,
+which yields an accepted `Socket` with a real `SocketChannel`. After bounded
+HTTP head parsing, `WebSocketRawUpgrade` switches the connected channel to
+nonblocking mode and writes the canonical 101 response through
+`WebSocketNioDuplex.writeOpeningResponse`, using the same absolute deadline
+as handshake admission. The socket does not revert to blocking mode after 101.
+
+`WebSocketNioDuplex` uses per-operation selectors with finite absolute
+monotonic deadlines: OP_READ decodes one bounded masked frame through the
+existing strict codec; OP_WRITE serializes canonical unmasked frame header and
+payload via nonblocking scatter/gather writes. Zero-progress reads/writes
+must wait for readiness rather than spin or park an actor. No socket stream is
+used after channel mode changes. A read and a write may coexist on separate
+host workers while `WebSocketOutboundGate` permits only one physical writer.
+Deadlines and closed sockets fail the operation, and the native-I/O physical
+loan remains held until its worker exits. This is actual nonblocking kernel
+channel I/O, but selector waiting may park *host* workers.
+
+The legacy raw-accepted-Socket fixture continues to use blocking stream I/O;
+it is not the production listener path. Neither this NIO adapter nor
+`WebSocketOutboundGate` exposes guest socket authority. The first NIO
+integration and real loopback JUnit cases are authored, **NOT_EXECUTED** on
+the exact Java/Graal source head; no performance/production claim is made.
+Separate configurable read/write/handshake deadlines, global/tenant memory
+budgets, terminal close-drain protocol, actor-generation ownership, guest
+source methods and GraalVM Native Image evidence are still required.
 
 `WebSocketLoopbackListenerTest` contains eight authored real-loopback,
 real-`AsyncNativeIo` integration scenarios: successful accepted frame,
@@ -254,7 +276,7 @@ always supplies `OresContext.requirePermission(NET, ...)`.
 
 Even if host tests pass, they do not prove Oreslang guest execution,
 generation-fenced actor delivery, cancellation-aware Future retirement,
-globally bounded memory, nonblocking writes, or backend parity. Keep this
+globally bounded memory, selector/runtime execution evidence or backend parity. Keep this
 branch draft until authorized exact-head CI records nonzero steps and
 independent review is complete.
 
@@ -264,9 +286,8 @@ independent review is complete.
 - End-to-end actor/generation-owned connection dispatch and retirement.
 - Source types such as `WebSocketServer`, `WebSocketConnection`, or actor
   dispatch/claim tokens.
-- True nonblocking SocketChannel outbound writes, absolute HTTP 101 write
-  deadline, completed close handshake/half-close and peer-drain behavior
-  (a bounded host-worker writer with CONTROL priority is now authored).
+- Complete close-handshake/half-close and deadline-bounded peer-drain behavior;
+  full application/supervisor aggregate byte-credit accounting.
 - Compression/extensions.
 - Java/Graal AOT execution evidence and LLVM parity.
 
