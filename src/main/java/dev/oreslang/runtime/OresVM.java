@@ -328,7 +328,7 @@ public final class OresVM implements AutoCloseable {
                 || ActorRuntime.inActorGroupMailmanExecution()
                 || PHYSICAL_STOP_OWNER.get() == this) {
             throw new IllegalStateException(
-                    "OresVM must be closed outside actor, Mailman and scheduler turns");
+                    "OresVM must be closed outside actor, Mailman and scheduler turns or physical STOP workers");
         }
         synchronized (this) {
             if (closed.compareAndSet(false, true)) {
