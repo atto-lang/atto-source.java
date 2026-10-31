@@ -392,9 +392,11 @@ class AsyncNativeIoTest {
                 // The actor's initial READY turn must run normally. After the
                 // supervisor explicitly arms the gate, block the next real
                 // carrier AFTER guest execution but BEFORE TurnExecutor exits.
-                boolean hold = holdNextPhysicalTurn.compareAndSet(true, false);
                 turn.run();
-                if (hold) {
+                // Arm only the turn that actually admitted the native I/O.
+                // Startup/housekeeping turns cannot consume this barrier.
+                if (admittedNative.getCount() == 0
+                        && holdNextPhysicalTurn.compareAndSet(true, false)) {
                     carrierInsideExecutor.countDown();
                     try {
                         assertTrue(releaseCarrier.await(5, TimeUnit.SECONDS),
