@@ -303,8 +303,14 @@ provides automatic physical cleanup for idle actors without per-connection
 threads, subject to host-worker scheduling and OS close completion.
 The claim's monitor also fences USER admission together with the bounded
 `WebSocketOutboundGate.enqueueUser`: a USER write is either admitted
-before revoke or rejected after revoke. Scoped NET authorization and
-the existing bounded asynchronous writer still apply.
+before revoke or rejected after revoke. Actor incarnation liveness
+reads only the immutable ActorRef identity and atomic stopped gate: it does
+not reenter the actor lifecycle monitor while the claim admission monitor is
+held. This avoids a lifecycle-lock inversion when an actor finalizes and
+settles done() callbacks under its own lock. Healthy retirement sweeps
+allocate no per-tick child snapshots; only stale claims are collected.
+Scoped NET authorization and the existing bounded asynchronous writer still
+apply.
 
 This is **not yet a safe end-to-end guest API**. There is no source-level
 `WebSocketServer`/`WebSocketConnection` builtin, generation-aware guest
@@ -321,7 +327,8 @@ host tests.
 `WebSocketActorClaimTest` now authors five actor-runtime checks (owner
 turn, foreign actor/runtime, stopped owner, self-claim denial, and admission
 after revoke). Listener tests require automatic idle actor-stop socket
-retirement and the host-bound actor-turn TCP send. These still require an
+retirement, actor-failure idle cleanup, supervisor-close races, and the
+host-bound actor-turn TCP send. These still require an
 approved exact-head CI execution receipt before they are evidence.
 
 ## Not yet implemented
