@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.runtime.PinnedNamespaceInitializationPlan;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.PinnedNamespaceProgramRunner;
@@ -9,6 +11,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -63,6 +68,51 @@ final class PinnedNamespaceSharedCorpusTest {
                 corpus.sources(), corpus.owners(),
                 Map.of("app@1", Map.of("foo", targetInstance)), ENTRY,
                 IsolatePolicy.developer(), ExecutionProfile.serverJit()).exitStatus();
+    }
+
+    private static Set<String> plannedInitializationUnits(Corpus corpus) {
+        var compiled = new IncrementalCompiler().compilePinned(
+                corpus.sources(), Map.of(), corpus.owners(),
+                Map.of("app@1", Map.of("foo", "foo@1"))).build();
+        Map<String, Set<String>> dependencies = new LinkedHashMap<>();
+        compiled.units().forEach((source, unit) ->
+                dependencies.put(source, unit.dependencies()));
+        return PinnedNamespaceInitializationPlan.reachableGroups(
+                dependencies, compiled.initializationGroups(), ENTRY).stream()
+                .flatMap(List::stream).collect(Collectors.toSet());
+    }
+
+    @Test
+    void unrelatedCollisionPackageAndUnimportedBProvidersDoNotInitialize() {
+        Corpus corpus = sourceCorpus();
+        Set<String> units = plannedInitializationUnits(corpus);
+        assertEquals(Set.of(ENTRY,
+                "foo/src/compute/math.ores",
+                "foo/src/compute/stats.ores",
+                "foo/src/compute/aggregation.ores",
+                "foo/src/api/routes.ores",
+                "foo/src/api/handlers.ores",
+                "foo/src/api/responses.ores"), units);
+        assertFalse(units.contains("other/src/collision.ores"));
+        assertFalse(units.contains("foo/src/data/models.ores"));
+    }
+
+    @Test
+    void addingPinnedBImportMakesAllItsProvidersReachableButNotOtherPackage() {
+        Corpus corpus = sourceCorpus();
+        corpus.sources().put(ENTRY,
+                "import ns a from \\"pkg:foo\\";\\n"
+                + "import ns b from \\"pkg:foo\\";\\n"
+                + "import ns c from \\"pkg:foo\\";\\n"
+                + "pub fnc main(): int { return a.aggregate(21) + c.response_delta() "
+                + "+ b.model_code() + b.query_code() + b.storage_code() "
+                + "+ b.validation_code(); }\\n");
+        Set<String> units = plannedInitializationUnits(corpus);
+        assertEquals(11, units.size());
+        assertTrue(units.containsAll(Set.of(
+                "foo/src/data/models.ores", "foo/src/data/queries.ores",
+                "foo/src/data/storage.ores", "foo/src/data/validation.ores")));
+        assertFalse(units.contains("other/src/collision.ores"));
     }
 
     @Test
