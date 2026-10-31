@@ -332,4 +332,46 @@ final class CopyPolicyCompilerTest {
                 () -> OresCompiler.parseAndTypeCheck(source));
         assertTrue(ex.getMessage().contains("E_MOVE_UNPROVEN"), ex.getMessage());
     }
+
+    @Test
+    void conditionalCannotLaunderProtectedFieldThroughRtCopy() {
+        String source = HEADER + """
+                fnc bad(Vault vault, bool choose): int {
+                  return rt copy (choose ? vault.token : 7);
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("E_COPY_FORBIDDEN"), failure.getMessage());
+    }
+
+    @Test
+    void conditionalCannotLaunderOrdinaryPartialMoveThroughRtTake() {
+        String source = """
+                define class Holder as
+                  pub let int id = 42;
+                end
+                fnc bad(Holder holder, bool choose): int {
+                  return rt take (choose ? holder.id : 7);
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("E_MOVE_UNPROVEN"), failure.getMessage());
+    }
+
+    @Test
+    void valueMatchCannotLaunderProtectedFieldThroughRtCopy() {
+        String source = HEADER + """
+                fnc bad(Vault vault, bool choose): int {
+                  return rt copy (match choose over {
+                    on true { return vault.token; }
+                    on false { return 7; }
+                  });
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("E_COPY_FORBIDDEN"), failure.getMessage());
+    }
 }
