@@ -65,6 +65,38 @@ parser, typechecker, ownership checker and guest execution tests pass.**
    or explicit regions, with deterministic retirement, no mandatory
    per-selection plan allocation and bounded fresh wait registrations.
 
+## Staged Java guest-source plan integration (draft #2369)
+
+The Java source typechecker and guest evaluator now **stage** the following
+Oreslang constructors (snake_case as required by source conventions):
+
+- `SelectPlan.from_list([SelectCase.read(channel), ...])` returns `SelectPlan`.
+- `SelectPlan.from_map(record{incoming: SelectCase.read(channel), ...})`
+  returns `SelectPlan`, with stable iteration order but index-only results.
+- `DynamicSelectPlan.from_list(...)` returns `DynamicSelectPlan<int>`,
+  with zero-based original slot keys.
+- `DynamicSelectPlan.from_map(record{...})` returns
+  `DynamicSelectPlan<string>`, retaining record field names as keys.
+
+A dynamic plan supports `put(key, case)`, `remove(key)`, `keys()`,
+`size()` and `version()`. Guest int values are normalized to Java's
+Integer slots across removal and reinsertion, even if a plan becomes empty.
+All source plan values can be selected with `select from plan`,
+`try select from plan`, or `nb select from plan`; their result types are
+currently `Option<SelectResult>` and
+`Future<Option<SelectResult>>` for nonblocking mode.
+
+**Do not claim keyed guest result parity yet:** the source select expression
+currently yields `SelectResult` with an ordinal `index`. The host
+`DynamicSelectPlan.selectKeyedAsync` and `trySelectKeyed` preserve
+snapshot keys/versions but are not yet connected to source return types.
+This draft also does not implement static value-producing select syntax,
+`over ... end` (draft #2079), complete source move-only descriptor
+admission, or LLVM/.NET/Wasm/Forge guest lowering. The new
+`SelectPlanSourceLanguageTest` contains actual .ores programs, but
+a source CI run with **executed steps** is still needed before marking
+the integration tested.
+
 ## Source spelling and result/return matrix
 
 | Form | Intent | Required result/return semantics | Current Java main caveat |
