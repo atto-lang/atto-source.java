@@ -296,6 +296,59 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void hostClaimTransfersUserSendAuthorityToOneLiveActorTurn() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var runtime = new ActorRuntime();
+             var listener = listen(io, port, 1)) {
+            var connectionRef = new java.util.concurrent.atomic.AtomicReference<
+                    WebSocketLoopbackListener.Connection>();
+            var acceptedReceipt = new java.util.concurrent.atomic.AtomicReference<
+                    OresFuture<Void>>();
+            var failed = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var turnCompleted = new java.util.concurrent.CountDownLatch(1);
+            var owner = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                try {
+                    acceptedReceipt.set(connectionRef.get().sendTextAsync(message));
+                } catch (Throwable error) {
+                    failed.set(error);
+                } finally {
+                    turnCompleted.countDown();
+                }
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                connectionRef.set(connection);
+                var claim = connection.claimActor(runtime, owner);
+                assertEquals(owner.generation(), claim.address().generation());
+                assertThrows(SecurityException.class,
+                        () -> connection.sendTextAsync("host cannot impersonate"));
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.claimActor(runtime, owner),
+                        "one physical connection cannot be rebound");
+                owner.send("actor");
+                assertTrue(turnCompleted.await(5, TimeUnit.SECONDS));
+                assertNull(failed.get());
+                acceptedReceipt.get().get(3, TimeUnit.SECONDS);
+                assertArrayEquals(new byte[] {
+                        (byte) 0x81, 5, 'a', 'c', 't', 'o', 'r'
+                }, client.getInputStream().readNBytes(7));
+                owner.stop();
+                owner.done().get(5, TimeUnit.SECONDS);
+                assertTrue(claim.revoked(), "stopped actor has no live send claim");
+                // This first slice only revokes logical authority. The host
+                // supervisor still owns physical socket retirement.
+                connection.close();
+                assertEquals(0, listener.activeConnectionCount());
+            }
+        }
+    }
+
+    @Test
     void peerCloseFrameIsSerializedAndRetiresThePhysicalConnection() throws Exception {
         int port = unusedPort();
         try (var io = new AsyncNativeIo(4);
