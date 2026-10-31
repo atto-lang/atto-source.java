@@ -2,6 +2,8 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -154,6 +156,19 @@ final class MutableShareCompilerTest {
                   return;
                 }
                 """);
+    }
+
+    @Test
+    void policyGateRejectsMutableSharingBeforeExecution() {
+        var program = Parser.parse("""
+                fnc bad(): void {
+                  val alias = rt mut share handle;
+                  return;
+                }
+                """);
+        SecurityException denial = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertTrue(denial.getMessage().contains("rt mut share"), denial.getMessage());
     }
 
     @Test
