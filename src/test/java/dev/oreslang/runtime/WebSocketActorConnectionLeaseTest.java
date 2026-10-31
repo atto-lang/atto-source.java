@@ -153,6 +153,28 @@ final class WebSocketActorConnectionLeaseTest {
     }
 
     @Test
+    void delayedOldActorStopCannotRevokeTransferredConnection() {
+        var tenant = UUID.randomUUID();
+        var runtime = UUID.randomUUID();
+        var first = actor(runtime, 1);
+        var second = actor(runtime, 2);
+        var ledger = WebSocketActorConnectionLease.bindHost(tenant, first, () -> true);
+        var before = ledger.issue();
+        var after = ledger.transferHost(before, tenant, first, second, () -> true);
+        assertFalse(ledger.revokeIfOwner(first),
+                "old done() callback must not revoke the new owner generation");
+        assertFalse(ledger.isLogicallyRetired());
+        try (var loan = ledger.acquire(after, tenant, second)) {
+            assertTrue(loan.mayDeliver(after, tenant, second));
+        }
+        assertTrue(ledger.revokeIfOwner(second));
+        assertFalse(ledger.revokeIfOwner(second));
+        assertFalse(ledger.revokeIfOwner(first));
+        assertThrows(SecurityException.class, () -> ledger.acquire(after, tenant, second));
+        assertEquals(0, ledger.outstandingLoans());
+    }
+
+    @Test
     void stoppedActorRejectedAndCannotBecomeNextOwner() {
         var tenant = UUID.randomUUID();
         var a = actor(UUID.randomUUID(), 1);
