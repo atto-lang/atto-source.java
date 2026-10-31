@@ -1,3 +1,8 @@
+> **INCOMPLETE / DO NOT MERGE:** This branch currently contains only the Cargo manifest,
+> documentation, and CI workflow. The Rust validator implementation was NOT committed:
+> the GitHub integration blocked the write. Consequently the crate has no `src/main.rs`
+> and is not buildable. No Rust test pass or executable policy certification exists.
+>
 # Actor arena quiescence policy — Rust port
 
 This is a **source-free policy validator**, not a native Oreslang runtime certification. It ports `scripts/verify_actor_arena_quiescence_matrix_v2.py` and the 27 original negative controls from `scripts/test_actor_arena_quiescence_matrix_v2.py`.
