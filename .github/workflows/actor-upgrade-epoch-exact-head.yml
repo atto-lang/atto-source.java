@@ -44,13 +44,13 @@ jobs:
           cache: maven
       - name: Run focused actor JUnit regression
         run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorUpgradePreflightCurrentMainTest,ActorRoutePublicationV1Test,LogicalActorProxyMailboxV1Test,LogicalActorProxyUpgradeWatermarkTest -DfailIfNoTests=true test
-      - name: Verify 36 candidate STOP race, cancellation and physical cutover regressions
+      - name: Verify 37 candidate STOP, exclusive V2 adoption and physical cutover regressions
         shell: bash
         run: |
           set -euo pipefail
           report=target/surefire-reports/TEST-dev.oreslang.runtime.ActorRoutePublicationV1Test.xml
           test -s "$report"
-          head -c 1000 "$report" | grep -Eq 'tests="36"'
+          head -c 1000 "$report" | grep -Eq 'tests="37"'
           head -c 1000 "$report" | grep -q 'errors="0"'
           head -c 1000 "$report" | grep -q 'failures="0"'
           head -c 1000 "$report" | grep -q 'skipped="0"'
