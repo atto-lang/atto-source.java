@@ -66,9 +66,11 @@ final class CglActorMessageTraceIntegrationTest {
             assertEquals(0, result.invalid());
             assertTrue(result.samples().stream().anyMatch(x ->
                     x.actorId().equals(host.id().value()) &&
+                    x.actorGeneration() == host.generation() &&
                     x.messageSequence() == 0 && !x.sourceActor()));
             assertTrue(result.samples().stream().anyMatch(x ->
                     x.actorId().equals(source.id().value()) &&
+                    x.actorGeneration() == source.generation() &&
                     x.messageSequence() == 0 && x.sourceActor()));
             assertTrue(result.samples().stream().allMatch(x ->
                     x.exitNanos() - x.enterNanos() >= 0));
