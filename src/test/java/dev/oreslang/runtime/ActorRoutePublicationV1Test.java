@@ -1215,6 +1215,74 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void concurrentLogicalUpgradesClaimOnePhysicalSuccessorExactlyOnce()
+            throws Exception {
+        try (var runtime = new ActorRuntime();
+             var firstGate = new ActorUpgradeEpochGate(76, image('a'));
+             var firstMailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var secondGate = new ActorUpgradeEpochGate(77, image('a'));
+             var secondMailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var workers = Executors.newFixedThreadPool(2)) {
+            var firstOld = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            var secondOld = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            var sharedCandidate = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            firstOld.ready().get(10, TimeUnit.SECONDS);
+            secondOld.ready().get(10, TimeUnit.SECONDS);
+            sharedCandidate.ready().get(10, TimeUnit.SECONDS);
+            try (var first = new ActorRoutePublicationV1<>(
+                    firstGate, firstMailbox, state(7), firstOld);
+                 var second = new ActorRoutePublicationV1<>(
+                    secondGate, secondMailbox, state(7), secondOld);
+                 var firstStage = first.stage(image('b'));
+                 var secondStage = second.stage(image('b'))) {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (!(firstStage.quiescent() && secondStage.quiescent())
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertTrue(firstStage.quiescent());
+                assertTrue(secondStage.quiescent());
+                var release = new CountDownLatch(1);
+                var firstPublish = workers.submit(() -> {
+                    if (!release.await(10, TimeUnit.SECONDS))
+                        throw new IllegalStateException("publication race timed out");
+                    try {
+                        return firstStage.publish(state(9), sharedCandidate);
+                    } catch (IllegalStateException denied) {
+                        if (!denied.getMessage().contains("already claimed"))
+                            throw denied;
+                        return false;
+                    }
+                });
+                var secondPublish = workers.submit(() -> {
+                    if (!release.await(10, TimeUnit.SECONDS))
+                        throw new IllegalStateException("publication race timed out");
+                    try {
+                        return secondStage.publish(state(9), sharedCandidate);
+                    } catch (IllegalStateException denied) {
+                        if (!denied.getMessage().contains("already claimed"))
+                            throw denied;
+                        return false;
+                    }
+                });
+                release.countDown();
+                boolean firstWon = firstPublish.get(10, TimeUnit.SECONDS);
+                boolean secondWon = secondPublish.get(10, TimeUnit.SECONDS);
+                assertNotEquals(firstWon, secondWon,
+                        "candidate publication ownership must have one winner");
+                assertEquals(firstWon ? 2L : 1L, first.current().routeEpoch());
+                assertEquals(secondWon ? 2L : 1L, second.current().routeEpoch());
+                assertSame(firstWon ? sharedCandidate : firstOld,
+                        first.current().physicalRoute());
+                assertSame(secondWon ? sharedCandidate : secondOld,
+                        second.current().physicalRoute());
+            }
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
