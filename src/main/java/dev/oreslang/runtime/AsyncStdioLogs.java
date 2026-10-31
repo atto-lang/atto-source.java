@@ -32,6 +32,10 @@ public final class AsyncStdioLogs implements AutoCloseable {
     private Thread drain;
     private long submitted;
     private long completed;
+    // Completed sink writes are distinct from delivered Future callbacks.
+    // While an earlier completion is being notified, later flush calls must
+    // queue behind it instead of returning an already-settled Future.
+    private boolean deliveringCompletions;
     private boolean accepting = true;
     private Throwable failure;
 
@@ -70,7 +74,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
             if (failure != null) return OresFuture.failed(failure);
             if (!accepting) return OresFuture.failed(
                     new IllegalStateException("async stdio writer is closed"));
-            if (submitted == completed) return OresFuture.completed(null);
+            if (submitted == completed && !deliveringCompletions)
+                return OresFuture.completed(null);
             if (barriers.size() >= MAX_PENDING_BARRIERS) {
                 throw new IllegalStateException("async stdio flush barriers exhausted");
             }
@@ -122,6 +127,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     if (error != null && failure == null) failure = error;
                     error = failure;
                     completed = record.sequence();
+                    deliveringCompletions = true;
                     // Barrier sequence numbers are nondecreasing by admission.
                     // Complete the ready prefix in FIFO registration order so a
                     // later flush observer cannot be notified before an earlier
@@ -139,6 +145,31 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 for (Barrier barrier : ready) {
                     if (error == null) barrier.completion().completeFromRuntime(null);
                     else barrier.completion().failFromRuntime(error);
+                }
+                // flushAsync() may have registered another barrier after the
+                // sink write advanced completed but before its earlier
+                // observers were notified. Drain all such late barriers before
+                // publishing that callbacks are fully delivered. The final
+                // empty check and flag transition are atomic with admission.
+                for (;;) {
+                    List<Barrier> late = new ArrayList<>();
+                    synchronized (lock) {
+                        int readyCount = 0;
+                        for (Barrier barrier : barriers) {
+                            if (error == null && barrier.sequence() > completed) break;
+                            late.add(barrier);
+                            readyCount++;
+                        }
+                        barriers.subList(0, readyCount).clear();
+                        if (late.isEmpty()) {
+                            deliveringCompletions = false;
+                            break;
+                        }
+                    }
+                    for (Barrier barrier : late) {
+                        if (error == null) barrier.completion().completeFromRuntime(null);
+                        else barrier.completion().failFromRuntime(error);
+                    }
                 }
             }
             // The final synchronous-stdout flush also belongs to this bounded
