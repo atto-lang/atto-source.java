@@ -56,6 +56,50 @@ final class AsyncRuntimeTest {
     }
 
     @Test
+    void failedCloseRetryMustWaitForPhysicalAsyncCarrierExit() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch physicallyExited = new CountDownLatch(1);
+        try {
+            runtime.submit(() -> {
+                entered.countDown();
+                try {
+                    // Deliberately ignore shutdownNow interruption until the
+                    // host releases this task's physical execution lease.
+                    boolean released = false;
+                    while (!released) {
+                        try {
+                            released = release.await(25, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException ignored) {
+                            // An interrupted Future is not a physical exit.
+                        }
+                    }
+                } finally {
+                    physicallyExited.countDown();
+                }
+                return 42;
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            IllegalStateException incomplete = assertThrows(
+                    IllegalStateException.class, runtime::close);
+            assertTrue(incomplete.getMessage().contains("did not terminate"),
+                    () -> "unexpected first-close failure: " + incomplete);
+            assertTrue(runtime.isClosed(), "new admissions must remain fenced");
+            assertEquals(1L, physicallyExited.getCount(),
+                    "timeout cannot certify the running task as retired");
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> runtime.submit(() -> 7));
+        } finally {
+            release.countDown();
+        }
+        assertTrue(physicallyExited.await(3, TimeUnit.SECONDS));
+        assertDoesNotThrow(runtime::close,
+                "successful retry must verify that the previously live carrier exited");
+        assertDoesNotThrow(runtime::close, "completed close must be idempotent");
+    }
+
+    @Test
     void awaitPropagatesOriginalRuntimeFailure() {
         CompletableFuture<Integer> future = new CompletableFuture<>();
         IllegalStateException original = new IllegalStateException("boom");
