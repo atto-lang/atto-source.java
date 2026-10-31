@@ -132,6 +132,85 @@ final class WebSocketNioDuplexTest {
     }
 
     @Test
+    void preInterruptedWorkerNeverPublishesAFrameOrConsumesInput() throws Exception {
+        try (Pair p = pair()) {
+            Thread.currentThread().interrupt();
+            try {
+                assertThrows(java.nio.channels.ClosedByInterruptException.class,
+                        () -> WebSocketNioDuplex.writeServerFrame(
+                                p.accepted(), true, WebSocketFrameCodec.OPCODE_BINARY,
+                                new byte[] {1}, 125, 1000));
+                assertThrows(java.nio.channels.ClosedByInterruptException.class,
+                        () -> WebSocketNioDuplex.readClientFrame(
+                                p.accepted(), 125, 1000));
+            } finally {
+                // Do not poison the JUnit worker or try-with-resources cleanup.
+                Thread.interrupted();
+            }
+            p.client().socket().setSoTimeout(100);
+            assertThrows(java.net.SocketTimeoutException.class,
+                    () -> p.client().socket().getInputStream().read(),
+                    "interrupted write must not have emitted a wire header");
+        }
+    }
+
+    @Test
+    void closingChannelDuringPartialFrameUnblocksReadAndNeverDeliversMessage()
+            throws Exception {
+        try (Pair p = pair()) {
+            var ready = new java.util.concurrent.CountDownLatch(1);
+            var failure = new CompletableFuture<Throwable>();
+            Thread worker = Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    WebSocketNioDuplex.readClientFrame(p.accepted(), 1024, 3000);
+                    failure.complete(new AssertionError("partial frame unexpectedly delivered"));
+                } catch (Throwable thrown) {
+                    failure.complete(thrown);
+                }
+            });
+            assertTrue(ready.await(1, TimeUnit.SECONDS));
+            p.client().socket().getOutputStream().write(
+                    new byte[] {(byte) 0x81, (byte) 0x85, 1, 2, 3, 4, 7});
+            Thread.sleep(40);
+            p.accepted().close();
+            Throwable result = failure.get(2, TimeUnit.SECONDS);
+            assertInstanceOf(IOException.class, result);
+            worker.join(1000);
+            assertFalse(worker.isAlive(), "closed read worker must retire");
+        }
+    }
+
+    @Test
+    void closingChannelDuringBackpressuredWriteUnblocksWriter() throws Exception {
+        try (Pair p = pair()) {
+            // Small kernel send buffer plus an undrained peer makes the
+            // complete 4 MiB frame exceed the socket's writable capacity.
+            p.accepted().socket().setSendBufferSize(1024);
+            var ready = new java.util.concurrent.CountDownLatch(1);
+            var failure = new CompletableFuture<Throwable>();
+            Thread worker = Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    WebSocketNioDuplex.writeServerFrame(
+                            p.accepted(), true, WebSocketFrameCodec.OPCODE_BINARY,
+                            new byte[4 * 1024 * 1024], 4 * 1024 * 1024, 3000);
+                    failure.complete(new AssertionError("undrained write unexpectedly completed"));
+                } catch (Throwable thrown) {
+                    failure.complete(thrown);
+                }
+            });
+            assertTrue(ready.await(1, TimeUnit.SECONDS));
+            Thread.sleep(40);
+            p.accepted().close();
+            Throwable result = failure.get(2, TimeUnit.SECONDS);
+            assertInstanceOf(IOException.class, result);
+            worker.join(1000);
+            assertFalse(worker.isAlive(), "closed write worker must retire");
+        }
+    }
+
+    @Test
     void closedChannelFailsWithoutRevivingPhysicalAuthority() throws Exception {
         try (Pair p = pair()) {
             p.accepted().close();
