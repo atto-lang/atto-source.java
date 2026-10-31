@@ -151,10 +151,44 @@ the RFC 6455 accept value, a subsequent masked text frame, Host and Origin
 denials, invalid Upgrade/body framing, deadline expiry, and misconfigured
 bounds. These are Java host integration tests, **not Oreslang guest execution**.
 
+## Bounded supervisor-only raw loopback listener slice
+
+`WebSocketLoopbackListener` now binds **127.0.0.1 only**, with a fixed
+nonzero port and mandatory scoped `RuntimePermissions.Permission.NET`
+authority. Only a supervisor/host carrier may create the listener or perform
+accept/read; it is intentionally package-private and exposes no guest
+WebSocket handle or JDK socket to Oreslang source code.
+
+The first host slice uses `AsyncNativeIo` for asynchronous accept and
+single-frame read work. Its registered `ServerSocket` and accepted `Socket`
+have physical I/O loans, registered-resource retirement and shutdown wakeups.
+The accepted socket is upgraded through `WebSocketRawUpgrade` before a host
+connection is returned. Each listener enforces a single outstanding accept,
+at most **16 active connections**, a backlog at most 128, frames and messages
+up to **64 KiB** each, and 16 queued USER messages per connection (thus
+at most 1 MiB of queued payload per connection and 16 MiB per listener from
+this queue in the worst configured case). The host connection supplies one
+outstanding async read and processes frame-level ping/close replies directly
+on an I/O worker. USER messages can be polled by host code, not guest actors.
+
+An accepted connection slot is released **only on physical connection close**
+(or on failed admission), never because its Future happened to settle.
+Synchronous task rejection resets single-flight state without releasing an
+owned connection. If registration races context shutdown, the registered
+socket stays under `AsyncNativeIo` retirement/quarantine rather than being
+force-closed ahead of the physical loan. This is a host foundation, not a
+replacement for explicit generation-fenced actor connection capability.
+
+The next patch needs exact-source Java/Graal native tests for the listener,
+including permit release and shutdown races. The existing
+`WebSocketRawUpgradeTest` provides real loopback 101/denial and masked
+frame tests, including silent/slow-drip head deadlines, but no Oreslang guest
+has run this new listener.
+
 ## Not yet implemented
 
-- Binding the validated upgrade to a dedicated native raw-socket listener.
-- Native raw-socket listener ownership and scoped NET admission.
+- An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
+- End-to-end actor/generation-owned connection dispatch and retirement.
 - Source types such as `WebSocketServer`, `WebSocketConnection`, or actor
   dispatch/claim tokens.
 - Transport serialization that prioritizes returned CONTROL actions over USER
