@@ -66,7 +66,7 @@ final class TenantIsolateRetirementRaceTest {
     }
 
     @Test
-    void vmWideShutdownSealsEveryTenantBeforeAwaitingOneSlowRetirement() throws Exception {
+    void hostWideShutdownSealsEveryTenantBeforeAwaitingOneSlowRetirement() throws Exception {
         TenantIsolateManager manager = new TenantIsolateManager(2, 256);
         var first = manager.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
         var second = manager.open_trusted_tenant("tenant-b", IsolatePolicy.developer());
