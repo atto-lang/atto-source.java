@@ -109,6 +109,50 @@ final class WebSocketActorConnectionLeaseTest {
     }
 
     @Test
+    void crossRuntimeTrustClassAndTransportTransfersFailClosed() {
+        var tenant = UUID.randomUUID();
+        var runtime = UUID.randomUUID();
+        var source = actor(runtime, 1);
+        var ledger = WebSocketActorConnectionLease.bindHost(
+                tenant, source, () -> true);
+        var handle = ledger.issue();
+        var crossRuntime = actor(UUID.randomUUID(), 2);
+        var crossKind = new ActorRuntime.ActorAddress(
+                runtime, ActorRuntime.ActorId.create(), 2,
+                ActorRuntime.ActorKind.UNTRUSTED, "local-process");
+        var crossTransport = new ActorRuntime.ActorAddress(
+                runtime, ActorRuntime.ActorId.create(), 2,
+                ActorRuntime.ActorKind.PRIVATE, "remote-process");
+        assertThrows(SecurityException.class, () ->
+                ledger.transferHost(handle, tenant, source, crossRuntime, () -> true));
+        assertThrows(SecurityException.class, () ->
+                ledger.transferHost(handle, tenant, source, crossKind, () -> true));
+        assertThrows(SecurityException.class, () ->
+                ledger.transferHost(handle, tenant, source, crossTransport, () -> true));
+        try (var loan = ledger.acquire(handle, tenant, source)) {
+            assertTrue(loan.mayDeliver(handle, tenant, source));
+        }
+        assertEquals(0, ledger.outstandingLoans());
+    }
+
+    @Test
+    void actorDeathBetweenAdmissionAndDeliveryInvalidatesLeaseWithoutForgery() {
+        var tenant = UUID.randomUUID();
+        var owner = actor(UUID.randomUUID(), 1);
+        var alive = new AtomicBoolean(true);
+        var ledger = WebSocketActorConnectionLease.bindHost(tenant, owner, alive::get);
+        var handle = ledger.issue();
+        var loan = ledger.acquire(handle, tenant, owner);
+        alive.set(false);
+        assertFalse(loan.mayDeliver(handle, tenant, owner));
+        assertFalse(loan.enqueueIfCurrent(() ->
+                fail("dead actor received queued WebSocket delivery")));
+        assertEquals(1, ledger.outstandingLoans());
+        loan.close();
+        assertEquals(0, ledger.outstandingLoans());
+    }
+
+    @Test
     void stoppedActorRejectedAndCannotBecomeNextOwner() {
         var tenant = UUID.randomUUID();
         var a = actor(UUID.randomUUID(), 1);
