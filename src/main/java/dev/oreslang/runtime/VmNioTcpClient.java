@@ -216,7 +216,8 @@ final class VmNioTcpClient implements AutoCloseable {
                         "TCP connect deadline armed twice");
             }
         } catch (RuntimeException | Error failure) {
-            releaseDeadlineAdmission();
+            // openOwned still owns the admission permit until construction
+            // succeeds; its failure path releases exactly once.
             throw failure;
         }
     }
