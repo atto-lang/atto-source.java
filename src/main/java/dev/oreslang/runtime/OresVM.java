@@ -78,6 +78,10 @@ public final class OresVM implements AutoCloseable {
     private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Preserve irreversible scheduler/discard-notification failures across
+    // a subsequent physical-carrier shutdown retry.
+    private RuntimeException shutdownFailure;
+
     private volatile StartupState startupState = StartupState.NEW;
 
     private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor,
@@ -305,11 +309,8 @@ public final class OresVM implements AutoCloseable {
 
     @Override
     public void close() {
-        // A CONTROL/root task cannot wait for its own carrier to leave. Reject
-        // BEFORE setting CLOSED or revoking dispatch; otherwise the scheduler's
-        // own close guard throws after the VM has been irreversibly poisoned.
-        // An ordinary actor/Mailman must likewise delegate blocking VM teardown
-        // to its supervising host after its turn finishes.
+        // Never wait for the calling task's own CONTROL/STOP carrier. Reject
+        // before irrevocably sealing the VM admission state.
         if (OresScheduler.current() != null
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
@@ -317,46 +318,56 @@ public final class OresVM implements AutoCloseable {
                     "OresVM must be closed outside actor, Mailman and scheduler turns");
         }
         synchronized (this) {
-            if (!closed.compareAndSet(false, true)) return;
-            startupState = StartupState.CLOSED;
-            try {
-                rootScheduler.close();
-            } finally {
-                // ActorRuntime has already requested structured closure. A
-                // failed close may leave an actor quarantined; never assume a
-                // dropped queued STOP task is a physical retirement receipt.
-                RuntimeException physicalShutdownFailure = null;
+            if (closed.compareAndSet(false, true)) {
+                startupState = StartupState.CLOSED;
+                RuntimeException permanentFailure = null;
+                try {
+                    rootScheduler.close();
+                } catch (RuntimeException schedulerFailure) {
+                    permanentFailure = schedulerFailure;
+                }
                 try {
                     shutdownPhysicalStops();
-                } catch (RuntimeException failure) {
-                    physicalShutdownFailure = failure;
+                } catch (RuntimeException discardFailure) {
+                    if (permanentFailure == null) permanentFailure = discardFailure;
+                    else if (permanentFailure != discardFailure) {
+                        permanentFailure.addSuppressed(discardFailure);
+                    }
                 } finally {
-                    // Even a broken discard observer cannot prevent CONTROL
-                    // carrier teardown or poison later shutdown attempts.
+                    // First close seals/cancels once. Repeated close must not
+                    // discard already-running work or mint fresh receipts.
                     controlExecutor.shutdownNow();
                 }
-                try {
-                    boolean physicalDone =
-                            physicalStopExecutor.awaitTermination(5, TimeUnit.SECONDS);
-                    boolean controlDone =
-                            controlExecutor.awaitTermination(5, TimeUnit.SECONDS);
-                    if (!controlDone || !physicalDone) {
-                        IllegalStateException incomplete = new IllegalStateException(
-                                "Oreslang VM carrier teardown incomplete: control="
-                                        + controlDone + ", physicalStop=" + physicalDone);
-                        if (physicalShutdownFailure != null) {
-                            incomplete.addSuppressed(physicalShutdownFailure);
-                        }
-                        throw incomplete;
-                    }
-                    if (physicalShutdownFailure != null) throw physicalShutdownFailure;
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(
-                            "interrupted while closing Oreslang CONTROL scheduler",
-                            interrupted);
+                shutdownFailure = permanentFailure;
+            }
+
+            // The CLOSED flag is not physical retirement. If the previous
+            // attempt timed out, all later attempts must recheck both worker
+            // pools before allowing the owning context to free its graph.
+            try {
+                boolean physicalDone =
+                        physicalStopExecutor.awaitTermination(5, TimeUnit.SECONDS);
+                boolean controlDone =
+                        controlExecutor.awaitTermination(5, TimeUnit.SECONDS);
+                if (!controlDone || !physicalDone) {
+                    IllegalStateException incomplete = new IllegalStateException(
+                            "Oreslang VM carrier teardown incomplete: control="
+                                    + controlDone + ", physicalStop=" + physicalDone);
+                    if (shutdownFailure != null) incomplete.addSuppressed(shutdownFailure);
+                    throw incomplete;
                 }
+                if (shutdownFailure != null) {
+                    throw new IllegalStateException(
+                            "Oreslang VM scheduler/discard cleanup failed; physical state quarantined",
+                            shutdownFailure);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "interrupted while closing Oreslang CONTROL scheduler",
+                        interrupted);
             }
         }
     }
+
 }
