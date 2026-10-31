@@ -239,6 +239,8 @@ final class SupervisorRegistryObservationTest {
                     executor.submit(() -> bridge.capture(grant, session, TENANT,
                             1, 32, 16, 1_000));
             assertTrue(atObservation.await(5, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, () ->
+                    bridge.capture(grant, session, TENANT, 1, 32, 16, 1_000));
             runtime.createChildSupervisor(root);
             proceed.countDown();
             var result = captured.get(5, TimeUnit.SECONDS);
