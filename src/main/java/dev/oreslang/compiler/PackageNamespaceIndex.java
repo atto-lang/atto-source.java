@@ -331,7 +331,10 @@ public final class PackageNamespaceIndex {
             throw new IllegalArgumentException("namespace admitted source path missing");
         }
         Path source = Path.of(submitted);
-        if (!source.isAbsolute() || !source.equals(source.normalize())) {
+        // Path.of() can erase repeated separators, so compare the exact
+        // textual unit ID as well as the normalized Path object.
+        if (!source.isAbsolute() || !source.equals(source.normalize())
+                || !submitted.equals(unitId(source))) {
             throw new SecurityException("namespace admitted source path must be absolute and canonical: " + submitted);
         }
         Path cursor = source.getRoot();
