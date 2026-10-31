@@ -5529,6 +5529,20 @@ public final class ActorRuntime implements AutoCloseable {
         return cell != null && !cell.stopped.get();
     }
 
+    /**
+     * Internal actor-connection capability fence: unlike isAlive(id), this
+     * requires the exact ActorRef incarnation still registered in this
+     * runtime. Old references may never authorize a new generation.
+     * No actor mutable state is exposed.
+     */
+    boolean isLiveIncarnation(ActorRef<?> ref) {
+        if (ref == null || !ref.ownedBy(this)) return false;
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell != null && cell.ref == ref
+                && cell.ref.generation() == ref.generation()
+                && !cell.stopped.get() && !cell.finalized();
+    }
+
     public void stop(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("stop actors");
         Objects.requireNonNull(ref);
