@@ -33,9 +33,10 @@ pub routine main(): void {
   val float epsilon = 0.001;
   val TinyState plus = new TinyState(state.w0, state.b0, state.w1 + epsilon, state.b1);
   val TinyState minus = new TinyState(state.w0, state.b0, state.w1 - epsilon, state.b1);
-  val float finite_difference = (
-    squared_loss(&plus, input, target) - squared_loss(&minus, input, target)
-  ) / (2.0 * epsilon);
+  // The compiler types the function results before arithmetic.
+  val float upper_loss = squared_loss(&plus, input, target);
+  val float lower_loss = squared_loss(&minus, input, target);
+  val float finite_difference = (upper_loss - lower_loss) / (2.0 * epsilon);
   val float derivative = vjp_weight0(&initial_tape);
   if finite_difference < derivative - 0.02 || finite_difference > derivative + 0.02; do
     rt fail("integrated gradient mismatch");
