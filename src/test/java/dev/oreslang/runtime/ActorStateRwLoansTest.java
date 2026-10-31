@@ -334,4 +334,53 @@ final class ActorStateRwLoansTest {
             assertEquals(0, loans.pendingCount());
         }
     }
+
+    @Test
+    void retirementWakeupFiresAfterPublisherAndPhysicalLoansBothDrain()
+            throws Exception {
+        var notifications = new AtomicInteger();
+        var loans = new ActorStateRwLoans(4, notifications::incrementAndGet);
+        var firstReader = loans.acquireReadAsync(actor(7901, 191, 1)).join();
+        var queuedWriter = loans.acquireWriteAsync(actor(7902, 192, 1));
+        var queuedReader = loans.acquireReadAsync(actor(7903, 193, 1));
+
+        var enteredCallback = new java.util.concurrent.CountDownLatch(1);
+        var releaseCallback = new java.util.concurrent.CountDownLatch(1);
+        queuedReader.whenCompleteRuntime((loan, failure) -> {
+            if (failure != null) throw new AssertionError(failure);
+            enteredCallback.countDown();
+            try {
+                if (!releaseCallback.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("publisher callback not released");
+                }
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interruption);
+            } finally {
+                loan.close();
+            }
+        });
+
+        // Cancel the queued writer: the remaining reader is promoted on the
+        // cancellation publisher, not by another StateLoan.close() call.
+        Thread cancelling = Thread.ofPlatform().start(
+                () -> assertTrue(queuedWriter.cancel(false)));
+        try {
+            assertTrue(enteredCallback.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                    "queued reader was never promoted");
+            firstReader.close();
+            loans.close();
+            assertEquals(0, notifications.get(),
+                    "publication and a physical reader are still outstanding");
+        } finally {
+            releaseCallback.countDown();
+            cancelling.join(5000);
+        }
+        assertFalse(cancelling.isAlive(), "cancellation publisher must finish");
+        assertTrue(loans.physicallyRetired());
+        assertEquals(1, notifications.get(),
+                "last notification drain must deliver the one-shot retirement wake");
+        loans.close();
+        assertEquals(1, notifications.get());
+    }
 }
