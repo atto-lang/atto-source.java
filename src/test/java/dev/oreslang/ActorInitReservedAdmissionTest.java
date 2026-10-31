@@ -165,6 +165,72 @@ final class ActorInitReservedAdmissionTest {
     }
 
     @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void namedArgumentsBindByLabelNotCallerPosition() throws Exception {
+        String twoParameterActor = ACTOR
+                .replace("init(seed: int)", "init(phase: int, seed: int)")
+                .replace("phase: 0", "phase: phase");
+        String program = main("spawn Worker(seed: 7, phase: 3)")
+                .replace(ACTOR, twoParameterActor);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program,
+                "actor-init-named-order.ores").mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("initialized", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void initializedValDependencyCannotBeReboundInsideCriticalWrite() {
+        String source = ACTOR.replace(
+                "self.handle_state(critical[read] |s| -> {",
+                "self.handle_state(critical[write] |s| -> {"
+                        + " s.seed = 8; });\\n"
+                        + " self.handle_state(critical[read] |s| -> {")
+                .replace("\\n", "\n");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("immutable"), failure.getMessage());
+    }
+
+    @Test
+    void stateLoanComputedWritesAreNotAnImmutableFieldEscape() {
+        String source = ACTOR.replace(
+                "self.handle_state(critical[read] |s| -> {",
+                "self.handle_state(critical[write] |s| -> {"
+                        + " s[\"seed\"] = 8; });\\n"
+                        + " self.handle_state(critical[read] |s| -> {")
+                .replace("\\n", "\n");
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void initStateFieldTypeMismatchIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        ACTOR.replace("phase: 0", "phase: true")));
+    }
+
+    @Test
+    void spawnHasNoUncheckedEffectfulOrSuspendingOperandPath() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        main("spawn Worker(seed: 1 + 6)")));
+    }
+
+    @Test
+    void initCannotExecuteTrailingStatementsAfterCompleteState() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        ACTOR.replace("return state { seed: seed, phase: 0 };",
+                                "return state { seed: seed, phase: 0 }; return;")));
+    }
+
+    @Test
     void ordinaryClassInitMethodIsNotReserved() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class Ordinary as
