@@ -47,12 +47,15 @@ public final class AsyncNativeIo implements AutoCloseable {
     private static final class ResourceRegistration {
         final long generation;
         final ActorRuntime.ActorPhysicalLease actorLease;
+        final ActorPermissionScope.PhysicalLease permissionLease;
 
         ResourceRegistration(
                 long generation,
-                ActorRuntime.ActorPhysicalLease actorLease) {
+                ActorRuntime.ActorPhysicalLease actorLease,
+                ActorPermissionScope.PhysicalLease permissionLease) {
             this.generation = generation;
             this.actorLease = actorLease;
+            this.permissionLease = permissionLease;
         }
     }
 
@@ -154,6 +157,17 @@ public final class AsyncNativeIo implements AutoCloseable {
         Objects.requireNonNull(operation, "native I/O operation");
         Objects.requireNonNull(work, "native I/O work");
 
+        final ActorRuntime.NativeIoAuthority ioAuthority;
+        final ActorPermissionScope.PhysicalLease permissionLease;
+        try {
+            ioAuthority = ActorRuntime.captureNativeIoAuthority();
+            permissionLease = ActorRuntime.capturePermissionPhysicalLease(
+                    "native-io:" + operation);
+        } catch (RuntimeException | Error permissionAdmissionFailure) {
+            if (actorLease != null) actorLease.retire();
+            throw permissionAdmissionFailure;
+        }
+
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
         synchronized (this) {
             if (closed || admitted.size() >= limit) {
@@ -171,6 +185,7 @@ public final class AsyncNativeIo implements AutoCloseable {
         }
 
         if (result.isDone()) {
+            if (permissionLease != null) permissionLease.close();
             if (actorLease != null) actorLease.retire();
             return result;
         }
@@ -187,8 +202,14 @@ public final class AsyncNativeIo implements AutoCloseable {
                     currentOperationActorLease.set(actorLease);
                 }
 
+                boolean permissionAuthorityEntered = false;
                 try {
                     CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
+                    ActorRuntime.enterNativeIoAuthority(ioAuthority);
+                    permissionAuthorityEntered = ioAuthority != null;
+                    if (ioAuthority != null) {
+                        ioAuthority.requireActive(operation);
+                    }
                     long workPerf = CorePerf.start();
                     T value;
                     try {
@@ -209,8 +230,12 @@ public final class AsyncNativeIo implements AutoCloseable {
                                 "I/O");
                         try {
                             result.failFromRuntime(failure);
+                            if (permissionLease != null) permissionLease.close();
                             if (actorLease != null) actorLease.retire();
                         } catch (RuntimeException | Error publicationFailure) {
+                            if (ioAuthority != null) {
+                                ioAuthority.quarantinePhysicalDrain();
+                            }
                             if (actorLease != null) {
                                 actorLease.fail(publicationFailure);
                             }
@@ -236,22 +261,33 @@ public final class AsyncNativeIo implements AutoCloseable {
                     }
                     try {
                         // OresFuture terminal subscribers drain synchronously.
-                        // Retire the worker lease only after they return.
+                        // Retire both permission and actor physical leases only
+                        // after they return.
                         result.completeFromRuntime(value);
+                        if (permissionLease != null) permissionLease.close();
                         if (actorLease != null) actorLease.retire();
                     } catch (RuntimeException | Error publicationFailure) {
+                        if (ioAuthority != null) {
+                            ioAuthority.quarantinePhysicalDrain();
+                        }
                         if (actorLease != null) {
                             actorLease.fail(publicationFailure);
                         }
                         throw publicationFailure;
                     }
                 } finally {
-                    if (previous == null) {
-                        currentOperationActorLease.remove();
-                    } else {
-                        currentOperationActorLease.set(previous);
+                    try {
+                        if (permissionAuthorityEntered) {
+                            ActorRuntime.exitNativeIoAuthority(ioAuthority);
+                        }
+                    } finally {
+                        if (previous == null) {
+                            currentOperationActorLease.remove();
+                        } else {
+                            currentOperationActorLease.set(previous);
+                        }
+                        executingWorker.remove();
                     }
-                    executingWorker.remove();
                 }
             });
         } catch (RuntimeException failure) {
@@ -264,6 +300,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 notifyAll();
             }
             result.failFromRuntime(failure);
+            if (permissionLease != null) permissionLease.close();
             if (actorLease != null) actorLease.retire();
         }
         return result;
@@ -290,6 +327,14 @@ public final class AsyncNativeIo implements AutoCloseable {
 
         ActorRuntime.ActorPhysicalLease actorLease =
                 captureActorPhysicalLease("native-registration");
+        ActorPermissionScope.PhysicalLease permissionLease;
+        try {
+            permissionLease = ActorRuntime.capturePermissionPhysicalLease(
+                    "native-registration");
+        } catch (RuntimeException | Error permissionFailure) {
+            if (actorLease != null) actorLease.retire();
+            throw permissionFailure;
+        }
 
         boolean rejectAfterTracking = false;
         boolean rejectWithoutTracking = false;
@@ -310,13 +355,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                 } else {
                     resources.put(
                             resource,
-                            new ResourceRegistration(generation, actorLease));
+                            new ResourceRegistration(
+                                    generation,
+                                    actorLease,
+                                    permissionLease));
                     rejectAfterTracking = closed;
                 }
             }
         }
 
         if (rejectWithoutTracking) {
+            if (permissionLease != null) permissionLease.close();
             if (actorLease != null) actorLease.retire();
             throw new IllegalStateException(
                     generationExhausted
@@ -324,6 +373,10 @@ public final class AsyncNativeIo implements AutoCloseable {
                             : "native resource registration raced duplicate/retired state");
         }
         if (rejectAfterTracking) {
+            // A pre-shutdown worker created ownership after scope admission was
+            // sealed. Keep the resource/leases for context cleanup but withhold
+            // delegated drain evidence until independently reconciled.
+            ActorRuntime.quarantineCurrentPermissionDrain();
             throw new IllegalStateException(
                     "I/O context closed; late resource retained for physical cleanup");
         }
@@ -352,6 +405,9 @@ public final class AsyncNativeIo implements AutoCloseable {
                         "stale native resource registration cannot retire current generation");
             }
             resources.remove(resource);
+        }
+        if (registration.permissionLease != null) {
+            registration.permissionLease.close();
         }
         if (registration.actorLease != null) {
             registration.actorLease.retire();
@@ -455,8 +511,13 @@ public final class AsyncNativeIo implements AutoCloseable {
                             retired = resources.remove(entry.getKey());
                         }
                     }
-                    if (retired != null && retired.actorLease != null) {
-                        retired.actorLease.retire();
+                    if (retired != null) {
+                        if (retired.permissionLease != null) {
+                            retired.permissionLease.close();
+                        }
+                        if (retired.actorLease != null) {
+                            retired.actorLease.retire();
+                        }
                     }
                 } catch (Exception | Error failure) {
                     // Physical close failure is retryable ownership, not a
