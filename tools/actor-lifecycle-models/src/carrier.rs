@@ -102,7 +102,10 @@ fn violation(s: State) -> Option<&'static str> {
     let mut executing: [Vec<usize>; ACTORS] = std::array::from_fn(|_| Vec::new());
     for (worker, job) in s.carriers.iter().copied().enumerate() {
         if job != FREE {
-            executing[JOB_ACTOR[job as usize]].push(worker);
+            let Some(&actor) = JOB_ACTOR.get(job as usize) else {
+                return Some("invalid physical carrier job identity");
+            };
+            executing[actor].push(worker);
         }
     }
 
@@ -252,6 +255,22 @@ mod tests {
         assert_eq!(
             violation(invalid),
             Some("task run state disagrees with carrier occupancy")
+        );
+    }
+
+    #[test]
+    fn malformed_physical_job_identity_fails_closed() {
+        let mut invalid = State::initial();
+        invalid.carriers[0] = 99;
+        assert_eq!(
+            violation(invalid),
+            Some("invalid physical carrier job identity")
+        );
+
+        invalid.carriers[0] = -2;
+        assert_eq!(
+            violation(invalid),
+            Some("invalid physical carrier job identity")
         );
     }
 
