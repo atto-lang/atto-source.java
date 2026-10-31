@@ -16,10 +16,10 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * First executable named-value-argument subset. Only direct non-generic local
- * functions/routines with a full set of primitive scalar literal arguments
- * are enabled. Nothing here enables omission, Option<T>, defaults, dynamic
- * argument evaluation, constructors or varargs.
+ * Staged executable direct local named calls: exact-typed primitive literals
+ * may be reordered; arbitrary expressions are admitted only if source and
+ * formal parameter order match. Omission, Option<T>, defaults, effectful
+ * permutation, constructors, generics and varargs remain disabled.
  */
 final class DirectNamedLiteralCallExecutionTest {
 
@@ -98,20 +98,77 @@ final class DirectNamedLiteralCallExecutionTest {
     }
 
     @Test
-    void effectfulNamedValueAndSuppliedNoneRemainDisabled() {
-        for (String argument : java.util.List.of("effect()", "None", "value")) {
-            String source = """
-                    pub fnc pick(int a): int { return a; }
-                    pub fnc effect(): int { return 7; }
-                    pub routine main(): void {
-                        const int value = 9;
-                        const int result = pick(a: %s);
-                        return;
-                    }
-                    """.formatted(argument);
-            assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)), argument);
+    void sourceOrderedNamedFunctionCallsEvaluateOnceInLexicalOrder() throws Exception {
+        // A direct CallExpr can preserve the exact order when every named
+        // argument already binds to its declaration index. Nested effects
+        // are not extracted, reordered, cloned or executed during checking.
+        String source = """
+                pub fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 4;
+                }
+                pub fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 3;
+                }
+                pub fnc combine(int left, int right): int {
+                    return left * 10 + right;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(combine(left: first(), right: second()));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "named-source-ordered-effects.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
         }
+        assertEquals("AB43", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void sourceOrderedNamedScalarReadsAndExpressionsTypecheck() {
+        String source = """
+                pub fnc combine(int left, int right): int { return left * 10 + right; }
+                pub routine main(): void {
+                    const int value = 3;
+                    const int result = combine(left: value, right: 1 + 2);
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void reorderedEffectfulNamedArgumentsRemainRejected() {
+        String source = """
+                pub fnc first(): int { return 4; }
+                pub fnc second(): int { return 3; }
+                pub fnc combine(int left, int right): int { return left * 10 + right; }
+                pub routine main(): void {
+                    const int value = combine(right: second(), left: first());
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void suppliedNoneAndNonScalarValuesRemainDisabled() {
+        String source = """
+                pub fnc pick(int a): int { return a; }
+                pub routine main(): void {
+                    const int result = pick(a: None);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
     }
 
     @Test
