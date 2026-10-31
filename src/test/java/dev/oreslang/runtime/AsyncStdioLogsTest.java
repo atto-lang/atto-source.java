@@ -375,4 +375,57 @@ final class AsyncStdioLogsTest {
         assertTrue(flushed.get(), "successful async close must preserve final stdout flush");
     }
 
+    @Test
+    void sealingBeforeRetirementRejectsWorkWithoutWaitingForStalledSink() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer blocked = new Writer() {
+            @Override public void write(char[] chars, int offset, int length) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) throw new IOException("test sink timeout");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, true));
+        try {
+            OresFuture<Void> accepted = logs.logAsync("accepted\n");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            OresFuture<Void> acceptedBarrier = logs.flushAsync();
+
+            // This models the early context-retirement fence: it must not
+            // acquire the blocked writer monitor or await the drain thread.
+            java.util.concurrent.CompletableFuture.runAsync(logs::sealAdmission)
+                    .get(1, TimeUnit.SECONDS);
+            logs.sealAdmission(); // repeated retirement attempts are safe
+            assertThrows(IllegalStateException.class, () -> logs.logAsync("late\n"));
+            assertThrows(IllegalStateException.class, logs::flushAsync);
+            assertFalse(accepted.isDone());
+            assertFalse(acceptedBarrier.isDone());
+
+            release.countDown();
+            accepted.get(3, TimeUnit.SECONDS);
+            acceptedBarrier.get(3, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            logs.close();
+        }
+    }
+
+    @Test
+    void sealingAnUnusedWriterIsIdempotentAndRequiresNoDrainThread() {
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(new java.io.StringWriter()));
+        logs.sealAdmission();
+        logs.sealAdmission();
+        assertThrows(IllegalStateException.class, () -> logs.logAsync("late\n"));
+        assertThrows(IllegalStateException.class, logs::flushAsync);
+        assertDoesNotThrow(logs::close);
+        assertDoesNotThrow(logs::close);
+    }
+
 }

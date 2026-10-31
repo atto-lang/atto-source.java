@@ -176,12 +176,25 @@ public final class AsyncStdioLogs implements AutoCloseable {
      * hanging process termination forever. SIGKILL and host crashes cannot be
      * flushed by software.
      */
+    /**
+     * Stop accepting both records and barriers before physical context
+     * retirement. Never join the worker or acquire the host PrintWriter lock.
+     * Work admitted before this fence retains its completion receipt and
+     * continues draining even when an earlier shutdown stage must retry.
+     */
+    void sealAdmission() {
+        synchronized (lock) {
+            if (!accepting) return;
+            accepting = false;
+            if (drain != null) wake.release();
+        }
+    }
+
     @Override public void close() {
+        sealAdmission();
         Thread worker;
         synchronized (lock) {
-            accepting = false;
             worker = drain;
-            if (worker != null) wake.release();
         }
         if (worker == null) return;
         try {

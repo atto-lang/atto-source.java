@@ -542,6 +542,10 @@ public final class OresContext implements AutoCloseable {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+        // Fence new async stdout records and barriers before actor/native-I/O
+        // retirement can stall or fail. This is nonblocking: accepted output
+        // retains its worker and Future receipts until the later drain join.
+        asyncStdio.sealAdmission();
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
