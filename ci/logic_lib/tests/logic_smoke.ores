@@ -1,0 +1,37 @@
+// Portable regression fixture: call run() and require true.
+// No Java, C++, JavaScript, .NET, FFI, or external solver.
+import module propositional from "../src/propositional";
+import module horn from "../src/horn";
+
+define module logic_smoke as
+  pub fnc run(): bool {
+    if !propositional.implies(false, false); then return false; fi
+    if propositional.implies(true, false); then return false; fi
+    if !propositional.equivalent(true, true); then return false; fi
+    if propositional.exclusive_or(true, true); then return false; fi
+
+    let mut Array<bool> empty = new Array<bool>();
+    if !propositional.all_of(rt borrow empty); then return false; fi
+    if propositional.any_of(rt borrow empty); then return false; fi
+
+    let mut Array<String> facts = new Array<String>();
+    facts.add("parent_alice_bob");
+    let mut Array<horn.Rule> rules = new Array<horn.Rule>();
+    let mut Array<String> first = new Array<String>();
+    first.add("parent_alice_bob");
+    rules.add(new horn.Rule(first, "ancestor_alice_bob"));
+    let mut Array<String> second = new Array<String>();
+    second.add("ancestor_alice_bob");
+    rules.add(new horn.Rule(second, "reachable_bob"));
+
+    val closure = horn.deduce(rt borrow facts, rt borrow rules, 3);
+    if closure.is_err(); then return false; fi
+    val derived = closure.unwrap();
+    if !derived.contains("reachable_bob"); then return false; fi
+    if derived.contains("not_provable"); then return false; fi
+
+    val too_small = horn.deduce(rt borrow facts, rt borrow rules, 2);
+    if !too_small.is_err(); then return false; fi
+    return true;
+  }
+end

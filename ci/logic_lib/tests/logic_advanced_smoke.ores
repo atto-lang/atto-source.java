@@ -1,0 +1,139 @@
+// Cross-backend callable contract. Requires genuine compiler execution.
+import module term from "../src/term";
+import module unify from "../src/unify";
+import module datalog from "../src/datalog";
+import module proof from "../src/proof";
+import module relate from "../src/relate";
+import module induce from "../src/induce";
+
+define module logic_advanced_smoke as
+  fnc atom2(String relation, term.Term a, term.Term b): datalog.Atom {
+    let mut Array<term.Term> values = new Array<term.Term>();
+    values.add(a);
+    values.add(b);
+    return new datalog.Atom(relation, values);
+  }
+
+  pub fnc run(): bool {
+    val x = term.variable(0, 1);
+    val y = term.variable(1, 1);
+    val z = term.variable(2, 1);
+    val alice = term.symbol("alice");
+    val bob = term.symbol("bob");
+    val carol = term.symbol("carol");
+
+    // Typed scalar substitution and type mismatch.
+    val empty_subs = unify.empty();
+    val numeral_four = term.integer(4);
+    val assignment = unify.unify(rt borrow x, rt borrow alice,
+                                  rt borrow empty_subs, 64, 32);
+    if assignment.is_err(); then return false; fi
+    if !assignment.unwrap().matched; then return false; fi
+    val mismatch = unify.unify(rt borrow x, rt borrow numeral_four,
+                                rt borrow empty_subs, 64, 32);
+    if mismatch.is_err(); then return false; fi
+    if mismatch.unwrap().matched; then return false; fi
+
+    // Deep occurs check rejects self-containing substitutions.
+    val recursive_var = term.variable(4, 4);
+    let mut Array<term.Term> children = new Array<term.Term>();
+    children.add(recursive_var);
+    val tree = term.application("box", children);
+    val cycle = unify.unify(rt borrow recursive_var, rt borrow tree,
+                            rt borrow empty_subs, 64, 32);
+    if cycle.is_err(); then return false; fi
+    if cycle.unwrap().matched; then return false; fi
+
+    let mut Array<datalog.Schema> schemas = new Array<datalog.Schema>();
+    let mut Array<int> person_pair = new Array<int>();
+    person_pair.add(1);
+    person_pair.add(1);
+    schemas.add(new datalog.Schema("parent", person_pair));
+    schemas.add(new datalog.Schema("ancestor", person_pair));
+
+    let mut Array<datalog.Atom> facts = new Array<datalog.Atom>();
+    facts.add(atom2("parent", alice, bob));
+    facts.add(atom2("parent", bob, carol));
+
+    let mut Array<datalog.Rule> rules = new Array<datalog.Rule>();
+    let mut Array<datalog.Atom> base_body = new Array<datalog.Atom>();
+    base_body.add(atom2("parent", x, y));
+    rules.add(new datalog.Rule(atom2("ancestor", x, y), base_body));
+
+    let mut Array<datalog.Atom> recursive_body = new Array<datalog.Atom>();
+    recursive_body.add(atom2("parent", x, y));
+    recursive_body.add(atom2("ancestor", y, z));
+    rules.add(new datalog.Rule(atom2("ancestor", x, z), recursive_body));
+
+    val result = datalog.evaluate(rt borrow schemas, rt borrow facts,
+                                   rt borrow rules, 5, 10000);
+    if result.is_err(); then return false; fi
+    val knowledge = result.unwrap();
+    val target = atom2("ancestor", alice, carol);
+    if !knowledge.contains(rt borrow target); then return false; fi
+    if knowledge.facts.length() != 5; then return false; fi
+
+    val witness = proof.explain(rt borrow knowledge, rt borrow target, 8, 8);
+    if witness.is_err(); then return false; fi
+    if witness.unwrap().steps.length() != 4; then return false; fi
+    val tiny_proof = proof.explain(rt borrow knowledge, rt borrow target, 1, 8);
+    if !tiny_proof.is_err(); then return false; fi
+
+    val too_few = datalog.evaluate(rt borrow schemas, rt borrow facts,
+                                   rt borrow rules, 4, 10000);
+    if !too_few.is_err(); then return false; fi
+    val too_little_work = datalog.evaluate(rt borrow schemas, rt borrow facts,
+                                           rt borrow rules, 5, 1);
+    if !too_little_work.is_err(); then return false; fi
+
+    // An unbound variable in the head must fail before evaluation.
+    let mut Array<datalog.Rule> unsafe_rules = new Array<datalog.Rule>();
+    unsafe_rules.add(new datalog.Rule(
+      atom2("ancestor", x, term.variable(50, 1)), base_body));
+    val unsafe_result = datalog.evaluate(rt borrow schemas, rt borrow facts,
+                                          rt borrow unsafe_rules, 10, 10000);
+    if !unsafe_result.is_err(); then return false; fi
+
+    // Predicate types are checked even for extensional facts.
+    let mut Array<datalog.Atom> wrong_type = new Array<datalog.Atom>();
+    wrong_type.add(atom2("parent", term.integer(4), bob));
+    val type_error = datalog.evaluate(rt borrow schemas, rt borrow wrong_type,
+                                       rt borrow rules, 10, 10000);
+    if !type_error.is_err(); then return false; fi
+
+    // FIFO fair search lets the second branch succeed even if the first fails.
+    let mut Array<relate.Branch> branches = new Array<relate.Branch>();
+    let mut Array<relate.Equality> bad = new Array<relate.Equality>();
+    bad.add(new relate.Equality(x, alice));
+    bad.add(new relate.Equality(alice, bob));
+    let mut Array<relate.Equality> good = new Array<relate.Equality>();
+    good.add(new relate.Equality(y, bob));
+    branches.add(new relate.Branch(bad));
+    branches.add(new relate.Branch(good));
+    val search = relate.run(rt borrow branches, 20, 5);
+    if search.is_err(); then return false; fi
+    val search_result = search.unwrap();
+    if !search_result.complete || search_result.answers.length() != 1; then
+      return false;
+    fi
+    val truncated = relate.run(rt borrow branches, 1, 5);
+    if truncated.is_err(); then return false; fi
+    if truncated.unwrap().complete; then return false; fi
+
+    // Induction is judged by distinct train and holdout evidence, not proof.
+    let mut Array<induce.Example> samples = new Array<induce.Example>();
+    samples.add(new induce.Example("signal", true, true, false));
+    samples.add(new induce.Example("signal", true, true, false));
+    samples.add(new induce.Example("signal", true, true, true));
+    samples.add(new induce.Example("signal", true, true, true));
+    samples.add(new induce.Example("noise", true, false, false));
+    samples.add(new induce.Example("noise", true, false, true));
+    val scores = induce.score(rt borrow samples, 2, 2, 900);
+    if scores.is_err(); then return false; fi
+    val ranked = scores.unwrap();
+    if ranked.length() != 2; then return false; fi
+    if !ranked.get(0).accepted; then return false; fi
+    if ranked.get(1).accepted; then return false; fi
+    return true;
+  }
+end

@@ -1,0 +1,67 @@
+// Extract one finite, acyclic first-witness derivation DAG in dependency order.
+// Missing evidence is "not proved", not logical negation.
+import module datalog from "./datalog";
+
+define module proof as
+  pub define class Proof as
+    pub val Array<datalog.Derivation> steps;
+    pub constructor(Array<datalog.Derivation> steps) {
+      self.steps = steps;
+    }
+  end
+
+  fnc included(borrow Array<datalog.Derivation> steps,
+               borrow datalog.Atom target): bool {
+    for (const step of steps) {
+      if datalog.same(rt borrow step.conclusion, rt borrow target); then
+        return true;
+      fi
+    }
+    return false;
+  }
+
+  fnc visit(borrow datalog.Knowledge kb, borrow datalog.Atom target,
+            borrow Array<datalog.Derivation> visited,
+            int max_nodes, int depth): Result<Proof, String> {
+    if depth <= 0; then return Err("proof depth budget exceeded"); fi
+    if included(rt borrow visited, rt borrow target); then
+      return Ok(new Proof(visited));
+    fi
+    let int index = -1;
+    for (let i = 0; i < kb.derivations.length(); i++) {
+      val candidate = kb.derivations.get(i);
+      if datalog.same(rt borrow candidate.conclusion,
+                      rt borrow target); then
+        index = i;
+        break;
+      fi
+    }
+    if index < 0; then return Err("missing proof witness"); fi
+    val witness = kb.derivations.get(index);
+    let mut Array<datalog.Derivation> ordered = new Array<datalog.Derivation>();
+    for (const step of visited) { ordered.add(step); }
+    for (const premise of witness.premises) {
+      val sub = visit(rt borrow kb, rt borrow premise, rt borrow ordered,
+                      max_nodes, depth - 1);
+      if sub.is_err(); then return Err("proof missing, cyclic, or over budget"); fi
+      ordered = sub.unwrap().steps;
+    }
+    if ordered.length() >= max_nodes; then return Err("proof node budget exceeded"); fi
+    ordered.add(witness);
+    return Ok(new Proof(ordered));
+  }
+
+  pub fnc explain(borrow datalog.Knowledge kb, borrow datalog.Atom target,
+                  int max_nodes, int max_depth): Result<Proof, String> {
+    if max_nodes <= 0 || max_depth <= 0 ||
+       max_nodes > 10000 || max_depth > 10000; then
+      return Err("invalid proof limits");
+    fi
+    if !kb.contains(rt borrow target); then
+      return Err("target not derivable in knowledge base");
+    fi
+    val empty_steps = new Array<datalog.Derivation>();
+    return visit(rt borrow kb, rt borrow target,
+                 rt borrow empty_steps, max_nodes, max_depth);
+  }
+end

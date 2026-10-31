@@ -1,0 +1,32 @@
+// Pure Oreslang propositional operators. No foreign runtime or FFI.
+define module propositional as
+  pub fnc implies(bool premise, bool conclusion): bool {
+    return !premise || conclusion;
+  }
+
+  pub fnc equivalent(bool left, bool right): bool {
+    return left == right;
+  }
+
+  pub fnc exclusive_or(bool left, bool right): bool {
+    return left != right;
+  }
+
+  pub fnc all_of(borrow Array<bool> values): bool {
+    for (const value of values) {
+      if !value; then return false; fi
+    }
+    return true;
+  }
+
+  pub fnc any_of(borrow Array<bool> values): bool {
+    for (const value of values) {
+      if value; then return true; fi
+    }
+    return false;
+  }
+
+  pub fnc none_of(borrow Array<bool> values): bool {
+    return !any_of(rt borrow values);
+  }
+end

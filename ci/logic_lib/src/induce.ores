@@ -1,0 +1,88 @@
+// Experimental finite candidate scoring: observed feature => positive label.
+// This is inductive statistical evidence, never a deductive proof.
+define module induce as
+  pub define class Example as
+    pub val String feature;
+    pub val bool fired;
+    pub val bool positive;
+    pub val bool holdout;
+    pub constructor(String feature, bool fired, bool positive, bool holdout) {
+      self.feature = feature;
+      self.fired = fired;
+      self.positive = positive;
+      self.holdout = holdout;
+    }
+  end
+
+  pub define class Hypothesis as
+    pub val String feature;
+    pub val int train_support;
+    pub val int holdout_support;
+    pub val int train_precision_per_thousand;
+    pub val int holdout_precision_per_thousand;
+    pub val bool accepted;
+    pub constructor(String feature, int train_support, int holdout_support,
+                    int train_precision_per_thousand,
+                    int holdout_precision_per_thousand, bool accepted) {
+      self.feature = feature;
+      self.train_support = train_support;
+      self.holdout_support = holdout_support;
+      self.train_precision_per_thousand = train_precision_per_thousand;
+      self.holdout_precision_per_thousand = holdout_precision_per_thousand;
+      self.accepted = accepted;
+    }
+  end
+
+  fnc recorded(borrow Array<String> names, String name): bool {
+    for (const item of names) {
+      if item == name; then return true; fi
+    }
+    return false;
+  }
+
+  // A trigger is a sample with fired=true. Samples with fired=false do not
+  // affect precision. Dataset rows are treated as independent observations.
+  // Require holdout precision separately; division by zero is never accepted.
+  pub fnc score(borrow Array<Example> examples, int min_train,
+                int min_holdout, int min_precision_per_thousand):
+      Result<Array<Hypothesis>, String> {
+    if examples.length() > 10000 || min_train <= 0 ||
+       min_holdout <= 0 || min_precision_per_thousand < 0 ||
+       min_precision_per_thousand > 1000; then
+      return Err("invalid induction limits");
+    fi
+    let mut Array<String> seen = new Array<String>();
+    let mut Array<Hypothesis> outcomes = new Array<Hypothesis>();
+    for (const sample of examples) {
+      if sample.feature == ""; then return Err("empty induction feature"); fi
+      if !recorded(rt borrow seen, sample.feature); then
+        seen.add(sample.feature);
+        let int train = 0;
+        let int train_correct = 0;
+        let int held = 0;
+        let int held_correct = 0;
+        for (const row of examples) {
+          if row.feature == sample.feature && row.fired; then
+            if row.holdout; then
+              held = held + 1;
+              if row.positive; then held_correct = held_correct + 1; fi
+            else
+              train = train + 1;
+              if row.positive; then train_correct = train_correct + 1; fi
+            fi
+          fi
+        }
+        let int train_precision = 0;
+        let int held_precision = 0;
+        if train > 0; then train_precision = train_correct * 1000 / train; fi
+        if held > 0; then held_precision = held_correct * 1000 / held; fi
+        val accepted = train >= min_train && held >= min_holdout &&
+            train_precision >= min_precision_per_thousand &&
+            held_precision >= min_precision_per_thousand;
+        outcomes.add(new Hypothesis(sample.feature, train, held,
+                                    train_precision, held_precision, accepted));
+      fi
+    }
+    return Ok(outcomes);
+  }
+end

@@ -1,0 +1,82 @@
+// Finite, positive, propositional Horn logic (no negation, no variables).
+// A deliberately bounded reference implementation for portable inference.
+define module horn as
+  pub define class Rule as
+    pub val Array<String> premises;
+    pub val String conclusion;
+    pub constructor(Array<String> premises, String conclusion) {
+      self.premises = premises;
+      self.conclusion = conclusion;
+    }
+  end
+
+  pub define class Knowledge as
+    pub val Array<String> facts;
+    pub constructor(Array<String> facts) {
+      self.facts = facts;
+    }
+
+    pub contains(String atom): bool {
+      for (const fact of self.facts) {
+        if fact == atom; then return true; fi
+      }
+      return false;
+    }
+  end
+
+  fnc has(borrow Array<String> facts, String atom): bool {
+    for (const fact of facts) {
+      if fact == atom; then return true; fi
+    }
+    return false;
+  }
+
+  fnc enabled(borrow Array<String> known, borrow Rule rule): bool {
+    for (const premise of rule.premises) {
+      if !has(rt borrow known, premise); then return false; fi
+    }
+    return true;
+  }
+
+  // Immutable input snapshot; no mutation of caller-owned arrays.
+  // max_facts is a resource bound, not permission to silently truncate.
+  pub fnc deduce(borrow Array<String> seed,
+                 borrow Array<Rule> rules,
+                 int max_facts): Result<Knowledge, String> {
+    if max_facts <= 0; then return Err("max_facts must be positive"); fi
+    let mut Array<String> known = new Array<String>();
+    for (const fact of seed) {
+      if fact == ""; then return Err("empty fact"); fi
+      if !has(rt borrow known, fact); then
+        if known.length() >= max_facts; then
+          return Err("fact budget exceeded");
+        fi
+        known.add(fact);
+      fi
+    }
+    for (const rule of rules) {
+      if rule.conclusion == ""; then return Err("empty rule conclusion"); fi
+      for (const premise of rule.premises) {
+        if premise == ""; then return Err("empty rule premise"); fi
+      }
+    }
+
+    // Each changing pass adds at least one new fact. Finite universe =>
+    // termination; a pass without additions is a least fixed point.
+    let mut bool changed = true;
+    while changed {
+      changed = false;
+      for (const rule of rules) {
+        if !has(rt borrow known, rule.conclusion) &&
+           enabled(rt borrow known, rt borrow rule); then
+          if known.length() >= max_facts; then
+            return Err("fact budget exceeded");
+          fi
+          known.add(rule.conclusion);
+          changed = true;
+        fi
+      }
+    }
+    return Ok(new Knowledge(known));
+  }
+end

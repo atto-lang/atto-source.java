@@ -1,0 +1,364 @@
+// Schema-typed, positive, range-restricted Datalog with semi-naive delta joins.
+// Reference engine: deterministic, bounded, immutable input snapshots.
+// No negation-as-failure, aggregation, FFI, external solver, or host runtime.
+import module term from "./term";
+import module unify from "./unify";
+
+define module datalog as
+  pub define class Schema as
+    pub val String name;
+    pub val Array<int> columns;  // 1=symbol, 2=int, 3=bool
+    pub constructor(String name, Array<int> columns) {
+      self.name = name;
+      self.columns = columns;
+    }
+  end
+
+  pub define class Atom as
+    pub val String relation;
+    pub val Array<term.Term> values;
+    pub constructor(String relation, Array<term.Term> values) {
+      self.relation = relation;
+      self.values = values;
+    }
+  end
+
+  pub define class Rule as
+    pub val Atom head;
+    pub val Array<Atom> body;
+    pub constructor(Atom head, Array<Atom> body) {
+      self.head = head;
+      self.body = body;
+    }
+  end
+
+  // A witness always points to premises in an earlier fixed-point stratum.
+  // source_rule==-1 means an extensional (seed) fact.
+  pub define class Derivation as
+    pub val Atom conclusion;
+    pub val int source_rule;
+    pub val Array<Atom> premises;
+    pub constructor(Atom conclusion, int source_rule, Array<Atom> premises) {
+      self.conclusion = conclusion;
+      self.source_rule = source_rule;
+      self.premises = premises;
+    }
+  end
+
+  pub define class Knowledge as
+    pub val Array<Atom> facts;
+    pub val Array<Derivation> derivations;
+    pub constructor(Array<Atom> facts, Array<Derivation> derivations) {
+      self.facts = facts;
+      self.derivations = derivations;
+    }
+    pub contains(borrow Atom atom): bool {
+      return has(rt borrow self.facts, rt borrow atom);
+    }
+  end
+
+  define class Expansion as
+    val Array<Derivation> candidates;
+    val int remaining;
+    constructor(Array<Derivation> candidates, int remaining) {
+      self.candidates = candidates;
+      self.remaining = remaining;
+    }
+  end
+
+  // Only flat ground Datalog cells enter the database; applications belong
+  // to general-purpose unification, not relational columns.
+  pub fnc same(borrow Atom a, borrow Atom b): bool {
+    if a.relation != b.relation || a.values.length() != b.values.length(); then
+      return false;
+    fi
+    for (let i = 0; i < a.values.length(); i++) {
+      val x = a.values.get(i);
+      val y = b.values.get(i);
+      if x.kind != y.kind; then return false; fi
+      if x.kind == 1 && x.text != y.text; then return false; fi
+      if x.kind == 2 && x.number != y.number; then return false; fi
+      if x.kind == 3 && x.truth != y.truth; then return false; fi
+      if x.kind < 1 || x.kind > 3; then return false; fi
+    }
+    return true;
+  }
+
+  fnc has(borrow Array<Atom> facts, borrow Atom query): bool {
+    for (const fact of facts) {
+      if same(rt borrow fact, rt borrow query); then return true; fi
+    }
+    return false;
+  }
+
+  fnc schema_index(borrow Array<Schema> schemas, String name): int {
+    for (let i = 0; i < schemas.length(); i++) {
+      if schemas.get(i).name == name; then return i; fi
+    }
+    return -1;
+  }
+
+  fnc valid_atom(borrow Atom atom, borrow Array<Schema> schemas,
+                 bool allow_vars): bool {
+    val index = schema_index(rt borrow schemas, atom.relation);
+    if index < 0; then return false; fi
+    val signature = schemas.get(index);
+    if atom.values.length() != signature.columns.length(); then return false; fi
+    for (let j = 0; j < atom.values.length(); j++) {
+      val cell = atom.values.get(j);
+      val expected = signature.columns.get(j);
+      if cell.type_id != expected; then return false; fi
+      if cell.kind == 0; then
+        if !allow_vars || cell.variable_id < 0; then return false; fi
+      else
+        if cell.kind != expected || cell.arguments.length() != 0; then
+          return false;
+        fi
+      fi
+    }
+    return true;
+  }
+
+  fnc valid_rule(borrow Rule rule, borrow Array<Schema> schemas): bool {
+    if rule.body.length() > 16; then return false; fi
+    if !valid_atom(rt borrow rule.head, rt borrow schemas, true); then
+      return false;
+    fi
+    for (const atom of rule.body) {
+      if !valid_atom(rt borrow atom, rt borrow schemas, true); then
+        return false;
+      fi
+    }
+    // Rule-local IDs must have one consistent type throughout the rule.
+    let mut Array<int> ids = new Array<int>();
+    let mut Array<int> types = new Array<int>();
+    let mut Array<Atom> atoms = new Array<Atom>();
+    atoms.add(rule.head);
+    for (const atom of rule.body) { atoms.add(atom); }
+    for (const atom of atoms) {
+      for (const cell of atom.values) {
+        if cell.kind == 0; then
+          let bool known = false;
+          for (let i = 0; i < ids.length(); i++) {
+            if ids.get(i) == cell.variable_id; then
+              if types.get(i) != cell.type_id; then return false; fi
+              known = true;
+            fi
+          }
+          if !known; then
+            ids.add(cell.variable_id);
+            types.add(cell.type_id);
+          fi
+        fi
+      }
+    }
+    // Range restriction: each head variable occurs in a positive body atom.
+    for (const cell of rule.head.values) {
+      if cell.kind == 0; then
+        let bool seen = false;
+        for (const atom of rule.body) {
+          for (const body_cell of atom.values) {
+            if body_cell.kind == 0 &&
+               body_cell.variable_id == cell.variable_id; then
+              seen = true;
+            fi
+          }
+        }
+        if !seen; then return false; fi
+      fi
+    }
+    return true;
+  }
+
+  fnc match_atom(borrow Atom pattern, borrow Atom fact,
+                 borrow unify.Substitution env): Result<unify.Match, String> {
+    if pattern.relation != fact.relation ||
+       pattern.values.length() != fact.values.length(); then
+      return Ok(new unify.Match(false, env));
+    fi
+    let mut unify.Substitution bindings = env;
+    for (let i = 0; i < pattern.values.length(); i++) {
+      val left_cell = pattern.values.get(i);
+      val right_cell = fact.values.get(i);
+      val step = unify.unify(rt borrow left_cell,
+                             rt borrow right_cell,
+                             rt borrow bindings, 64, 512);
+      if step.is_err(); then return Err("Datalog unification failed"); fi
+      val m = step.unwrap();
+      if !m.matched; then return Ok(new unify.Match(false, env)); fi
+      bindings = m.bindings;
+    }
+    return Ok(new unify.Match(true, bindings));
+  }
+
+  fnc instantiate(borrow Atom head, borrow unify.Substitution env):
+      Result<Atom, String> {
+    let mut Array<term.Term> values = new Array<term.Term>();
+    for (const cell of head.values) {
+      val resolved = unify.resolve(rt borrow cell, rt borrow env, 64);
+      if resolved.is_err(); then return Err("head substitution failed"); fi
+      val value = resolved.unwrap();
+      if value.kind == 0 || value.kind > 3; then
+        return Err("unsafe or non-flat derived fact");
+      fi
+      values.add(value);
+    }
+    return Ok(new Atom(head.relation, values));
+  }
+
+  fnc join_from(borrow Rule rule, int rule_id, int position, int anchor,
+                borrow Array<Atom> known, borrow Array<Atom> delta,
+                borrow unify.Substitution env, borrow Array<Atom> witnesses,
+                int remaining): Result<Expansion, String> {
+    if position == rule.body.length(); then
+      val derived = instantiate(rt borrow rule.head, rt borrow env);
+      if derived.is_err(); then return Err("cannot ground rule head"); fi
+      let mut Array<Derivation> one = new Array<Derivation>();
+      one.add(new Derivation(derived.unwrap(), rule_id, witnesses));
+      return Ok(new Expansion(one, remaining));
+    fi
+    if position == anchor; then
+      return join_candidates(rt borrow rule, rule_id, position, anchor,
+                             rt borrow known, rt borrow delta,
+                             rt borrow delta, rt borrow env,
+                             rt borrow witnesses, remaining);
+    fi
+    return join_candidates(rt borrow rule, rule_id, position, anchor,
+                           rt borrow known, rt borrow delta,
+                           rt borrow known, rt borrow env,
+                           rt borrow witnesses, remaining);
+  }
+
+  fnc join_candidates(borrow Rule rule, int rule_id, int position, int anchor,
+                      borrow Array<Atom> known, borrow Array<Atom> delta,
+                      borrow Array<Atom> candidates,
+                      borrow unify.Substitution env, borrow Array<Atom> witnesses,
+                      int remaining): Result<Expansion, String> {
+    let mut int fuel = remaining;
+    let mut Array<Derivation> results = new Array<Derivation>();
+    val pattern = rule.body.get(position);
+    for (const fact of candidates) {
+      if fuel <= 0; then return Err("Datalog join work budget exceeded"); fi
+      fuel = fuel - 1;
+      val candidate = match_atom(rt borrow pattern, rt borrow fact,
+                                   rt borrow env);
+      if candidate.is_err(); then return Err("Datalog matching error"); fi
+      val match_result = candidate.unwrap();
+      if match_result.matched; then
+        let mut Array<Atom> more = new Array<Atom>();
+        for (const witness of witnesses) { more.add(witness); }
+        more.add(fact);
+        val tail = join_from(rt borrow rule, rule_id, position + 1, anchor,
+                             rt borrow known, rt borrow delta,
+                             rt borrow match_result.bindings, rt borrow more,
+                             fuel);
+        if tail.is_err(); then return Err("Datalog join work budget exceeded"); fi
+        val expansion = tail.unwrap();
+        fuel = expansion.remaining;
+        for (const proposal of expansion.candidates) {
+          if results.length() >= 100000; then
+            return Err("Datalog proposal budget exceeded");
+          fi
+          results.add(proposal);
+        }
+      fi
+    }
+    return Ok(new Expansion(results, fuel));
+  }
+
+  // Semi-naive delta: each nonempty-body rule fires with at least one premise
+  // drawn from the previous round's newly admitted facts. Other premises are
+  // drawn from a stable snapshot of all facts admitted before this round.
+  pub fnc evaluate(borrow Array<Schema> schemas, borrow Array<Atom> seed,
+                   borrow Array<Rule> rules, int max_facts,
+                   int max_work): Result<Knowledge, String> {
+    if max_facts <= 0 || max_facts > 10000 ||
+       max_work <= 0 || max_work > 1000000 ||
+       rules.length() > 1024 || schemas.length() > 1024; then
+      return Err("invalid Datalog resource limits");
+    fi
+    for (let i = 0; i < schemas.length(); i++) {
+      val s = schemas.get(i);
+      if s.name == "" || s.columns.length() > 16; then
+        return Err("invalid relation signature");
+      fi
+      for (const type_id of s.columns) {
+        if type_id < 1 || type_id > 3; then return Err("invalid column type"); fi
+      }
+      for (let j = 0; j < i; j++) {
+        if s.name == schemas.get(j).name; then
+          return Err("duplicate relation signature");
+        fi
+      }
+    }
+    for (const rule of rules) {
+      if !valid_rule(rt borrow rule, rt borrow schemas); then
+        return Err("unsafe or ill-typed rule");
+      fi
+    }
+    let mut Array<Atom> known = new Array<Atom>();
+    let mut Array<Atom> delta = new Array<Atom>();
+    let mut Array<Derivation> proofs = new Array<Derivation>();
+    for (const fact of seed) {
+      if !valid_atom(rt borrow fact, rt borrow schemas, false); then
+        return Err("ill-typed extensional fact");
+      fi
+      if !has(rt borrow known, rt borrow fact); then
+        if known.length() >= max_facts; then
+          return Err("Datalog fact budget exceeded");
+        fi
+        known.add(fact);
+        delta.add(fact);
+        proofs.add(new Derivation(fact, -1, new Array<Atom>()));
+      fi
+    }
+    for (let i = 0; i < rules.length(); i++) {
+      val rule = rules.get(i);
+      if rule.body.length() == 0 &&
+         !has(rt borrow known, rt borrow rule.head); then
+        if known.length() >= max_facts; then
+          return Err("Datalog fact budget exceeded");
+        fi
+        known.add(rule.head);
+        delta.add(rule.head);
+        proofs.add(new Derivation(rule.head, i, new Array<Atom>()));
+      fi
+    }
+
+    let mut int remaining = max_work;
+    while delta.length() > 0 {
+      let mut Array<Atom> next = new Array<Atom>();
+      let mut Array<Derivation> next_proofs = new Array<Derivation>();
+      for (let i = 0; i < rules.length(); i++) {
+        val rule = rules.get(i);
+        for (let anchor = 0; anchor < rule.body.length(); anchor++) {
+          val fresh = unify.empty();
+          val no_witnesses = new Array<Atom>();
+          val expanded = join_from(rt borrow rule, i, 0, anchor,
+                                    rt borrow known, rt borrow delta,
+                                    rt borrow fresh, rt borrow no_witnesses,
+                                    remaining);
+          if expanded.is_err(); then
+            return Err("Datalog work or substitution budget exceeded");
+          fi
+          val batch = expanded.unwrap();
+          remaining = batch.remaining;
+          for (const derivation of batch.candidates) {
+            if !has(rt borrow known, rt borrow derivation.conclusion) &&
+               !has(rt borrow next, rt borrow derivation.conclusion); then
+              if known.length() + next.length() >= max_facts; then
+                return Err("Datalog fact budget exceeded");
+              fi
+              next.add(derivation.conclusion);
+              next_proofs.add(derivation);
+            fi
+          }
+        }
+      }
+      for (const fact of next) { known.add(fact); }
+      for (const proof of next_proofs) { proofs.add(proof); }
+      delta = next;
+    }
+    return Ok(new Knowledge(known, proofs));
+  }
+end

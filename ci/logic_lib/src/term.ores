@@ -1,0 +1,78 @@
+// Typed logical terms. Kind 0=variable, 1=symbol, 2=int, 3=bool, 4=application.
+// Variables carry their expected type; applications are not Datalog column values.
+define module term as
+  pub define class Term as
+    pub val int kind;
+    pub val int type_id;
+    pub val int variable_id;
+    pub val String text;
+    pub val int number;
+    pub val bool truth;
+    pub val Array<Term> arguments;
+
+    pub constructor(int kind, int type_id, int variable_id, String text,
+                    int number, bool truth, Array<Term> arguments) {
+      self.kind = kind;
+      self.type_id = type_id;
+      self.variable_id = variable_id;
+      self.text = text;
+      self.number = number;
+      self.truth = truth;
+      self.arguments = arguments;
+    }
+
+    // A bounded check, including for malformed cyclic application graphs.
+    pub is_ground(int depth): Result<bool, String> {
+      if depth <= 0; then return Err("term groundness depth exceeded"); fi
+      if self.kind == 0; then return Ok(false); fi
+      for (const child of self.arguments) {
+        val result = child.is_ground(depth - 1);
+        if result.is_err(); then return Err("term groundness depth exceeded"); fi
+        if !result.unwrap(); then return Ok(false); fi
+      }
+      return Ok(true);
+    }
+  end
+
+  pub fnc variable(int id, int type_id): Term {
+    return new Term(0, type_id, id, "", 0, false, new Array<Term>());
+  }
+
+  pub fnc symbol(String text): Term {
+    return new Term(1, 1, -1, text, 0, false, new Array<Term>());
+  }
+
+  pub fnc integer(int value): Term {
+    return new Term(2, 2, -1, "", value, false, new Array<Term>());
+  }
+
+  pub fnc boolean(bool value): Term {
+    return new Term(3, 3, -1, "", 0, value, new Array<Term>());
+  }
+
+  pub fnc application(String name, Array<Term> children): Term {
+    return new Term(4, 4, -1, name, 0, false, children);
+  }
+
+  // Bounded structural comparison; depth overflow is an error, never false.
+  pub fnc equals(borrow Term a, borrow Term b, int depth): Result<bool, String> {
+    if depth <= 0; then return Err("term comparison depth exceeded"); fi
+    if a.kind != b.kind || a.type_id != b.type_id; then return Ok(false); fi
+    if a.kind == 0; then return Ok(a.variable_id == b.variable_id); fi
+    if a.kind == 1; then return Ok(a.text == b.text); fi
+    if a.kind == 2; then return Ok(a.number == b.number); fi
+    if a.kind == 3; then return Ok(a.truth == b.truth); fi
+    if a.kind != 4 || a.text != b.text ||
+       a.arguments.length() != b.arguments.length(); then
+      return Ok(false);
+    fi
+    for (let i = 0; i < a.arguments.length(); i++) {
+      val left_child = a.arguments.get(i);
+      val right_child = b.arguments.get(i);
+      val e = equals(rt borrow left_child, rt borrow right_child, depth - 1);
+      if e.is_err(); then return Err("term comparison depth exceeded"); fi
+      if !e.unwrap(); then return Ok(false); fi
+    }
+    return Ok(true);
+  }
+end

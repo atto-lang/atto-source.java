@@ -1,0 +1,3 @@
+Oreslang logic source PR #2 pinned head: 18888e0ad165d47fc8e95909e395fd7f6d37d84d
+All 14 exact content blobs are verified with git hash-object by the workflow.
+Source is pure .ores; no external org mirroring.

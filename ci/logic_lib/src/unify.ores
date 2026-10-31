@@ -1,0 +1,134 @@
+// Pure, immutable substitution-based first-order unification.
+// Failed matches are ordinary values; malformed/budget-exceeded work is Err.
+import module term from "./term";
+
+define module unify as
+  pub define class Binding as
+    pub val int variable_id;
+    pub val term.Term value;
+    pub constructor(int variable_id, term.Term value) {
+      self.variable_id = variable_id;
+      self.value = value;
+    }
+  end
+
+  pub define class Substitution as
+    pub val Array<Binding> entries;
+    pub constructor(Array<Binding> entries) {
+      self.entries = entries;
+    }
+  end
+
+  pub define class Match as
+    pub val bool matched;
+    pub val Substitution bindings;
+    pub constructor(bool matched, Substitution bindings) {
+      self.matched = matched;
+      self.bindings = bindings;
+    }
+  end
+
+  pub fnc empty(): Substitution {
+    return new Substitution(new Array<Binding>());
+  }
+
+  pub fnc resolve(borrow term.Term value, borrow Substitution env,
+                  int depth): Result<term.Term, String> {
+    if depth <= 0; then return Err("substitution depth exceeded"); fi
+    if value.kind != 0; then return Ok(value); fi
+    for (const binding of env.entries) {
+      if binding.variable_id == value.variable_id; then
+        return resolve(rt borrow binding.value, rt borrow env, depth - 1);
+      fi
+    }
+    return Ok(value);
+  }
+
+  fnc occurs(int id, borrow term.Term value, borrow Substitution env,
+             int depth): Result<bool, String> {
+    if depth <= 0; then return Err("occurs check depth exceeded"); fi
+    val deref = resolve(rt borrow value, rt borrow env, depth);
+    if deref.is_err(); then return Err("occurs check resolution exceeded"); fi
+    val item = deref.unwrap();
+    if item.kind == 0; then return Ok(item.variable_id == id); fi
+    for (const arg of item.arguments) {
+      val nested = occurs(id, rt borrow arg, rt borrow env, depth - 1);
+      if nested.is_err(); then return Err("occurs check depth exceeded"); fi
+      if nested.unwrap(); then return Ok(true); fi
+    }
+    return Ok(false);
+  }
+
+  fnc extend(borrow term.Term variable, borrow term.Term value,
+             borrow Substitution env, int depth,
+             int max_bindings): Result<Match, String> {
+    if variable.type_id != value.type_id && value.kind != 0; then
+      return Ok(new Match(false, env));
+    fi
+    if value.kind == 0 && variable.type_id != value.type_id; then
+      return Ok(new Match(false, env));
+    fi
+    if variable.kind != 0 || variable.variable_id < 0; then
+      return Err("invalid logic variable");
+    fi
+    if env.entries.length() >= max_bindings; then
+      return Err("binding budget exceeded");
+    fi
+    val cyclic = occurs(variable.variable_id, rt borrow value,
+                        rt borrow env, depth);
+    if cyclic.is_err(); then return Err("occurs check failed"); fi
+    if cyclic.unwrap(); then return Ok(new Match(false, env)); fi
+    let mut Array<Binding> copy = new Array<Binding>();
+    for (const binding of env.entries) { copy.add(binding); }
+    copy.add(new Binding(variable.variable_id, value));
+    return Ok(new Match(true, new Substitution(copy)));
+  }
+
+  pub fnc unify(borrow term.Term left, borrow term.Term right,
+                borrow Substitution env, int depth,
+                int max_bindings): Result<Match, String> {
+    if depth <= 0 || max_bindings <= 0; then
+      return Err("unification budget exceeded");
+    fi
+    val ar = resolve(rt borrow left, rt borrow env, depth);
+    val br = resolve(rt borrow right, rt borrow env, depth);
+    if ar.is_err() || br.is_err(); then return Err("resolution budget exceeded"); fi
+    val a = ar.unwrap();
+    val b = br.unwrap();
+    if a.kind == 0 && b.kind == 0 && a.variable_id == b.variable_id; then
+      if a.type_id != b.type_id; then return Ok(new Match(false, env)); fi
+      return Ok(new Match(true, env));
+    fi
+    if a.kind == 0; then
+      return extend(rt borrow a, rt borrow b, rt borrow env,
+                    depth - 1, max_bindings);
+    fi
+    if b.kind == 0; then
+      return extend(rt borrow b, rt borrow a, rt borrow env,
+                    depth - 1, max_bindings);
+    fi
+    if a.kind != b.kind || a.type_id != b.type_id; then
+      return Ok(new Match(false, env));
+    fi
+    if a.kind == 1; then return Ok(new Match(a.text == b.text, env)); fi
+    if a.kind == 2; then return Ok(new Match(a.number == b.number, env)); fi
+    if a.kind == 3; then return Ok(new Match(a.truth == b.truth, env)); fi
+    if a.kind != 4 || a.text != b.text ||
+       a.arguments.length() != b.arguments.length(); then
+      return Ok(new Match(false, env));
+    fi
+    let mut Substitution next = env;
+    for (let i = 0; i < a.arguments.length(); i++) {
+      val left_child = a.arguments.get(i);
+      val right_child = b.arguments.get(i);
+      val step = unify(rt borrow left_child,
+                       rt borrow right_child, rt borrow next,
+                       depth - 1, max_bindings);
+      if step.is_err(); then return Err("compound unification failed"); fi
+      val matched = step.unwrap();
+      if !matched.matched; then return Ok(new Match(false, env)); fi
+      next = matched.bindings;
+    }
+    return Ok(new Match(true, next));
+  }
+end

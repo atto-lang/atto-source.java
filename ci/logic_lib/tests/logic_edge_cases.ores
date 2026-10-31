@@ -1,0 +1,162 @@
+// Failure-first regression checks: all tests are Oreslang guest programs.
+// This module should be run via tests/main.ores by every backend.
+import module term from "../src/term";
+import module unify from "../src/unify";
+import module datalog from "../src/datalog";
+import module proof from "../src/proof";
+import module relate from "../src/relate";
+import module induce from "../src/induce";
+
+define module logic_edge_cases as
+  fnc unification_edges(): bool {
+    val empty = unify.empty();
+    val a = term.variable(1, 4);
+    val b = term.variable(2, 4);
+    let mut Array<term.Term> args = new Array<term.Term>();
+    args.add(a);
+    val compound = term.application("f", args);
+
+    // Direct self-occurrence must fail, not produce an infinite term.
+    val direct = unify.unify(rt borrow a, rt borrow compound,
+                             rt borrow empty, 16, 8);
+    if direct.is_err(); then return false; fi
+    if direct.unwrap().matched; then return false; fi
+
+    // Indirect occurrence through a prior binding must also fail.
+    val alias = unify.unify(rt borrow a, rt borrow b,
+                            rt borrow empty, 16, 8);
+    if alias.is_err(); then return false; fi
+    val linked = alias.unwrap();
+    if !linked.matched; then return false; fi
+    let mut Array<term.Term> b_args = new Array<term.Term>();
+    b_args.add(a);
+    val b_compound = term.application("f", b_args);
+    val indirect = unify.unify(rt borrow b, rt borrow b_compound,
+                               rt borrow linked.bindings, 16, 8);
+    if indirect.is_err(); then return false; fi
+    if indirect.unwrap().matched; then return false; fi
+
+    // Resolving with exhausted depth must be a hard error.
+    val zero_depth = unify.resolve(rt borrow a, rt borrow empty, 0);
+    if !zero_depth.is_err(); then return false; fi
+
+    // Existing same-variable equality must not allocate a binding.
+    val identical = unify.unify(rt borrow a, rt borrow a,
+                                 rt borrow empty, 16, 1);
+    if identical.is_err(); then return false; fi
+    if !identical.unwrap().matched; then return false; fi
+
+    // Variable sorts must be invariant.
+    val sym_var = term.variable(3, 1);
+    val int_var = term.variable(4, 2);
+    val mismatched_sort = unify.unify(rt borrow sym_var, rt borrow int_var,
+                                      rt borrow empty, 16, 8);
+    if mismatched_sort.is_err(); then return false; fi
+    if mismatched_sort.unwrap().matched; then return false; fi
+
+    // Check that partial terms are not accidentally treated as ground.
+    val partial = compound.is_ground(16);
+    if partial.is_err(); then return false; fi
+    if partial.unwrap(); then return false; fi
+    val ground = term.integer(7);
+    val checked = ground.is_ground(16);
+    if checked.is_err(); then return false; fi
+    if !checked.unwrap(); then return false; fi
+    val too_deep = ground.is_ground(0);
+    if !too_deep.is_err(); then return false; fi
+    return true;
+  }
+
+  fnc datalog_edges(): bool {
+    let mut Array<datalog.Schema> schemas = new Array<datalog.Schema>();
+    let no_columns = new Array<int>();
+    schemas.add(new datalog.Schema("ready", no_columns));
+    let mut Array<int> one_symbol = new Array<int>();
+    one_symbol.add(1);
+    schemas.add(new datalog.Schema("mark", one_symbol));
+
+    // Zero-ary extensional facts and a zero-body rule are permitted.
+    let seeds = new Array<datalog.Atom>();
+    let mut Array<datalog.Rule> rules = new Array<datalog.Rule>();
+    val ready_fact = new datalog.Atom("ready", new Array<term.Term>());
+    rules.add(new datalog.Rule(ready_fact, new Array<datalog.Atom>()));
+    val derived = datalog.evaluate(rt borrow schemas, rt borrow seeds,
+                                   rt borrow rules, 2, 100);
+    if derived.is_err(); then return false; fi
+    val kb = derived.unwrap();
+    if kb.facts.length() != 1; then return false; fi
+    if !kb.contains(rt borrow ready_fact); then return false; fi
+    val explanation = proof.explain(rt borrow kb, rt borrow ready_fact, 2, 4);
+    if explanation.is_err(); then return false; fi
+    if explanation.unwrap().steps.length() != 1; then return false; fi
+    val missing = new datalog.Atom("mark", new Array<term.Term>());
+    if kb.contains(rt borrow missing); then return false; fi
+
+    // Zero budget, duplicate schemas, and non-ground facts must be rejected.
+    val bad_budget = datalog.evaluate(rt borrow schemas, rt borrow seeds,
+                                      rt borrow rules, 0, 100);
+    if !bad_budget.is_err(); then return false; fi
+    let mut Array<datalog.Schema> duplicates = new Array<datalog.Schema>();
+    duplicates.add(new datalog.Schema("ready", new Array<int>()));
+    duplicates.add(new datalog.Schema("ready", new Array<int>()));
+    val duplicate_result = datalog.evaluate(rt borrow duplicates, rt borrow seeds,
+                                             rt borrow rules, 4, 100);
+    if !duplicate_result.is_err(); then return false; fi
+
+    let mut Array<datalog.Atom> non_ground = new Array<datalog.Atom>();
+    let mut Array<term.Term> variable_columns = new Array<term.Term>();
+    variable_columns.add(term.variable(7, 1));
+    non_ground.add(new datalog.Atom("mark", variable_columns));
+    val non_ground_result = datalog.evaluate(rt borrow schemas,
+                                              rt borrow non_ground,
+                                              rt borrow rules, 4, 100);
+    if !non_ground_result.is_err(); then return false; fi
+
+    // Unbound head variables (range-restriction failures) fail closed.
+    let mut Array<term.Term> unbound_columns = new Array<term.Term>();
+    unbound_columns.add(term.variable(9, 1));
+    let unbound_head = new datalog.Atom("mark", unbound_columns);
+    let no_body = new Array<datalog.Atom>();
+    let mut Array<datalog.Rule> unsafe_rules = new Array<datalog.Rule>();
+    unsafe_rules.add(new datalog.Rule(unbound_head, no_body));
+    val unsafe_result = datalog.evaluate(rt borrow schemas, rt borrow seeds,
+                                          rt borrow unsafe_rules, 4, 100);
+    if !unsafe_result.is_err(); then return false; fi
+    return true;
+  }
+
+  fnc relational_edges(): bool {
+    val branches = new Array<relate.Branch>();
+    val empty_result = relate.run(rt borrow branches, 4, 4);
+    if empty_result.is_err(); then return false; fi
+    val s = empty_result.unwrap();
+    if !s.complete || s.answers.length() != 0 || s.steps != 0; then
+      return false;
+    fi
+    val invalid_budget = relate.run(rt borrow branches, 0, 4);
+    if !invalid_budget.is_err(); then return false; fi
+    return true;
+  }
+
+  fnc induction_edges(): bool {
+    let mut Array<induce.Example> samples = new Array<induce.Example>();
+    samples.add(new induce.Example("not_enough_holdout", true, true, false));
+    samples.add(new induce.Example("not_enough_holdout", true, true, false));
+    val result = induce.score(rt borrow samples, 2, 1, 500);
+    if result.is_err(); then return false; fi
+    val hypotheses = result.unwrap();
+    if hypotheses.length() != 1; then return false; fi
+    if hypotheses.get(0).accepted; then return false; fi
+    val invalid = induce.score(rt borrow samples, 2, 1, 1001);
+    if !invalid.is_err(); then return false; fi
+    return true;
+  }
+
+  pub fnc run(): bool {
+    if !unification_edges(); then return false; fi
+    if !datalog_edges(); then return false; fi
+    if !relational_edges(); then return false; fi
+    if !induction_edges(); then return false; fi
+    return true;
+  }
+end

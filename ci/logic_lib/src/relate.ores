@@ -1,0 +1,86 @@
+// Fair FIFO scheduling across finite branches of equality constraints.
+// This is a bounded miniKanren-style kernel, not general recursive search.
+import module term from "./term";
+import module unify from "./unify";
+
+define module relate as
+  pub define class Equality as
+    pub val term.Term left;
+    pub val term.Term right;
+    pub constructor(term.Term left, term.Term right) {
+      self.left = left;
+      self.right = right;
+    }
+  end
+
+  pub define class Branch as
+    pub val Array<Equality> goals;
+    pub constructor(Array<Equality> goals) { self.goals = goals; }
+  end
+
+  define class State as
+    val int branch;
+    val int position;
+    val unify.Substitution env;
+    constructor(int branch, int position, unify.Substitution env) {
+      self.branch = branch;
+      self.position = position;
+      self.env = env;
+    }
+  end
+
+  pub define class Search as
+    pub val Array<unify.Substitution> answers;
+    pub val bool complete;
+    pub val int steps;
+    pub constructor(Array<unify.Substitution> answers, bool complete,
+                    int steps) {
+      self.answers = answers;
+      self.complete = complete;
+      self.steps = steps;
+    }
+  end
+
+  pub fnc run(borrow Array<Branch> branches, int max_steps,
+              int max_answers): Result<Search, String> {
+    if max_steps <= 0 || max_steps > 1000000 ||
+       max_answers <= 0 || max_answers > 10000 ||
+       branches.length() > 1024; then
+      return Err("invalid relational-search limits");
+    fi
+    let mut Array<State> queue = new Array<State>();
+    let mut Array<unify.Substitution> answers =
+      new Array<unify.Substitution>();
+    for (let i = 0; i < branches.length(); i++) {
+      if branches.get(i).goals.length() > 256; then
+        return Err("relational conjunction too large");
+      fi
+      queue.add(new State(i, 0, unify.empty()));
+    }
+    let int cursor = 0;
+    let int steps = 0;
+    while cursor < queue.length() && steps < max_steps &&
+          answers.length() < max_answers {
+      val item = queue.get(cursor);
+      cursor = cursor + 1;
+      steps = steps + 1;
+      val branch = branches.get(item.branch);
+      if item.position >= branch.goals.length(); then
+        answers.add(item.env);
+      else
+        val goal = branch.goals.get(item.position);
+        val matched = unify.unify(rt borrow goal.left,
+                                   rt borrow goal.right,
+                                   rt borrow item.env, 64, 512);
+        if matched.is_err(); then
+          return Err("relational search unification budget exceeded");
+        fi
+        val m = matched.unwrap();
+        if m.matched; then
+          queue.add(new State(item.branch, item.position + 1, m.bindings));
+        fi
+      fi
+    }
+    return Ok(new Search(answers, cursor >= queue.length(), steps));
+  }
+end

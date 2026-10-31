@@ -1,4 +1,4 @@
-name: Oreslang logic guest compiler canary
+name: Oreslang logic exact-blob guest canary and suite
 
 on:
   push:
@@ -15,28 +15,37 @@ concurrency:
 jobs:
   compile-and-run-oreslang:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
-      - name: Checkout exact Java compiler commit
+      - name: Checkout compiler with no persisted credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Set up GraalVM 25 and Maven
+      - name: Set up GraalVM 25
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: '25.3'
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Print actual checked-out compiler SHA
+      - name: Verify exact pinned logic test-source Git blobs
         run: |
           set -eu
           git rev-parse HEAD
           java -version
           mvn -version
-      - name: Compile the real Java/GraalVM Oreslang compiler
+          while read -r expected path; do
+            [ -f "$path" ] || { echo "missing $path"; exit 1; }
+            actual="$(git hash-object "$path")"
+            [ "$actual" = "$expected" ] || { echo "logic blob mismatch: $path expected $expected got $actual"; exit 1; }
+          done < ci/logic_lib/expected-blobs.txt
+      - name: Build genuine Oreslang Java/GraalVM compiler
         run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests package
-      - name: Parse and type-check real Oreslang guest canary
-        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests exec:java -Dexec.args="--check ci/logic_canary.ores"
-      - name: Execute real Oreslang guest canary
-        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests exec:java -Dexec.args="ci/logic_canary.ores"
+      - name: Real compiler check - scalar canary
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests exec:java -Dexec.args="--check ci/logic_lib/tests/compiler_canary.ores"
+      - name: Real Oreslang guest execution - scalar canary
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests exec:java -Dexec.args="ci/logic_lib/tests/compiler_canary.ores"
+      - name: Real compiler check - full logic import graph
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests exec:java -Dexec.args="--check ci/logic_lib/tests/main.ores"
+      - name: Real Oreslang guest execution - full logic suite
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests exec:java -Dexec.args="ci/logic_lib/tests/main.ores"

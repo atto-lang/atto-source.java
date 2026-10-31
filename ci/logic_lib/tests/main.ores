@@ -1,0 +1,13 @@
+// Executable contract: exit 0 only when both Oreslang smoke suites pass.
+import module logic_smoke from "./logic_smoke";
+import module logic_advanced_smoke from "./logic_advanced_smoke";
+import module logic_edge_cases from "./logic_edge_cases";
+
+define module logic_test_runner as
+  pub fnc main(): int {
+    if !logic_smoke.run(); then return 1; fi
+    if !logic_advanced_smoke.run(); then return 2; fi
+    if !logic_edge_cases.run(); then return 3; fi
+    return 0;
+  }
+end
