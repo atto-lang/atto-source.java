@@ -55,6 +55,7 @@ final class DbDurableWalAuthority {
                     trustedDirectory, basename, ownerGeneration);
             try {
                 io.register(opened);
+                grant.bindPhysicalFile(opened);
                 return new DbDurableWalAuthority(
                         context, actor, filePath, opened, grant);
             } catch (Exception rejected) {
@@ -114,16 +115,21 @@ final class DbDurableWalAuthority {
         // CONTROL rejection/never-started cancellation leaves CLOSING:
         // context-owned registration retains the physical file for a
         // verified shutdown sweep. Never release or retry optimistically.
-        return io.submitControl("db.wal.revoke", () -> {
+        java.util.concurrent.atomic.AtomicBoolean closeSucceeded =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        return io.submitControlWithRetirementHook("db.wal.revoke", () -> {
             try (AsyncNativeIo.IoLoan loan = io.borrow(file)) {
                 file.close();
             }
-            // Only remove the registered handle once file close AND its
-            // final physical loan have actually retired.
+            // The physical resource loan exited, but AsyncNativeIo's
+            // callback-drain and final operation retirement have NOT yet.
             io.unregister(file);
-            lifecycle.physicalCloseRetired();
-            grant.physicalRetire();
+            closeSucceeded.set(true);
             return null;
+        }, () -> {
+            if (!closeSucceeded.get()) return; // unknown; stay CLOSING
+            lifecycle.physicalCloseRetired();
+            grant.physicalRetire(file, lifecycle);
         });
     }
 

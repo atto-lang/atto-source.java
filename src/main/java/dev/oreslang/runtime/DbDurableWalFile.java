@@ -137,6 +137,7 @@ final class DbDurableWalFile implements AutoCloseable {
     }
 
     synchronized boolean uncertain() { return uncertain; }
+    synchronized boolean closed() { return closed; }
 
     @Override public synchronized void close() throws IOException {
         if (closed) return;

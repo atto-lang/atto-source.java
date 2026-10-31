@@ -24,6 +24,7 @@ final class DbWalTrustedGrantRegistry {
         private final Shard shard;
         private final int generation;
         private Phase phase = Phase.ACTIVE;
+        private DbDurableWalFile boundFile;
 
         private Grant(DbWalTrustedGrantRegistry issuer,
                 ActorRuntime.ActorId actorId, Shard shard, int generation) {
@@ -47,8 +48,13 @@ final class DbWalTrustedGrantRegistry {
             issuer.beginDrainForCurrentActor(this, expectedRuntime);
         }
 
-        void physicalRetire() {
-            issuer.retireAfterPhysicalClose(this);
+        void bindPhysicalFile(DbDurableWalFile file) {
+            issuer.bindPhysicalFile(this, file);
+        }
+
+        void physicalRetire(DbDurableWalFile file,
+                DbWalAuthorityLifecycle lifecycle) {
+            issuer.retireAfterPhysicalClose(this, file, lifecycle);
         }
     }
 
@@ -95,15 +101,36 @@ final class DbWalTrustedGrantRegistry {
     }
 
     /**
-     * Called only by the trusted physical close path after actual FD close
-     * and its last resource loan have retired. This method does NOT itself
-     * prove that condition. No guest message may invoke it.
+     * Bind the exact physical WAL object once. An open that finishes after
+     * drain/revocation cannot publish a usable grant. Never bind by pathname
+     * or a guest-supplied file descriptor.
      */
-    synchronized void retireAfterPhysicalClose(Grant grant) {
+    synchronized void bindPhysicalFile(Grant grant, DbDurableWalFile file) {
         Objects.requireNonNull(grant);
+        Objects.requireNonNull(file);
+        if (sealed || grant.issuer != this || owners.get(grant.shard) != grant
+                || grant.phase != Phase.ACTIVE || grant.boundFile != null
+                || file.closed())
+            throw new SecurityException("WAL grant already bound, stale or draining");
+        grant.boundFile = file;
+    }
+
+    /**
+     * Host-only final retirement: require same bound file, its real closed
+     * state, and the WAL lifecycle's post-completion-callback CLOSED state.
+     * Callers must obtain that state through the AsyncNativeIo physical
+     * retirement hook; this is NOT a guest-callable close receipt.
+     */
+    synchronized void retireAfterPhysicalClose(Grant grant,
+            DbDurableWalFile file, DbWalAuthorityLifecycle lifecycle) {
+        Objects.requireNonNull(grant);
+        Objects.requireNonNull(file);
+        Objects.requireNonNull(lifecycle);
         if (grant.issuer != this || owners.get(grant.shard) != grant
-                || grant.phase != Phase.DRAINING)
-            throw new IllegalStateException("WAL physical retirement out of order");
+                || grant.phase != Phase.DRAINING || grant.boundFile != file
+                || !file.closed()
+                || lifecycle.phase() != DbWalAuthorityLifecycle.Phase.CLOSED)
+            throw new IllegalStateException("WAL unverified physical retirement");
         grant.phase = Phase.RETIRED;
         owners.remove(grant.shard);
     }

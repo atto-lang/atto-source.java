@@ -237,11 +237,25 @@ public final class AsyncNativeIo implements AutoCloseable {
     }
 
     synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
-        return admit(operation, work, controls, CONTROL_CAPACITY, controlWorkers, null);
+        return admit(operation, work, controls, CONTROL_CAPACITY,
+                controlWorkers, null, null);
+    }
+
+    /**
+     * Host-only physical-retirement callback. Unlike an OresFuture terminal
+     * callback, this runs AFTER all completion subscribers and the worker's
+     * actor loan/operation have physically retired. Never call guest code.
+     * A never-admitted/never-started CONTROL task has NO retirement receipt.
+     */
+    synchronized <T> OresFuture<T> submitControlWithRetirementHook(
+            String operation, Callable<T> work, Runnable onPhysicallyRetired) {
+        Objects.requireNonNull(onPhysicallyRetired);
+        return admit(operation, work, controls, CONTROL_CAPACITY,
+                controlWorkers, null, onPhysicallyRetired);
     }
 
     synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
-        return admit(operation, work, pending, capacity, workers, null);
+        return admit(operation, work, pending, capacity, workers, null, null);
     }
 
     /**
@@ -253,12 +267,13 @@ public final class AsyncNativeIo implements AutoCloseable {
     synchronized <T> OresFuture<T> submitWithNonStartHook(
             String operation, Callable<T> work, Runnable onNeverStarted) {
         Objects.requireNonNull(onNeverStarted);
-        return admit(operation, work, pending, capacity, workers, onNeverStarted);
+        return admit(operation, work, pending, capacity,
+                workers, onNeverStarted, null);
     }
 
     private <T> OresFuture<T> admit(String operation, Callable<T> work,
             Set<Operation<?>> admitted, int limit, ThreadPoolExecutor executor,
-            Runnable onNeverStarted) {
+            Runnable onNeverStarted, Runnable onPhysicallyRetired) {
         Objects.requireNonNull(operation);
         Objects.requireNonNull(work);
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
@@ -272,7 +287,8 @@ public final class AsyncNativeIo implements AutoCloseable {
 
         Operation<T> op = new Operation<>(
                 operation, work, result, admitted,
-                ActorRuntime.currentActorId().orElse(null), onNeverStarted);
+                ActorRuntime.currentActorId().orElse(null),
+                onNeverStarted, onPhysicallyRetired);
         admitted.add(op); // Reserve before publishing work to any executor.
         incrementActorOperationLocked(op.admittedActor);
         long queuedAt = CorePerf.start();
@@ -313,19 +329,21 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final Set<Operation<?>> owner;
         private final ActorRuntime.ActorId admittedActor;
         private final Runnable onNeverStarted;
+        private final Runnable onPhysicallyRetired;
         private final AtomicReference<OperationState> state =
                 new AtomicReference<>(OperationState.ADMITTED);
         private long queuedAt;
 
         private Operation(String operation, Callable<T> work, OresFuture<T> completion,
                 Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor,
-                Runnable onNeverStarted) {
+                Runnable onNeverStarted, Runnable onPhysicallyRetired) {
             this.operation = operation;
             this.work = work;
             this.completion = completion;
             this.owner = owner;
             this.admittedActor = admittedActor;
             this.onNeverStarted = onNeverStarted;
+            this.onPhysicallyRetired = onPhysicallyRetired;
         }
 
         @Override public void run() {
@@ -370,6 +388,15 @@ public final class AsyncNativeIo implements AutoCloseable {
                 }
                 executingWorker.remove();
                 notifyActorRetirement(retireActor);
+                if (onPhysicallyRetired != null) {
+                    try {
+                        onPhysicallyRetired.run();
+                    } catch (RuntimeException | Error callbackFailure) {
+                        recordIncomplete(callbackFailure);
+                        // An unverified callback must quarantine the context
+                        // rather than convert a file close to an ACK.
+                    }
+                }
             }
             if (failure instanceof VirtualMachineError fatal) throw fatal;
             if (failure instanceof ThreadDeath fatal) throw fatal;
