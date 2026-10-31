@@ -335,6 +335,11 @@ public final class ReturnCleanupChecker {
             }
             expression(call.callee(), scope, inDefer, state);
             call.arguments().forEach(e -> expression(e, scope, inDefer, state));
+        } else if (expr instanceof Ast.SpawnNamedArgExpr named) {
+            expression(named.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.InitStateExpr initialState) {
+            initialState.fields().forEach(f ->
+                    expression(f.value(), scope, inDefer, state));
         } else if (expr instanceof Ast.RuntimeCallExpr call) {
             call.arguments().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.MemberExpr member) {
