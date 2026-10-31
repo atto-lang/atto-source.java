@@ -59,4 +59,34 @@ final class SelectPlanCollectionInputTest {
                 List.of(ChannelRuntime.defaultCase(), ChannelRuntime.defaultCase())));
         assertEquals(0, channel.pendingRegistrations());
     }
+
+    @Test
+    void persistentMutableWritePayloadFailsBeforeAnyChannelPublication() {
+        var channel = new ChannelRuntime.Channel<Object>(1);
+        var mutable = new java.util.ArrayList<Integer>();
+        var write = ChannelRuntime.write(channel, mutable);
+        assertThrows(IllegalArgumentException.class,
+                () -> ChannelRuntime.SelectPlan.of(write));
+        var dynamic = new ChannelRuntime.DynamicSelectPlan<String>();
+        assertThrows(IllegalArgumentException.class,
+                () -> dynamic.put("unsafe", write));
+        assertEquals(0L, dynamic.version());
+        assertEquals(0, dynamic.size());
+        assertEquals(0, channel.pendingRegistrations());
+        assertTrue(channel.tryRead().isEmpty());
+        dynamic.put("safe", ChannelRuntime.write(channel, 42));
+        assertEquals("safe", dynamic.trySelectKeyed(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow().key());
+        assertEquals(42, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void dynamicListQuotaIsCheckedBeforePublishingPlan() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var tooMany = java.util.Collections.nCopies(
+                ChannelRuntime.MAX_SELECT_CASES + 1, ChannelRuntime.read(channel));
+        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+                () -> ChannelRuntime.DynamicSelectPlan.fromList(tooMany));
+        assertEquals(0, channel.pendingRegistrations());
+    }
 }
