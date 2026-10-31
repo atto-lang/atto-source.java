@@ -53,10 +53,11 @@ final class DbWalTrustedGrantRegistryTest {
             assertNull(error.get());
             assertEquals(1, registry.activeShardCount());
             assertNotNull(second.get());
+            // This test models a trusted worker proving that an attempted
+            // physical open failed before it acquired/registered any file.
+            second.get().failedOpenWithoutResource();
             assertThrows(IllegalStateException.class,
                     () -> second.get().failedOpenWithoutResource());
-            // The trusted worker may only retire an OPENING grant after it
-            // has established that no file/registered resource survives.
             assertEquals(0, registry.activeShardCount());
         }
     }
