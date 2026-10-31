@@ -12,7 +12,7 @@
 
 ## Capacity and failure contract
 
-Each context has a queue of 1,024 records, maximum 65,536 UTF-8 bytes per rendered record, and at most 1,024 pending async flush barriers. Admission returns promptly or raises on a full queue, excess record size, writer closure, barrier exhaustion, or terminal sink failure. Queuing is in-memory, non-durable, and bounded by record count, **not** a separate graph-wide byte budget. Source formatting may allocate before the size check; adversarial size-amplifying renderers remain a separate resource-analysis gate.
+Each context has a queue of 1,024 records, an additional **8 MiB aggregate pending-byte limit counting the in-flight record**, maximum 65,536 UTF-8 bytes per rendered record, and at most 1,024 pending async flush barriers. Admission returns promptly or raises on a full queue, excess record size, writer closure, barrier exhaustion, or terminal sink failure. Queuing is in-memory, non-durable, and bounded by both record count and a per-context byte budget; **there is still no graph-wide or tenant-wide aggregate byte budget across contexts**. Source formatting may allocate before the size check; adversarial size-amplifying renderers remain a separate resource-analysis gate.
 
 Writer I/O happens on a daemon platform thread. Accepted records are FIFO per context, but mixed synchronous writes are serialized only by the shared PrintWriter monitor. A sink failure marks the queue terminal and fails accepted record/barrier Futures. A lost Future does not revoke accepted data.
 
@@ -27,7 +27,7 @@ This cannot guarantee bounded shutdown when **unrelated** services or the extern
 | Gate | Required proof | Current state |
 |---|---|---|
 | CI admission | Real runner and nonempty job steps on head SHA/attempt | BLOCKED, zero-step |
-| Focused host tests | `AsyncStdioLogsTest` queued writes, blocked writer, overflow, sink errors, deadline | AUTHORED, NOT EXECUTED |
+| Focused host tests | `AsyncStdioLogsTest` queued writes, blocked writer, UTF-8 sizes, 8 MiB in-flight accounting, overflow, per-context sink error isolation, timeout/drain retry | AUTHORED, NOT EXECUTED |
 | Guest tests | `StdioLogAndSpreadTest` detached log, await barrier, spread/list, permission-denied and direct-only | AUTHORED, NOT EXECUTED |
 | Retirement | Actor generation/cancellation, failed native-I/O physical join, quarantine release and retry | NOT EXECUTED |
 | Native | Exact-tree GraalVM guest and native AOT/hybrid builds, carrier liveness | NOT EXECUTED |
@@ -35,3 +35,7 @@ This cannot guarantee bounded shutdown when **unrelated** services or the extern
 | Governance | Protected main + independent approval | OPEN |
 
 Preserve backend, repository, head/tree, compiler/toolchain, job attempt and nonempty step ledger for all results. A source-free canary is **only runner admission**, not native or guest proof. Do not update `oreslang-otel/SOURCE_REF` or promote the async exporter until this runtime reaches an executed, independently reviewed exact head.
+
+### Pending-byte admission note (2026-10-31)
+
+The byte counter increases only after a record is accepted and decreases only after that record is processed, including its in-flight write; a dequeued but blocked writer still consumes quota. Failed admissions do not allocate a record or Future into the queue. The quota is **not** a measure of total process heap usage: pre-admission string rendering, Java object overhead, and other contexts remain additional allocations. Physical-isolate and actor scheduling proof requires executed native tests.
