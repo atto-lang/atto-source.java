@@ -285,31 +285,81 @@ final class AsyncStdioLogsTest {
             @Override public void flush() { }
             @Override public void close() { }
         };
-        PrintWriter output = new PrintWriter(blocked, true);
-        AsyncStdioLogs logs = new AsyncStdioLogs(output);
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, true));
         try {
-            logs.logAsync("blocked\\n");
+            logs.logAsync("blocked\n");
             assertTrue(entered.await(2, TimeUnit.SECONDS));
+            // A worker owns the sink lock. close() must report incomplete
+            // shutdown within its deadline without entering that monitor.
             IllegalStateException timeout = assertThrows(IllegalStateException.class, logs::close);
             assertTrue(timeout.getMessage().contains("shutdown deadline"));
-            // The worker still owns the writer lock here; this must return
-            // without attempting PrintWriter.flush().
-            var skipped = java.util.concurrent.CompletableFuture.runAsync(
-                    () -> OresContext.flushOutputAfterAsyncDrain(output, false));
-            skipped.get(1, TimeUnit.SECONDS);
         } finally {
             release.countDown();
         }
+    }
 
-        java.util.concurrent.atomic.AtomicBoolean flushed = new java.util.concurrent.atomic.AtomicBoolean();
-        PrintWriter healthy = new PrintWriter(new java.io.StringWriter()) {
-            @Override public void flush() {
-                flushed.set(true);
-                super.flush();
+    @Test
+    void synchronousOnlyOutputStillGetsFinalFlushFromDrainWorker() {
+        java.io.StringWriter backing = new java.io.StringWriter();
+        java.util.concurrent.atomic.AtomicReference<String> flushed = new java.util.concurrent.atomic.AtomicReference<>();
+        Writer buffered = new Writer() {
+            @Override public void write(char[] chars, int off, int len) {
+                backing.write(chars, off, len);
             }
+            @Override public void flush() {
+                flushed.set(backing.toString());
+            }
+            @Override public void close() { }
         };
-        OresContext.flushOutputAfterAsyncDrain(healthy, true);
-        assertTrue(flushed.get(), "successful async close must preserve final stdout flush");
+        PrintWriter output = new PrintWriter(buffered, false);
+        AsyncStdioLogs logs = new AsyncStdioLogs(output);
+        // No async records were ever submitted; the old implementation
+        // skipped the worker and OresContext.close() synchronously flushed.
+        output.print("sync-only");
+        assertNull(flushed.get());
+        logs.close();
+        assertEquals("sync-only", flushed.get());
+    }
+
+    @Test
+    void blockedSynchronousOnlyFinalFlushIsBounded() {
+        CountDownLatch enteredFlush = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer blocked = new Writer() {
+            @Override public void write(char[] chars, int off, int len) { }
+            @Override public void flush() throws IOException {
+                enteredFlush.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) {
+                        throw new IOException("test sink flush timeout");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
+            @Override public void close() { }
+        };
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, false));
+        try {
+            IllegalStateException deadline = assertThrows(IllegalStateException.class, logs::close);
+            assertTrue(enteredFlush.getCount() == 0L, "final flush must reach the worker");
+            assertTrue(deadline.getMessage().contains("shutdown deadline"));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void sealedWriterRejectsNewFlushBarrierEvenWhenNoRecordsArePending() throws Exception {
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(new java.io.StringWriter()));
+        logs.sealAdmission();
+        OresFuture<Void> late = logs.flushAsync();
+        ExecutionException failure = assertThrows(ExecutionException.class,
+                () -> late.get(2, TimeUnit.SECONDS));
+        assertTrue(failure.getCause().getMessage().contains("closed"));
+        assertThrows(IllegalStateException.class, () -> logs.logAsync("late\n"));
+        logs.close();
     }
 
 }
