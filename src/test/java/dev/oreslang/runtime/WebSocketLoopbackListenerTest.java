@@ -1,0 +1,214 @@
+package dev.oreslang.runtime;
+
+import java.io.ByteArrayOutputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Real localhost TCP + real AsyncNativeIo workers and physical resource loans.
+ * Host-only: does not execute an Oreslang guest or prove actor dispatch.
+ */
+@Timeout(15)
+final class WebSocketLoopbackListenerTest {
+    private static final String KEY = "dGhlIHNhbXBsZSBub25jZQ==";
+
+    private static int unusedPort() throws Exception {
+        try (var reserved = new ServerSocket(0, 1,
+                InetAddress.getByName("127.0.0.1"))) {
+            return reserved.getLocalPort();
+        }
+    }
+
+    private static WebSocketLoopbackListener listen(AsyncNativeIo io, int port,
+            int maxConnections) throws Exception {
+        return WebSocketLoopbackListener.bind(io, (endpoint, action) -> { },
+                port, 4, maxConnections, 1024, 1024,
+                Set.of("http://127.0.0.1:" + port),
+                new WebSocketRawUpgrade.Limits(4096, 16, 750));
+    }
+
+    private static void sendOpening(Socket client, int port) throws Exception {
+        String request = "GET /echo HTTP/1.1\r\n"
+                + "Host: 127.0.0.1:" + port + "\r\n"
+                + "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                + "Sec-WebSocket-Key: " + KEY + "\r\n"
+                + "Sec-WebSocket-Version: 13\r\n"
+                + "Origin: http://127.0.0.1:" + port + "\r\n\r\n";
+        client.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
+        client.getOutputStream().flush();
+    }
+
+    private static String readHead(Socket client) throws Exception {
+        client.setSoTimeout(2_000);
+        ByteArrayOutputStream raw = new ByteArrayOutputStream();
+        while (raw.size() < 4096) {
+            int one = client.getInputStream().read();
+            if (one < 0) break;
+            raw.write(one);
+            byte[] bytes = raw.toByteArray();
+            int n = bytes.length;
+            if (n >= 4 && bytes[n - 4] == '\r' && bytes[n - 3] == '\n'
+                    && bytes[n - 2] == '\r' && bytes[n - 1] == '\n') break;
+        }
+        return raw.toString(StandardCharsets.US_ASCII);
+    }
+
+    private static void sendMaskedText(Socket client, String text) throws Exception {
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        assertTrue(bytes.length <= 125);
+        client.getOutputStream().write(0x81);
+        client.getOutputStream().write(0x80 | bytes.length);
+        client.getOutputStream().write(new byte[] {1, 2, 3, 4});
+        for (int i = 0; i < bytes.length; i++) {
+            client.getOutputStream().write(bytes[i] ^ (i % 4 + 1));
+        }
+        client.getOutputStream().flush();
+    }
+
+    @Test
+    void hostListenerAcceptsAndReadsMaskedTextWithNativeLoans() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 2)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                assertEquals(1, listener.activeConnectionCount());
+                sendMaskedText(client, "hello");
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        connection.readAsync().get(3, TimeUnit.SECONDS).kind());
+                var message = connection.pollUserMessage().orElseThrow();
+                assertEquals(WebSocketFrameCodec.OPCODE_TEXT, message.opcode());
+                assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), message.payload());
+                connection.close();
+                connection.close(); // No duplicate permit return.
+                assertEquals(0, listener.activeConnectionCount());
+            }
+        }
+    }
+
+    @Test
+    void listenerShutdownClosesAllOwnedPeersAndRevokesQueuedData() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 2)) {
+            var first = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var owned = first.get(3, TimeUnit.SECONDS);
+                sendMaskedText(client, "retained");
+                owned.readAsync().get(3, TimeUnit.SECONDS);
+                assertEquals(1, listener.activeConnectionCount());
+                assertEquals(1, owned.pollUserMessage().stream().count());
+                sendMaskedText(client, "unread");
+                owned.readAsync().get(3, TimeUnit.SECONDS);
+                listener.close();
+                assertEquals(0, listener.activeConnectionCount());
+                assertTrue(owned.pollUserMessage().isEmpty(),
+                        "retirement must zero retained USER queue");
+                assertEquals(-1, client.getInputStream().read(),
+                        "parent listener close must close the accepted TCP socket");
+                assertThrows(RuntimeException.class, owned::readAsync);
+                assertThrows(RuntimeException.class, listener::acceptAsync);
+            }
+        }
+    }
+
+    @Test
+    void overloadRejectsSecondPeerButFirstKeepsProgressing() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var first = listener.acceptAsync();
+            try (var client1 = new Socket("127.0.0.1", port)) {
+                sendOpening(client1, port);
+                assertTrue(readHead(client1).startsWith("HTTP/1.1 101"));
+                var owned = first.get(3, TimeUnit.SECONDS);
+                var second = listener.acceptAsync();
+                try (var client2 = new Socket("127.0.0.1", port)) {
+                    sendOpening(client2, port);
+                    assertThrows(ExecutionException.class,
+                            () -> second.get(3, TimeUnit.SECONDS));
+                    assertEquals(1, listener.activeConnectionCount());
+                    sendMaskedText(client1, "live");
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            owned.readAsync().get(3, TimeUnit.SECONDS).kind());
+                    owned.close();
+                }
+            }
+            var third = listener.acceptAsync();
+            try (var client3 = new Socket("127.0.0.1", port)) {
+                sendOpening(client3, port);
+                assertTrue(readHead(client3).startsWith("HTTP/1.1 101"));
+                third.get(3, TimeUnit.SECONDS).close();
+            }
+            assertEquals(0, listener.activeConnectionCount());
+        }
+    }
+
+    @Test
+    void parentCloseUnblocksPendingAcceptAndNativeIoCanRetire() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(2);
+             var listener = listen(io, port, 1)) {
+            var pending = listener.acceptAsync();
+            listener.close();
+            assertThrows(ExecutionException.class,
+                    () -> pending.get(3, TimeUnit.SECONDS));
+            assertEquals(0, listener.activeConnectionCount());
+        }
+    }
+
+    @Test
+    void contextNativeIoShutdownRetiresLogicalOwnerAndPeer() throws Exception {
+        int port = unusedPort();
+        var io = new AsyncNativeIo(4);
+        try {
+            var listener = listen(io, port, 1);
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var owned = accept.get(3, TimeUnit.SECONDS);
+                assertEquals(1, listener.activeConnectionCount());
+                // Closing native I/O directly must retire the registered
+                // logical listener, not just wake its ServerSocket.
+                io.close();
+                assertEquals(0, listener.activeConnectionCount());
+                assertTrue(owned.pollUserMessage().isEmpty());
+                assertEquals(-1, client.getInputStream().read());
+            }
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test
+    void netPolicyDenialHappensBeforeSocketBind() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(2)) {
+            assertThrows(SecurityException.class, () ->
+                    WebSocketLoopbackListener.bind(io,
+                            (endpoint, action) -> { throw new SecurityException("NET denied"); },
+                            port, 4, 1, 1024, 1024,
+                            Set.of("http://127.0.0.1:" + port),
+                            new WebSocketRawUpgrade.Limits(4096, 16, 750)));
+            try (var available = new ServerSocket(port, 1,
+                    InetAddress.getByName("127.0.0.1"))) {
+                assertEquals(port, available.getLocalPort());
+            }
+        }
+    }
+}
