@@ -374,4 +374,59 @@ final class CopyPolicyCompilerTest {
                 () -> OresCompiler.parseAndTypeCheck(source));
         assertTrue(failure.getMessage().contains("E_COPY_FORBIDDEN"), failure.getMessage());
     }
+
+    @Test
+    void returningMoveOnlyClassFieldCannotDuplicateItsOwner() {
+        String source = """
+                define class Resource as
+                  pub val int token = 8;
+                end
+                define class Holder as
+                  pub val Resource resource = new Resource();
+                end
+                fnc bad(Holder holder): Resource {
+                  return holder.resource;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("E_MOVE_UNPROVEN"), failure.getMessage());
+    }
+
+    @Test
+    void passingMoveOnlyClassFieldByValueCannotDuplicateItsOwner() {
+        String source = """
+                define class Resource as
+                  pub val int token = 8;
+                end
+                define class Holder as
+                  pub val Resource resource = new Resource();
+                end
+                fnc consume(Resource resource): void { return; }
+                fnc bad(Holder holder): void {
+                  consume(holder.resource);
+                  return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("E_MOVE_UNPROVEN"), failure.getMessage());
+    }
+
+    @Test
+    void borrowOfOrdinaryMoveOnlyClassFieldRemainsLegal() {
+        String source = """
+                define class Resource as
+                  pub val int token = 8;
+                end
+                define class Holder as
+                  pub val Resource resource = new Resource();
+                end
+                fnc good(Holder holder): void {
+                  val borrow Resource view = rt borrow holder.resource;
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
 }
