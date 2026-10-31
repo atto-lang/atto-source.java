@@ -318,6 +318,90 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void acceptedPeerBindsOpaqueActorAndRevokesOutstandingLeaseOnClose()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var conn = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var runtime = java.util.UUID.randomUUID();
+                var a = new ActorRuntime.ActorAddress(runtime,
+                        ActorRuntime.ActorId.create(), 1,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var b = new ActorRuntime.ActorAddress(runtime,
+                        ActorRuntime.ActorId.create(), 2,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = conn.bindActorHost(tenant, a, () -> true);
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> conn.bindActorHost(tenant, b, () -> true));
+                var lease = conn.acquireActorLease(handle, tenant, a);
+                assertTrue(lease.mayDeliver(handle, tenant, a));
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> conn.transferActorHost(handle, tenant, a, b, () -> true),
+                        "transfer must wait for the physical loan's completion");
+                assertThrows(SecurityException.class,
+                        () -> conn.acquireActorLease(handle, java.util.UUID.randomUUID(), a));
+                conn.close();
+                assertFalse(lease.mayDeliver(handle, tenant, a));
+                assertFalse(lease.enqueueIfCurrent(() ->
+                        fail("retired actor handle published queued USER work")));
+                assertThrows(SecurityException.class,
+                        () -> conn.acquireActorLease(handle, tenant, a));
+                // Logical revocation does not forge an underlying native-I/O
+                // completion receipt; the producer must return the lease.
+                lease.close();
+                lease.close();
+                assertEquals(0, listener.activeConnectionCount());
+                assertThrows(SecurityException.class,
+                        () -> conn.transferActorHost(handle, tenant, a, b, () -> true));
+            }
+        }
+    }
+
+    @Test
+    void actorTransferAfterReturnedLoanFencesOriginalHandle() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var conn = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var runtime = java.util.UUID.randomUUID();
+                var a = new ActorRuntime.ActorAddress(runtime,
+                        ActorRuntime.ActorId.create(), 1,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var b = new ActorRuntime.ActorAddress(runtime,
+                        ActorRuntime.ActorId.create(), 2,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var original = conn.bindActorHost(tenant, a, () -> true);
+                try (var physical = conn.acquireActorLease(original, tenant, a)) {
+                    assertTrue(physical.mayDeliver(original, tenant, a));
+                }
+                var transferred = conn.transferActorHost(
+                        original, tenant, a, b, () -> true);
+                assertThrows(SecurityException.class,
+                        () -> conn.acquireActorLease(original, tenant, a));
+                assertThrows(SecurityException.class,
+                        () -> conn.acquireActorLease(transferred, tenant, a));
+                try (var next = conn.acquireActorLease(transferred, tenant, b)) {
+                    assertTrue(next.mayDeliver(transferred, tenant, b));
+                }
+                conn.close();
+                assertThrows(SecurityException.class,
+                        () -> conn.acquireActorLease(transferred, tenant, b));
+            }
+        }
+    }
+
+    @Test
     void hostOutboundTextBinaryAndPongHaveCanonicalUnmaskedWire() throws Exception {
         int port = unusedPort();
         try (var io = new AsyncNativeIo(4);
