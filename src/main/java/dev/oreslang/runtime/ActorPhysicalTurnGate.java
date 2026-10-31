@@ -150,8 +150,10 @@ final class ActorPhysicalTurnGate {
                     boolean cancelledOnClose;
                     synchronized (accepted) {
                         if (accepted.claim != 0) {
-                            // A submitter rejected this runnable after enqueueing.
-                            // The rejection already transferred its permit.
+                            // The runnable was already rejected OR has been
+                            // physically claimed once. A buggy executor that
+                            // invokes the same callback twice must never
+                            // enter guest code or release one permit twice.
                             return;
                         }
                         // Serialize the decision to BEGIN a guest turn with
