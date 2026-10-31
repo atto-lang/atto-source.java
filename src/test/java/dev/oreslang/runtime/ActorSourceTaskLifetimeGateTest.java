@@ -308,4 +308,66 @@ final class ActorSourceTaskLifetimeGateTest {
     }
 
 
+
+    @Test
+    void failedPhysicalRetirementQuarantinesArenaAndWithholdsDone()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 64));
+        CountDownLatch retirementAttempted = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.PrivateMemoryBlock> memory = new AtomicReference<>();
+
+        ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                actorContext -> {
+                    ActorRuntime.PrivateMemoryBlock block =
+                            actorContext.privateMemory()
+                                    .orElseThrow()
+                                    .allocatePrivateBytes(32);
+                    block.writeInt(0, 91);
+                    memory.set(block);
+
+                    return (message, context) ->
+                            context.runtime().startActorTask(
+                                    resume -> OresScheduler.done(null),
+                                    () -> {
+                                        retirementAttempted.countDown();
+                                        throw new IllegalStateException(
+                                                "injected physical retirement failure");
+                                    });
+                });
+
+        actor.send("launch");
+        assertTrue(
+                retirementAttempted.await(5, TimeUnit.SECONDS),
+                "physical retirement callback was not attempted");
+
+        ActorRuntime.PrivateMemoryBlock block = memory.get();
+        assertNotNull(block);
+        assertFalse(block.closed());
+
+        actor.stop();
+
+        assertFalse(
+                actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                "failed retirement must quarantine the actor generation");
+        assertFalse(
+                actor.done().isDone(),
+                "failed retirement must withhold actor DONE publication");
+        assertFalse(
+                block.closed(),
+                "failed retirement must not authorize arena reclamation");
+        assertEquals(1, runtime.actorCount());
+
+        IllegalStateException closeFailure = assertThrows(
+                IllegalStateException.class,
+                runtime::close);
+        assertTrue(
+                closeFailure.getMessage().contains(
+                        "did not observe full actor termination/carrier exit"));
+        assertFalse(block.closed());
+        assertFalse(actor.done().isDone());
+    }
+
+
 }
