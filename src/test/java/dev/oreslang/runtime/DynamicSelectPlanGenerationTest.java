@@ -2,6 +2,10 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
@@ -145,4 +149,83 @@ final class DynamicSelectPlanGenerationTest {
         assertEquals("ready", pending.join().selection().value());
         assertEquals(0, producer.pendingRuntimeWaiterCount());
     }
+    @Test
+    void orderedListFactoryPreservesOriginalKeysAndCopiesInputs() {
+        var left = new ChannelRuntime.Channel<Integer>(1);
+        var right = new ChannelRuntime.Channel<Integer>(1);
+        List<ChannelRuntime.SelectCase> cases = new ArrayList<>();
+        cases.add(ChannelRuntime.read(left));
+        cases.add(ChannelRuntime.read(right));
+
+        var dynamic = ChannelRuntime.DynamicSelectPlan.fromList(cases);
+        var immutable = ChannelRuntime.SelectPlan.fromList(cases);
+        cases.clear(); // mutations of the caller's input cannot rewrite either plan
+
+        assertEquals(List.of(0, 1), dynamic.keys());
+        assertEquals(2L, dynamic.version());
+        assertEquals(2, immutable.cases().size());
+        assertEquals(2, dynamic.selectSetSnapshot().cases().size());
+
+        assertTrue(left.tryWrite(41));
+        assertTrue(right.tryWrite(42));
+        var leftResult = dynamic.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+        assertEquals(0, leftResult.key());
+        assertEquals(2L, leftResult.version());
+        assertEquals(41, leftResult.selection().value());
+        assertEquals(1, right.pendingValues());
+        var rightResult = dynamic.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+        assertEquals(1, rightResult.key());
+        assertEquals(42, rightResult.selection().value());
+        assertEquals(0, left.pendingRegistrations());
+        assertEquals(0, right.pendingRegistrations());
+    }
+
+    @Test
+    void mapFactoryRetainsStableKeysAndDoesNotRetainCallerMap() {
+        var first = new ChannelRuntime.Channel<Integer>(1);
+        var second = new ChannelRuntime.Channel<Integer>(1);
+        Map<String, ChannelRuntime.SelectCase> cases = new LinkedHashMap<>();
+        cases.put("input", ChannelRuntime.read(first));
+        cases.put("other", ChannelRuntime.read(second));
+
+        var dynamic = ChannelRuntime.DynamicSelectPlan.fromMap(cases);
+        var immutable = ChannelRuntime.SelectPlan.fromMap(cases);
+        cases.clear();
+
+        assertEquals(List.of("input", "other"), dynamic.keys());
+        assertEquals(2L, dynamic.version());
+        assertEquals(2, immutable.cases().size());
+        assertTrue(first.tryWrite(7));
+        var result = dynamic.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+        assertEquals("input", result.key());
+        assertEquals(7, result.selection().value());
+        assertEquals(0, second.pendingRegistrations());
+    }
+
+    @Test
+    void listFactoryRejectsNullsDuplicateDefaultAndExcessiveArms() {
+        assertThrows(NullPointerException.class,
+                () -> ChannelRuntime.DynamicSelectPlan.fromList(null));
+        assertThrows(NullPointerException.class,
+                () -> ChannelRuntime.SelectPlan.fromList(null));
+        List<ChannelRuntime.SelectCase> bad = new ArrayList<>();
+        bad.add(ChannelRuntime.defaultCase());
+        bad.add(null);
+        assertThrows(NullPointerException.class,
+                () -> ChannelRuntime.DynamicSelectPlan.fromList(bad));
+        assertThrows(IllegalArgumentException.class,
+                () -> ChannelRuntime.DynamicSelectPlan.fromList(
+                        List.of(ChannelRuntime.defaultCase(), ChannelRuntime.defaultCase())));
+
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var oversized = new ArrayList<ChannelRuntime.SelectCase>();
+        for (int i = 0; i <= ChannelRuntime.MAX_SELECT_CASES; i++) {
+            oversized.add(ChannelRuntime.read(channel));
+        }
+        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+                () -> ChannelRuntime.DynamicSelectPlan.fromList(oversized));
+        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+                () -> ChannelRuntime.SelectPlan.fromList(oversized));
+    }
+
 }
