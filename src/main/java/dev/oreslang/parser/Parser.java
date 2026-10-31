@@ -3950,7 +3950,7 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
-        boolean mutableBorrow = match(MUT);
+        boolean mutableOperation = match(MUT);
         Token operation;
         if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
@@ -3959,8 +3959,8 @@ public final class Parser {
         }
 
         String name = operation.lexeme();
-        if (mutableBorrow && !name.equals("borrow")) {
-            throw error(operation, "'rt mut' may only modify borrow; use 'rt mut borrow value'");
+        if (mutableOperation && !name.equals("borrow") && !name.equals("share")) {
+            throw error(operation, "'rt mut' supports only borrow or share");
         }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
@@ -3980,9 +3980,8 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        if (name.equals("borrow") && check(MUT)) {
-            throw error(peek(),
-                    "legacy 'rt borrow mut value' is not accepted; use 'rt mut borrow value'");
+        if ((name.equals("borrow") || name.equals("share")) && check(MUT)) {
+            throw error(peek(), "legacy 'rt " + name + " mut value' is not accepted; use 'rt mut " + name + " value'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
@@ -3995,8 +3994,11 @@ public final class Parser {
             // Command form has unary precedence: rt borrow value.member
             argument = parseUnary();
         }
-        return mutableBorrow ? new Ast.UnaryExpr("&mut", argument)
-                : new Ast.RuntimeCallExpr(name, List.of(argument));
+        // Mutable borrowing is an exclusive loan; mutable sharing is a distinct,
+        // guard-protected handle operation, never an unrestricted &mut alias.
+        return mutableOperation && name.equals("borrow")
+                ? new Ast.UnaryExpr("&mut", argument)
+                : new Ast.RuntimeCallExpr(mutableOperation ? "mut_share" : name, List.of(argument));
     }
 
     private Ast.Expr parseChannelOperation(
