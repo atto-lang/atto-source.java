@@ -6,6 +6,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorPhysicalTurnGate.java'
       - 'src/main/java/dev/oreslang/runtime/ReusableLongStateRegion.java'
       - 'tests/ExactSourcePhysicalTurnSmoke.java'
+      - 'tests/CurrentRegionSafetySmoke.java'
       - '.github/workflows/actor-state-region-physical-turn.yml'
   workflow_dispatch:
 
@@ -50,10 +51,14 @@ jobs:
             -d "$RUNNER_TEMP/actor-region-classes" \
             src/main/java/dev/oreslang/runtime/ReusableLongStateRegion.java \
             src/main/java/dev/oreslang/runtime/ActorPhysicalTurnGate.java \
-            tests/ExactSourcePhysicalTurnSmoke.java
+            tests/ExactSourcePhysicalTurnSmoke.java \
+            tests/CurrentRegionSafetySmoke.java
           "$JAVA_HOME_21_X64/bin/java" -ea \
             -cp "$RUNNER_TEMP/actor-region-classes" \
             dev.oreslang.runtime.ExactSourcePhysicalTurnSmoke
+          "$JAVA_HOME_21_X64/bin/java" -ea \
+            -cp "$RUNNER_TEMP/actor-region-classes" \
+            dev.oreslang.runtime.CurrentRegionSafetySmoke
           echo "SOURCE_HEAD_EXECUTED=$EXPECTED_HEAD"
           echo "HOST_ONLY=1"
           echo "COMPILER_GUEST_PARITY=NOT_VERIFIED"
