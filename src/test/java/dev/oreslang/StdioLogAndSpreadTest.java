@@ -99,7 +99,7 @@ final class StdioLogAndSpreadTest {
             }
         };
         Source source = Source.newBuilder(OresLanguage.ID,
-                "pub routine main(): void { stdio.stdout.log_async(\\\"blocked\\\"); }",
+                "pub routine main(): void { stdio.stdout.log_async(\"blocked\"); }",
                 "stdio-blocked-context-close.ores")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
