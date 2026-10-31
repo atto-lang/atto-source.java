@@ -71,6 +71,22 @@ final class ActorCriticalStateModeTest {
     }
 
     @Test
+    void nestedCriticalLoanIsNotAnAuthorityEscalation() {
+        // A caller cannot use an inner critical block to reacquire the same
+        // physical actor state while an outer lexical loan is live.
+        String source = actor("""
+                    self.handle_state(critical[write] |outer| -> {
+                      self.handle_state(critical[read] |inner| -> {
+                        let int revision = inner.revision;
+                      });
+                    });
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source),
+                "nested sealed-state loans must fail the source effect/lexical checker");
+    }
+
+    @Test
     void criticalReadMustNeverMutateSealedState() {
         String source = actor("""
                     self.handle_state(critical[read] |s| -> {
