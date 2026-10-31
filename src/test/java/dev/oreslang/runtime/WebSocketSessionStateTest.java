@@ -220,4 +220,28 @@ final class WebSocketSessionStateTest {
                 () -> new WebSocketSessionState(1, 9, 8));
     }
 
+
+    @Test
+    void handoffGateDetectsQueuedMessagesAndUnfinishedFragments() {
+        WebSocketSessionState session = new WebSocketSessionState(2, 125);
+        assertFalse(session.hasPendingUserState());
+        assertEquals(WebSocketSessionState.ActionKind.NONE,
+                session.accept(new WebSocketFrameCodec.Frame(false,
+                        WebSocketFrameCodec.OPCODE_TEXT,
+                        new byte[] {'f', 'r'})).kind());
+        assertTrue(session.hasPendingUserState(),
+                "incomplete fragmented USER frame cannot cross actor transfer");
+        assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                session.accept(new WebSocketFrameCodec.Frame(true,
+                        WebSocketFrameCodec.OPCODE_CONTINUATION,
+                        new byte[] {'a', 'g'})).kind());
+        assertTrue(session.hasPendingUserState(),
+                "completed but undelivered USER frame cannot cross transfer");
+        assertArrayEquals(new byte[] {'f', 'r', 'a', 'g'},
+                session.pollUserMessage().orElseThrow().payload());
+        assertFalse(session.hasPendingUserState());
+        session.transportClosed();
+        assertFalse(session.hasPendingUserState());
+    }
+
 }
