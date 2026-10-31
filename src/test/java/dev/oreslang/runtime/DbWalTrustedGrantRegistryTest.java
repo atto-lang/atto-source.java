@@ -27,6 +27,7 @@ final class DbWalTrustedGrantRegistryTest {
             var drained = new CountDownLatch(1);
             var reissued = new CountDownLatch(1);
             var oldGenerationDenied = new CountDownLatch(1);
+            var sealedDenied = new CountDownLatch(1);
             var first = runtime.<String>spawnShared(() -> (message, context) -> {
                 try {
                     if (message.equals("issue")) {
@@ -64,6 +65,12 @@ final class DbWalTrustedGrantRegistryTest {
                     } else if (message.equals("issue")) {
                         secondGrant.set(registry.issueForCurrentActor(11, 3, 8));
                         reissued.countDown();
+                    } else if (message.equals("sealed")) {
+                        assertThrows(SecurityException.class,
+                                () -> secondGrant.get().requireLive(runtime));
+                        assertThrows(SecurityException.class,
+                                () -> registry.issueForCurrentActor(12, 4, 9));
+                        sealedDenied.countDown();
                     }
                 } catch (Throwable failure) {
                     secondError.compareAndSet(null, failure);
@@ -71,6 +78,7 @@ final class DbWalTrustedGrantRegistryTest {
                     duplicateRejected.countDown();
                     drainingConflictRejected.countDown();
                     reissued.countDown();
+                    sealedDenied.countDown();
                 }
             });
             first.ready().get(3, TimeUnit.SECONDS);
@@ -122,8 +130,9 @@ final class DbWalTrustedGrantRegistryTest {
             registry.seal();
             assertEquals(1, registry.activeShardCount(),
                     "sealing must retain a live generation until physical retirement");
-            assertThrows(SecurityException.class,
-                    () -> secondGrant.get().requireLive(runtime));
+            second.send("sealed");
+            assertTrue(sealedDenied.await(3, TimeUnit.SECONDS));
+            assertNull(secondError.get());
         }
     }
 }
