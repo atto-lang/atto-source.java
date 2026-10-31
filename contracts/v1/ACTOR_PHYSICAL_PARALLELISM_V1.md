@@ -50,3 +50,18 @@ must fail closed rather than reinterpret the global physical-turn budget.
 
 A source-org workflow with zero executed steps is admission/infrastructure
 failure and does not constitute execution evidence for this contract.
+
+## Worker-thread assertion propagation
+
+The cross-actor overlap and same-actor serialization JUnit tests now collect **all**
+callback-thread `Throwable` outcomes in an `AtomicReference<Throwable>`,
+then assert on the originating JUnit test thread after all deliveries drain.
+This ensures the test fails if the actor runtime intercepts a worker-thread
+assertion instead of letting JUnit see the failure. Always release latches
+in `finally` so a failing assertion does not strand the test's actor workers.
+
+This test hardening is **not a semantic runtime change** or a substitute for
+compiled Oreslang actor guest traces, asynchronous suspension/continuation
+testing, or a physical actor-owned heap proof. A zero-step GitHub Actions
+check cannot verify these JUnit assertions; exact-branch JDK25 execution
+and independent review remain required.
