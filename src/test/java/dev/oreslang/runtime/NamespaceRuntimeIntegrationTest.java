@@ -726,6 +726,32 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void malformedUtf8RootManifestFailsBeforeIndexing() throws Exception {
+        Path project = temp.resolve("invalid-utf8-manifest");
+        Path entry = source(project, "src/main.ores", "app",
+                "pub fnc main(): void { return; }");
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.write(manifest, new byte[]{(byte) 0xc3, (byte) 0x28});
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceWorkspace.discover(entry));
+        assertTrue(denied.getMessage().contains("valid UTF-8"));
+    }
+
+    @Test
+    void oversizedRootManifestFailsBeforeParsing() throws Exception {
+        Path project = temp.resolve("oversized-manifest");
+        Path entry = source(project, "src/main.ores", "app",
+                "pub fnc main(): void { return; }");
+        Path manifest = project.resolve(".ores.pkg.toml");
+        byte[] oversized = new byte[1024 * 1024 + 1];
+        java.util.Arrays.fill(oversized, (byte) ' ');
+        Files.write(manifest, oversized);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceWorkspace.discover(entry));
+        assertTrue(denied.getMessage().contains("manifest exceeds byte budget"));
+    }
+
+    @Test
     void namespaceIndexUsesAdmittedRootManifestNotLaterOwnerEdit() throws Exception {
         Path project = temp.resolve("immutable-root-index");
         Path main = source(project, "src/main.ores", "app",
