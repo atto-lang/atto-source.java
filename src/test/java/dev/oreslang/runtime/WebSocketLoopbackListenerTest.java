@@ -454,7 +454,7 @@ final class WebSocketLoopbackListenerTest {
                     (byte) 0x81, 4, 'e', 'c', 'h', 'o'
                 }, client.getInputStream().readNBytes(6));
                 connection.close();
-                assertThrows(SecurityException.class,
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
                         () -> connection.sendBinaryForActorAsync(
                                 newHandle, tenant, b, new byte[] {1}));
             }
