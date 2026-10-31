@@ -1141,6 +1141,22 @@ public final class OwnershipChecker {
                     }
                     yield source;
                 }
+                case "mut_share" -> {
+                    ValueInfo source = checkExpr(argument, scope, false);
+                    // Builtin SharedMutex is a COPY handle to one synchronized
+                    // allocation; no user-defined nominal/alias may impersonate it.
+                    if (source.type == null
+                            || !source.type.name().equals("SharedMutex")
+                            || source.type.arguments().size() != 1
+                            || source.type.isBorrow()
+                            || source.kind != ValueKind.COPY
+                            || findClass("SharedMutex") != null
+                            || hasLocalTypeAliasNamed("SharedMutex")) {
+                        throw error("rt mut share requires an owned builtin SharedMutex<T> handle; "
+                                + "mutable objects and borrows cannot become shared writable aliases");
+                    }
+                    yield source;
+                }
                 case "share" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
                     if (source.kind != ValueKind.COPY) {
