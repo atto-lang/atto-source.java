@@ -113,6 +113,33 @@ final class EditorLexicalParserAdmissionTest {
     }
 
     @Test
+    void reservedWordsInsideLongerIdentifiersAreNotKeywords() {
+        for (String word : PINNED_RESERVED_WORDS) {
+            // Word boundaries are lexical: \`return_x\` and \`returnx\` do
+            // not become a RETURN token, even for legacy reserved spellings.
+            assertEquals(List.of(IDENT, EOF), types(word + "x"),
+                    "suffix identifier containing " + word);
+            assertEquals(List.of(IDENT, EOF), types("_" + word),
+                    "prefix identifier containing " + word);
+            assertEquals(List.of(IDENT, EOF), types(word + "_suffix"),
+                    "underscored identifier containing " + word);
+        }
+    }
+
+    @Test
+    void quotedSymbolSurrogatePairEscapesNormalizeButHalfPairsReject() {
+        assertEquals("😀", lex("#\"\\uD83D\\uDE00\"").get(0).lexeme());
+        assertEquals("😀", lex("#'\\uD83D\\uDE00'").get(0).lexeme());
+        for (String bad : List.of(
+                "#\"\\uD83D\"", "#\"\\uDE00\"",
+                "#\"\\uDE00\\uD83D\"", "#\"\\uD83D\\u0061\"")) {
+            assertThrows(IllegalArgumentException.class, () -> lex(bad), bad);
+        }
+        assertEquals(List.of(SYMBOL_LITERAL, EOF),
+                types("#\"\\uD83D\\uDE00\""));
+    }
+
+    @Test
     void contextualIdentifierLexingDoesNotInventFutureKeywords() {
         for (String identifier : List.of("owned", "borrow", "pipe", "read", "write", "transform")) {
             // Compound forms are recognized only in parser context.
