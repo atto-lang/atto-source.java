@@ -112,7 +112,15 @@ public final class HotReloadManager implements AutoCloseable {
             throw new SecurityException(
                     "incremental hot loading of imported dependencies requires verified linker provenance");
         }
-        OresCompiler.validateForIsolate(unit.sourceText(), guestPolicy);
+        var checkedSource = OresCompiler.validateForIsolate(unit.sourceText(), guestPolicy);
+        // Dependencies in the public CompiledUnit record are attacker-controlled.
+        // An empty declared dependency set must not authorize imports found in
+        // the actual executable source. Import linking requires an independently
+        // verified full source/dependency closure, not a forgeable record.
+        if (!checkedSource.imports().isEmpty()) {
+            throw new SecurityException(
+                    "compiled hot-load imports require verified dependency closure");
+        }
         return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), true);
     }
 
