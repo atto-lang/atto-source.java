@@ -212,4 +212,100 @@ final class ActorSourceTaskLifetimeGateTest {
         assertTrue(retired.get());
     }
 
+
+    @Test
+    void runtimeCloseWaitsForDeferredSourceTaskRetirementBeforeClosingArena()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 64))) {
+            CountDownLatch retirementHookEntered = new CountDownLatch(1);
+            CountDownLatch closeStarted = new CountDownLatch(1);
+            AtomicReference<Runnable> releaseRetirement = new AtomicReference<>();
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> memory = new AtomicReference<>();
+            AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    actorContext -> {
+                        ActorRuntime.PrivateMemoryBlock block =
+                                actorContext.privateMemory()
+                                        .orElseThrow()
+                                        .allocatePrivateBytes(32);
+                        block.writeInt(0, 73);
+                        memory.set(block);
+
+                        return (message, context) -> context.runtime().startActorTask(
+                                new OresScheduler.Task<Void>() {
+                                    @Override
+                                    public OresScheduler.Step<Void> resume(
+                                            OresScheduler.Resume resume) {
+                                        return OresScheduler.done(null);
+                                    }
+
+                                    @Override
+                                    public void afterCarrierQuiescent(Runnable retire) {
+                                        if (!releaseRetirement.compareAndSet(null, retire)) {
+                                            throw new IllegalStateException(
+                                                    "physical retirement hook invoked twice");
+                                        }
+                                        retirementHookEntered.countDown();
+                                    }
+                                });
+                    });
+
+            Thread closer = null;
+            try {
+                actor.send("launch");
+                assertTrue(
+                        retirementHookEntered.await(5, TimeUnit.SECONDS),
+                        "source Task never reached deferred physical retirement");
+
+                ActorRuntime.PrivateMemoryBlock block = memory.get();
+                assertNotNull(block);
+                assertFalse(block.closed());
+
+                closer = Thread.ofVirtual()
+                        .name("actor-runtime-close-quiescence-test")
+                        .start(() -> {
+                            closeStarted.countDown();
+                            try {
+                                runtime.close();
+                            } catch (Throwable failure) {
+                                closeFailure.set(failure);
+                            }
+                        });
+
+                assertTrue(closeStarted.await(5, TimeUnit.SECONDS));
+                closer.join(100);
+                assertTrue(
+                        closer.isAlive(),
+                        "runtime close returned before source Task physical retirement");
+                assertFalse(
+                        actor.done().isDone(),
+                        "actor done published while runtime close was waiting on Task retirement");
+                assertFalse(
+                        block.closed(),
+                        "runtime close reclaimed actor memory before physical retirement");
+
+                Runnable retire = releaseRetirement.getAndSet(null);
+                assertNotNull(retire);
+                retire.run();
+
+                closer.join(5_000);
+                assertFalse(closer.isAlive(), "runtime close did not finish after retirement");
+                assertNull(closeFailure.get(), () -> "runtime close failed: " + closeFailure.get());
+                assertTrue(block.closed(), "actor memory must close after retirement");
+                assertTrue(actor.done().isDone(), "actor done must publish after retirement");
+                assertEquals(0, runtime.actorCount());
+            } finally {
+                Runnable retire = releaseRetirement.getAndSet(null);
+                if (retire != null) retire.run();
+                if (closer != null && closer.isAlive()) {
+                    closer.join(5_000);
+                }
+            }
+        }
+    }
+
+
 }
