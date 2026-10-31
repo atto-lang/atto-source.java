@@ -19,7 +19,11 @@ final class DbWalTrustedGrantRegistryTest {
 
     @Test void shardIsReservedAcrossDrainUntilPhysicalRelease() throws Exception {
         try (var runtime = new ActorRuntime()) {
-            var registry = new DbWalTrustedGrantRegistry(runtime);
+            // Test-only synthetic host authorization: production contexts
+            // use the registry's default-deny policy until a trusted host
+            // supplies a real authenticated tenant mapping.
+            var registry = new DbWalTrustedGrantRegistry(runtime,
+                    (actor, tenant, shard) -> tenant == 11 && shard == 3);
             var firstGrant = new AtomicReference<DbWalTrustedGrantRegistry.Grant>();
             var secondGrant = new AtomicReference<DbWalTrustedGrantRegistry.Grant>();
             var firstError = new AtomicReference<Throwable>();
@@ -101,6 +105,10 @@ final class DbWalTrustedGrantRegistryTest {
                     new DbWalTrustedGrantRegistry(runtime)),
                     "another registry cannot be mistaken for the issuing context");
             assertEquals(1, registry.activeShardCount());
+            assertThrows(SecurityException.class,
+                    () -> new DbWalTrustedGrantRegistry(runtime)
+                            .issueForCurrentActor(11, 3, 9),
+                    "unauthenticated issuance outside actor must fail"); 
             assertThrows(SecurityException.class,
                     () -> firstGrant.get().requireLive(runtime),
                     "a host thread outside the actor turn is not the grant owner");
