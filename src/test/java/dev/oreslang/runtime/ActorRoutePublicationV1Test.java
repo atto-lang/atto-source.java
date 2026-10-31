@@ -511,6 +511,7 @@ final class ActorRoutePublicationV1Test {
                 return List.copyOf(values);
             };
             var physical = ActorRoutePublicationV1.actorRuntimeDrainSubmitter(decode);
+            newRoute.ready().get(10, TimeUnit.SECONDS);
             try (var authority = new ActorRoutePublicationV1<>(
                     gate, mailbox, state(7), oldRoute)) {
                 authority.admit(new byte[]{7});
@@ -648,8 +649,11 @@ final class ActorRoutePublicationV1Test {
                 while (mailbox.snapshot().retainedMessages() != 0
                         && System.nanoTime() < deadline) Thread.sleep(10);
                 assertEquals(0, mailbox.snapshot().retainedMessages());
+                var successor = runtime.<List<Integer>>spawnShared(() ->
+                        (message, context) -> {});
+                successor.ready().get(10, TimeUnit.SECONDS);
                 try (var staged = authority.stage(image('b'))) {
-                    assertTrue(staged.publish(state(9), "replacement"));
+                    assertTrue(staged.publish(state(9), successor));
                 }
             } finally {
                 releaseCarrier.countDown();
@@ -699,8 +703,11 @@ final class ActorRoutePublicationV1Test {
                         && System.nanoTime() < deadline) Thread.sleep(10);
                 assertEquals(0, mailbox.snapshot().retainedMessages(),
                         "only physical child Task quiescence may release old route");
+                var successor = runtime.<List<Integer>>spawnShared(() ->
+                        (message, context) -> {});
+                successor.ready().get(10, TimeUnit.SECONDS);
                 try (var staged = authority.stage(image('b'))) {
-                    assertTrue(staged.publish(state(9), "replacement"));
+                    assertTrue(staged.publish(state(9), successor));
                 }
             } finally {
                 releaseTask.completeFromRuntime(null);
@@ -808,6 +815,8 @@ final class ActorRoutePublicationV1Test {
                     (message, context) -> fail("stale V1 DATA execution"));
             var candidate = runtime.<List<Integer>>spawnShared(() ->
                     (message, context) -> deliveredNew.countDown());
+            old.ready().get(10, TimeUnit.SECONDS);
+            candidate.ready().get(10, TimeUnit.SECONDS);
             try (var authority = new ActorRoutePublicationV1<>(
                     gate, mailbox, state(7), old)) {
                 try (var stage = authority.stage(image('b'))) {
