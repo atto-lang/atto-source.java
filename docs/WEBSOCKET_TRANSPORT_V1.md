@@ -321,6 +321,53 @@ code. No actor-owned guest handle, generation-fenced transfer API, native
 guest execution, or cross-backend parity is implemented by this milestone.
 Physical close remains separate from the actor logical revocation receipt.
 
+## Host-only actor connection lease and generation fencing (2026-10-31)
+
+`WebSocketActorConnectionLease` is a source-local **host ledger** for one
+logical accepted WebSocket connection. It issues identity-only opaque handles
+with non-reusable connection identity and monotonically incremented ownership
+generations, rather than exposing `Socket`, `SocketChannel`, `ActorRef`, or
+an actor state pointer to guest code.
+
+At issuance and use, trusted host code supplies the tenant identity and
+authenticated `ActorRuntime.ActorAddress` (runtime UUID, ActorId, actor
+generation, kind, and transport), with a live-owner predicate. An incorrect
+tenant, actor, runtime, or actor generation fails closed. All these values
+**must be derived from the owning runtime**, not from a guest-provided
+address. Importantly, `ActorAddress` does not prove tenant membership.
+An eventual runtime host bridge must independently check the new owner
+belongs to the same tenant and isolate before calling this ledger.
+
+`Connection.bindActor` now accepts a trusted actor ref, while
+`bindActorHost` and `transferActorHost` are package-private test seams.
+Binding is single-shot and serialized with connection retirement under
+`lifecycleLock`. Transfer is rejected while any physical-operation lease
+remains outstanding; it fences the old handle and issues a new generation
+atomically. Transfers to another runtime instance, actor trust class, or
+transport fail closed in v1. Before enqueue and again before actual guest
+delivery, the trusted scheduler must validate handle/tenant/owner generation.
+`Loan.enqueueIfCurrent` only permits bounded, nonblocking **host scheduler
+enqueues** under the short lifecycle lock; never run guest code there.
+
+On `Connection.close()`, the logical ledger is revoked before physical
+socket closure; retained in-flight loans remain counted until the owning
+worker releases them. Logical revocation and a zero loan count do **not**
+assert that the underlying `AsyncNativeIo` resource/selector or actor
+continuation physically retired. The ledger currently has **no lifecycle
+subscription** from `ActorRef.done()`; therefore automated actor-stop
+physical socket wakeup, guest message routing, and cancellable owner
+handoff are not yet supported.
+
+The authored `WebSocketActorConnectionLeaseTest` suite exercises foreign
+tenant/actor/generation, old handles after transfer, outstanding-loan
+transfer denial, close/stop fencing, crossed runtime/policy/transport,
+delivery-after-owner-death, revoke-vs-enqueue, and transfer-vs-admission
+races. Existing real TCP listener tests additionally check binding and
+revocation against an accepted peer. All tests remain **NOT_EXECUTED**
+until an authorized exact-head JDK25/GraalVM workflow executes nonzero
+steps. The package-private methods are NOT an exposed Oreslang guest API
+or a verified isolate security boundary.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
