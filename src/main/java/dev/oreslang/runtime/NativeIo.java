@@ -232,6 +232,10 @@ public final class NativeIo {
             String method,
             String rawUri,
             String body) {
+        // HttpClient.send is synchronous. Strict NIO must not disguise it as
+        // an allowed network path merely because TCP now has a selector route.
+        NioOnlyPolicy.requireLegacyAllowed(
+                "http." + method.toLowerCase(java.util.Locale.ROOT));
         URI uri = checkedHttpUri(rawUri);
         String endpoint = networkEndpoint(uri);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "http." + method.toLowerCase());
