@@ -46,6 +46,11 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions,
             Map<String, String> sourceOwners,
             Map<String, Map<String, String>> pinnedAliases) {
+        // Preserve the caller-supplied identity exactly. Path normalization
+        // may hide traversal or aliasing before the closed ownership map is
+        // checked; these names are logical IDs, never paths to discover.
+        for (String id : sources.keySet()) requireCanonicalPinnedSourceId(id);
+        for (String id : sourceOwners.keySet()) requireCanonicalPinnedSourceId(id);
         // Host-pinned source graphs are subject to the same source-closure
         // limits as ordinary filesystem imports, before parsing any unit.
         if (sources.size() > 1024) {
@@ -95,6 +100,25 @@ public final class IncrementalCompiler {
                 PackageNamespaceLinker.link(parsed, owners, pinnedAliases);
         return new PinnedBuildResult(
                 compileInternal(sources, importResolutions, graph, owners), graph);
+    }
+
+    private static void requireCanonicalPinnedSourceId(String id) {
+        if (id == null || id.isEmpty() || id.length() > 1024
+                || id.charAt(0) == '/' || id.indexOf('\\\\') >= 0
+                || id.indexOf(':') >= 0) {
+            throw new IllegalArgumentException("noncanonical pinned namespace source identity");
+        }
+        for (String segment : id.split("/", -1)) {
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
+                throw new IllegalArgumentException("noncanonical pinned namespace source identity");
+            }
+        }
+        for (int i = 0; i < id.length(); i++) {
+            char c = id.charAt(i);
+            if (c < 32 || c == 127) {
+                throw new IllegalArgumentException("noncanonical pinned namespace source identity");
+            }
+        }
     }
 
     public synchronized BuildResult compile(
