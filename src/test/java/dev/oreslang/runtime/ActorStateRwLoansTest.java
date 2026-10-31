@@ -570,6 +570,10 @@ final class ActorStateRwLoansTest {
         var loans = new ActorStateRwLoans(2, wakes::incrementAndGet);
         var holder = loans.acquireWriteAsync(actor(8601, 261, 1)).join();
         var pending = loans.acquireReadAsync(actor(8602, 262, 1));
+        // A second waiter must not be promoted after the cancellation
+        // revoker reports failure, even when the active writer retires.
+        var queuedReader = loans.acquireReadAsync(actor(8605, 265, 1));
+        assertFalse(queuedReader.isDone());
         var injected = new IllegalStateException("injected revocation failure");
 
         // OresFuture intentionally catches revoker failures and stores them
@@ -599,8 +603,13 @@ final class ActorStateRwLoansTest {
         assertEquals(0, loans.pendingCount(),
                 "quarantined requests must not enter the pending admission queue");
 
-        loans.close();
+        assertFalse(queuedReader.isDone(), "queued reader must not be granted in quarantine");
         holder.close();
+        assertFalse(queuedReader.isDone(),
+                "physical writer release must not promote an untrusted queued waiter");
+        loans.close();
+        assertTrue(queuedReader.isCompletedExceptionally(),
+                "shutdown must settle queued work without granting state authority");
         assertEquals(0, loans.activeWriterCount());
         assertEquals(0, loans.pendingCount());
         assertFalse(loans.physicallyRetired(),
