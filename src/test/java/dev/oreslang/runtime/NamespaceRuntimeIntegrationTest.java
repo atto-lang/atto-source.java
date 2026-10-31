@@ -60,6 +60,21 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void symlinkedEntrySourceCannotBeCanonicalizedIntoAnotherManifestMember() throws Exception {
+        Path project = temp.resolve("entry-alias");
+        billing(project);
+        Path genuine = source(project, "src/main.ores", "app", """
+                pub fnc main(): void { return; }
+                """);
+        Path alias = genuine.resolveSibling("entry-alias.ores");
+        Files.createSymbolicLink(alias, genuine.getFileName());
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.discover(alias));
+        assertTrue(denied.getMessage().contains(
+                "symlinked namespace entry source is forbidden"));
+    }
+
+    @Test
     void samePackageSingleNamespaceImportDispatchesAcrossFourFiles() throws Exception {
         Path root = temp.resolve("checkout");
         billing(root);
