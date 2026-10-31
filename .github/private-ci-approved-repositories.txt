@@ -1,6 +1,6 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
-# Changes must receive independent @ORESoftware review and be enforced by protected main or V3 exact review attestation.
+# Changes require independent @ORESoftware review and enforced protected main; review is never a substitute for branch protection.
 # Format: exact owner/repo ONE SPACE immutable numeric GitHub repository ID (e.g. trusted/ci 1234567).
 # Slug or numeric-ID changes require a new exact independent review.
 # Proposed narrow private carrier for v3 exact-tree tests; requires exact independent review before merge.
