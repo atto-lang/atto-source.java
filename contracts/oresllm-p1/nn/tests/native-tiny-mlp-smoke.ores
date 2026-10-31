@@ -11,7 +11,8 @@ pub routine main(): void {
   for let step = 0; step < 12; step++ do
     state = train_step(&state, 2.0, 6.0, 0.01);
   done
-  if squared_loss(&state, 2.0, 6.0) >= starting_loss; do
+  val float final_loss = squared_loss(&state, 2.0, 6.0);
+  if final_loss >= starting_loss; do
     rt fail("MLP training did not improve loss");
   fi
   stdio.stdout.println("ORES-TINY-MLP-NATIVE-PASS");

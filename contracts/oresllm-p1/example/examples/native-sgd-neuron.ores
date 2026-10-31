@@ -32,10 +32,10 @@ pub routine main(): void {
   );
 
   // Explicit scalar training loop; one weight and a deterministic sample.
-  for const step of arr[1, 2, 3, 4, 5, 6, 7, 8] do
+  for let step = 0; step < 8; step++ do
     val float gradient = scalar_training.gradient_w(input, weight, target);
     weight = scalar_training.update_weight(weight, gradient, learning_rate);
-  end
+  done
 
   val float final_loss = scalar_training.squared_error(
     scalar_training.predict(input, weight), target
