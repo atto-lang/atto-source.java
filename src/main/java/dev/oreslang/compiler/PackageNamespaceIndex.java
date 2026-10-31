@@ -62,9 +62,35 @@ public final class PackageNamespaceIndex {
         if (manifests == null) throw new IllegalArgumentException("manifests cannot be null");
         LinkedHashMap<Path, String> snapshots = new LinkedHashMap<>();
         for (Path manifest : manifests) {
-            Path canonical = manifest.toRealPath();
-            String previous = snapshots.putIfAbsent(canonical,
-                    Files.readString(canonical, java.nio.charset.StandardCharsets.UTF_8));
+            Path canonical = manifest.toAbsolutePath().normalize();
+            // Do not canonicalize an alias before inspecting it. The public
+            // direct-index entry point must reject a symlinked manifest just
+            // like workspace discovery, including symlinked parent paths.
+            if (!".ores.pkg.toml".equals(canonical.getFileName().toString())
+                    || Files.isSymbolicLink(canonical)
+                    || !Files.isRegularFile(canonical, LinkOption.NOFOLLOW_LINKS)
+                    || !canonical.equals(canonical.toRealPath())) {
+                throw new SecurityException("namespace manifest is not a regular unaliased path");
+            }
+            // Bound the read itself, not a previous stat: manifests can grow
+            // concurrently and Files.readString() allocates without a limit.
+            byte[] bytes;
+            try (var input = Files.newInputStream(canonical, LinkOption.NOFOLLOW_LINKS)) {
+                bytes = input.readNBytes(1024 * 1024 + 1);
+            }
+            if (bytes.length > 1024 * 1024) {
+                throw new IllegalArgumentException("namespace manifest exceeds byte budget");
+            }
+            String content;
+            try {
+                content = java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                        .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+            } catch (java.nio.charset.CharacterCodingException malformed) {
+                throw new IllegalArgumentException("namespace manifest must be valid UTF-8", malformed);
+            }
+            String previous = snapshots.putIfAbsent(canonical, content);
             if (previous != null) throw new IllegalArgumentException("duplicate package manifest");
         }
         return loadFromSnapshots(snapshots, sources, pinnedDependencyAliases);

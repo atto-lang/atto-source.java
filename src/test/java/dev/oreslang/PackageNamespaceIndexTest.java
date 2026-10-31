@@ -293,6 +293,39 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void directIndexRejectsOversizedAndMalformedUtf8ManifestBeforeParsing() throws IOException {
+        Path directory = temporary.resolve("direct-manifest-budget");
+        Path ownedManifest = manifest(directory, "checkout", List.of("src/file.ores"));
+        Files.write(ownedManifest, new byte[1024 * 1024 + 1]);
+        IllegalArgumentException oversized = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(ownedManifest), Map.of(), Map.of()));
+        assertTrue(oversized.getMessage().contains("exceeds byte budget"));
+
+        Files.write(ownedManifest, new byte[] {(byte) 0xC3, (byte) 0x28});
+        IllegalArgumentException malformed = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(ownedManifest), Map.of(), Map.of()));
+        assertTrue(malformed.getMessage().contains("valid UTF-8"));
+    }
+
+    @Test
+    void directIndexRejectsSymlinkedManifestEntryWithoutCanonicalizingAwayAlias()
+            throws IOException {
+        Path original = manifest(temporary.resolve("direct-manifest-real"),
+                "checkout", List.of("src/file.ores"));
+        Path alias = temporary.resolve("direct-manifest-alias/.ores.pkg.toml");
+        Files.createDirectories(alias.getParent());
+        try {
+            Files.createSymbolicLink(alias, original);
+        } catch (UnsupportedOperationException | IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.load(List.of(alias), Map.of(), Map.of()));
+        assertTrue(denied.getMessage().contains("unaliased path"));
+    }
+
+    @Test
     void runtimeLoaderRejectsNamespaceImportsWithoutVerifiedManifest() throws IOException {
         Path entry = temporary.resolve("entry.ores");
         Files.writeString(entry, """
