@@ -263,6 +263,43 @@ public final class NativeIo {
         }
     }
 
+    /**
+     * Nonblocking TCP connect backed by the owning VM's selector domain.
+     *
+     * <p>This is the strict-mode network path. Numeric IPv4 is intentionally
+     * required by the first contract so hostname resolution cannot hide a
+     * blocking resolver call.</p>
+     */
+    public static OresFuture<VmNioTcpClient.Connection> connectAsync(
+            OresContext context, String host, int port) {
+        return connectAsync(context, host, port, 15_000);
+    }
+
+    public static OresFuture<VmNioTcpClient.Connection> connectAsync(
+            OresContext context, String host, int port, int timeoutMillis) {
+        if (context == null) throw new NullPointerException("context");
+        if (host == null || host.isBlank()) {
+            return OresFuture.failed(new IllegalArgumentException(
+                    "network.connect_async host cannot be blank"));
+        }
+        if (port < 1 || port > 65_535) {
+            return OresFuture.failed(new IllegalArgumentException(
+                    "network.connect_async port must be 1..65535"));
+        }
+        String endpoint =
+                host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
+        context.requirePermission(
+                RuntimePermissions.Permission.NET,
+                endpoint,
+                "network.connect_async");
+        try {
+            return context.vm().connectNioTcp(
+                    host, port, timeoutMillis);
+        } catch (IOException | RuntimeException failure) {
+            return OresFuture.failed(failure);
+        }
+    }
+
     public static TcpConnection connect(OresContext context, String host, int port) {
         // Compatibility API: this path owns java.net.Socket and may park.
         // Strict NIO callers must use connectAsync() below.
