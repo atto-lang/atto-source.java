@@ -71,7 +71,7 @@ final class HotReloadCompiledUnitAdmissionTest {
         // dependencies set. Only independently parsed executable source
         // determines whether an import closure needs authentication.
         String withImport =
-                "import module dependency from \"dependency.ores\";\\n" + GOOD;
+                "import module dependency from \"dependency.ores\";\n" + GOOD;
         var parsed = dev.oreslang.parser.Parser.parse(withImport);
         assertFalse(parsed.imports().isEmpty(), "fixture must contain a real import declaration");
         var base = fixture();
