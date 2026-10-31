@@ -2574,6 +2574,36 @@ public final class ActorRuntime implements AutoCloseable {
             return ActorRuntime.this.freezeUpgradeIngress(this);
         }
 
+        /**
+         * Validate a proposed physical successor without running guest code.
+         * Same-runtime provenance and successful initialization are required;
+         * a bare non-null ActorRef or completed failed ready Future is not a
+         * handoff proof. The upgrade coordinator must still fence admissions,
+         * verify full physical drain and handle post-publication termination.
+         */
+        void requireReadyUpgradeSuccessor(ActorRef<?> successor) {
+            requireSupervisorContext("validate physical upgrade successor");
+            requireCallerRuntimeAffinity("validate physical upgrade successor");
+            Objects.requireNonNull(successor, "physical successor");
+            if (!successor.ownedBy(ActorRuntime.this))
+                throw new ActorInvalidReferenceException(
+                        "physical upgrade successor belongs to a different ActorRuntime");
+            if (kind != ActorKind.SHARED || successor.kind != ActorKind.SHARED)
+                throw new SecurityException("actor upgrade successor requires SHARED placement");
+            if (successor == this)
+                throw new IllegalArgumentException("cannot replace physical actor with itself");
+            if (!successor.readyFuture.isDone()
+                    || successor.readyFuture.isCompletedExceptionally())
+                throw new IllegalStateException(
+                        "physical upgrade successor has not initialized successfully");
+            ActorCell<?> admitted = actors.get(successor.id);
+            if (admitted == null || admitted.ref != successor
+                    || admitted.stopped.get() || admitted.finalized
+                    || successor.terminationCause.get() != null)
+                throw new IllegalStateException(
+                        "physical upgrade successor is no longer serving");
+        }
+
 
 
         /** Seal admission and finish previously admitted messages before stopping.
