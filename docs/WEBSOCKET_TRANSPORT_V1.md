@@ -532,6 +532,38 @@ all guest lifecycle/tenant/isolate checks intact. Neither host-side
 callback delivery nor context identity alone proves physical tenant
 heap isolation or WebSocket guest parity on LLVM/.NET/WASM.
 
+## Cancellation checkpoint and scheduler refusal hardening (2026-10-31)
+
+The trusted `ActorDeliveryTicket.deliverOnActor` path now invokes
+`ActorRuntime.schedulerSafepoint()` and revalidates its owner-generation
+loan immediately before guest handler invocation. A STOP that has
+already won the actor runtime's cancellation fence rejects delivery
+without guest execution. This is a cooperative boundary; it does not
+promise to preempt guest code that has already begun executing.
+
+`ActorRuntime.enqueueHostActorDelivery` now distinguishes an accepted
+mailbox envelope from a failed dispatcher submission. After admission,
+the mailbox **owns** the on-retirement callback; if scheduling is
+rejected, the actor failure path initiates STOP/drain and the caller is
+still told the ticket was admitted. The caller never fabricates
+ownership return when the queue still contains the envelope.
+Fatal JVM/linkage errors are not disguised as ordinary scheduler
+rejections.
+
+`WebSocketActorMailboxDeliveryTest` now also includes a host
+TurnExecutor-refusal scenario that expects zero guest delivery,
+actor failure, and exactly one accepted-envelope cleanup.
+
+**Verification limitations:** 14/14 source-only contract predicates
+matched at the exact reviewed head before this documentation edit.
+This is *not* proof of compile/test success. The full focused
+JDK25/GraalVM Maven/JUnit suite has not executed. The approved
+self-hosted runner/CI admission requirements and private test
+repository authorization remain independent gates. An attempted
+source-free branch creation at the alternate private host was
+blocked by the integration safety control. No private source was
+mirrored, and no alternate CI success was claimed.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
