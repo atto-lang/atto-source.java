@@ -422,6 +422,43 @@ tenant/isolate membership proof, or native guest execution. Logical
 revocation and ownership lease release still do not prove the global
 `AsyncNativeIo` actor arena join receipt or socket-fd isolation.
 
+## Canonical ledger physical-retirement consolidation (draft, NOT_EXECUTED)
+
+This patch preserves the current `WebSocketActorConnectionLease` as the **only**
+authoritative ownership ledger. It does not copy the older, separate
+`WebSocketActorClaim` or `WebSocketConnectionHandles` designs from review
+PRs #2366/#2371 into the transport. Those drafts require independent
+feature-by-feature review rather than merging competing ownership models.
+
+The existing actor-finalization callback already revokes only the exact
+currently bound actor generation (`revokeIfOwner`) and enqueues a host-only
+CONTROL close operation. A saturated CONTROL pool previously launched a
+**new virtual thread per failed retirement admission**. The fallback now
+uses one shared daemon host-sweep worker, which drains up to 32 deduplicated
+already-owned connections per interval. There is no new connection, actor
+carrier, or cleanup thread per revoked connection. An entry is removed after
+the connection-close attempt; the existing native-I/O resource ledger still
+owns any pending physical loan. The shared fallback is best effort under a
+blocked host close, not a verified hard-real-time or globally fair scheduler.
+
+The actor USER delivery handoff now distinguishes rejection of an
+unauthorized/foreign actor handle (which must not close a healthy socket)
+from failure after a valid lease has been acquired. In the latter case the
+loan is closed in `finally`, the lifecycle monitor is released, then
+`requestActiveWriteAbort` revokes the ledger and schedules physical host
+close. The previous code called `close()` while the outer lifecycle lock
+was still held, even though `close()` itself intended to perform socket
+I/O after releasing that lock. No guest callback may be executed in this
+short host scheduler enqueue seam.
+
+The authored `WebSocketLoopbackListenerTest` includes CONTROL-pool
+saturation with a claimed idle connection and a trusted scheduler handoff
+failure that must close without stranding loans. These tests have **not
+executed on current JDK25/GraalVM**. This work does not supply a
+source-level Oreslang guest WebSocket API, global listener/byte budgets,
+a verified native actor mailbox delivery adapter, or full five-backend
+conformance. Do not promote or merge without authorized exact-head CI.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
