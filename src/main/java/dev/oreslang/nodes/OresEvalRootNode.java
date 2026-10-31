@@ -11423,17 +11423,33 @@ public final class OresEvalRootNode extends RootNode {
         private Object println(List<Object> args) {
             return emitStdout(context, args, "stdio.stdout.println", true);
         }
-        private Object log(List<Object> args){
-            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(CycleSafeDisplay.render(arg));
-            context.output().println();
-            context.output().flush();
+        private Object printlnAsync(List<Object> args) {
+            return emitStdoutAsync(context, args, "stdio.stdout.println_async");
+        }
+        private Object logAsync(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.log_async");
+            StringBuilder record = new StringBuilder();
+            for (Object arg : args) record.append(CycleSafeDisplay.render(arg));
+            return context.asyncStdio().logAsync(record.append('\n').toString());
+        }
+        private Object logListAsync(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.logList_async");
+            requireOne(args, "stdio.stdout.logList_async");
+            return logAsync(expandArgumentSequence(args.getFirst(), "stdio.stdout.logList_async"));
+        }
+        private Object log(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.log");
+            StringBuilder record = new StringBuilder();
+            for (Object arg : args) record.append(CycleSafeDisplay.render(arg));
+            // One PrintWriter operation per record prevents mixed sync/async
+            // logging from interleaving partial lines on a shared writer.
+            context.output().println(record);
             return null;
         }
-        private Object logList(List<Object> args){
-            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.logList");
-            requireOne(args,"stdio.stdout.logList");
-            return log(expandArgumentSequence(args.getFirst(),"stdio.stdout.logList"));
+        private Object logList(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.logList");
+            requireOne(args, "stdio.stdout.logList");
+            return log(expandArgumentSequence(args.getFirst(), "stdio.stdout.logList"));
         }
     }
     private record StdinFacade(OresContext context) {
