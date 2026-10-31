@@ -116,6 +116,30 @@
       "id": "field.take.unproven",
       "outcome": "reject",
       "code": "E_MOVE_UNPROVEN"
+    },
+    {
+      "id": "copy.conditional.nocopy",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "copy.match.nocopy",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "take.conditional.partial",
+      "outcome": "reject",
+      "code": "E_MOVE_UNPROVEN"
+    },
+    {
+      "id": "field.implicit.move",
+      "outcome": "reject",
+      "code": "E_MOVE_UNPROVEN"
+    },
+    {
+      "id": "field.move-only.borrow",
+      "outcome": "accept"
     }
   ]
 }
