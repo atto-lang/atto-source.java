@@ -295,7 +295,13 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         var frame = WebSocketNioDuplex.readClientFrame(
                                 socket.getChannel(), maxFrameBytes,
                                 limits.handshakeTimeoutMillis());
+                        if (retired.get()) {
+                            throw new IOException("WebSocket retired before incoming frame admission");
+                        }
                         var action = protocol.accept(frame);
+                        if (retired.get()) {
+                            throw new IOException("WebSocket retired during incoming frame admission");
+                        }
                         if (action.kind() == WebSocketSessionState.ActionKind.SEND_PONG
                                 || action.kind() == WebSocketSessionState.ActionKind.SEND_CLOSE) {
                             int opcode = action.kind()
@@ -307,6 +313,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             // USER frames in the single physical write lane.
                             outbound.enqueueControl(opcode, action.payload());
                             wakeWriter();
+                        }
+                        if (retired.get()) {
+                            throw new IOException("WebSocket retired before incoming read publication");
                         }
                         return action;
                     } catch (IOException | RuntimeException failure) {
