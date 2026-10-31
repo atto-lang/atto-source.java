@@ -12,6 +12,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -26,6 +27,7 @@ import java.util.function.Supplier;
 public final class SupervisorRegistryObservation implements AutoCloseable {
     public static final int MAX_NODES = 10_000;
     public static final int MAX_DEPTH = 64;
+    public static final int MAX_ACTIVE_READS = 8;
     public static final long MAX_TTL_NANOS = 60_000_000_000L;
     public static final long MAX_READ_NANOS = 5_000_000_000L;
     private static final long REGISTRATION_GENERATION = 1L;
@@ -34,6 +36,7 @@ public final class SupervisorRegistryObservation implements AutoCloseable {
     private final LongSupplier ticks;
     private final Supplier<Instant> wallClock;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicInteger activeReads = new AtomicInteger();
 
     public record SupervisorNode(String id, String parentId, String status,
                                  long generation, String observedAt) { }
@@ -67,6 +70,7 @@ public final class SupervisorRegistryObservation implements AutoCloseable {
         private final long issuedAt;
         private final long ttlNanos;
         private final AtomicBoolean revoked = new AtomicBoolean();
+        private final AtomicBoolean reading = new AtomicBoolean();
         private Grant(SupervisorRegistryObservation owner, Object session,
                       String tenantId, ActorRuntime.ActorSupervisor scopeRoot,
                       long issuedAt, long ttlNanos) {
@@ -138,7 +142,14 @@ public final class SupervisorRegistryObservation implements AutoCloseable {
             throw new IllegalArgumentException("invalid snapshot bounds");
         if (registry.size() > MAX_NODES)
             throw new IllegalStateException("supervisor registry exceeds observation cap");
-
+        if (!grant.reading.compareAndSet(false, true))
+            throw new IllegalStateException("observation grant already has an active read");
+        if (activeReads.incrementAndGet() > MAX_ACTIVE_READS) {
+            activeReads.decrementAndGet();
+            grant.reading.set(false);
+            throw new IllegalStateException("observation read capacity exhausted");
+        }
+        try {
         long start = ticks.getAsLong();
         String startedAt = wallClock.get().toString();
         // Construct structural edges from immutable, runtime-owned registry
@@ -213,6 +224,10 @@ public final class SupervisorRegistryObservation implements AutoCloseable {
                 tenantId, grant.scopeRoot.id().value().toString(),
                 REGISTRATION_GENERATION, startedAt, wallClock.get().toString(),
                 nodes, List.of(), missing, warnings);
+        } finally {
+            activeReads.decrementAndGet();
+            grant.reading.set(false);
+        }
     }
 
     private void requireValid(Grant grant, Object session, String tenant,
