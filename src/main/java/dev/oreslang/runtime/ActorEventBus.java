@@ -242,7 +242,32 @@ public final class ActorEventBus implements AutoCloseable {
         }
     }
 
+    /**
+     * Subscribe to one publisher on an existing ActorGroup topic. This is a
+     * host/runtime substrate for ObservableActor, not its source-level grant
+     * API. Group membership is required for both parties; source-level
+     * observation grants must be checked by the eventual frontend adapter.
+     *
+     * Unlike a topic-wide subscription, an event from a different publisher
+     * never consumes this subscription's quota or pending writes.
+     */
+    public <T> Subscription<T> subscribePublisher(
+            String name, ActorRuntime.ActorRef<?> publisher) {
+        Objects.requireNonNull(publisher, "publisher");
+        requireOpen();
+        group.requireCurrentMember("subscribe to publisher ActorGroup events");
+        if (!runtime.isAlive(publisher) || !group.isMember(publisher.id())) {
+            throw new SecurityException("publisher must be a live member of this ActorGroup");
+        }
+        return subscribeInternal(name, publisher.address());
+    }
+
     public <T> Subscription<T> subscribe(String name) {
+        return subscribeInternal(name, null);
+    }
+
+    private <T> Subscription<T> subscribeInternal(
+            String name, ActorRuntime.ActorAddress publisherScope) {
         requireOpen();
         ActorRuntime.ActorId subscriber =
                 group.requireCurrentMember("subscribe to ActorGroup events");
@@ -252,6 +277,7 @@ public final class ActorEventBus implements AutoCloseable {
                             + "use actor mailboxes until isolated event delivery is available");
         }
         TopicState topic = requireTopic(name);
+        SubscriptionKey key = new SubscriptionKey(subscriber, publisherScope);
 
         int actorLimit =
                 Math.max(1, ActorRuntime.currentActorPolicy().maxMailboxMessages());
@@ -267,21 +293,21 @@ public final class ActorEventBus implements AutoCloseable {
             for (;;) {
                 @SuppressWarnings("unchecked")
                 Subscription<T> existing =
-                        (Subscription<T>) topic.subscriptions.get(subscriber);
+                        (Subscription<T>) topic.subscriptions.get(key);
                 if (existing != null) {
                     if (!existing.closed()) return existing;
-                    topic.subscriptions.remove(subscriber, existing);
+                    topic.subscriptions.remove(key, existing);
                     continue;
                 }
 
                 Subscription<T> created =
-                        new Subscription<>(topic, subscriber, capacity);
+                        new Subscription<>(topic, key, capacity);
                 Subscription<?> raced =
-                        topic.subscriptions.putIfAbsent(subscriber, created);
+                        topic.subscriptions.putIfAbsent(key, created);
                 if (raced != null) {
                     created.closeChannelOnly();
                     if (raced.closed()) {
-                        topic.subscriptions.remove(subscriber, raced);
+                        topic.subscriptions.remove(key, raced);
                         continue;
                     }
                     @SuppressWarnings("unchecked")
@@ -290,7 +316,7 @@ public final class ActorEventBus implements AutoCloseable {
                 }
 
                 if (!group.isMember(subscriber) || closed.get()) {
-                    topic.subscriptions.remove(subscriber, created);
+                    topic.subscriptions.remove(key, created);
                     created.closeChannelOnly();
                     throw new IllegalStateException(
                             "ActorGroup membership ended during subscription");
@@ -374,9 +400,17 @@ public final class ActorEventBus implements AutoCloseable {
     void removeActor(ActorRuntime.ActorId actorId) {
         for (TopicState topic : topics.values()) {
             synchronized (topic.deliveryLock) {
-                Subscription<?> subscription =
-                        topic.subscriptions.remove(actorId);
-                if (subscription != null) subscription.closeChannelOnly();
+                for (Map.Entry<SubscriptionKey, Subscription<?>> entry
+                        : List.copyOf(topic.subscriptions.entrySet())) {
+                    SubscriptionKey key = entry.getKey();
+                    if (key.subscriber().equals(actorId)
+                            || (key.publisher() != null
+                                    && key.publisher().actorId().equals(actorId))) {
+                        if (topic.subscriptions.remove(key, entry.getValue())) {
+                            entry.getValue().closeChannelOnly();
+                        }
+                    }
+                }
             }
         }
     }
@@ -459,11 +493,17 @@ public final class ActorEventBus implements AutoCloseable {
                         new ArrayList<>(snapshot.size());
                 for (Subscription<?> subscription : snapshot) {
                     if (subscription.closed()
-                            || !group.isMember(subscription.subscriber)) {
-                        topic.subscriptions.remove(
-                                subscription.subscriber, subscription);
+                            || !group.isMember(subscription.subscriber)
+                            || (subscription.publisherScope != null
+                                    && !group.isMember(
+                                            subscription.publisherScope.actorId()))) {
+                        topic.subscriptions.remove(subscription.key, subscription);
                         subscription.closeChannelOnly();
-                    } else {
+                    } else if (subscription.publisherScope == null
+                            || subscription.publisherScope.actorId().equals(publisher)) {
+                        // Filter before reliable reservation and per-observer
+                        // credit accounting. A system event only reaches
+                        // legacy, unscoped topic subscriptions.
                         active.add(subscription);
                     }
                 }
@@ -625,12 +665,20 @@ public final class ActorEventBus implements AutoCloseable {
         }
     }
 
+    // Null publisher means an existing topic-wide subscription.
+    private record SubscriptionKey(
+            ActorRuntime.ActorId subscriber, ActorRuntime.ActorAddress publisher) {
+        private SubscriptionKey {
+            Objects.requireNonNull(subscriber, "subscriber");
+        }
+    }
+
     private final class TopicState {
         private final String name;
         private final DeliveryPolicy policy;
         private final int capacity;
         private final boolean reductionOwned;
-        private final Map<ActorRuntime.ActorId, Subscription<?>> subscriptions =
+        private final Map<SubscriptionKey, Subscription<?>> subscriptions =
                 new ConcurrentHashMap<>();
         private final Object deliveryLock = new Object();
         private final AtomicLong sequence = new AtomicLong();
@@ -702,7 +750,9 @@ public final class ActorEventBus implements AutoCloseable {
 
     public final class Subscription<T> implements AutoCloseable {
         private final TopicState topic;
+        private final SubscriptionKey key;
         private final ActorRuntime.ActorId subscriber;
+        private final ActorRuntime.ActorAddress publisherScope;
         private final ChannelRuntime.Channel<Event<T>> channel;
         private final Object latestLock = new Object();
         private final AtomicInteger reliableOutstanding = new AtomicInteger();
@@ -713,10 +763,12 @@ public final class ActorEventBus implements AutoCloseable {
 
         private Subscription(
                 TopicState topic,
-                ActorRuntime.ActorId subscriber,
+                SubscriptionKey key,
                 int capacity) {
             this.topic = topic;
-            this.subscriber = subscriber;
+            this.key = key;
+            this.subscriber = key.subscriber();
+            this.publisherScope = key.publisher();
             this.channel = new ChannelRuntime.Channel<>(capacity);
             this.pendingReadLimit = ActorRuntime.currentActorPolicy().maxMailboxMessages();
             long bounded = Math.max((long) capacity + 1L, (long) capacity * 2L);
@@ -729,6 +781,11 @@ public final class ActorEventBus implements AutoCloseable {
 
         public ActorRuntime.ActorId subscriber() {
             return subscriber;
+        }
+
+        /** Null indicates a legacy subscription to every topic publisher. */
+        public Optional<ActorRuntime.ActorAddress> publisherScope() {
+            return Optional.ofNullable(publisherScope);
         }
 
         public DeliveryPolicy policy() {
@@ -903,7 +960,7 @@ public final class ActorEventBus implements AutoCloseable {
                         "an actor may only close its own ActorGroup event subscription");
             }
             synchronized (topic.deliveryLock) {
-                if (topic.subscriptions.remove(subscriber, this)) {
+                if (topic.subscriptions.remove(key, this)) {
                     closeChannelOnly();
                 }
             }
