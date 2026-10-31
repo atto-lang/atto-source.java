@@ -126,16 +126,21 @@ final class MutableShareCompilerTest {
 
     @Test
     void rejectsForgedNominalSharedMutexDeclaration() {
-        rejected("""
-                define class SharedMutex<T> as
-                  pub let int value = 1;
-                end
-                fnc bad(): void {
-                  val fake = new SharedMutex<int>();
-                  val alias = rt mut share fake;
-                  return;
-                }
-                """, "rt mut share requires");
+        // An earlier reserved-name/type gate may reject this class before
+        // the rt mut share ownership gate; both must deny the forgery.
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class SharedMutex<T> as
+                          pub let int value = 1;
+                        end
+                        fnc bad(): void {
+                          val fake = new SharedMutex<int>();
+                          val alias = rt mut share fake;
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("SharedMutex"), error.getMessage());
     }
 
     @Test
@@ -156,6 +161,49 @@ final class MutableShareCompilerTest {
                   return;
                 }
                 """);
+    }
+
+    @Test
+    void guardedSharingCannotEscapeTheSynchronizationProtocol() {
+        rejected(COUNTER + """
+                fnc bad(): void {
+                  val mutex = SharedMutex.new(new Counter());
+                  val alias = rt mut share mutex;
+                  alias.value = 99;
+                  return;
+                }
+                """, "value");
+        rejected(COUNTER + """
+                fnc bad(): void {
+                  val mutex = SharedMutex.new(new Counter());
+                  val guard = mutex.lock();
+                  val alias = rt mut share guard;
+                  return;
+                }
+                """, "rt mut share requires");
+    }
+
+    @Test
+    void heldGuardAndExclusiveBorrowCannotCrossSuspension() {
+        rejected(COUNTER + """
+                async fnc bad(): void {
+                  val counter = new Counter();
+                  val loan = rt mut borrow counter;
+                  rt cooperate;
+                  loan.value = 5;
+                  return;
+                }
+                """, "borrow");
+        rejected(COUNTER + """
+                async fnc bad(): void {
+                  val mutex = SharedMutex.new(new Counter());
+                  val alias = rt mut share mutex;
+                  val guard = alias.lock();
+                  rt cooperate;
+                  guard.value = 2;
+                  return;
+                }
+                """, "MutexGuard");
     }
 
     @Test
