@@ -136,20 +136,29 @@ final class WebSocketConnectionHandlesTest {
                     var secondConnection = secondAccept.get(3, TimeUnit.SECONDS);
                     assertThrows(RejectedExecutionException.class, () ->
                             handles.claim(secondConnection, runtime, secondActor));
-                    firstActor.stop();
-                    firstActor.done().get(5, TimeUnit.SECONDS);
-                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-                    while (!firstConnection.isRetired()
-                            && System.nanoTime() < deadline) Thread.sleep(10);
-                    assertTrue(firstConnection.isRetired());
-                    assertEquals(-1, first.getInputStream().read());
-                    var next = handles.claim(secondConnection, runtime, secondActor);
+                    // Failed table admission never assumes ownership of this
+                    // accepted host socket. The supervisor must close it.
+                    secondConnection.close();
+                    assertEquals(-1, second.getInputStream().read());
+                }
+                firstActor.stop();
+                firstActor.done().get(5, TimeUnit.SECONDS);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (!firstConnection.isRetired()
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertTrue(firstConnection.isRetired());
+                assertEquals(-1, first.getInputStream().read());
+                var thirdAccept = listener.acceptAsync();
+                try (var third = new Socket("127.0.0.1", port)) {
+                    upgrade(third, port);
+                    var nextConnection = thirdAccept.get(3, TimeUnit.SECONDS);
+                    var next = handles.claim(nextConnection, runtime, secondActor);
                     assertNotSame(old, next);
                     assertThrows(SecurityException.class,
                             () -> handles.sendBinaryAsync(old, new byte[] {1}));
                     secondActor.stop();
                     secondActor.done().get(5, TimeUnit.SECONDS);
-                    assertRetired(listener, second);
+                    assertRetired(listener, third);
                 }
             }
         }
