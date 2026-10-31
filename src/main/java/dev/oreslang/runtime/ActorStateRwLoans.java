@@ -46,11 +46,10 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private long nextEpoch;
     private boolean closed;
     private boolean publishing;
-    // A terminal Future CAS is not a physical-retirement receipt: synchronous
-    // runtime notification callbacks may still run after a pending waiter has
-    // been dequeued by cancellation or shutdown. Count them until the Future
-    // reports that its terminal notification drain has completed.
-    private int terminalNotificationsInFlight;
+    // Every queued Future owns exactly one retirement pin from queue admission
+    // through terminal notification drain, even if promotion/cancellation wins
+    // a CAS after the waiter leaves pending. No removal path may omit this pin.
+    private long terminalNotificationsInFlight;
     private final Runnable retirementWakeup;
     private boolean retirementWakeupDelivered;
 
@@ -145,6 +144,12 @@ public final class ActorStateRwLoans implements AutoCloseable {
             }
             Pending waiter = new Pending(authority, access);
             pending.addLast(waiter);
+            // The Future has not escaped, and cannot settle before this
+            // registration. Account once at admission rather than when a
+            // cancellation or promotion eventually removes the queue node.
+            // This fences every terminal-CAS / producer-promotion race.
+            terminalNotificationsInFlight++;
+            trackNotificationDrain(waiter.future);
             return waiter.future;
         }
     }
@@ -237,19 +242,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
         while (!pending.isEmpty()) {
             Pending head = pending.peekFirst();
             if (head.future.isCancelled()) {
-                // Cancellation publishes the terminal CAS before its hook
-                // can remove this waiter. Another loan may retire and reach
-                // promotion first. That path owns removal and MUST also
-                // retain the cancellation notification-drain fence, otherwise
-                // close() can report physical retirement while the cancelling
-                // thread is still blocked before running its observers.
+                // This future's notification receipt was registered when it
+                // entered pending. Its cancellation CAS may precede its hook;
+                // removing the node here does not retire the notification pin.
                 pending.removeFirst();
                 unreserveLocked(head.authority);
-                terminalNotificationsInFlight++;
-                // Register outside monitor via the normal completion publisher.
-                // The cancellation hook will see removal already completed and
-                // must not register a second receipt.
-                completions.addLast(() -> trackNotificationDrain(head.future));
                 continue;
             }
 
@@ -337,17 +334,13 @@ public final class ActorStateRwLoans implements AutoCloseable {
                     removed = pending.remove(this);
                     if (removed) {
                         unreserveLocked(authority);
-                        // The winning cancellation CAS precedes this hook, but
-                        // its host observers run AFTER the hook returns.
-                        // Account for that window before close() can retire.
-                        terminalNotificationsInFlight++;
+                        // Queue admission already retained the Future's
+                        // terminal notification pin, including this CAS/hook
+                        // window and any promotion race.
                         promoteLocked();
                     }
                 }
-                if (removed) {
-                    trackNotificationDrain(future);
-                    publish();
-                }
+                if (removed) publish();
             });
         }
     }
@@ -437,15 +430,13 @@ public final class ActorStateRwLoans implements AutoCloseable {
             abandoned = new ArrayDeque<>(pending);
             pending.clear();
             for (Pending waiter : abandoned) unreserveLocked(waiter.authority);
-            // A blocked terminal callback must not let the last physical loan
-            // retire its actor arena before all abandoned Futures drain.
-            terminalNotificationsInFlight += abandoned.size();
+            // Every abandoned Future already has a terminal drain pin from
+            // queue admission; shutdown must neither add nor duplicate one.
         }
 
         Throwable firstFailure = null;
         for (Pending waiter : abandoned) {
             try {
-                trackNotificationDrain(waiter.future);
                 waiter.future.failFromRuntime(new IllegalStateException(
                         "actor state RW loans closed"));
             } catch (Throwable failure) {
