@@ -226,6 +226,9 @@ public final class OresEvalRootNode extends RootNode {
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
+        // Once an affine class-field owner is taken, any alias of that class
+        // instance must observe an unusable slot until an explicit reassignment.
+        private static final Object MOVED_FIELD = new Object();
 
         private enum InvocationKind {
             FUNCTION,
@@ -4417,6 +4420,24 @@ public final class OresEvalRootNode extends RootNode {
                                 "rt " + runtime.operation() + " expects exactly one argument"));
                 return;
             }
+            // A class-field take must consume its storage. Evaluating the
+            // member first and then applying identity-level rt take would
+            // leave the same affine Task handle in the object.
+            if (runtime.operation().equals("take")
+                    && runtime.arguments().getFirst() instanceof Ast.MemberExpr member) {
+                evalSuspendableExpr(task, member.receiver(), env, (t, receiver, failure) -> {
+                    if (failure != null) {
+                        continuation.accept(t, null, failure);
+                        return;
+                    }
+                    try {
+                        continuation.accept(t, takeClassField(receiver, member.member(), env), null);
+                    } catch (RuntimeException | Error moveFailure) {
+                        continuation.accept(t, null, moveFailure);
+                    }
+                });
+                return;
+            }
             evalSuspendableExpr(
                     task,
                     runtime.arguments().getFirst(),
@@ -6368,6 +6389,47 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException(name + " operands must be bool");
         }
 
+        // Return the field's old value exactly once. The same object may be
+        // aliased, so the storage guard (not a caller-local demand flag) is
+        // responsible for rejecting a second move.
+        private Object takeClassField(Object receiver, String name, Env env) {
+            if (!(receiver instanceof OresObject object)) {
+                // Non-class member projections retain their pre-existing
+                // semantics. This gate is specifically for class ownership.
+                return member(receiver, name, env);
+            }
+            OwnedField ownerField = object.owner.findField(
+                    object.klass, name, new LinkedHashSet<>());
+            if (ownerField == null) {
+                throw new IllegalArgumentException("unknown class field '" + name + "'");
+            }
+            object.owner.requireClassMemberVisible(
+                    ownerField.field().visibility(),
+                    ownerField.owner(),
+                    env == null ? null : env.accessClass(),
+                    "field", ownerField.field().name());
+            if (ownerField.field().bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException(
+                        "cannot rt take immutable/final class field '"
+                                + object.klass.name() + "." + name + "'");
+            }
+            synchronized (object.fields) {
+                Object value = object.fields.get(name);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "class field '" + object.klass.name() + "." + name
+                                    + "' is read before initialization");
+                }
+                if (value == MOVED_FIELD) {
+                    throw new IllegalStateException(
+                            "class field '" + object.klass.name() + "." + name
+                                    + "' was already moved");
+                }
+                object.fields.put(name, MOVED_FIELD);
+                return value;
+            }
+        }
+
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
                 case "fail" -> {
@@ -6679,6 +6741,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (runtime.arguments().size() != 1) {
                     throw new IllegalArgumentException(
                             "rt " + runtime.operation() + " expects exactly one argument");
+                }
+                if (runtime.operation().equals("take")
+                        && runtime.arguments().getFirst() instanceof Ast.MemberExpr member) {
+                    return takeClassField(eval(member.receiver(), env), member.member(), env);
                 }
                 Object value = eval(runtime.arguments().getFirst(), env);
                 return applyRuntimeOwnership(runtime.operation(), value);
@@ -7434,13 +7500,20 @@ public final class OresEvalRootNode extends RootNode {
                                 "field",
                                 ownedField.field().name());
                     }
-                    Object value = object.fields.get(name);
-                    if (value == UNINITIALIZED_FIELD) {
-                        throw new IllegalArgumentException(
-                                "field '" + object.klass.name() + "." + name
-                                        + "' is read before constructor initialization");
+                    synchronized (object.fields) {
+                        Object value = object.fields.get(name);
+                        if (value == UNINITIALIZED_FIELD) {
+                            throw new IllegalArgumentException(
+                                    "field '" + object.klass.name() + "." + name
+                                            + "' is read before constructor initialization");
+                        }
+                        if (value == MOVED_FIELD) {
+                            throw new IllegalStateException(
+                                    "field '" + object.klass.name() + "." + name
+                                            + "' was already moved");
+                        }
+                        return value;
                     }
-                    return value;
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());

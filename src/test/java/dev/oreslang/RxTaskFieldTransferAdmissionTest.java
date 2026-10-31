@@ -96,6 +96,42 @@ final class RxTaskFieldTransferAdmissionTest {
                 () -> OresCompiler.parseAndTypeCheck(program));
     }
 
+    @Test
+    void aSecondMoveFromTheSameClassFieldMustFailClosed() {
+        String program = MUTABLE_TASK_FIELD + """
+                pub routine main(): void {
+                  let Task<int> producer = task { return 42; };
+                  let TaskCell holder = new TaskCell(rt take producer);
+                  let Task<int> once = holder.take_task();
+                  let Task<int> twice = holder.take_task();
+                  stdio.stdout.write(await once);
+                  stdio.stdout.write(await twice);
+                  return;
+                }
+                """;
+        // Either the ownership checker must reject this, or the runtime
+        // moved-slot sentinel must make a second transfer impossible.
+        assertThrows(RuntimeException.class, () -> run(program));
+    }
+
+    @Test
+    void readingAClassFieldAfterItsOwnerWasTakenMustFailClosed() {
+        String program = MUTABLE_TASK_FIELD + """
+                pub routine main(): void {
+                  let Task<int> producer = task { return 42; };
+                  let TaskCell holder = new TaskCell(rt take producer);
+                  let Task<int> once = holder.take_task();
+                  let Task<int> stolen = holder.producer;
+                  stdio.stdout.write(await once);
+                  stdio.stdout.write(await stolen);
+                  return;
+                }
+                """;
+        // Static class-private access must be rejected, or runtime moved
+        // field access must reject. Never produce two live Task handles.
+        assertThrows(RuntimeException.class, () -> run(program));
+    }
+
     private static String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, code, "rx-task-field-transfer.ores")
