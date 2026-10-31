@@ -192,6 +192,47 @@ final class PinnedNamespaceSharedCorpusTest {
     }
 
     @Test
+    void crossFileCallsUseOnlyPublicSamePackageNamespaceSlots() {
+        // The base 43 oracle makes three actual sibling calls across files:
+        // aggregate->double->add and response_delta->handler_ok->route_ok.
+        assertEquals(43, execute(sourceCorpus(), "foo@1"));
+
+        Corpus missingProvider = sourceCorpus();
+        missingProvider.sources().remove("foo/src/compute/math.ores");
+        missingProvider.owners().remove("foo/src/compute/math.ores");
+        // other@1 still exports a same-named a.add(int,int); that is
+        // insufficient authority for foo@1's a.double provider to call it.
+        assertThrows(IllegalArgumentException.class,
+                () -> execute(missingProvider, "foo@1"));
+
+        Corpus privateProvider = sourceCorpus();
+        privateProvider.sources().put("foo/src/compute/math.ores",
+                "namespace a;\\nfnc add(int a, int b): int { return a + b; }\\n");
+        assertThrows(IllegalArgumentException.class,
+                () -> execute(privateProvider, "foo@1"));
+
+        Corpus wrongSiblingArity = sourceCorpus();
+        wrongSiblingArity.sources().put("foo/src/compute/stats.ores",
+                "namespace a;\\npub fnc double(int value): int { return add(value); }\\n");
+        assertThrows(IllegalArgumentException.class,
+                () -> execute(wrongSiblingArity, "foo@1"));
+    }
+
+    @Test
+    void wrongPackageSameNamespaceCannotHijackProviderBoolReturn() {
+        Corpus corpus = sourceCorpus();
+        String routes = "foo/src/api/routes.ores";
+        corpus.sources().remove(routes);
+        corpus.owners().remove(routes);
+        corpus.sources().put("other/src/routes.ores",
+                "namespace c;\\npub fnc route_ok(int code): bool { return true; }\\n");
+        corpus.owners().put("other/src/routes.ores", "other@1");
+        // handler_ok remains in foo@1 and cannot call other@1's c.route_ok.
+        assertThrows(IllegalArgumentException.class,
+                () -> execute(corpus, "foo@1"));
+    }
+
+    @Test
     void allTenProviderFilesContributeToActualGuestResult53() {
         Corpus corpus = sourceCorpus();
         corpus.sources().put(ENTRY,
