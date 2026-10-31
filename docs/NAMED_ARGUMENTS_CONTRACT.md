@@ -133,3 +133,31 @@ The parser retains `Ast.StagedCallExpr`. Before execution the preflight, deferre
 This is a bridge, not full named calls: nonliteral/effectful expressions, `None` as an expression, omitted `_`/`omit`, `T?` declarations, `@Default`, class methods and constructors, actors, variadic/rest parameters, imports/generics and dynamic targets remain disabled. Future support MUST retain source-order evaluated temporaries, checked nominal Option values, correct overload identity and ownership/effect guarantees; it may not generalize the literal-only permutation shortcut.
 
 Compilation and guest-execution tests in `DirectNamedLiteralCallExecutionTest` are committed but not confirmed on the full project's JDK 25 Maven/JUnit CI: upstream GitHub Actions continues to fail before recorded steps. Independent source-free funded-runner tests are not compiler execution evidence.
+
+## Source-order dynamic named-call milestone (2026-10-31, draft)
+
+A subsequent unverified compiler-path change on Java draft PR #1335 admits
+**nonliteral expressions only when the statically selected full-arity named-call
+binding is an identity permutation** (source argument index equals formal index
+at every slot). The expressions then lower directly to an ordinary CallExpr in
+their original lexical order, reusing the existing type, ownership, effect,
+deferred-cleanup and runtime call paths. This extends the previous primitive
+literal-only subset to ordinary nested function calls and scalar variable reads
+with named labels in declaration order; the new JUnit guest fixture checks
+observable left-to-right effects.
+
+This is deliberately *not* general named argument reordering. Any nonliteral
+source item in a nonidentity permutation rejects before guest execution,
+even if another item is a primitive literal. The only reordered calls still
+admitted are the existing independently typed primitive literals. Only direct
+local non-generic non-actor fnc targets with checked primitive scalar formals,
+all full-arity and supplied, are eligible. Option/None lifting, omission,
+defaults, methods, constructors, async, spread, generic and nominal modes
+remain unsupported by this executable slice. The source-order candidate
+predicate is only a preflight filter; actual admission rebinds the exact
+selected declaration and validates the permutation before lowering.
+
+**Evidence:** authored JUnit and source changes have been committed. No exact-head
+JDK 25/Maven compiler or GraalVM Native Image execution has been observed at
+the time of this addition. No Java/LLVM parity or production readiness claim
+is justified by this staging change alone.
