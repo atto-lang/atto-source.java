@@ -6827,11 +6827,23 @@ public final class OresEvalRootNode extends RootNode {
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
-                for (Object item : list) cases.add(requireSelectCase(item));
+                for (Object item : list) {
+                    if (cases.size() == ChannelRuntime.MAX_SELECT_CASES)
+                        throw new ChannelRuntime.SelectAdmissionException(
+                                "select case count exceeds maximum "
+                                        + ChannelRuntime.MAX_SELECT_CASES);
+                    cases.add(requireSelectCase(item));
+                }
                 return new ChannelRuntime.SelectSet(cases);
             }
             if (value instanceof Map<?, ?> map) {
-                for (Object item : map.values()) cases.add(requireSelectCase(item));
+                for (Object item : map.values()) {
+                    if (cases.size() == ChannelRuntime.MAX_SELECT_CASES)
+                        throw new ChannelRuntime.SelectAdmissionException(
+                                "select case count exceeds maximum "
+                                        + ChannelRuntime.MAX_SELECT_CASES);
+                    cases.add(requireSelectCase(item));
+                }
                 return new ChannelRuntime.SelectSet(cases);
             }
             throw new IllegalArgumentException(
@@ -11174,8 +11186,14 @@ public final class OresEvalRootNode extends RootNode {
                 input = map.shallowSnapshot();
             if (input instanceof List<?> list) {
                 ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
-                for (Object item : list)
+                for (Object item : list) {
+                    if (cases.size() == ChannelRuntime.MAX_SELECT_CASES) {
+                        throw new ChannelRuntime.SelectAdmissionException(
+                                "select plan case count exceeds maximum "
+                                        + ChannelRuntime.MAX_SELECT_CASES);
+                    }
                     cases.add(owner.requireSelectCase(item));
+                }
                 return dynamic
                         ? ChannelRuntime.DynamicSelectPlan.fromList(cases)
                         : ChannelRuntime.SelectPlan.from(cases);
