@@ -564,6 +564,31 @@ source-free branch creation at the alternate private host was
 blocked by the integration safety control. No private source was
 mirrored, and no alternate CI success was claimed.
 
+## First actor binding must fence unleased host I/O (2026-10-31)
+
+A trusted actor bind is a one-way capability publication. The connection
+now rejects initial `bindActorHost` unless it is OPEN and has **no** raw
+host read, active writer, queued outbound USER/CONTROL work, pending USER
+message, incomplete fragment, or abort/retirement request. This matches
+the subsequent transfer drain gate: the new actor cannot inherit socket
+I/O or USER protocol state admitted before any actor-generation loan
+existed. A refused bind leaves the host connection unbound so the
+supervisor can finish and drain its host-only work first.
+
+Two real-loopback JUnit fixtures assert refusal during an in-flight raw
+NIO read, with a queued raw USER message, and with an unfinished raw TEXT
+fragment. After host receipt completion and USER drain they validate
+successful first binding, handle use, and rejection of raw host APIs.
+
+Source governance is independent of available compute. The checked-in
+`.github/private-ci-approved-repositories.txt` currently approves no
+cross-organization private source destination without an independent
+reviewed exact owner/repository ID. Recent successful source-free runs
+in `beamscale/bmscl-compiler` and `usa-acc/usa-acc-e2e` confirm some
+private runners executed steps, but do not approve exporting this
+private tree. No source mirror was made. All new tests remain
+**NOT_EXECUTED** until exact-head JDK25/Graal Maven steps run.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
