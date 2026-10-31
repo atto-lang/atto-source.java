@@ -40,6 +40,9 @@ public final class HotReloadManager implements AutoCloseable {
     private long routingEpoch;
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
+    // Serving routes have separate publication authority: legacy load() may
+    // change activeByCodeUnit without shadowing an already healthy service.
+    private final Map<String, Generation> servingByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
 
     public HotReloadManager(
@@ -207,6 +210,7 @@ public final class HotReloadManager implements AutoCloseable {
                 requireRoutingEpochCapacity();
                 ++routingEpoch;
                 activeByCodeUnit.put(name, candidate);
+                servingByCodeUnit.put(name, candidate);
                 active.set(candidate);
                 return candidate;
             }
@@ -240,13 +244,13 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /**
-     * Readiness-filtered route for generic serving. Legacy load() publishes
-     * an uninitialized candidate for compatibility; that candidate is NEVER
-     * eligible here until its entrypoint has returned successfully. Readiness
-     * does not replace application health, ABI or actor quiescence checks.
+     * Single supervisor-owned serving route, independent of the legacy
+     * active() staging pointer. Only successful reloadAndStart() publication
+     * enters this registry. Initialization success is NOT a health/ABI or
+     * actor-quiescence certificate.
      */
     public synchronized Generation serving(String codeUnitId) {
-        Generation selected = activeByCodeUnit.get(codeUnitId);
+        Generation selected = servingByCodeUnit.get(codeUnitId);
         return selected != null && selected.initialized() && !selected.closed()
                 ? selected : null;
     }
@@ -268,12 +272,14 @@ public final class HotReloadManager implements AutoCloseable {
             generation = generations.get(generationId);
             if (generation != null) {
                 boolean selected = active.get() == generation
-                        || activeByCodeUnit.get(generation.codeUnitId()) == generation;
+                        || activeByCodeUnit.get(generation.codeUnitId()) == generation
+                        || servingByCodeUnit.get(generation.codeUnitId()) == generation;
                 if (selected) requireRoutingEpochCapacity();
                 if (!generation.beginClose()) return;
                 generations.remove(generationId, generation);
                 boolean removed = active.compareAndSet(generation, null);
                 removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
+                removed |= servingByCodeUnit.remove(generation.codeUnitId(), generation);
                 if (removed) ++routingEpoch;
             }
         }
@@ -287,11 +293,13 @@ public final class HotReloadManager implements AutoCloseable {
     /** Closed guest contexts must not remain in the manager's active registry. */
     private synchronized void onGenerationClosed(Generation generation) {
         boolean selected = activeByCodeUnit.get(generation.codeUnitId()) == generation
+                || servingByCodeUnit.get(generation.codeUnitId()) == generation
                 || active.get() == generation;
         // Never mutate registry selection before checking the epoch fence.
         if (selected && !closed) requireRoutingEpochCapacity();
         generations.remove(generation.id(), generation);
         boolean removed = activeByCodeUnit.remove(generation.codeUnitId(), generation);
+        removed |= servingByCodeUnit.remove(generation.codeUnitId(), generation);
         removed |= active.compareAndSet(generation, null);
         if (removed && !closed) ++routingEpoch;
     }
@@ -322,6 +330,7 @@ public final class HotReloadManager implements AutoCloseable {
             closed = true;
             generations.clear();
             activeByCodeUnit.clear();
+            servingByCodeUnit.clear();
             active.set(null);
         }
         Throwable failure = null;
@@ -521,7 +530,8 @@ public final class HotReloadManager implements AutoCloseable {
                     // registry could retain an unusable closed route.
                     if (!closed.get() && !manager.closed
                             && (manager.active.get() == this
-                            || manager.activeByCodeUnit.get(codeUnitId) == this)) {
+                            || manager.activeByCodeUnit.get(codeUnitId) == this
+                            || manager.servingByCodeUnit.get(codeUnitId) == this)) {
                         manager.requireRoutingEpochCapacity();
                     }
                     if (!beginClose()) return;
