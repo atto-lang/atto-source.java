@@ -368,6 +368,11 @@ public final class HotReloadManager implements AutoCloseable {
         // True only while the synchronous manager-owned Context.eval call is
         // executing. It is NOT a complete Task/continuation/FFI quiescence ledger.
         private boolean executing;
+        // Scoped host entry/operation pins. These protect callers which use
+        // pinOperation() for the *entire* physical operation. An external user
+        // of context() without a pin, or a detached async continuation, remains
+        // outside this proof.
+        private int operationPins;
 
         private Generation(HotReloadManager owner, long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
             this.owner = new java.lang.ref.WeakReference<>(owner);
@@ -389,6 +394,55 @@ public final class HotReloadManager implements AutoCloseable {
         /** Only true after entrypoint returns without an exception. */
         public boolean initialized() { return initialized.get(); }
         public boolean closed() { return closed.get(); }
+
+        /**
+         * Host-owned physical operation lease for an initialized generation.
+         * Hold this across every guest invocation, callback, or external
+         * operation whose completion depends on this code image. No guest
+         * authorization is conferred, and this does not capture suspended Tasks
+         * or legacy unpinned uses of context() automatically.
+         */
+        public final class OperationLease implements AutoCloseable {
+            private final AtomicBoolean released = new AtomicBoolean();
+
+            private OperationLease() { }
+
+            @Override public void close() {
+                synchronized (Generation.this) {
+                    if (!released.compareAndSet(false, true)) return;
+                    if (operationPins <= 0) {
+                        throw new IllegalStateException("hot-load operation pin underflow");
+                    }
+                    --operationPins;
+                }
+            }
+        }
+
+        /** Linearizable admission against retire(), close() and shutdown(). */
+        public OperationLease pinOperation() {
+            HotReloadManager manager = owner.get();
+            if (manager == null) {
+                throw new IllegalStateException("generation owner no longer available");
+            }
+            synchronized (manager) {
+                manager.requireOpen();
+                if (manager.generations.get(id) != this) {
+                    throw new IllegalStateException("generation not registered");
+                }
+                synchronized (this) {
+                    if (closed.get() || !initialized.get() || executing) {
+                        throw new IllegalStateException(
+                                "operation requires an idle initialized live generation");
+                    }
+                    if (operationPins == Integer.MAX_VALUE) {
+                        throw new IllegalStateException(
+                                "hot-load operation pin budget exhausted");
+                    }
+                    ++operationPins;
+                    return new OperationLease();
+                }
+            }
+        }
 
         /** Starts once, reserving a lifecycle lease before entering Graal. */
         public Value start() {
@@ -437,9 +491,10 @@ public final class HotReloadManager implements AutoCloseable {
         }
 
         private synchronized void requireIdleForClose() {
-            if (executing) {
+            if (executing || operationPins != 0) {
                 throw new IllegalStateException(
-                        "cannot retire generation " + id + " while guest entrypoint executes");
+                        "cannot retire generation " + id
+                                + " while entrypoint or scoped guest operation is active");
             }
         }
 
