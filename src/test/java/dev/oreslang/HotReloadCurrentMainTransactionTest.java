@@ -351,6 +351,31 @@ final class HotReloadCurrentMainTransactionTest {
     }
 
     @Test
+    void servingRouteSelectionAndPhysicalPinAreAtomic() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            assertThrows(IllegalStateException.class, () -> manager.pinServing("worker.ores"));
+            var healthy = manager.loadAndStart("worker.ores", GOOD);
+            var legacyStaged = manager.load("worker.ores", GOOD);
+            try (var serving = manager.pinServing("worker.ores")) {
+                assertSame(healthy, serving.generation());
+                assertNotSame(legacyStaged, serving.generation());
+                assertThrows(IllegalStateException.class,
+                        () -> manager.retire(healthy.id()));
+                assertThrows(IllegalStateException.class, manager::close);
+                assertSame(healthy, manager.serving("worker.ores"));
+            }
+            manager.retire(healthy.id());
+            assertNull(manager.serving("worker.ores"));
+            assertThrows(IllegalStateException.class,
+                    () -> manager.pinServing("worker.ores"));
+            // The legacy staged generation remains independently registered.
+            assertEquals(1, manager.liveGenerations());
+            legacyStaged.close();
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
     void unverifiedDeclaredDependenciesAreRejectedEvenWithValidSource() {
         var compiled = compiledGood();
         var forged = counterfeit(compiled, GOOD, sha256(GOOD), Set.of("other.ores"));
