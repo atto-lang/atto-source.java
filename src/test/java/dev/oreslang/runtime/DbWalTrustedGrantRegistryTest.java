@@ -17,6 +17,50 @@ import static org.junit.jupiter.api.Assertions.*;
 final class DbWalTrustedGrantRegistryTest {
     @TempDir Path root;
 
+    @Test void abandonedOpeningReleasesOnlyAfterTrustedNonstartOrNoResource()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var registry = new DbWalTrustedGrantRegistry(runtime,
+                    (actor, tenant, shard) -> tenant == 11 && shard == 5);
+            var first = new AtomicReference<DbWalTrustedGrantRegistry.Grant>();
+            var second = new AtomicReference<DbWalTrustedGrantRegistry.Grant>();
+            var error = new AtomicReference<Throwable>();
+            var finished = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    if (message.equals("reject_before_start")) {
+                        first.set(registry.issueForCurrentActor(11, 5, 1));
+                        first.get().reserveOpen(runtime);
+                        assertThrows(SecurityException.class,
+                                () -> first.get().reserveOpen(runtime));
+                        // This is the exact AsyncNativeIo never-started
+                        // callback path, not an arbitrary Future cancellation.
+                        first.get().neverStartedOpen();
+                        assertThrows(IllegalStateException.class,
+                                () -> first.get().neverStartedOpen());
+                        second.set(registry.issueForCurrentActor(11, 5, 2));
+                        second.get().reserveOpen(runtime);
+                        finished.countDown();
+                    }
+                } catch (Throwable failure) {
+                    error.set(failure);
+                    finished.countDown();
+                }
+            });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            actor.send("reject_before_start");
+            assertTrue(finished.await(3, TimeUnit.SECONDS));
+            assertNull(error.get());
+            assertEquals(1, registry.activeShardCount());
+            assertNotNull(second.get());
+            assertThrows(IllegalStateException.class,
+                    () -> second.get().failedOpenWithoutResource());
+            // The trusted worker may only retire an OPENING grant after it
+            // has established that no file/registered resource survives.
+            assertEquals(0, registry.activeShardCount());
+        }
+    }
+
     @Test void shardIsReservedAcrossDrainUntilPhysicalRelease() throws Exception {
         try (var runtime = new ActorRuntime()) {
             // Test-only synthetic host authorization: production contexts
@@ -41,6 +85,10 @@ final class DbWalTrustedGrantRegistryTest {
                 try {
                     if (message.equals("issue")) {
                         firstGrant.set(registry.issueForCurrentActor(11, 3, 7));
+                        firstGrant.get().reserveOpen(runtime);
+                        assertThrows(SecurityException.class,
+                                () -> firstGrant.get().reserveOpen(runtime),
+                                "one shard must have one pending open");
                         issued.countDown();
                     } else if (message.equals("drain")) {
                         firstGrant.get().beginDrain(runtime);
@@ -81,6 +129,7 @@ final class DbWalTrustedGrantRegistryTest {
                         drainingConflictRejected.countDown();
                     } else if (message.equals("issue")) {
                         secondGrant.set(registry.issueForCurrentActor(11, 3, 8));
+                        secondGrant.get().reserveOpen(runtime);
                         reissued.countDown();
                     } else if (message.equals("sealed")) {
                         assertThrows(SecurityException.class,
