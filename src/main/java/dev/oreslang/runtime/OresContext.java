@@ -509,10 +509,6 @@ public final class OresContext implements AutoCloseable {
         }
     }
 
-    static void flushOutputAfterAsyncDrain(PrintWriter output, boolean drainComplete) {
-        if (drainComplete) output.flush();
-    }
-
     @Override
     public void close() {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
@@ -576,7 +572,9 @@ public final class OresContext implements AutoCloseable {
             sharedCodeImages.close();
         }
         garbageCollector.close();
-        flushOutputAfterAsyncDrain(output, true);
+        // The final PrintWriter flush was performed on the bounded daemon
+        // drain, including when no async record was ever admitted. Never
+        // reenter the host sink monitor on the closing actor/carrier thread.
         QUARANTINED_CONTEXTS.remove(this);
     }
 }
