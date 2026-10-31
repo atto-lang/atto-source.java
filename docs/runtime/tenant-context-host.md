@@ -87,3 +87,29 @@ durable provider-side epoch CAS and effect sink fencing are mandatory.
 Do not claim Java/LLVM/.NET/Wasm/Forge parity or hard real-time from this
 host integration. Only executable exact-head guest and native isolation
 evidence can advance those states.
+
+## Lifecycle hardening and shared contract update (2026-10-30)
+
+- The host publishes `RETIRING` **before waiting** for any active guest
+  evaluation monitor; no new guest eval can overtake a tenant retirement.
+  Whole-host close seals **every** tenant first, before closing the first.
+- A failed context close becomes `QUARANTINED` and remains strongly held;
+  never count a close exception as physical retirement. A successful close
+  removes the tenant handle, and concurrent trusted close attempts avoid
+  double-closing the same Context.
+- `tenant_state` is a **host-only** diagnostic, not an actor API or a
+  security sandbox proof.
+- Tenant names now conform to the shared tenant-isolation-v1 ASCII
+  `[A-Za-z0-9_.-]` alphabet (1–128 bytes), with `.` and `..` reserved.
+  Reject Unicode, slashes, whitespace and path component aliases so a
+  future backing store never diverges from other backends.
+- `TenantIsolateRetirementRaceTest` uses a deterministic monitor barrier
+  to test the retirement/evaluation admission race and that host-wide
+  shutdown seals unrelated tenants before a blocked tenant completes.
+  This test is source-committed but **NOT_EXECUTED** until Maven actually
+  runs against the exact PR head.
+
+These are trusted-context lifecycle protections. The final process-level
+OresVM root, physical VM-isolate/sandbox implementation, complete tenant
+resource accounting, compiled guest execution proof and Java issue #1566
+physical Task quiescence evidence remain separate blockers.
