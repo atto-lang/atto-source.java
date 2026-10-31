@@ -119,4 +119,28 @@ final class PinnedNamespaceSharedCorpusTest {
         assertTrue(missing.getMessage().contains("undeclared or unpinned"),
                 missing.getMessage());
     }
+    @Test
+    void duplicatePublicSignatureAcrossPhysicalFilesRejectsBeforeGuestExecution() {
+        Corpus corpus = sourceCorpus();
+        String secondFile = "foo/src/data/models.ores";
+        // This function collides with foo/src/compute/math.ores only after
+        // changing the header to namespace a: no folder-based namespace split.
+        corpus.sources().put(secondFile,
+                "namespace a;\npub fnc add(int left, int right): int { return 99; }\n");
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> execute(corpus, "foo@1"));
+        assertTrue(rejected.getMessage().contains("duplicate public namespace declaration"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void extraProviderOwnedByAnotherPackageCannotJoinFooNamespace() {
+        Corpus corpus = sourceCorpus();
+        String provider = "foo/src/compute/aggregation.ores";
+        // Keep its namespace spelling and public signature but change only
+        // package identity. The linker must not fall back by source location.
+        corpus.owners().put(provider, "other@1");
+        assertThrows(IllegalArgumentException.class, () -> execute(corpus, "foo@1"));
+    }
+
 }
