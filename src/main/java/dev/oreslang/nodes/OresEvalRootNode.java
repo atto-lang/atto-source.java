@@ -7238,6 +7238,15 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
+                case "mut_share" -> {
+                    // Defense in depth for host-created ASTs: never manufacture
+                    // shared mutation without an actual synchronized handle.
+                    if (!(value instanceof OresMutex.Shared<?>)) {
+                        throw new IllegalArgumentException(
+                                "rt mut share requires a runtime SharedMutex<T> handle");
+                    }
+                    yield value;
+                }
                 // Static ownership checking currently admits rt copy only for proven
                 // Copy values on this convergence branch, so returning the immutable
                 // scalar/value representation is an independent language-level copy.
