@@ -1,0 +1,33 @@
+name: Rust actor arena quiescence policy
+
+on:
+  pull_request:
+    paths:
+      - 'tools/actor-quiescence-policy/**'
+      - 'contracts/v1/actor_arena_quiescence_matrix_v2.json'
+      - '.github/workflows/actor-quiescence-policy-rust.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-free-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - name: Verify Rust formatting
+        run: cargo fmt --manifest-path tools/actor-quiescence-policy/Cargo.toml -- --check
+      - name: Verify Clippy
+        run: cargo clippy --manifest-path tools/actor-quiescence-policy/Cargo.toml --all-targets -- -D warnings
+      - name: Run source-free matrix mutation tests
+        run: cargo test --manifest-path tools/actor-quiescence-policy/Cargo.toml -- --nocapture
+      - name: Verify canonical source-free matrix
+        run: cargo run --manifest-path tools/actor-quiescence-policy/Cargo.toml -- contracts/v1/actor_arena_quiescence_matrix_v2.json
