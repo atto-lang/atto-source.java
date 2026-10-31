@@ -110,6 +110,32 @@ final class ArithmeticOverflowGuestErrorTest {
     }
 
     @Test
+    void localOperandOverflowRetainsGuestIdentityAcrossRuntimeEvaluation() {
+        // Do not qualify overflow only through literal constant folding.
+        // Named local operands must still enter ordinary typed guest catch.
+        String guest = """
+                pub fnc main():int{
+                  val int maximum = 9223372036854775807;
+                  val int increment = 1;
+                  try {
+                    return maximum + increment;
+                  } catch (err) {
+                    if err is type ArithmeticOverflowError {
+                      return 42;
+                    } else {
+                      return 1;
+                    } fi
+                  } finally {
+                  }
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(OresLanguage.ID, guest).asLong());
+        }
+    }
+
+    @Test
     void uncaughtOverflowReportsGuestErrorIdentity() {
         String guest = "pub fnc main():int{return Math.neg(-9223372036854775808);}";
         try (Context context = Context.newBuilder(OresLanguage.ID)
