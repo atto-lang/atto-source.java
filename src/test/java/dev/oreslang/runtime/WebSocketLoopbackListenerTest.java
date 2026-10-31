@@ -402,6 +402,87 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void actorDoneRevokesActiveReadWithoutEarlyPhysicalLeaseRelease()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var pending = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = pending.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var actor = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, actor, () -> true);
+                var done = new OresFuture<Void>();
+                connection.watchHostActorDone(done, actor);
+                var reader = connection.readForActorAsync(handle, tenant, actor);
+                assertFalse(reader.cancel(true),
+                        "native read remains physically owned until worker exit");
+                assertTrue(done.completeFromRuntime(null));
+                assertThrows(ExecutionException.class,
+                        () -> reader.get(3, TimeUnit.SECONDS),
+                        "actor stop must interrupt outstanding selector read");
+                assertThrows(SecurityException.class,
+                        () -> connection.readForActorAsync(handle, tenant, actor));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.activeConnectionCount() != 0
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertEquals(0, listener.activeConnectionCount(),
+                        "actor done must cause physical socket retirement");
+                assertEquals(-1, client.getInputStream().read());
+            }
+        }
+    }
+
+    @Test
+    void retiredOldActorNotificationCannotCloseTransferredConnection()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var pending = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = pending.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var runtime = java.util.UUID.randomUUID();
+                var oldOwner = new ActorRuntime.ActorAddress(
+                        runtime, ActorRuntime.ActorId.create(), 1,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var newOwner = new ActorRuntime.ActorAddress(
+                        runtime, ActorRuntime.ActorId.create(), 2,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var oldDone = new OresFuture<Void>();
+                var newDone = new OresFuture<Void>();
+                var oldHandle = connection.bindActorHost(tenant, oldOwner, () -> true);
+                connection.watchHostActorDone(oldDone, oldOwner);
+                var currentHandle = connection.transferActorHost(
+                        oldHandle, tenant, oldOwner, newOwner, () -> true);
+                connection.watchHostActorDone(newDone, newOwner);
+                assertTrue(oldDone.completeFromRuntime(null));
+                assertEquals(1, listener.activeConnectionCount(),
+                        "old done cannot retire a transferred live connection");
+                connection.sendTextForActorAsync(
+                        currentHandle, tenant, newOwner, "live").get(3, TimeUnit.SECONDS);
+                assertArrayEquals(new byte[] {(byte) 0x81, 4, 'l', 'i', 'v', 'e'},
+                        client.getInputStream().readNBytes(6));
+                assertTrue(newDone.completeFromRuntime(null));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.activeConnectionCount() != 0
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertEquals(0, listener.activeConnectionCount());
+                assertThrows(SecurityException.class,
+                        () -> connection.acquireActorLease(currentHandle, tenant, newOwner));
+            }
+        }
+    }
+
+    @Test
     void actorReadDeliveryAndWriteRequireHandleAndDrainBeforeTransfer()
             throws Exception {
         int port = unusedPort();
