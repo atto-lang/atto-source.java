@@ -1413,6 +1413,20 @@ def publish(
     capacity = verify_carrier_capacity(
         repository, contract, capacity_run_id, now=now
     )
+
+    def revalidate_capacity():
+        # The initial proof prevents exporting into a carrier with no current
+        # hosted capacity. Recheck against the real wall clock immediately
+        # before refs make the uploaded tree discoverable/executable; a slow
+        # upload must not inherit a stale 15-minute receipt.
+        refreshed = verify_carrier_capacity(
+            repository, contract, capacity_run_id, now=None
+        )
+        if (refreshed.get("run_id") != capacity.get("run_id")
+                or refreshed.get("run_attempt") != capacity.get("run_attempt")):
+            raise Denied("carrier capacity evidence changed during transfer")
+        return refreshed
+
     plan_meta = validate_test_plan(plan_bytes, source_pr)
 
     trusted = trusted_root.resolve(strict=True)
@@ -1577,6 +1591,7 @@ def publish(
     authorization_attempted = False
     try:
         auth()
+        revalidate_capacity()
         payload_attempted = True
         created = legacy.gh_api(
             f"repos/{repository}/git/refs", method="POST",
@@ -1609,6 +1624,7 @@ def publish(
             raise Denied("source repository identity changed before authorization")
 
         auth()
+        revalidate_capacity()
         authorization_attempted = True
         approved = legacy.gh_api(
             f"repos/{repository}/git/refs", method="POST",
