@@ -293,12 +293,25 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                 // or follows the successful publication. No arbitrary
                 // callbacks, Future notifications or cleanup run under that
                 // candidate monitor.
-                if (prior.physicalRoute() instanceof ActorRuntime.ActorRef<?> old) {
-                    old.withReadyUpgradeSuccessorPublication(
-                            (ActorRuntime.ActorRef<?>) readyPhysicalRoute,
-                            () -> active = next);
-                } else {
-                    active = next;
+                try {
+                    if (prior.physicalRoute() instanceof ActorRuntime.ActorRef<?> old) {
+                        old.withReadyUpgradeSuccessorPublication(
+                                (ActorRuntime.ActorRef<?>) readyPhysicalRoute,
+                                () -> active = next);
+                    } else {
+                        active = next;
+                    }
+                } catch (RuntimeException | Error rejected) {
+                    // Readiness may have passed before another logical route
+                    // claimed this V2 actor. The newly allocated generation
+                    // has NOT been published and must not leak an open gate.
+                    try {
+                        nextGate.close();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        if (cleanupFailure != rejected)
+                            rejected.addSuppressed(cleanupFailure);
+                    }
+                    throw rejected;
                 }
                 pending = null;
                 finished = true;
