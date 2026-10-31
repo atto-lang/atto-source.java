@@ -103,9 +103,9 @@ final class TenantIsolateManagerTest {
             assertThrows(IllegalStateException.class,
                     () -> manager.open_trusted_tenant("second", IsolatePolicy.developer()));
             assertThrows(IllegalArgumentException.class,
-                    () -> manager.open_trusted_tenant("first\u0000other", IsolatePolicy.developer()));
+                    () -> manager.open_trusted_tenant("first" + (char) 0 + "other", IsolatePolicy.developer()));
             assertThrows(IllegalArgumentException.class,
-                    () -> manager.open_trusted_tenant("\uD800", IsolatePolicy.developer()));
+                    () -> manager.open_trusted_tenant(String.valueOf((char) 0xd800), IsolatePolicy.developer()));
         }
     }
 
