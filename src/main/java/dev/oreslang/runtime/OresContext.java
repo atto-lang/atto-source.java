@@ -166,6 +166,7 @@ public final class OresContext implements AutoCloseable {
                 try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            try { asyncStdio.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
         CorePerf.end(CorePerf.CONTEXT_STARTUP, contextPerf);
@@ -506,6 +507,10 @@ public final class OresContext implements AutoCloseable {
             throw new IllegalStateException(
                     "Oreslang actor and native I/O retirement incomplete", failure);
         }
+    }
+
+    static void flushOutputAfterAsyncDrain(PrintWriter output, boolean drained) {
+        if (drained) output.flush();
     }
 
     @Override
