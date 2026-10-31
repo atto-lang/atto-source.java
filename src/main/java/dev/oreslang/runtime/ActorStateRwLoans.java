@@ -340,9 +340,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
             // terminal hook or callbacks finish. The authority is reusable
             // only after BOTH the loan (if granted) and notifications drain.
             Throwable revocationFailure = waiter.future.cancellationHookFailureFromRuntime();
+            boolean firstQuarantine = false;
             synchronized (monitor) {
                 if (revocationFailure != null && retirementQuarantineCause == null) {
                     retirementQuarantineCause = revocationFailure;
+                    firstQuarantine = true;
                 }
                 if (terminalNotificationsInFlight <= 0 || waiter.notificationsDrained) {
                     throw new IllegalStateException("state RW notification receipt ledger corrupted");
@@ -359,6 +361,14 @@ public final class ActorStateRwLoans implements AutoCloseable {
                     }
                 }
                 terminalNotificationsInFlight--;
+            }
+            if (firstQuarantine) {
+                // Quarantining admission without settling already queued
+                // Futures strands their callers. Seal logical access and fail
+                // every still-pending request. close() performs callbacks
+                // OUTSIDE monitor; keep the arena quarantined regardless of
+                // any observer errors during this fail-closed shutdown.
+                close();
             }
             maybeWakeRetirement();
         });
@@ -497,8 +507,13 @@ public final class ActorStateRwLoans implements AutoCloseable {
         Throwable firstFailure = null;
         for (Pending waiter : abandoned) {
             try {
-                waiter.future.failFromRuntime(new IllegalStateException(
-                        "actor state RW loans closed"));
+                Throwable quarantine;
+                synchronized (monitor) { quarantine = retirementQuarantineCause; }
+                waiter.future.failFromRuntime(quarantine == null
+                        ? new IllegalStateException("actor state RW loans closed")
+                        : new IllegalStateException(
+                                "actor state RW loans quarantined after failed revocation",
+                                quarantine));
             } catch (Throwable failure) {
                 // Attempt to settle the other abandoned requests too. A
                 // failed/undrained Future retains its retirement fence.
