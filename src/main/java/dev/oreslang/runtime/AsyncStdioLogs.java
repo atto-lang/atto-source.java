@@ -87,6 +87,10 @@ public final class AsyncStdioLogs implements AutoCloseable {
     public OresFuture<Void> flushAsync() {
         synchronized (lock) {
             if (failure != null) return OresFuture.failed(failure);
+            // Shutdown closes barrier admission as well as record admission.
+            // Otherwise callers could keep adding awaiters to a stuck drain
+            // after close() has already exhausted its bounded deadline.
+            if (!accepting) throw new IllegalStateException("async stdio writer is closed");
             if (submitted == completed) return OresFuture.completed(null);
             if (barriers.size() >= MAX_PENDING_BARRIERS) {
                 throw new IllegalStateException("async stdio flush barriers exhausted");
