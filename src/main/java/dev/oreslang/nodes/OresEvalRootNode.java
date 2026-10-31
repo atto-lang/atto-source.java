@@ -6819,6 +6819,10 @@ public final class OresEvalRootNode extends RootNode {
             if (!(value instanceof List<?> list)) {
                 throw new IllegalArgumentException("from_list requires a list of SelectCase values");
             }
+            if (list.size() > ChannelRuntime.MAX_SELECT_CASES) {
+                throw new ChannelRuntime.SelectAdmissionException(
+                        "select list exceeds maximum " + ChannelRuntime.MAX_SELECT_CASES);
+            }
             ArrayList<ChannelRuntime.SelectCase> result = new ArrayList<>(list.size());
             for (Object item : list) {
                 result.add(requireSelectCase(item));
@@ -6829,6 +6833,10 @@ public final class OresEvalRootNode extends RootNode {
         private LinkedHashMap<String, ChannelRuntime.SelectCase> asSelectCaseMap(Object value) {
             if (!(value instanceof Map<?, ?> map)) {
                 throw new IllegalArgumentException("from_map requires an ordered map of SelectCase values");
+            }
+            if (map.size() > ChannelRuntime.MAX_SELECT_CASES) {
+                throw new ChannelRuntime.SelectAdmissionException(
+                        "select map exceeds maximum " + ChannelRuntime.MAX_SELECT_CASES);
             }
             LinkedHashMap<String, ChannelRuntime.SelectCase> result = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
