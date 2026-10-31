@@ -1,0 +1,146 @@
+package dev.oreslang.runtime;
+
+import dev.oreslang.OresLanguage;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class TenantIsolateManagerTest {
+    private static Source source(String text, String name) throws Exception {
+        return Source.newBuilder(OresLanguage.ID, text, name)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+    }
+
+    private static final String TWO_ACTORS = """
+            define actor Counter as
+              let int count;
+              on_start(): void {
+                self.count = 0;
+                return;
+              }
+              receive(ActorMail<String> mail): void {
+                self.count = self.count + 1;
+                self.send(self.count);
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val left = spawn Counter();
+              val right = spawn Counter();
+              await left.get_ready();
+              await right.get_ready();
+              left.send("go");
+              right.send("go");
+              val a = (await left.outputs.next()).value.unwrap();
+              val b = (await right.outputs.next()).value.unwrap();
+              stdio.stdout.write(a.value);
+              stdio.stdout.write("|");
+              stdio.stdout.write(b.value);
+              await left.get_done();
+              await right.get_done();
+              return;
+            }
+            """;
+
+    @Test
+    void actualSourceActorsRunInIndependentTenantContexts() throws Exception {
+        try (TenantIsolateManager manager = new TenantIsolateManager(3, 4096)) {
+            var a = manager.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
+            var b = manager.open_trusted_tenant("tenant-b", IsolatePolicy.developer());
+            assertEquals(2, manager.tenant_count());
+            Source guest = source(TWO_ACTORS, "tenant-counters.ores");
+
+            // Each guest executes real actor construction, mailbox dispatch,
+            // on_start and done; not a host-side simulated ActorRuntime.
+            assertEquals("1|1", manager.evaluate_source(a, guest));
+            assertEquals("1|1", manager.evaluate_source(b, guest));
+            assertEquals("tenant-a", a.tenant_id());
+            assertEquals("tenant-b", b.tenant_id());
+        }
+    }
+
+    @Test
+    void closingOneTenantDoesNotRevokeAnotherAndOldHandleCannotAliasNewTenant() throws Exception {
+        try (TenantIsolateManager manager = new TenantIsolateManager(2, 4096)) {
+            var a = manager.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
+            var b = manager.open_trusted_tenant("tenant-b", IsolatePolicy.developer());
+            manager.close_tenant(a);
+            assertEquals(1, manager.tenant_count());
+            var simple = source("""
+                    pub routine main(): void {
+                      stdio.stdout.write("tenant-b-alive");
+                      return;
+                    }
+                    """, "tenant-b-alive.ores");
+            assertEquals("tenant-b-alive", manager.evaluate_source(b, simple));
+            assertThrows(SecurityException.class, () -> manager.evaluate_source(a, simple));
+
+            var anotherA = manager.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
+            assertNotSame(a, anotherA);
+            assertThrows(SecurityException.class, () -> manager.evaluate_source(a, simple));
+        }
+    }
+
+    @Test
+    void aHandleFromAnotherManagerDoesNotGrantAccess() throws Exception {
+        try (TenantIsolateManager first = new TenantIsolateManager(1, 256);
+             TenantIsolateManager second = new TenantIsolateManager(1, 256)) {
+            var handle = first.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
+            var source = source("pub routine main(): void { return; }", "simple.ores");
+            assertThrows(SecurityException.class, () -> second.evaluate_source(handle, source));
+            assertThrows(SecurityException.class, () -> second.close_tenant(handle));
+        }
+    }
+
+    @Test
+    void admissionIsBoundedAndRejectsDuplicateOrMalformedTenantIds() {
+        try (TenantIsolateManager manager = new TenantIsolateManager(1, 128)) {
+            manager.open_trusted_tenant("first", IsolatePolicy.developer());
+            assertThrows(IllegalStateException.class,
+                    () -> manager.open_trusted_tenant("first", IsolatePolicy.developer()));
+            assertThrows(IllegalStateException.class,
+                    () -> manager.open_trusted_tenant("second", IsolatePolicy.developer()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> manager.open_trusted_tenant("first\u0000other", IsolatePolicy.developer()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> manager.open_trusted_tenant("\uD800", IsolatePolicy.developer()));
+        }
+    }
+
+    @Test
+    void protectedOrUntrustedTenantsCannotSilentlyFallBackToContexts() {
+        try (TenantIsolateManager manager = new TenantIsolateManager(2, 256)) {
+            SecurityException error = assertThrows(SecurityException.class,
+                    () -> manager.open_trusted_tenant("untrusted",
+                            IsolatePolicy.untrustedActor()));
+            assertTrue(error.getMessage().contains("UNVERIFIED_TENANT_ISOLATION"));
+            assertThrows(IllegalStateException.class,
+                    () -> ActorHeapAdmission.requireSupportedTenantIsolationMode("vm-isolate"));
+            assertEquals(0, manager.tenant_count());
+        }
+    }
+
+    @Test
+    void onlyOreslangSourceIsAdmittedWithoutExposingGuestValues() throws Exception {
+        try (TenantIsolateManager manager = new TenantIsolateManager(1, 256)) {
+            var a = manager.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
+            Source foreign = Source.newBuilder("untrusted-js", "1 + 1", "foreign.js").build();
+            assertThrows(SecurityException.class, () -> manager.evaluate_source(a, foreign));
+        }
+    }
+
+    @Test
+    void closeSealsNewTenantAdmissionAndRevokesOldHandles() throws Exception {
+        TenantIsolateManager manager = new TenantIsolateManager(1, 256);
+        var a = manager.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
+        manager.close();
+        assertEquals(0, manager.tenant_count());
+        assertThrows(IllegalStateException.class,
+                () -> manager.open_trusted_tenant("tenant-b", IsolatePolicy.developer()));
+        var source = source("pub routine main(): void { return; }", "closed.ores");
+        assertThrows(SecurityException.class, () -> manager.evaluate_source(a, source));
+        manager.close(); // idempotent after full retirement
+    }
+}
