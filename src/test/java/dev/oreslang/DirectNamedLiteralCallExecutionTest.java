@@ -186,6 +186,33 @@ final class DirectNamedLiteralCallExecutionTest {
     }
 
     @Test
+    void astSourceOrderProofRejectsNonliteralPermutationWithoutExecuting() {
+        Ast.Program program = Parser.parse("""
+                pub fnc combine(int left, int right): int { return left * 10 + right; }
+                """);
+        Ast.FunctionDecl target = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.Expr left = new Ast.NameExpr("first_value");
+        Ast.Expr right = new Ast.NameExpr("second_value");
+        Ast.StagedCallExpr ordered = new Ast.StagedCallExpr(
+                new Ast.NameExpr("combine"), java.util.List.of(), false,
+                java.util.List.of(Ast.CallArgument.named("left", left),
+                                  Ast.CallArgument.named("right", right)));
+        Ast.CallExpr lowered =
+                OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(ordered, target);
+        assertSame(left, lowered.arguments().get(0));
+        assertSame(right, lowered.arguments().get(1));
+
+        Ast.StagedCallExpr reordered = new Ast.StagedCallExpr(
+                new Ast.NameExpr("combine"), java.util.List.of(), false,
+                java.util.List.of(Ast.CallArgument.named("right", right),
+                                  Ast.CallArgument.named("left", left)));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(reordered, target));
+        assertTrue(rejected.getMessage().contains("lexical temporary lowering"));
+    }
+
+    @Test
     void directAstLoweringRejectsPrimitiveMismatchesWithoutTypeChecker() {
         Ast.Program source = Parser.parse("""
                 pub fnc pick(int a, bool c): int { return a; }
