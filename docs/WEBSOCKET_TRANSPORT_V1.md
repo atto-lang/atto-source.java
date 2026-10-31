@@ -98,7 +98,15 @@ Ping returns an immediate pong action, peer close returns an immediate close
 action, and neither consumes USER queue capacity. A completed USER message is
 queued only if capacity exists; configured USER capacity is capped at 65,536.
 USER overflow does not silently discard and continue: it transitions the
-connection to closing and emits close code 1013. Locally generated close
+connection to closing and emits close code 1013. Both USER message count and
+aggregate queued payload bytes are now independently bounded: maximum 65,536
+queued messages and 16 MiB of queued payload across a session. The actual
+queue can use a lower byte quota, but maxMessageBytes must fit within that
+quota; rejecting incompatible configuration prevents a full-size admitted
+message from exceeding queue capacity. Message length checks do not copy the
+payload. Polling retires exact byte credits and physical close resets all
+queued-byte accounting. This is **per-session** only; a listener must impose
+separate global/per-tenant memory and connection budgets. Locally generated close
 payloads are passed back through the codec's close-status validation so reserved
 codes cannot be emitted. Fragmented data consumes one USER slot only after
 complete reassembly.
