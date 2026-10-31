@@ -420,6 +420,100 @@ class PrivateCiV3Test(unittest.TestCase):
                     "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
                 )
 
+    def test_reviewed_source_pr_head_binds_policy_codeowners_and_exact_review(self):
+        source_commit = "8" * 40
+        policy_bytes = b"trusted/ci 1323598177\n"
+        policy_digest = hashlib.sha256(policy_bytes).digest()
+        source_codeowners = (
+            "\n".join(
+                path + " @ORESoftware"
+                for path in v3.legacy.SECURITY_CODEOWNER_PATHS
+            ) + "\n"
+        ).encode()
+
+        def remote(path, ref, max_bytes):
+            self.assertEqual(ref, source_commit)
+            if path == v3.legacy.POLICY_PATH:
+                return policy_bytes, v3.git_blob_sha(policy_bytes)
+            if path == v3.legacy.CODEOWNERS_PATH:
+                return source_codeowners, v3.git_blob_sha(source_codeowners)
+            raise AssertionError(path)
+
+        with (
+            patch.object(
+                v3, "verify_source_pr",
+                return_value=v3.SOURCE_REPOSITORY_ID,
+            ) as verified,
+            patch.object(v3, "remote_file_at_source_main", side_effect=remote),
+        ):
+            self.assertEqual(
+                v3.authorized_source_authority_sha(
+                    "trusted/ci", policy_digest, 1323598177,
+                    1482, source_commit, "reviewed-pr-head",
+                ),
+                source_commit,
+            )
+        self.assertEqual(verified.call_count, 2)
+
+    def test_reviewed_source_pr_head_rejects_policy_or_review_drift(self):
+        source_commit = "8" * 40
+        policy_bytes = b"trusted/ci 1323598177\n"
+        policy_digest = hashlib.sha256(policy_bytes).digest()
+        source_codeowners = (
+            "\n".join(
+                path + " @ORESoftware"
+                for path in v3.legacy.SECURITY_CODEOWNER_PATHS
+            ) + "\n"
+        ).encode()
+
+        def good_remote(path, ref, max_bytes):
+            if path == v3.legacy.POLICY_PATH:
+                return policy_bytes, v3.git_blob_sha(policy_bytes)
+            if path == v3.legacy.CODEOWNERS_PATH:
+                return source_codeowners, v3.git_blob_sha(source_codeowners)
+            raise AssertionError(path)
+
+        with (
+            patch.object(
+                v3, "verify_source_pr",
+                side_effect=[
+                    v3.SOURCE_REPOSITORY_ID,
+                    v3.Denied("source PR security owner approval is stale or revoked"),
+                ],
+            ),
+            patch.object(v3, "remote_file_at_source_main", side_effect=good_remote),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "stale or revoked"):
+                v3.authorized_source_authority_sha(
+                    "trusted/ci", policy_digest, 1323598177,
+                    1482, source_commit, "reviewed-pr-head",
+                )
+
+        def bad_policy(path, ref, max_bytes):
+            if path == v3.legacy.POLICY_PATH:
+                changed = policy_bytes + b"# changed\n"
+                return changed, v3.git_blob_sha(changed)
+            return source_codeowners, v3.git_blob_sha(source_codeowners)
+
+        with (
+            patch.object(
+                v3, "verify_source_pr",
+                return_value=v3.SOURCE_REPOSITORY_ID,
+            ),
+            patch.object(v3, "remote_file_at_source_main", side_effect=bad_policy),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "policy diverges"):
+                v3.authorized_source_authority_sha(
+                    "trusted/ci", policy_digest, 1323598177,
+                    1482, source_commit, "reviewed-pr-head",
+                )
+
+    def test_source_authority_mode_rejects_unknown_value(self):
+        with self.assertRaisesRegex(v3.Denied, "source authority mode invalid"):
+            v3.authorized_source_authority_sha(
+                "trusted/ci", POLICY, 42, 1482, "8" * 40, "unsafe",
+            )
+
     def test_maven_plan_requires_offline_mode_and_exact_pom_blob(self):
         base = {
             "schema": "ores-private-ci-test-plan-v1",
@@ -1338,7 +1432,8 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                    "protected-main"
                 )
 
     def test_authorize_write_rejects_reviewed_repository_id_change(self):
@@ -1355,7 +1450,8 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                    "protected-main"
                 )
             checked_repo.assert_not_called()
 
@@ -1403,7 +1499,8 @@ class PrivateCiV3Test(unittest.TestCase):
                 1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
             )
             governance.assert_called_once_with(
-                Path("."), "trusted/ci", POLICY, carrier, 1482, PROTECTED
+                Path("."), "trusted/ci", POLICY, carrier,
+                1482, "8" * 40, PROTECTED, "protected-main"
             )
 
         def drift_api(route, method="GET", payload=None):
@@ -1427,7 +1524,8 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "main changed"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                    "protected-main"
                 )
             source_pr_check.assert_not_called()
 
@@ -1475,7 +1573,8 @@ class PrivateCiV3Test(unittest.TestCase):
             )
         source_pr_check.assert_called_once_with(1482, "8" * 40)
         governance.assert_called_once_with(
-            Path("."), "trusted/ci", POLICY, carrier, 1482, PROTECTED
+            Path("."), "trusted/ci", POLICY, carrier,
+            1482, "8" * 40, PROTECTED, "protected-main"
         )
 
         with (
@@ -1498,7 +1597,8 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "stale or revoked"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                    "protected-main"
                 )
 
     def test_authorize_write_rechecks_carrier_protection_each_write(self):
@@ -1544,7 +1644,8 @@ class PrivateCiV3Test(unittest.TestCase):
             ):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                    "protected-main"
                 )
         carrier_guard.assert_called_once_with("trusted/ci", carrier)
         source_pr_check.assert_not_called()
@@ -1554,7 +1655,7 @@ class PrivateCiV3Test(unittest.TestCase):
         carrier = contract()
         with (
             patch.object(
-                v3, "authorized_main_sha", return_value="2" * 40
+                v3, "authorized_source_authority_sha", return_value="2" * 40
             ),
             patch.object(v3, "checked_control_plane") as control_plane,
             patch.object(v3, "checked_contract") as checked_contract,
@@ -1562,7 +1663,7 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "authority changed"):
                 v3.revalidate_source_governance(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, PROTECTED
+                    1482, "8" * 40, PROTECTED, "protected-main"
                 )
             control_plane.assert_not_called()
             checked_contract.assert_not_called()
@@ -1571,7 +1672,7 @@ class PrivateCiV3Test(unittest.TestCase):
         carrier = contract()
         with (
             patch.object(
-                v3, "authorized_main_sha", return_value=PROTECTED
+                v3, "authorized_source_authority_sha", return_value=PROTECTED
             ),
             patch.object(v3, "checked_control_plane") as control_plane,
             patch.object(
@@ -1580,7 +1681,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             v3.revalidate_source_governance(
                 Path("."), "trusted/ci", POLICY, carrier,
-                1482, PROTECTED
+                1482, "8" * 40, PROTECTED, "protected-main"
             )
         control_plane.assert_called_once_with(Path("."), PROTECTED)
         checked_contract.assert_called_once_with(
@@ -1593,7 +1694,7 @@ class PrivateCiV3Test(unittest.TestCase):
         changed = dict(carrier, workflow_blob_sha="9" * 40)
         with (
             patch.object(
-                v3, "authorized_main_sha", return_value=PROTECTED
+                v3, "authorized_source_authority_sha", return_value=PROTECTED
             ),
             patch.object(v3, "checked_control_plane"),
             patch.object(v3, "checked_contract", return_value=changed),
@@ -1601,7 +1702,7 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "contract changed"):
                 v3.revalidate_source_governance(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, PROTECTED
+                    1482, "8" * 40, PROTECTED, "protected-main"
                 )
 
     def test_authorize_write_rejects_reopened_incident_before_api_or_blob(self):
@@ -1658,7 +1759,8 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "#171 remains unresolved"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                    "protected-main"
                 )
             incident_gate.assert_called_once_with()
             policy.assert_not_called()
@@ -1678,7 +1780,8 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "#172 remains unresolved"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
-                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                    "protected-main"
                 )
             incident_gate.assert_called_once_with()
             policy.assert_not_called()
@@ -1697,7 +1800,7 @@ class PrivateCiV3Test(unittest.TestCase):
                         "destination approval was revoked or absent"
                     ),
                 ) as preflight,
-                patch.object(v3, "authorized_main_sha") as origin,
+                patch.object(v3, "authorized_source_authority_sha") as origin,
                 patch.object(v3, "checked_control_plane") as control_plane,
                 patch.object(v3, "checked_contract") as checked_contract,
                 patch.object(v3, "verify_source_pr") as verify_source_pr,
@@ -2132,7 +2235,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.legacy, "checked_policy_approval",
                     return_value=(POLICY, carrier["repository_id"]),
                 ),
-                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "authorized_source_authority_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", side_effect=verify_calls),
@@ -2211,7 +2314,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.legacy, "checked_policy_approval",
                     return_value=(POLICY, carrier["repository_id"]),
                 ),
-                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "authorized_source_authority_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
@@ -2293,7 +2396,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.legacy, "checked_policy_approval",
                     return_value=(POLICY, carrier["repository_id"]),
                 ),
-                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "authorized_source_authority_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
@@ -2375,7 +2478,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.legacy, "checked_policy_approval",
                     return_value=(POLICY, carrier["repository_id"]),
                 ),
-                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "authorized_source_authority_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
@@ -2457,7 +2560,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.legacy, "checked_policy_approval",
                     return_value=(POLICY, carrier["repository_id"]),
                 ),
-                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "authorized_source_authority_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
