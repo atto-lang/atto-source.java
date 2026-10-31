@@ -143,6 +143,44 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void publicLoaderRejectsSymlinkBeforeDotDotBeforeSourceAdmission() throws Exception {
+        Path project = temp.resolve("public-entry-normalization");
+        Path main = source(project, "src/main.ores", "app",
+                "pub fnc main(): void { return; }");
+        Files.writeString(project.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                """);
+        Path inside = project.resolve("inside/deeper");
+        Files.createDirectories(inside);
+        Path alias = project.resolve("entry-link");
+        try {
+            Files.createSymbolicLink(alias, inside);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException denied) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not support symlink fixture");
+        }
+        // Normalized spelling is the admitted file, but the original path
+        // traverses a different directory via alias/.. and must fail closed.
+        Path disguised = alias.resolve("../src/main.ores");
+        assertEquals(main, disguised.normalize());
+        source(project, "inside/src/main.ores", "other",
+                "pub fnc main(): void { return; }");
+        assertTrue(Files.isRegularFile(disguised));
+        SecurityException validateDenied = assertThrows(SecurityException.class,
+                () -> LinkedProgramRunner.validate(disguised));
+        assertTrue(validateDenied.getMessage().contains(
+                "symlinked namespace entry source ancestry"), validateDenied.getMessage());
+        SecurityException runDenied = assertThrows(SecurityException.class,
+                () -> run(disguised, new ByteArrayOutputStream()));
+        assertTrue(runDenied.getMessage().contains(
+                "symlinked namespace entry source ancestry"), runDenied.getMessage());
+    }
+
+    @Test
     void samePackageSingleNamespaceImportDispatchesAcrossFourFiles() throws Exception {
         Path root = temp.resolve("checkout");
         billing(root);
