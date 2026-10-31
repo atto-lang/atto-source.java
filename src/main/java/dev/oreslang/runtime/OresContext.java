@@ -37,9 +37,7 @@ public final class OresContext implements AutoCloseable {
     // Stages that finished must not be closed twice during a retry after
     // another stage fails; all state is owned by closeInProgress.
     private final AuxiliaryCloseStages auxiliaryCloseStages = new AuxiliaryCloseStages();
-    private boolean sharedCodeImagesClosed;
-    private boolean garbageCollectorClosed;
-    private boolean outputFlushed;
+    private final FinalCloseStages finalCloseStages = new FinalCloseStages();
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
 
     // Package-local inspection for executable lifecycle tests; never unpins an
@@ -619,6 +617,39 @@ public final class OresContext implements AutoCloseable {
         }
     }
 
+    /**
+     * Final teardown executes only after all physical joins and the async
+     * drain have succeeded. A failed final host flush must NOT release any
+     * shared-code or GC-owned state, even if the context stays quarantined.
+     *
+     * Owned by the exclusive close guard. Successful stages have once-only
+     * receipts across retries; failures remain eligible for retry.
+     */
+    static final class FinalCloseStages {
+        private boolean outputFlushed;
+        private boolean sharedCodeImagesClosed;
+        private boolean garbageCollectorClosed;
+
+        void closeRemaining(
+                Runnable flushOutput, Runnable closeSharedCode, Runnable closeGc) {
+            java.util.Objects.requireNonNull(flushOutput);
+            java.util.Objects.requireNonNull(closeSharedCode);
+            java.util.Objects.requireNonNull(closeGc);
+            if (!outputFlushed) {
+                flushOutput.run();
+                outputFlushed = true;
+            }
+            if (!sharedCodeImagesClosed) {
+                closeSharedCode.run();
+                sharedCodeImagesClosed = true;
+            }
+            if (!garbageCollectorClosed) {
+                closeGc.run();
+                garbageCollectorClosed = true;
+            }
+        }
+    }
+
     static void flushOutputAfterAsyncDrain(PrintWriter output, boolean drained) {
         // PrintWriter silently records IOException in its sticky error flag.
         // checkError() performs the flush and reports that failure; plain
@@ -663,24 +694,19 @@ public final class OresContext implements AutoCloseable {
         auxiliaryCloseStages.closeRemaining(
                 http::close, asyncRuntime::close, vm::close, asyncStdio::close);
 
-        // The remaining teardown stages are also one-shot on success. On
-        // failure they remain retryable while the whole context stays pinned.
-        synchronized (this) {
-            if (!sharedCodeImagesClosed) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
-                sharedCodeImagesClosed = true;
-            }
-        }
-        if (!garbageCollectorClosed) {
-            garbageCollector.close();
-            garbageCollectorClosed = true;
-        }
-        if (!outputFlushed) {
-            flushOutputAfterAsyncDrain(output, true);
-            outputFlushed = true;
-        }
+        // The host flush is a mandatory retirement gate: do not reclaim the
+        // shared code or GC graph until PrintWriter.checkError() confirms it.
+        // Incomplete final stages leave this context strongly quarantined.
+        finalCloseStages.closeRemaining(
+                () -> flushOutputAfterAsyncDrain(output, true),
+                () -> {
+                    synchronized (this) {
+                        linkedCodeUnits.clear();
+                        linkedImportResolutions.clear();
+                        sharedCodeImages.close();
+                    }
+                },
+                garbageCollector::close);
         QUARANTINED_CONTEXTS.remove(this);
         closeCompleted = true;
     }
