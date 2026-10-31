@@ -176,12 +176,12 @@ final class PinnedNamespaceSharedCorpusTest {
     void allTenProviderFilesContributeToActualGuestResult53() {
         Corpus corpus = sourceCorpus();
         corpus.sources().put(ENTRY,
-                "import ns a from \"pkg:foo\";\\n"
-                + "import ns b from \"pkg:foo\";\\n"
-                + "import ns c from \"pkg:foo\";\\n"
+                "import ns a from \"pkg:foo\";\n"
+                + "import ns b from \"pkg:foo\";\n"
+                + "import ns c from \"pkg:foo\";\n"
                 + "pub fnc main(): int { return a.aggregate(21) + c.response_delta() "
                 + "+ b.model_code() + b.query_code() + b.storage_code() "
-                + "+ b.validation_code(); }\\n");
+                + "+ b.validation_code(); }\n");
         // The original a/c path returns 43; the four b provider units
         // contribute exactly 1+2+3+4, proving their calls are really linked.
         assertEquals(53, execute(corpus, "foo@1"));
