@@ -1,0 +1,65 @@
+name: Hot-loader current-main transactional admission
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/hot-loader-current-main-exact-head.yml'
+      - 'src/main/java/dev/oreslang/runtime/HotReloadManager.java'
+      - 'src/test/java/dev/oreslang/HotReloadCurrentMainTransactionTest.java'
+      - 'pom.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-backed-hotloader:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact source PR head (read-only)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source head and record tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          test -f src/test/java/dev/oreslang/HotReloadCurrentMainTransactionTest.java
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute real hot-loader JUnit tests
+        run: >-
+          mvn -B -ntp -Dtest=HotReloadCurrentMainTransactionTest
+          -DfailIfNoTests=true test
+      - name: Check JUnit XML for eight non-skipped tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=target/surefire-reports/TEST-dev.oreslang.HotReloadCurrentMainTransactionTest.xml
+          test -s "$report"
+          grep -Eq 'tests="8"' "$report"
+          grep -q 'errors="0"' "$report"
+          grep -q 'failures="0"' "$report"
+          grep -q 'skipped="0"' "$report"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+      - name: Retain actual JUnit evidence (not full-AOT or actor-upgrade evidence)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: source-hotloader-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/surefire-reports/TEST-dev.oreslang.HotReloadCurrentMainTransactionTest.xml
+          if-no-files-found: error
+          retention-days: 7
