@@ -15,7 +15,7 @@
 3. After successful physical actor/native-I/O retirement and auxiliary producer shutdown, seal async stdout admission and join the worker with a 5000 ms deadline; a stalled writer is an **incomplete** shutdown and the context stays quarantined.
 4. Never call synchronous `PrintWriter.flush()` after a failed bounded drain or incomplete physical retirement: it can block forever on the drain worker's writer monitor.
 5. Only after successful physical joins, writer drain, and all auxiliary shutdown/GC cleanup may the context leave `QUARANTINED_CONTEXTS`.
-6. The 1024-record queue, 65536-byte per-record cap, and 1024-pending-barrier cap reject excess callers. Future cancellation cannot undo an already accepted output record; physical delivery is not crash-durable.
+6. The 1024-record queue, 65536-byte per-record cap, and 1024-pending-barrier cap reject excess callers. Flush barriers notify their registered observers in FIFO sequence order. Future cancellation cannot undo an already accepted output record; physical delivery is not crash-durable.
 7. A stdout write failure must fail pending completion futures and quarantine shutdown. No claim of hard real-time latency or guaranteed OS crash flushing.
 
 ## Test evidence: never conflate classes
@@ -32,6 +32,18 @@
 | Governance | Protected `main`, required executed checks, independent approval | M: merge gate |
 
 The focused tests now include a real actor STOP cleanup log and a deterministic delayed-producer/shutdown-seal boundary, but neither substitutes for a complete Truffle context-shutdown or actor-generation race proof. No local or hosted test receipt is claimed by the source patch alone. Historical OTel `steps=null` jobs are runner-admission failures, never green tests. GitHub org billing/runner eligibility must be checked by an administrator if new source-free canary also has zero steps.
+
+## Exact-source isolated Java execution — limited evidence (2026-10-31)
+
+This evidence is deliberately **not** the pinned, full Oreslang runtime/JUnit/native receipt.
+
+- A local JDK 21 `javac` compiled the **byte-identical** `AsyncStdioLogs.java` source using a minimal `OresFuture` test double, because the local environment lacks Maven and the required GraalVM/JDK 25 installation.
+- **New patched source blob:** `0c65fa7795a05682d1d7db616ad6c1654535c354` (verified against GitHub's returned content SHA after patch).
+- **Behavior harness:** 15/15 checks passed, covering bounded records and barriers, FIFO output/flush, blocked-writer nonblocking seal, error reporting, 5000 ms shutdown deadline and cleanup record preservation.
+- The old unmodified source blob `da0dff18320254b9b86bc8b4c7984e8a85b66f88` failed the 64-barrier registration-order assertion (exit 1). The patched byte-identical blob passed it (exit 0).
+- The production JUnit test `flushBarrierSubscribersReceiveFifoNotifications` registers 64 `OresFuture.whenCompleteRuntime` observers while stdout is blocked and asserts FIFO callback order after release. It is **authored but not yet executed with the real OresFuture implementation**.
+- **Latest GitHub exact-head CI:** head `a82f713cfac02de4cd37505458e7faaa61ea5ae6`, Git tree `8b820ce292df63304da3898658eebabda1980975`; workflow run [41218819134](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41218819134), attempt **1**: `focused-java` job **124588900884**, `admission` job **124588901171** both failed before any step (`steps=null`). No compiler, JUnit, guest or native proof from Actions.
+- The harness stub does **not** prove OresFuture completion/cancellation semantics, actor scheduler safety, GraalVM compilation, JVM/Native Image compatibility, nor telemetry export durability. All must be checked on the real compiler and source tree.
 
 ## Dependency order
 
