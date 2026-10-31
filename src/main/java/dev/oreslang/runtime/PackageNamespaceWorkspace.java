@@ -62,6 +62,15 @@ final class PackageNamespaceWorkspace {
         if (Files.isSymbolicLink(entry)) {
             throw new SecurityException("symlinked namespace entry source is forbidden");
         }
+        // A symlinked parent directory is just as mutable as a symlink at
+        // the leaf. Check the caller's original path before toRealPath()
+        // erases its alias components and changes package-root authority.
+        try {
+            requireNoSymlinkComponents(entry);
+        } catch (SecurityException symlinkedParent) {
+            throw new SecurityException(
+                    "symlinked namespace entry source ancestry is forbidden", symlinkedParent);
+        }
         Path canonicalEntry = entry.toRealPath();
         Path manifest = null;
         for (Path cursor = canonicalEntry.getParent(); cursor != null; cursor = cursor.getParent()) {
