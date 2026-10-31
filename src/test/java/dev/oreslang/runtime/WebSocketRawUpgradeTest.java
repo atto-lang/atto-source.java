@@ -128,6 +128,37 @@ final class WebSocketRawUpgradeTest {
     }
 
     @Test
+    void slowDripCannotExtendSingleOpeningHeadDeadline() throws Exception {
+        try (var listener = new ServerSocket(0, 2,
+                     InetAddress.getByName("127.0.0.1"));
+             var client = new Socket("127.0.0.1", listener.getLocalPort());
+             var accepted = listener.accept();
+             var workers = Executors.newSingleThreadExecutor()) {
+            String host = "127.0.0.1:" + listener.getLocalPort();
+            var work = workers.submit(() -> WebSocketRawUpgrade.upgrade(
+                    accepted, host, Set.of("http://" + host),
+                    new WebSocketRawUpgrade.Limits(4096, 16, 320)));
+            // Each individual read makes progress before its socket timeout.
+            // A per-read-only timeout would incorrectly admit indefinite drip.
+            byte[] drip = "GET /echo HTTP/1.1".getBytes(StandardCharsets.US_ASCII);
+            for (int i = 0; i < drip.length; i++) {
+                try {
+                    client.getOutputStream().write(drip[i]);
+                    client.getOutputStream().flush();
+                } catch (IOException closedByServer) {
+                    break;
+                }
+                Thread.sleep(75);
+                if (work.isDone()) break;
+            }
+            ExecutionException failed = assertThrows(ExecutionException.class,
+                    () -> work.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(SocketTimeoutException.class, failed.getCause());
+            assertTrue(accepted.isClosed());
+        }
+    }
+
+    @Test
     void badHandshakeQuotaIsRejectedBeforeReading() {
         assertThrows(IllegalArgumentException.class,
                 () -> new WebSocketRawUpgrade.Limits(255, 16, 1_000));
