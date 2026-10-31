@@ -125,14 +125,16 @@ public final class ActorStateRwLoans implements AutoCloseable {
         }
         Authority authority = authority(execution);
         synchronized (monitor) {
-            if (closed) {
-                return OresFuture.failed(new IllegalStateException(
-                        "actor state RW loans closed"));
-            }
+            // Report the recorded revocation failure even after automatic
+            // shutdown, rather than hiding it behind a generic "closed".
             if (retirementQuarantineCause != null) {
                 return OresFuture.failed(new IllegalStateException(
                         "actor state RW loans quarantined after failed revocation",
                         retirementQuarantineCause));
+            }
+            if (closed) {
+                return OresFuture.failed(new IllegalStateException(
+                        "actor state RW loans closed"));
             }
             if (boundAllocation == null) {
                 boundAllocation = execution.allocationDomain();
