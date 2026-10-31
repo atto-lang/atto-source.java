@@ -169,6 +169,49 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Optional.empty() : Optional.of(current.actorId());
     }
 
+    /**
+     * Opaque runtime-owned physical lifetime token. Host workers may carry this
+     * off the actor carrier, but guest code must never receive it.
+     */
+    final class ActorPhysicalLease {
+        private final ActorCell<?> cell;
+        private final PhysicalRetirementReceipt.Lease lease;
+
+        private ActorPhysicalLease(
+                ActorCell<?> cell,
+                PhysicalRetirementReceipt.Lease lease) {
+            this.cell = cell;
+            this.lease = lease;
+        }
+
+        long generation() {
+            return lease.generation();
+        }
+
+        void retire() {
+            cell.retirePhysicalLifetime(lease);
+        }
+
+        void fail(Throwable failure) {
+            cell.failPhysicalLifetime(lease, failure);
+        }
+    }
+
+    /**
+     * Capture a physical lifetime lease for host work admitted by the current
+     * actor turn. The returned token may retire on a different host thread.
+     */
+    ActorPhysicalLease acquireCurrentActorPhysicalLifetime(String kind) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor physical lifetime admission requires an executing actor turn");
+        }
+        return new ActorPhysicalLease(
+                cell,
+                cell.acquirePhysicalLifetime(kind));
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
@@ -1705,14 +1748,14 @@ public final class ActorRuntime implements AutoCloseable {
         // live until the scheduler has completed the full physical-retirement
         // chain. A terminal/cancelled Future is not a reclamation witness.
         PhysicalRetirementReceipt.Lease sourceTaskLease =
-                cell.acquireSourceTaskLifetime();
+                cell.acquirePhysicalLifetime("source-task");
         if (cell.kind != ActorKind.UNTRUSTED) {
             final OresScheduler scheduler;
             try {
                 scheduler = cell.sourceScheduler();
             } catch (RuntimeException | Error schedulerFailure) {
                 // No scheduler child could possibly own this lease.
-                cell.retireSourceTaskLifetime(sourceTaskLease);
+                cell.retirePhysicalLifetime(sourceTaskLease);
                 throw schedulerFailure;
             }
             OresFuture<T> future = scheduler.startCompilerAdmittedTask(
@@ -1720,12 +1763,12 @@ public final class ActorRuntime implements AutoCloseable {
                     () -> {
                         try {
                             retireAfterPhysicalDone.run();
-                            cell.retireSourceTaskLifetime(sourceTaskLease);
+                            cell.retirePhysicalLifetime(sourceTaskLease);
                         } catch (RuntimeException | Error retirementFailure) {
                             // Failed physical retirement permanently
                             // quarantines this actor generation: no receipt can
                             // authorize arena/code reclamation.
-                            cell.failSourceTaskLifetime(
+                            cell.failPhysicalLifetime(
                                     sourceTaskLease, retirementFailure);
                             throw retirementFailure;
                         }
@@ -1787,7 +1830,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         } catch (RuntimeException | Error admissionFailure) {
             // Quota admission failed before a scheduler child existed.
-            cell.retireSourceTaskLifetime(sourceTaskLease);
+            cell.retirePhysicalLifetime(sourceTaskLease);
             throw admissionFailure;
         }
 
@@ -1825,10 +1868,10 @@ public final class ActorRuntime implements AutoCloseable {
                                 // The unified actor receipt receives its source
                                 // Task retirement only after ownership, quota,
                                 // and scheduler physical quiescence all succeed.
-                                cell.retireSourceTaskLifetime(sourceTaskLease);
+                                cell.retirePhysicalLifetime(sourceTaskLease);
                             });
                 } catch (RuntimeException | Error retirementFailure) {
-                    cell.failSourceTaskLifetime(
+                    cell.failPhysicalLifetime(
                             sourceTaskLease, retirementFailure);
                     throw retirementFailure;
                 }
@@ -6937,11 +6980,11 @@ public final class ActorRuntime implements AutoCloseable {
         /** Timed admission persists until both guest quiescence and terminal drain. */
         private int activeUntrustedTimedAdmissions;
         /**
-         * Positive reclamation authority for actor-owned source Tasks. A valid
-         * receipt is impossible until shutdown seals admission and every source
-         * Task's scheduler/TaskScope retirement chain has completed.
+         * Unified positive reclamation authority for actor-owned physical work.
+         * A valid receipt is impossible until shutdown seals admission and every
+         * admitted Task/worker/loan retirement chain has completed.
          */
-        private final PhysicalRetirementReceipt sourceTaskRetirement =
+        private final PhysicalRetirementReceipt physicalRetirement =
                 new PhysicalRetirementReceipt(nextPhysicalRetirementGeneration());
         private Behavior<M> behavior;
 
@@ -7218,18 +7261,19 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private PhysicalRetirementReceipt.Lease acquireSourceTaskLifetime() {
+        private PhysicalRetirementReceipt.Lease acquirePhysicalLifetime(
+                String kind) {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized || closed.get()) {
                     throw new RejectedExecutionException(
                             "actor " + ref.id()
-                                    + " cannot admit a source Task during shutdown");
+                                    + " cannot admit physical work during shutdown");
                 }
-                return sourceTaskRetirement.acquire("source-task");
+                return physicalRetirement.acquire(kind);
             }
         }
 
-        private void retireSourceTaskLifetime(
+        private void retirePhysicalLifetime(
                 PhysicalRetirementReceipt.Lease lease) {
             synchronized (lifecycleLock) {
                 lease.close();
@@ -7238,7 +7282,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void failSourceTaskLifetime(
+        private void failPhysicalLifetime(
                 PhysicalRetirementReceipt.Lease lease,
                 Throwable failure) {
             synchronized (lifecycleLock) {
@@ -7256,7 +7300,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
-                    || !sourceTaskRetirement.hasValidReceipt()
+                    || !physicalRetirement.hasValidReceipt()
                     || !children.isEmpty()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
@@ -7846,7 +7890,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // A reclamation receipt can exist only after shutdown seals
                 // source Task admission. Existing leases remain authoritative
                 // until their physical retirement callbacks succeed.
-                sourceTaskRetirement.seal();
+                physicalRetirement.seal();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
