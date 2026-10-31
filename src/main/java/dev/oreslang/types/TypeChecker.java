@@ -1707,8 +1707,16 @@ public final class TypeChecker {
                                         + "' requires a scalar ABI until ActorRef transfer is proven");
                     params.add(param.name());
                 }
+                if (!klass.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor init inheritance requires a linked complete-state ABI");
+                }
                 java.util.Map<String, Ast.FieldDecl> stateFields = new java.util.LinkedHashMap<>();
                 for (Ast.FieldDecl field : klass.fields()) {
+                    if (!isActorStateSchemaField(field)) {
+                        throw new IllegalArgumentException(
+                                "actor init requires state { ... }, not legacy free-standing fields");
+                    }
                     if (field.initializer() != null) {
                         throw new IllegalArgumentException(
                                 "actor init supplies a complete state; declaration field initializers are forbidden");
