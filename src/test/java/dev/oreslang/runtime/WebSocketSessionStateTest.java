@@ -156,4 +156,68 @@ final class WebSocketSessionStateTest {
         leaked[1] = 42;
         assertArrayEquals(new byte[] {7, 8}, action.payload());
     }
+    @Test
+    void userByteQuotaClosesWith1013BeforeCountCapacityAndPingStillWorks() {
+        WebSocketSessionState session = new WebSocketSessionState(32, 8, 8);
+        assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                session.accept(new WebSocketFrameCodec.Frame(
+                        true, WebSocketFrameCodec.OPCODE_BINARY,
+                        new byte[] {1, 2, 3, 4, 5})).kind());
+        assertEquals(5, session.queuedUserBytes());
+        assertEquals(1, session.queuedUserMessages());
+
+        var ping = session.accept(new WebSocketFrameCodec.Frame(
+                true, WebSocketFrameCodec.OPCODE_PING, new byte[] {9}));
+        assertEquals(WebSocketSessionState.ActionKind.SEND_PONG, ping.kind());
+        assertArrayEquals(new byte[] {9}, ping.payload());
+
+        var overload = session.accept(new WebSocketFrameCodec.Frame(
+                true, WebSocketFrameCodec.OPCODE_BINARY,
+                new byte[] {6, 7, 8, 9}));
+        assertEquals(WebSocketSessionState.ActionKind.SEND_CLOSE, overload.kind());
+        assertEquals(1013, (Byte.toUnsignedInt(overload.payload()[0]) << 8)
+                | Byte.toUnsignedInt(overload.payload()[1]));
+        assertEquals(WebSocketSessionState.State.CLOSING, session.state());
+        assertEquals(1, session.queuedUserMessages());
+        assertEquals(5, session.queuedUserBytes());
+        assertEquals(5, session.pollUserMessage().orElseThrow().payloadLength());
+        assertEquals(0, session.queuedUserBytes());
+        assertTrue(session.pollUserMessage().isEmpty());
+        session.transportClosed();
+        assertEquals(0, session.queuedUserBytes());
+    }
+
+    @Test
+    void pollingAndPhysicalCloseReleaseExactByteCredits() {
+        WebSocketSessionState session = new WebSocketSessionState(3, 3, 5);
+        session.accept(new WebSocketFrameCodec.Frame(
+                true, WebSocketFrameCodec.OPCODE_BINARY, new byte[] {1, 2, 3}));
+        session.accept(new WebSocketFrameCodec.Frame(
+                true, WebSocketFrameCodec.OPCODE_BINARY, new byte[] {4, 5}));
+        assertEquals(2, session.queuedUserMessages());
+        assertEquals(5, session.queuedUserBytes());
+        assertEquals(3, session.pollUserMessage().orElseThrow().payloadLength());
+        assertEquals(2, session.queuedUserBytes());
+
+        session.accept(new WebSocketFrameCodec.Frame(
+                true, WebSocketFrameCodec.OPCODE_BINARY, new byte[] {6, 7, 8}));
+        assertEquals(5, session.queuedUserBytes());
+        session.transportClosed();
+        session.transportClosed(); // repeat retirement must not underflow credits
+        assertEquals(0, session.queuedUserBytes());
+        assertEquals(0, session.queuedUserMessages());
+    }
+
+    @Test
+    void queueByteQuotaConfigurationRejectsMemoryAmplification() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new WebSocketSessionState(65_536, 64 * 1024 * 1024));
+        for (int quota : new int[] {0, -1, WebSocketSessionState.MAX_QUEUED_USER_BYTES + 1}) {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> new WebSocketSessionState(1, 1, quota));
+        }
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new WebSocketSessionState(1, 9, 8));
+    }
+
 }
