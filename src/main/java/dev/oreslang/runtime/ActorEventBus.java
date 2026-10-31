@@ -542,18 +542,31 @@ public final class ActorEventBus implements AutoCloseable {
                     }
                 }
 
-                long sequence = topic.sequence.incrementAndGet();
-                Event<Object> created = new Event<>(
-                        topic.name,
-                        sequence,
-                        publisher,
-                        System.nanoTime(),
-                        frozenPayload.value(),
-                        frozenPayload.reservation());
-                event = created;
-                // Commit only after the topic's admission/close fence and
-                // successful reliable preflight, before any reader can see it.
-                commitState.run();
+                try {
+                    // Sequence assignment is serialized by topic.deliveryLock.
+                    // Overflow fails closed rather than allowing negative ids.
+                    long sequence = Math.addExact(topic.sequence.get(), 1L);
+                    Event<Object> created = new Event<>(
+                            topic.name,
+                            sequence,
+                            publisher,
+                            System.nanoTime(),
+                            frozenPayload.value(),
+                            frozenPayload.reservation());
+                    event = created;
+                    // Reduction state and event sequence commit before fanout.
+                    commitState.run();
+                    topic.sequence.set(sequence);
+                } catch (Throwable failure) {
+                    // If event allocation or the commit hook fails after the
+                    // successful preflight, no write has started yet.
+                    if (reserved != null) {
+                        for (Subscription<?> admitted : reserved) {
+                            admitted.releaseReliableEvent();
+                        }
+                    }
+                    throw failure;
+                }
 
                 if (active.isEmpty()) {
                     topic.published.incrementAndGet();
