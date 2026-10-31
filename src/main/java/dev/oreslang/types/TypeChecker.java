@@ -1854,11 +1854,6 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.BlockStmt block) {
-            if (block.taskScope() && currentActorKind != Ast.ActorKind.NONE) {
-                throw new IllegalArgumentException(
-                        "task scope is not enabled inside actor execution until "
-                                + "actor quota/hot-reload structured-scope integration is proven");
-            }
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
