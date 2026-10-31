@@ -265,6 +265,126 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    void trackedAsyncDispatchStaysPinnedAfterSubmitReturnsUntilPhysicalCompletion() {
+        try (var gate = new ActorUpgradeEpochGate(52, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            authority.admit(new byte[]{1});
+            var handle = new java.util.concurrent.atomic.AtomicReference<
+                    ActorRoutePublicationV1<String>.PhysicalCompletion>();
+            assertTrue(authority.dispatchNextTracked((route, envelope, receipt) -> {
+                assertEquals("old-physical", route);
+                assertEquals(1L, envelope.messageSequence());
+                handle.set(receipt);
+            }));
+            assertEquals(1, mailbox.snapshot().outstandingMessages());
+            assertThrows(IllegalStateException.class,
+                    () -> authority.stage(image('b')),
+                    "return from async transport submission is not physical completion");
+            assertThrows(IllegalStateException.class, authority::close,
+                    "logical close must not free physical actor while old work is active");
+            assertEquals(1L, authority.current().routeEpoch());
+            handle.get().acknowledge();
+            assertThrows(IllegalStateException.class, handle.get()::acknowledge);
+            assertEquals(0, mailbox.snapshot().outstandingMessages());
+            try (var stage = authority.stage(image('b'))) {
+                assertTrue(stage.quiescent());
+                assertTrue(stage.publish(state(8), "new-physical"));
+            }
+            assertEquals("new-physical", authority.current().physicalRoute());
+        }
+    }
+
+    @Test
+    void earlyReceiptDoesNotFreePhysicalSubmitWhileCallbackStillExecuting()
+            throws Exception {
+        try (var gate = new ActorUpgradeEpochGate(53, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox);
+             var pool = Executors.newSingleThreadExecutor()) {
+            authority.admit(new byte[]{1});
+            var acknowledged = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var submit = pool.submit(() ->
+                    authority.dispatchNextTracked((route, envelope, receipt) -> {
+                        receipt.acknowledge();
+                        acknowledged.countDown();
+                        try {
+                            if (!release.await(5, TimeUnit.SECONDS))
+                                throw new AssertionError("tracked callback stalled");
+                        } catch (InterruptedException error) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(error);
+                        }
+                    }));
+            assertTrue(acknowledged.await(5, TimeUnit.SECONDS));
+            try {
+                assertEquals(0, mailbox.snapshot().outstandingMessages());
+                assertThrows(IllegalStateException.class, () -> authority.stage(image('b')));
+                assertThrows(IllegalStateException.class, authority::close);
+            } finally {
+                release.countDown();
+            }
+            assertTrue(submit.get(5, TimeUnit.SECONDS));
+            try (var stage = authority.stage(image('b'))) {
+                assertTrue(stage.publish(state(3), "replacement"));
+            }
+            assertEquals(2L, authority.current().routeEpoch());
+        }
+    }
+
+    @Test
+    void synchronousTransportReturnCannotAuthorizePrematureLogicalShutdown() {
+        try (var gate = new ActorUpgradeEpochGate(54, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            authority.admit(new byte[]{1});
+            assertTrue(authority.dispatchNext((route, envelope) ->
+                    assertEquals("old-physical", route)));
+            assertThrows(IllegalStateException.class, authority::close,
+                    "live dispatched mail retains its physical generation");
+            assertEquals(1, mailbox.snapshot().retainedMessages());
+            assertEquals(image('a'), authority.current().image());
+            authority.complete(1L);
+            authority.close();
+            assertTrue(mailbox.snapshot().closed());
+        }
+    }
+
+    @Test
+    void suspendedTaskPinBlocksLogicalShutdownEvenWithEmptyMailbox() {
+        try (var gate = new ActorUpgradeEpochGate(55, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            var continuation = gate.pin(ActorUpgradeEpochGate.LeaseKind.SUSPENDED_TASK);
+            try {
+                assertThrows(IllegalStateException.class, authority::close);
+                assertSame(gate, authority.current().taskAdmission());
+                assertFalse(mailbox.snapshot().closed());
+            } finally {
+                continuation.close();
+            }
+            authority.close();
+            assertTrue(gate.retired());
+        }
+    }
+
+    @Test
+    void ordinaryShutdownRequiresExplicitStageRollback() {
+        try (var gate = new ActorUpgradeEpochGate(56, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            var stage = authority.stage(image('b'));
+            assertThrows(IllegalStateException.class, authority::close);
+            assertTrue(mailbox.snapshot().dispatchFrozen());
+            stage.close();
+            assertFalse(mailbox.snapshot().dispatchFrozen());
+            authority.close();
+            assertTrue(mailbox.snapshot().closed());
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
