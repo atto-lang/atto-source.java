@@ -2853,6 +2853,17 @@ public final class TypeChecker {
                 // as the internal unary form, without nesting loan wrappers.
                 case "borrow" -> operand instanceof Borrow existing
                         ? new Borrow(existing.target(), false) : new Borrow(operand, false);
+                case "mut_share" -> {
+                    // Retain an existing synchronized handle, never create a mutable
+                    // alias to an ordinary object or a borrowed reference.
+                    if (!(operand instanceof Named named)
+                            || !named.name().equals("SharedMutex")
+                            || named.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "rt mut share requires a SharedMutex<T> handle; protected mutation requires a guard");
+                    }
+                    yield operand;
+                }
                 case "copy", "take", "share" -> operand;
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
