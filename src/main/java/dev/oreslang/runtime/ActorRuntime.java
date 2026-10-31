@@ -195,6 +195,12 @@ public final class ActorRuntime implements AutoCloseable {
         void fail(Throwable failure) {
             cell.failPhysicalLifetime(lease, failure);
         }
+
+        ActorPhysicalLease fork(String kind) {
+            return new ActorPhysicalLease(
+                    cell,
+                    cell.forkPhysicalLifetime(lease, kind));
+        }
     }
 
     /**
@@ -7270,6 +7276,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     + " cannot admit physical work during shutdown");
                 }
                 return physicalRetirement.acquire(kind);
+            }
+        }
+
+        private PhysicalRetirementReceipt.Lease forkPhysicalLifetime(
+                PhysicalRetirementReceipt.Lease parent,
+                String kind) {
+            synchronized (lifecycleLock) {
+                return parent.fork(kind);
             }
         }
 
