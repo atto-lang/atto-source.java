@@ -31,7 +31,8 @@ final class PackageNamespaceWorkspace {
                      Set<String> rootPackageIds, Map<Path, String> dependencySourcePins,
                      Map<Path, String> dependencyManifestPins,
                      String rootManifestSha256,
-                     Map<Path, String> manifestSnapshots) {
+                     Map<Path, String> manifestSnapshots,
+                     Map<Path, Object> providerFileKeys) {
         Workspace {
             manifests = List.copyOf(manifests);
             files = List.copyOf(files);
@@ -40,6 +41,10 @@ final class PackageNamespaceWorkspace {
             dependencySourcePins = Map.copyOf(dependencySourcePins);
             dependencyManifestPins = Map.copyOf(dependencyManifestPins);
             manifestSnapshots = Map.copyOf(manifestSnapshots);
+            providerFileKeys = Map.copyOf(providerFileKeys);
+            if (!Set.copyOf(files).containsAll(providerFileKeys.keySet())) {
+                throw new IllegalArgumentException("provider identity map references unlisted sources");
+            }
             if (manifests.isEmpty() || !manifestSnapshots.keySet().equals(Set.copyOf(manifests))
                     || !sha256(manifestSnapshots.get(manifests.getFirst())
                             .getBytes(StandardCharsets.UTF_8)).equals(rootManifestSha256)) {
@@ -173,8 +178,18 @@ final class PackageNamespaceWorkspace {
                 || totalBytes > 64L * 1024 * 1024) {
             throw new IllegalArgumentException("namespace workspace exceeds manifest/source limits");
         }
+        // Where supported, bind each admitted physical provider to its file
+        // identity. Byte digests alone cannot detect a same-byte inode swap.
+        LinkedHashMap<Path, Object> providerFileKeys = new LinkedHashMap<>();
+        for (Path file : files) {
+            Object fileKey = Files.readAttributes(file,
+                    java.nio.file.attribute.BasicFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS).fileKey();
+            if (fileKey != null) providerFileKeys.put(file, fileKey);
+        }
         Workspace snapshot = new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
-                aliases, rootPackageIds, sourcePins, manifestPins, rootManifestSha256, manifestSnapshots);
+                aliases, rootPackageIds, sourcePins, manifestPins, rootManifestSha256,
+                manifestSnapshots, providerFileKeys);
         verifyRootManifestSnapshot(snapshot);
         return snapshot;
     }
@@ -384,6 +399,15 @@ final class PackageNamespaceWorkspace {
             throw new SecurityException("namespace source inventory changed during admission");
         }
         for (Path member : verifiedMembers) {
+            Object expectedKey = workspace.providerFileKeys().get(member);
+            if (expectedKey != null) {
+                Object observedKey = Files.readAttributes(member,
+                        java.nio.file.attribute.BasicFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS).fileKey();
+                if (!expectedKey.equals(observedKey)) {
+                    throw new SecurityException("namespace provider file identity changed during admission: " + member);
+                }
+            }
             String id = member.toRealPath().toString().replace('\\', '/');
             String sourceText = admitted.get(id);
             if (sourceText == null) {
