@@ -67,6 +67,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
     private static final long UNTRUSTED_MIN_FUEL = 256L;
+    private static final AtomicLong NEXT_PHYSICAL_RETIREMENT_GENERATION = new AtomicLong();
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
@@ -82,6 +83,15 @@ public final class ActorRuntime implements AutoCloseable {
      */
     private static final ThreadLocal<Boolean> ACTOR_GROUP_MAILMAN_CONTEXT_SEND =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    private static long nextPhysicalRetirementGeneration() {
+        long generation = NEXT_PHYSICAL_RETIREMENT_GENERATION.incrementAndGet();
+        if (generation <= 0) {
+            throw new IllegalStateException(
+                    "physical retirement generation space exhausted");
+        }
+        return generation;
+    }
 
     private record ActorGroupMailmanExecution(
             ActorRuntime runtime,
@@ -1694,23 +1704,31 @@ public final class ActorRuntime implements AutoCloseable {
         // Actor-owned memory, code epochs and final done publication must remain
         // live until the scheduler has completed the full physical-retirement
         // chain. A terminal/cancelled Future is not a reclamation witness.
-        Runnable releaseActorTaskLease = cell.acquireSourceTaskLifetime();
+        PhysicalRetirementReceipt.Lease sourceTaskLease =
+                cell.acquireSourceTaskLifetime();
         if (cell.kind != ActorKind.UNTRUSTED) {
             final OresScheduler scheduler;
             try {
                 scheduler = cell.sourceScheduler();
             } catch (RuntimeException | Error schedulerFailure) {
                 // No scheduler child could possibly own this lease.
-                releaseActorTaskLease.run();
+                cell.retireSourceTaskLifetime(sourceTaskLease);
                 throw schedulerFailure;
             }
             OresFuture<T> future = scheduler.startCompilerAdmittedTask(
                     task,
                     () -> {
-                        // If ownership retirement fails, deliberately keep the
-                        // actor lifetime pinned rather than closing its arena.
-                        retireAfterPhysicalDone.run();
-                        releaseActorTaskLease.run();
+                        try {
+                            retireAfterPhysicalDone.run();
+                            cell.retireSourceTaskLifetime(sourceTaskLease);
+                        } catch (RuntimeException | Error retirementFailure) {
+                            // Failed physical retirement permanently
+                            // quarantines this actor generation: no receipt can
+                            // authorize arena/code reclamation.
+                            cell.failSourceTaskLifetime(
+                                    sourceTaskLease, retirementFailure);
+                            throw retirementFailure;
+                        }
                     });
             // startActorTask is actor-owned by definition. Make the ownership
             // registration intrinsic so direct runtime callers cannot orphan a
@@ -1769,7 +1787,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         } catch (RuntimeException | Error admissionFailure) {
             // Quota admission failed before a scheduler child existed.
-            releaseActorTaskLease.run();
+            cell.retireSourceTaskLifetime(sourceTaskLease);
             throw admissionFailure;
         }
 
@@ -1797,17 +1815,23 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicBoolean released = new AtomicBoolean();
         Runnable retireOnce = () -> {
             if (released.compareAndSet(false, true)) {
-                retireUntrustedCompilerTransfer(
-                        retireAfterPhysicalDone,
-                        () -> releaseUntrustedSourceTask(cell, quota),
-                        () -> {
-                            physicalQuiescenceConfirmed.set(true);
-                            releaseTimedWhenSafe.run();
-                            // Release the actor only after ownership retirement,
-                            // logical quota retirement, and physical-quiescence
-                            // publication have all completed successfully.
-                            releaseActorTaskLease.run();
-                        });
+                try {
+                    retireUntrustedCompilerTransfer(
+                            retireAfterPhysicalDone,
+                            () -> releaseUntrustedSourceTask(cell, quota),
+                            () -> {
+                                physicalQuiescenceConfirmed.set(true);
+                                releaseTimedWhenSafe.run();
+                                // The unified actor receipt receives its source
+                                // Task retirement only after ownership, quota,
+                                // and scheduler physical quiescence all succeed.
+                                cell.retireSourceTaskLifetime(sourceTaskLease);
+                            });
+                } catch (RuntimeException | Error retirementFailure) {
+                    cell.failSourceTaskLifetime(
+                            sourceTaskLease, retirementFailure);
+                    throw retirementFailure;
+                }
             }
         };
         Runnable notificationsDrained = () -> {
@@ -6913,10 +6937,12 @@ public final class ActorRuntime implements AutoCloseable {
         /** Timed admission persists until both guest quiescence and terminal drain. */
         private int activeUntrustedTimedAdmissions;
         /**
-         * Source Tasks whose scheduler retirement chain has not fully completed.
-         * This is stronger than Future terminal state and scheduler close.
+         * Positive reclamation authority for actor-owned source Tasks. A valid
+         * receipt is impossible until shutdown seals admission and every source
+         * Task's scheduler/TaskScope retirement chain has completed.
          */
-        private int activeSourceTaskLeases;
+        private final PhysicalRetirementReceipt sourceTaskRetirement =
+                new PhysicalRetirementReceipt(nextPhysicalRetirementGeneration());
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -7192,33 +7218,34 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private Runnable acquireSourceTaskLifetime() {
+        private PhysicalRetirementReceipt.Lease acquireSourceTaskLifetime() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized || closed.get()) {
                     throw new RejectedExecutionException(
                             "actor " + ref.id()
                                     + " cannot admit a source Task during shutdown");
                 }
-                if (activeSourceTaskLeases == Integer.MAX_VALUE) {
-                    throw new RejectedExecutionException(
-                            "actor source Task lifetime capacity exceeded");
-                }
-                activeSourceTaskLeases++;
+                return sourceTaskRetirement.acquire("source-task");
             }
+        }
 
-            AtomicBoolean released = new AtomicBoolean();
-            return () -> {
-                if (!released.compareAndSet(false, true)) return;
-                synchronized (lifecycleLock) {
-                    if (activeSourceTaskLeases <= 0) {
-                        throw new IllegalStateException(
-                                "actor source Task lifetime underflow for " + ref.id());
-                    }
-                    activeSourceTaskLeases--;
-                    if (stopped.get()) finalizeStopLocked();
-                    lifecycleLock.notifyAll();
-                }
-            };
+        private void retireSourceTaskLifetime(
+                PhysicalRetirementReceipt.Lease lease) {
+            synchronized (lifecycleLock) {
+                lease.close();
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private void failSourceTaskLifetime(
+                PhysicalRetirementReceipt.Lease lease,
+                Throwable failure) {
+            synchronized (lifecycleLock) {
+                lease.fail(failure);
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
         }
 
         private void finalizeStopLocked() {
@@ -7229,7 +7256,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
-                    || activeSourceTaskLeases != 0
+                    || !sourceTaskRetirement.hasValidReceipt()
                     || !children.isEmpty()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
@@ -7816,6 +7843,10 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
+                // A reclamation receipt can exist only after shutdown seals
+                // source Task admission. Existing leases remain authoritative
+                // until their physical retirement callbacks succeed.
+                sourceTaskRetirement.seal();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
