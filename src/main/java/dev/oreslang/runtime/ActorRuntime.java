@@ -4942,6 +4942,24 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalArgumentException(
                             "source actor init startup payload exceeds 4096 bytes");
                 }
+                // UTF-8 encoding with replacement would otherwise hide
+                // malformed surrogate halves and different backends could
+                // interpret the same startup input differently. Validate the
+                // bounded UTF-16 sequence before encoding or publication.
+                for (int i = 0; i < string.length(); i++) {
+                    char ch = string.charAt(i);
+                    if (Character.isHighSurrogate(ch)) {
+                        if (i + 1 >= string.length()
+                                || !Character.isLowSurrogate(string.charAt(i + 1))) {
+                            throw new IllegalArgumentException(
+                                    "actor init string contains unpaired UTF-16 surrogate");
+                        }
+                        i++;
+                    } else if (Character.isLowSurrogate(ch)) {
+                        throw new IllegalArgumentException(
+                                "actor init string contains unpaired UTF-16 surrogate");
+                    }
+                }
                 int length = string.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
                 bytes = Math.addExact(bytes, length);
             } else if (argument instanceof Boolean) {
@@ -4959,7 +4977,10 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "source actor init startup payload exceeds 4096 bytes");
             }
-            checked.add(argument);
+            // Oreslang 'int' is a canonical signed 64-bit scalar, not
+            // a host-dependent boxed Integer. Normalize at admission so
+            // the actor never observes a 32-bit host wrapper.
+            checked.add(argument instanceof Integer i ? Long.valueOf(i.longValue()) : argument);
         }
         return List.copyOf(checked);
     }
