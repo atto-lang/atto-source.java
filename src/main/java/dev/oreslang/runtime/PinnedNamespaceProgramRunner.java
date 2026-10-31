@@ -65,6 +65,16 @@ public final class PinnedNamespaceProgramRunner {
         if (!build.units().containsKey(entrySource))
             throw new IllegalArgumentException("entry source was not supplied in pinned package graph");
 
+        // The compiler validates the full pinned inventory, including
+        // unreachable packages. Its complete SCC plan must be checked
+        // BEFORE any guest context or initializer is admitted.
+        Map<String, Set<String>> dependencies = new LinkedHashMap<>();
+        for (var unit : build.units().entrySet())
+            dependencies.put(unit.getKey(), unit.getValue().dependencies());
+        List<List<String>> reachableInitializationGroups =
+                PinnedNamespaceInitializationPlan.reachableGroups(
+                        dependencies, build.initializationGroups(), entrySource);
+
         List<String> ids = new ArrayList<>(build.units().keySet());
         ids.sort(String::compareTo);
         Context.Builder builder = policy.restrictedContextBuilder(profile, Set.of());
@@ -130,7 +140,7 @@ public final class PinnedNamespaceProgramRunner {
             // package graph adds all namespace sources to initialization deps.
             for (String id : ids)
                 executables.get(id).execute(OresEvalRootNode.LINK_ONLY_COMMAND);
-            for (List<String> group : build.initializationGroups())
+            for (List<String> group : reachableInitializationGroups)
                 for (String id : group)
                     executables.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
 
