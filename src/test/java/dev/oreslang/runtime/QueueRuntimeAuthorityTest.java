@@ -38,8 +38,15 @@ final class QueueRuntimeAuthorityTest {
                     () -> (message, context) -> {
                         if (message.equals("spawn")) {
                             ActorRuntime.ActorHandle<String> child =
-                                    runtime.<String>spawnChildShared(startup ->
-                                            (command, childContext) -> {
+                                    runtime.<String>spawnChildShared(startup -> {
+                                        // Startup carries no current mail and must not
+                                        // mint either supervisor or producer authority.
+                                        var bootAuthority = startup.queueCommandAuthority()
+                                                .orElseThrow();
+                                        assertThrows(SecurityException.class,
+                                                () -> bootAuthority.permits(
+                                                        ActorRuntime.QueueOperation.CLOSE, -1));
+                                        return (command, childContext) -> {
                                                 var authority = childContext.queueCommandAuthority()
                                                         .orElseThrow();
                                                 leaked.set(authority);
@@ -68,7 +75,8 @@ final class QueueRuntimeAuthorityTest {
                                                 } catch (SecurityException denial) {
                                                     observed.add("denied");
                                                 }
-                                            });
+                                            };
+                                    });
                             handle.set(child);
                             queue.set(child.ref());
                             observed.add("spawned");
