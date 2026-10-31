@@ -237,8 +237,19 @@ public final class ActorStateRwLoans implements AutoCloseable {
         while (!pending.isEmpty()) {
             Pending head = pending.peekFirst();
             if (head.future.isCancelled()) {
+                // Cancellation publishes the terminal CAS before its hook
+                // can remove this waiter. Another loan may retire and reach
+                // promotion first. That path owns removal and MUST also
+                // retain the cancellation notification-drain fence, otherwise
+                // close() can report physical retirement while the cancelling
+                // thread is still blocked before running its observers.
                 pending.removeFirst();
                 unreserveLocked(head.authority);
+                terminalNotificationsInFlight++;
+                // Register outside monitor via the normal completion publisher.
+                // The cancellation hook will see removal already completed and
+                // must not register a second receipt.
+                completions.addLast(() -> trackNotificationDrain(head.future));
                 continue;
             }
 
