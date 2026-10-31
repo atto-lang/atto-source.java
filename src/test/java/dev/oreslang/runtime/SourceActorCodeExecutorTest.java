@@ -182,13 +182,13 @@ final class SourceActorCodeExecutorTest {
                 }
             };
             java.util.ArrayList<Object> original = new java.util.ArrayList<>(
-                    java.util.List.of(12, true, "tenant-a"));
+                    java.util.List.of(12, true, "tenant-a", "\\uD83E\\uDD99"));
             ActorRuntime.ActorRef<Object> ref = runtime.spawnCodeActor(
                     ActorRuntime.ActorKind.PRIVATE, executor, "Worker", original);
             original.set(0, 99L);
             original.set(2, "tenant-b");
             assertNull(ref.ready().join());
-            assertEquals(java.util.List.of(12L, true, "tenant-a"), received.get());
+            assertEquals(java.util.List.of(12L, true, "tenant-a", "\\uD83E\\uDD99"), received.get());
             assertInstanceOf(Long.class, received.get().getFirst(),
                     "source int values must have one canonical int64 representation");
             assertThrows(UnsupportedOperationException.class,
@@ -218,6 +218,9 @@ final class SourceActorCodeExecutorTest {
             assertThrows(IllegalArgumentException.class,
                     () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
                             executor, "Worker", java.util.List.of("x".repeat(4097))));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker", java.util.List.of("\\u20AC".repeat(1366))));
             assertThrows(IllegalArgumentException.class,
                     () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
                             executor, "Worker", java.util.List.of(Double.NaN)));
