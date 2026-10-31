@@ -92,6 +92,77 @@ final class ActorPermissionUnifiedRetirementTest {
     }
 
     @Test
+    void revocationRaceCannotMintDrainWhileWorkerLeaseIsLive()
+            throws Exception {
+        ActorPermissionScope scope = ActorPermissionScope.root(
+                RuntimePermissions.denyAll(),
+                () -> { }).attenuate(
+                        RuntimePermissions.denyAll(),
+                        () -> { });
+
+        CountDownLatch admitted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread worker = Thread.ofVirtual().start(() -> {
+            try (ActorPermissionScope.PhysicalLease lease =
+                         scope.acquirePhysicalLease("racing-worker")) {
+                admitted.countDown();
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("worker release timed out");
+                }
+            } catch (Throwable caught) {
+                failure.set(caught);
+            }
+        });
+
+        try {
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+            assertTrue(scope.revoke());
+            assertTrue(
+                    scope.tryDrainReceipt().isEmpty(),
+                    "revocation forged drain before physical retirement");
+            assertThrows(
+                    SecurityException.class,
+                    () -> scope.acquirePhysicalLease("post-revoke"));
+        } finally {
+            release.countDown();
+        }
+
+        worker.join(5_000);
+        assertFalse(worker.isAlive());
+        assertNull(failure.get(), () -> String.valueOf(failure.get()));
+        assertTrue(scope.tryDrainReceipt().isPresent());
+    }
+
+    @Test
+    void quarantinedDelegationCannotRecoverDrainFromCounterReachingZero() {
+        ActorPermissionScope root = ActorPermissionScope.root(
+                RuntimePermissions.denyAll(),
+                () -> { });
+        ActorPermissionScope delegated = root.attenuate(
+                RuntimePermissions.denyAll(),
+                () -> { });
+        ActorPermissionScope sibling = root.attenuate(
+                RuntimePermissions.denyAll(),
+                () -> { });
+
+        ActorPermissionScope.PhysicalLease lease =
+                delegated.acquirePhysicalLease("late-native-owner");
+        delegated.quarantinePhysicalDrain();
+        assertTrue(delegated.revoke());
+        lease.close();
+
+        assertTrue(
+                delegated.tryDrainReceipt().isEmpty(),
+                "quarantined scope must not mint a drain receipt");
+        assertTrue(sibling.revoke());
+        assertTrue(
+                sibling.tryDrainReceipt().isPresent(),
+                "one quarantined delegation must not erase sibling evidence");
+    }
+
+    @Test
     void delegatedNativeWorkerPinsChildAndParentArenaUntilPhysicalExit()
             throws Exception {
         try (AsyncNativeIo io = new AsyncNativeIo();
