@@ -8,7 +8,7 @@ pub routine main(): void {
   if hidden(&state, 2.0) != 1.0; do rt fail("hidden forward"); fi
   if predict(&state, 2.0) != 1.0; do rt fail("output forward"); fi
   val float starting_loss = squared_loss(&state, 2.0, 6.0);
-  for const step of arr[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] do
+  for let step = 0; step < 12; step++ do
     state = train_step(&state, 2.0, 6.0, 0.01);
   done
   if squared_loss(&state, 2.0, 6.0) >= starting_loss; do
