@@ -81,6 +81,29 @@ final class StdioLogAndSpreadTest {
     }
 
     @Test
+    void heldAsyncFlushReceiptIsAnAwaitableMoveOnlyFuture() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                pub async routine main(): void {
+                  val receipt = stdio.flush_async_logs();
+                  await receipt;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void builtinAsyncFlushRejectsArgumentsInOwnershipAnalysis() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                        pub async routine main(): void {
+                          await stdio.flush_async_logs("unexpected");
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("requires zero arguments"));
+    }
+
+    @Test
     void asyncSpreadAndListRenderIdentically() throws Exception {
         assertEquals("A1B\nA1B\n", run("""
                 pub routine main(): void {
