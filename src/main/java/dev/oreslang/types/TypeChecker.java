@@ -1700,7 +1700,7 @@ public final class TypeChecker {
                 for (Ast.Param param : method.parameters()) {
                     if (param.mutable() || param.structural() || param.type().isBorrow()
                             || !param.type().arguments().isEmpty()
-                            || !java.util.Set.of("int", "bool", "float", "string")
+                            || !java.util.Set.of("int", "bool", "float", "string", "String")
                                     .contains(param.type().name()))
                         throw new IllegalArgumentException(
                                 "actor init parameter '" + param.name()
