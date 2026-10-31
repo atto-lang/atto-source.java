@@ -444,6 +444,14 @@ public final class HotReloadManager implements AutoCloseable {
             HotReloadManager manager = owner.get();
             if (manager != null) {
                 synchronized (manager) {
+                    // An exhausted publication epoch must reject close before
+                    // marking a selected generation terminal; otherwise the
+                    // registry could retain an unusable closed route.
+                    if (!closed.get() && !manager.closed
+                            && (manager.active.get() == this
+                            || manager.activeByCodeUnit.get(codeUnitId) == this)) {
+                        manager.requireRoutingEpochCapacity();
+                    }
                     if (!beginClose()) return;
                     // Detach before cleanup. An in-flight start cannot race
                     // because it also requires this monitor.
