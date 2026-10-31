@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 
 /**
  * Runtime-only single-owner admission gate for a trusted logical region root.
@@ -13,6 +16,12 @@ import java.util.Objects;
  * identities, not guest serializable/native-address capabilities.</p>
  */
 final class RegionOwnershipGate {
+    private static final Object ROOT_MINT_LOCK = new Object();
+    private static final int MAX_LIVE_GATES = 65536;
+    // Region roots are identity tokens. Keep them pinned until explicit
+    // retirement so a second gate cannot manufacture another writable owner.
+    private static final Set<DopRegionSchedule.Root> MINTED_ROOTS =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private final DopRegionSchedule.Root root;
     private Owner owner;
     private long epoch = 1L;
@@ -22,6 +31,7 @@ final class RegionOwnershipGate {
     private boolean computeInFlight;
     private boolean poisoned;
     private boolean retired;
+    private boolean initialIssued;
 
     private RegionOwnershipGate(DopRegionSchedule.Root root, Object domain) {
         this.root = Objects.requireNonNull(root, "trustedRoot");
@@ -30,7 +40,17 @@ final class RegionOwnershipGate {
 
     /** Called only by trusted storage / actor runtime bootstrap. */
     static RegionOwnershipGate trustedCreate(DopRegionSchedule.Root root, Object ownerDomain) {
-        return new RegionOwnershipGate(root, ownerDomain);
+        Objects.requireNonNull(root, "trustedRoot");
+        Objects.requireNonNull(ownerDomain, "ownerDomain");
+        synchronized (ROOT_MINT_LOCK) {
+            if (MINTED_ROOTS.contains(root))
+                throw new IllegalStateException("logical Region root already has a live owner gate");
+            if (MINTED_ROOTS.size() >= MAX_LIVE_GATES)
+                throw new IllegalStateException("region owner gate budget exhausted");
+            RegionOwnershipGate gate = new RegionOwnershipGate(root, ownerDomain);
+            MINTED_ROOTS.add(root);
+            return gate;
+        }
     }
 
     /** Runtime metadata only; never a physical pointer or guest Region handle. */
@@ -47,6 +67,8 @@ final class RegionOwnershipGate {
     /** Runtime-only original owner receipt, never minted from a message's claimed id. */
     synchronized Owner initialOwner() {
         requireLive();
+        if (initialIssued) throw new IllegalStateException("initial Region owner already issued");
+        initialIssued = true;
         return owner;
     }
 
@@ -171,6 +193,10 @@ final class RegionOwnershipGate {
             throw new IllegalStateException("region has live borrows");
         retired = true;
         owner = null;
+        synchronized (ROOT_MINT_LOCK) {
+            if (!MINTED_ROOTS.remove(root))
+                throw new IllegalStateException("region root registry lost live ownership");
+        }
     }
 
     /** Opaque, incarnation-specific ownership claim; not transferable itself. */

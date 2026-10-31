@@ -11,6 +11,13 @@ pointer, a device capability, or authority to transfer arbitrary handles.
 A trusted physical storage adapter must tie that root to a stable, verified
 allocation descriptor; the gate itself cannot certify a physical allocation.
 
+Each logical Root may mint **at most one live ownership gate**. An
+identity-keyed, bounded (65,536 live gates) registry refuses duplicate
+ownership gates; explicit retirement releases that root claim. The initial
+owner receipt is issued at most once. The registry deliberately holds a
+root until explicit retirement rather than reclaiming ownership while a
+forgotten resource could still be physically active.
+
 A `RegionOwnershipGate.Owner` is an opaque, incarnation-specific host
 receipt. Do not serialize it as an actor message, make raw `Region<T>`
 actor-sendable, expose its constructors through interop, or accept ownership
@@ -66,7 +73,7 @@ bash scripts/test-region-ownership-gate.sh
 The script compiles exactly the repository's `DopRegionSchedule.java`,
 `RegionOwnershipGate.java`, and `RegionOwnershipGateCheck.java` using
 `javac --release 21 -Xlint:all -Werror` in a temporary directory.
-Its Java host test exercises 108 assertions (including 64 concurrent
+Its Java host test exercises 111 assertions (including 64 concurrent
 admission-versus-rejection races, stale owner, live read/write borrow,
 in-flight compute, cancelled and failed compute poison/retirement).
 It then uses `javac` to verify that a Java class in an outside package

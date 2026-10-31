@@ -16,6 +16,8 @@ public final class RegionOwnershipGateCheck {
         var a = new Object(); var b = new Object(); var c = new Object();
         var gate = RegionOwnershipGate.trustedCreate(root, a);
         var sender = gate.initialOwner();
+        expectFailure(gate::initialOwner);
+        expectFailure(() -> RegionOwnershipGate.trustedCreate(root, b));
         check(gate.rows() == 7 && gate.fields() == 2);
         try (var read1 = gate.borrowRead(sender); var read2 = gate.borrowRead(sender)) {
             read1.requireReadable(); read2.requireReadable(); checks += 2;
@@ -57,6 +59,7 @@ public final class RegionOwnershipGateCheck {
         var sender2 = gate2.initialOwner();
         var committed = gate2.prepareTransfer(sender2, b);
         var receiver = committed.admitted();
+        expectFailure(gate2::initialOwner);
         expectFailure(() -> gate2.requireWrite(sender2));
         expectFailure(() -> gate2.borrowRead(sender2));
         expectFailure(committed::admitted);
@@ -95,6 +98,7 @@ public final class RegionOwnershipGateCheck {
         secondCompute.trustedBackendQuiescent(true);
         var nextOwner = gate3.prepareTransfer(afterTransfer, c).admitted();
         gate3.requireRead(nextOwner); checks++;
+        gate3.retire(nextOwner);
 
         // Backend-reported failure poisons even without cancellation.
         var gate4 = RegionOwnershipGate.trustedCreate(root, a);
@@ -113,8 +117,9 @@ public final class RegionOwnershipGateCheck {
             var transfer = g.prepareTransfer(initial, b);
             var ready = new java.util.concurrent.CountDownLatch(1);
             var winners = new java.util.concurrent.atomic.AtomicInteger();
+            var acceptedOwner = new java.util.concurrent.atomic.AtomicReference<RegionOwnershipGate.Owner>();
             Runnable commit = () -> {
-                try { ready.await(); transfer.admitted(); winners.incrementAndGet(); }
+                try { ready.await(); acceptedOwner.set(transfer.admitted()); winners.incrementAndGet(); }
                 catch (IllegalStateException expected) { }
                 catch (InterruptedException err) { Thread.currentThread().interrupt(); throw new AssertionError(err); }
             };
@@ -129,7 +134,11 @@ public final class RegionOwnershipGateCheck {
             try { t1.join(5000); t2.join(5000); }
             catch (InterruptedException err) { Thread.currentThread().interrupt(); throw new AssertionError(err); }
             check(!t1.isAlive() && !t2.isAlive() && winners.get() == 1);
+            g.retire(acceptedOwner.get() == null ? initial : acceptedOwner.get());
         }
+        var reroot = RegionOwnershipGate.trustedCreate(root, a);
+        var rerootOwner = reroot.initialOwner();
+        reroot.retire(rerootOwner);
         System.out.println("REGION_OWNERSHIP_HOST_CHECKS=" + checks + " PASS");
     }
 }
