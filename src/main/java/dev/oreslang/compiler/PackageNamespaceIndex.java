@@ -139,6 +139,15 @@ public final class PackageNamespaceIndex {
                     if (filePath == null || !filePath.endsWith(".ores")) {
                         throw new IllegalArgumentException("package member must be an .ores file");
                     }
+                    // Preserve the manifest's exact source inventory spelling.
+                    // Silently normalizing ./, repeated separators or embedded
+                    // dot/parent segments creates two textual authorities for
+                    // the same physical provider and defeats pinned inventories.
+                    if (!Path.of(filePath).normalize().toString()
+                            .replace('\\', '/').equals(filePath)) {
+                        throw new IllegalArgumentException(
+                                "noncanonical namespace provider filename: " + filePath);
+                    }
                     Path sourcePath = boundedRelative(root, filePath, root);
                     // A nested manifest cannot silently transfer ownership
                     // of a child source into an ancestor package's file list.
