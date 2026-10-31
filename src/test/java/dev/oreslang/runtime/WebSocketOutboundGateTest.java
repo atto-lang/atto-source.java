@@ -187,6 +187,50 @@ final class WebSocketOutboundGateTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(15)
+    void queuedCancellationRacingTerminalCloseCannotUnderflowOrLoseClose()
+            throws Exception {
+        for (int round = 0; round < 32; round++) {
+            var aborts = new AtomicInteger();
+            var gate = new WebSocketOutboundGate(
+                    125, 1, 125, 1, aborts::incrementAndGet);
+            var activePong = gate.enqueueControl(
+                    WebSocketFrameCodec.OPCODE_PONG, new byte[] {1});
+            assertSame(activePong, gate.poll());
+            var queuedUser = gate.enqueueUser(
+                    WebSocketFrameCodec.OPCODE_TEXT, new byte[] {'x'});
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var raceFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var cancellation = Thread.ofVirtual().start(() -> {
+                try {
+                    if (!start.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new AssertionError("missing cancellation start");
+                    }
+                    queuedUser.receipt().cancel(false);
+                } catch (Throwable failure) {
+                    raceFailure.set(failure);
+                }
+            });
+            start.countDown();
+            var close = gate.enqueueControl(
+                    WebSocketFrameCodec.OPCODE_CLOSE,
+                    WebSocketSessionState.closePayload(1000, ""));
+            cancellation.join(3000);
+            assertFalse(cancellation.isAlive(), "cancellation blocked in round " + round);
+            assertNull(raceFailure.get(), () -> String.valueOf(raceFailure.get()));
+            assertEquals(0, gate.heldUserCount(), "round " + round);
+            assertEquals(0, gate.heldUserBytes(), "round " + round);
+            assertEquals(2, gate.heldControlCount(), "round " + round);
+            gate.finish(activePong, null);
+            assertSame(close, gate.poll(), "round " + round);
+            gate.finish(close, null);
+            assertEquals(0, gate.heldControlCount(), "round " + round);
+            assertNull(gate.poll(), "round " + round);
+            assertEquals(0, aborts.get(), "cancel of queued USER must not abort active PONG");
+        }
+    }
+
+    @Test
     void invalidControlAndOversizeOutboundFramesFailBeforeQueueAdmission() {
         var gate = new WebSocketOutboundGate(125, 1, 125, 1, () -> { });
         assertThrows(IllegalArgumentException.class, () ->
