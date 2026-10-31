@@ -318,6 +318,49 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void actorBindRejectsPendingRawReadAndUndrainedHostUserMessage()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+
+                // Before binding, a raw host read owns its native socket
+                // borrow. No actor generation may inherit that unleased I/O.
+                var rawRead = connection.readAsync();
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.bindActorHost(tenant, owner, () -> true));
+                sendMaskedText(client, "host");
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        rawRead.get(3, TimeUnit.SECONDS).kind());
+
+                // Finishing the I/O borrow is not sufficient: USER state
+                // received for the old host must also be explicitly drained.
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.bindActorHost(tenant, owner, () -> true));
+                assertArrayEquals("host".getBytes(StandardCharsets.UTF_8),
+                        connection.pollUserMessage().orElseThrow().payload());
+
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                try (var loan = connection.acquireActorLease(handle, tenant, owner)) {
+                    assertTrue(loan.mayDeliver(handle, tenant, owner));
+                }
+                assertThrows(SecurityException.class, connection::readAsync);
+                assertThrows(SecurityException.class, connection::pollUserMessage);
+                connection.close();
+            }
+        }
+    }
+
+    @Test
     void acceptedPeerBindsOpaqueActorAndRevokesOutstandingLeaseOnClose()
             throws Exception {
         int port = unusedPort();
