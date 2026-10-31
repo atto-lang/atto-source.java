@@ -96,6 +96,13 @@ This includes root package providers, not merely pinned dependency source
 digests. Changes to provider bytes, deleted or replaced providers, or
 same-byte source symlink swaps fail closed at the checked boundaries.
 
+The entry source path is also checked component-by-component **before**
+canonicalizing or lexically eliminating `.` / `..`: symlinked ancestors,
+including a component hidden by a subsequent `..`, must not redefine package
+ownership. The direct-file symlink denial remains distinct from an aliased
+parent-directory denial. The component scan and subsequent reads are not an
+atomic filesystem snapshot under adversarial concurrent mutation.
+
 When the filesystem supplies a stable `BasicFileAttributes.fileKey()`, the
 workspace also records physical provider file identity at discovery and
 rechecks it during source verification. This rejects regular-file replacement
