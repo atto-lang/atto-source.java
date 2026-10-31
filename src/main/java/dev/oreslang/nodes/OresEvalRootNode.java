@@ -6533,7 +6533,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.StagedCallExpr named
-                    && OptionalCallShapeBinder.isDirectScalarLiteralNamedCall(named)) {
+                    && OptionalCallShapeBinder.isDirectNamedCallCandidate(named)) {
                 Ast.NameExpr name = (Ast.NameExpr) named.callee();
                 if (env.lookup(name.name()) != Env.MISSING) {
                     throw new IllegalArgumentException(
@@ -6543,8 +6543,9 @@ public final class OresEvalRootNode extends RootNode {
                         name.name(), named.arguments().size());
                 Ast.CallExpr lowered = OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(
                         named, resolved);
-                // This is safe to reorder ONLY because every source item is a
-                // primitive literal; the ordinary runtime performs invocation.
+                // Only primitive literals can be permuted. Nonliteral named
+                // arguments must stay in source/formal order, so this ordinary
+                // runtime call preserves lexical effects and cleanup.
                 return eval(lowered, env);
             }
             if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
