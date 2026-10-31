@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Eight cross-backend conformance programs copied byte-for-byte from
+ * Nine cross-backend conformance programs copied byte-for-byte from
  * oreslang-common-source PR #187 within the same private organization.
  * Source-blob checks are necessary, not sufficient: the real compiler
  * and Truffle guest must execute to count as a backend pass.
@@ -56,6 +56,12 @@ final class ActorCriticalModeConformanceTest {
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void reject_await_in_write() throws Exception {
         reject("reject_await_in_write", "12c24fa550bfadb1cbc55ee4e6de25308509cc41", "cannot suspend");
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void reject_await_in_read() throws Exception {
+        reject("reject_await_in_read", "f4d182cef8ab1e376198f84020c45f9dd0e0aba9", "cannot suspend");
     }
 
     @Test
