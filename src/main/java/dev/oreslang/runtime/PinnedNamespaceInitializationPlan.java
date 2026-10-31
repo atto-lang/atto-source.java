@@ -61,6 +61,28 @@ public final class PinnedNamespaceInitializationPlan {
             }
         }
 
+        // Same-group ordering is only safe for a *real* SCC. A host-supplied
+        // group that merges one-way dependencies can otherwise run an entry
+        // initializer before the dependency that it imports.
+        for (List<String> group : dependencyFirstGroups) {
+            if (group.size() <= 1) continue;
+            Set<String> members = Set.copyOf(group);
+            Map<String, Set<String>> reversed = new HashMap<>();
+            for (String id : group) reversed.put(id, new HashSet<>());
+            for (String id : group) {
+                for (String dependency : dependencies.get(id)) {
+                    if (members.contains(dependency))
+                        reversed.get(dependency).add(id);
+                }
+            }
+            String first = group.get(0);
+            if (traverseWithin(first, dependencies, members).size() != members.size()
+                    || traverseWithin(first, reversed, members).size() != members.size()) {
+                throw new IllegalArgumentException(
+                        "initialization group is not a verified strongly connected component");
+            }
+        }
+
         Set<String> reachable = new LinkedHashSet<>();
         ArrayDeque<String> pending = new ArrayDeque<>();
         pending.push(entry);
@@ -79,5 +101,19 @@ public final class PinnedNamespaceInitializationPlan {
             if (!kept.isEmpty()) selected.add(List.copyOf(kept));
         }
         return List.copyOf(selected);
+    }
+
+    private static Set<String> traverseWithin(
+            String first, Map<String, Set<String>> edges, Set<String> members) {
+        Set<String> visited = new HashSet<>();
+        ArrayDeque<String> pending = new ArrayDeque<>();
+        pending.push(first);
+        while (!pending.isEmpty()) {
+            String current = pending.pop();
+            if (!visited.add(current)) continue;
+            for (String next : edges.get(current))
+                if (members.contains(next) && !visited.contains(next)) pending.push(next);
+        }
+        return visited;
     }
 }
