@@ -299,9 +299,19 @@ public final class AsyncNativeIo implements AutoCloseable {
                 admitted.remove(result);
                 notifyAll();
             }
-            result.failFromRuntime(failure);
-            if (permissionLease != null) permissionLease.close();
-            if (actorLease != null) actorLease.retire();
+            try {
+                result.failFromRuntime(failure);
+                if (permissionLease != null) permissionLease.close();
+                if (actorLease != null) actorLease.retire();
+            } catch (RuntimeException | Error publicationFailure) {
+                if (ioAuthority != null) {
+                    ioAuthority.quarantinePhysicalDrain();
+                }
+                if (actorLease != null) {
+                    actorLease.fail(publicationFailure);
+                }
+                throw publicationFailure;
+            }
         }
         return result;
     }
