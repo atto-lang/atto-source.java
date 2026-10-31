@@ -8,8 +8,9 @@ import java.util.Objects;
  * payload. Creation requires the current actor of the same OresContext.
  * File open/write/sync/close run on bounded AsyncNativeIo workers.
  *
- * This checks actor affinity and scoped permissions, but does not yet
- * implement a guest ABI, tenant/shard registry, or persistent ACK protocol.
+ * This checks actor affinity and scoped permissions through the context
+ * shard registry, but does not yet implement a guest ABI, production
+ * tenant-authentication provider, or persistent durable ACK protocol.
  */
 final class DbDurableWalAuthority {
     private final OresContext context;
