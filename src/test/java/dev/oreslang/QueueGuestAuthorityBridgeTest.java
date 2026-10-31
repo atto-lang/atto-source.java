@@ -21,9 +21,15 @@ final class QueueGuestAuthorityBridgeTest {
                     val bool close_allowed = self.queue_authorized(4, -1);
                     val bool forged_send = self.queue_authorized(1, 0);
                     val bool invalid_kind = self.queue_authorized(99, 0);
+                    val bool wrong_slot = self.queue_authorized(4, 0);
+                    val bool huge_kind = self.queue_authorized(2147483648, -1);
+                    val bool huge_slot = self.queue_authorized(1, 2147483648);
                     self.send(close_allowed);
                     self.send(forged_send);
                     self.send(invalid_kind);
+                    self.send(wrong_slot);
+                    self.send(huge_kind);
+                    self.send(huge_slot);
                     self.end();
                     return;
                   }
@@ -36,16 +42,25 @@ final class QueueGuestAuthorityBridgeTest {
                   val a = (await worker.outputs.next()).value.unwrap();
                   val b = (await worker.outputs.next()).value.unwrap();
                   val c = (await worker.outputs.next()).value.unwrap();
+                  val d = (await worker.outputs.next()).value.unwrap();
+                  val e = (await worker.outputs.next()).value.unwrap();
+                  val f = (await worker.outputs.next()).value.unwrap();
                   stdio.stdout.write(a.value);
                   stdio.stdout.write(",");
                   stdio.stdout.write(b.value);
                   stdio.stdout.write(",");
                   stdio.stdout.write(c.value);
+                  stdio.stdout.write(",");
+                  stdio.stdout.write(d.value);
+                  stdio.stdout.write(",");
+                  stdio.stdout.write(e.value);
+                  stdio.stdout.write(",");
+                  stdio.stdout.write(f.value);
                   await worker.done;
                   return;
                 }
                 """;
-        assertEquals("false,false,false", run(program));
+        assertEquals("false,false,false,false,false,false", run(program));
     }
 
     @Test
