@@ -161,3 +161,58 @@ selected declaration and validates the permutation before lowering.
 JDK 25/Maven compiler or GraalVM Native Image execution has been observed at
 the time of this addition. No Java/LLVM parity or production readiness claim
 is justified by this staging change alone.
+
+## Checked source-order closed scalar permutation milestone (2026-10-31)
+
+Java draft PR #1335 now contains a further **unverified compiler/runtime**
+extension for out-of-order named arguments. It does NOT admit arbitrary
+effectful expressions: only full-arity direct local function/routine calls
+with previously checked primitive Copy formals, whose original source items
+are primitive literals or **closed direct zero-argument function calls**, are
+eligible. A nested zero-argument function may have observable effects, but
+does not transfer a loan or move-only argument into its enclosing invocation.
+Locally shadowed/dynamic nested callbacks are separately forbidden by
+TypeChecker, OwnershipChecker and runtime. The existing restrictions on
+`@Default`, `T?`, Option/None, borrowed/mutable parameters, suspension,
+generics, constructors, actor calls, spread and rest remain in force.
+
+Implementation gate:
+
+1. Resolve the exact outer callable with the existing lexical name+arity
+   selection; reject ambiguous and shadowed names and unsupported signature
+   effects. Build the immutable checked lexical-source-to-formal plan.
+2. Compile-time checking may use a **formal-order CallExpr view** because
+   all permuted payloads are primitive Copy scalars and nonliteral expressions
+   are closed zero-argument calls. This is NOT an executable argument order;
+   other expressions, captured callbacks, borrowed and move-only values
+   remain rejected without a source-order ownership/effects proof.
+3. At runtime, validate the same signature and plan **before any guest
+   effects**, check class/actor lexical import rules, then evaluate original
+   `StagedCallExpr.arguments` from left to right exactly once. Write each
+   value directly to its already selected formal slot using the plan's
+   inverse scalar mapping. Invoke the ordinary declared-arity function
+   trampoline with these evaluated scalar values. If an earlier expression
+   fails, later source expressions do not run.
+4. A single formal-argument ArrayList is used rather than two source/formal
+   temporary buffers. This is NOT an allocation-free Java call or a verified
+   near-zero-GC performance guarantee; allocation profiling remains needed.
+
+Example guest semantic witness:
+
+```oreslang
+pub fnc first(): int { stdio.stdout.write("A"); return 4; }
+pub fnc second(): int { stdio.stdout.write("B"); return 3; }
+pub fnc combine(int left, int right): int { return left * 10 + right; }
+pub routine main(): void {
+    stdio.stdout.write(combine(right: second(), left: first()));
+    return;
+}
+```
+
+Expected observable output: `BA43` (lexical effects B, A; formal-ABI
+result 43). A three-argument case expects `BCA423`. Wrong primitive
+return types, local shadowed callbacks and argument-bearing nested calls
+must fail before runtime. Both the pure-plan and guest JUnit cases have
+been authored; **no exact-tree JDK 25/JUnit or native-image run has
+executed successfully**. Do not treat this stage as full effectful named
+arguments or cross-backend parity, and keep the PR draft.
