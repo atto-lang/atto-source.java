@@ -789,6 +789,83 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void unchangedRootProviderBytesMatchAdmittedSourceSnapshot() throws Exception {
+        Path project = temp.resolve("stable-root-source-snapshot");
+        billing(project);
+        Path entry = project.resolve("src/billing/charge.ores");
+        PackageNamespaceWorkspace.Workspace snapshot =
+                PackageNamespaceWorkspace.discover(entry);
+        Map<String, String> admitted = new java.util.LinkedHashMap<>();
+        for (Path file : snapshot.files()) {
+            admitted.put(file.toRealPath().toString().replace('\\', '/'),
+                    Files.readString(file));
+        }
+        PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted);
+    }
+
+    @Test
+    void rootProviderMutationAfterDiscoveryIsRejected() throws Exception {
+        Path project = temp.resolve("root-source-drift");
+        billing(project);
+        Path entry = project.resolve("src/billing/charge.ores");
+        PackageNamespaceWorkspace.Workspace snapshot =
+                PackageNamespaceWorkspace.discover(entry);
+        Map<String, String> admitted = new java.util.LinkedHashMap<>();
+        for (Path file : snapshot.files()) {
+            admitted.put(file.toRealPath().toString().replace('\\', '/'),
+                    Files.readString(file));
+        }
+        Path changed = project.resolve("src/billing/refund.ores");
+        Files.writeString(changed, "namespace billing; pub fnc refund(): int { return 999; }");
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted));
+        assertTrue(denied.getMessage().contains("namespace provider bytes changed during admission"));
+    }
+
+    @Test
+    void dependencyProviderMutationAfterDiscoveryIsRejected() throws Exception {
+        Path provider = temp.resolve("dependency-source-drift");
+        Path dependencyManifest = billing(provider);
+        List<Path> members = List.of(
+                provider.resolve("src/billing/charge.ores"),
+                provider.resolve("src/billing/refund.ores"),
+                provider.resolve("src/billing/balance.ores"),
+                provider.resolve("src/billing/invoice.ores"));
+        Path client = temp.resolve("client-source-drift");
+        Path main = source(client, "src/main.ores", "app", """
+                import namespace billing as payments from "checkout";
+                pub fnc main(): void { stdio.println(payments.refund()); return; }
+                """);
+        Files.writeString(client.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                [namespace_dependencies.checkout]
+                manifest = "../dependency-source-drift/.ores.pkg.toml"
+                package = "checkout"
+                manifest_sha256 = "%s"
+                sources_sha256 = "%s"
+                """.formatted(
+                PackageNamespaceWorkspace.sha256(Files.readAllBytes(dependencyManifest)),
+                PackageNamespaceWorkspace.sourceDigest(dependencyManifest, members)));
+        PackageNamespaceWorkspace.Workspace snapshot =
+                PackageNamespaceWorkspace.discover(main);
+        Map<String, String> admitted = new java.util.LinkedHashMap<>();
+        for (Path file : snapshot.files()) {
+            admitted.put(file.toRealPath().toString().replace('\\', '/'),
+                    Files.readString(file));
+        }
+        PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted);
+        Path changed = provider.resolve("src/billing/refund.ores");
+        Files.writeString(changed, "namespace billing; pub fnc refund(): int { return 888; }");
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted));
+        assertTrue(denied.getMessage().contains("namespace provider bytes changed during admission"));
+    }
+
+    @Test
     void namespaceIndexUsesAdmittedRootManifestNotLaterOwnerEdit() throws Exception {
         Path project = temp.resolve("immutable-root-index");
         Path main = source(project, "src/main.ores", "app",
