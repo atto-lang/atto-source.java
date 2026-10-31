@@ -43,6 +43,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private long nextEpoch;
     private boolean closed;
     private boolean publishing;
+    // A terminal Future CAS is not a physical-retirement receipt: synchronous
+    // runtime notification callbacks may still run after a pending waiter has
+    // been dequeued by cancellation or shutdown. Count them until the Future
+    // reports that its terminal notification drain has completed.
+    private int terminalNotificationsInFlight;
     private final Runnable retirementWakeup;
     private boolean retirementWakeupDelivered;
 
@@ -72,7 +77,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
         return closed && writer == null && readers.isEmpty()
                 && pending.isEmpty() && completions.isEmpty() && !publishing
                 && reserved.isEmpty() && reservedExecutions.isEmpty()
-                && reservedHandles.isEmpty();
+                && reservedHandles.isEmpty()
+                && terminalNotificationsInFlight == 0;
     }
 
     private void maybeWakeRetirement() {
@@ -288,6 +294,18 @@ public final class ActorStateRwLoans implements AutoCloseable {
         }
     }
 
+    private void trackNotificationDrain(OresFuture<?> future) {
+        future.whenNotificationsDrainedRuntime(() -> {
+            synchronized (monitor) {
+                if (terminalNotificationsInFlight <= 0) {
+                    throw new IllegalStateException("state RW terminal notification ledger corrupted");
+                }
+                terminalNotificationsInFlight--;
+            }
+            maybeWakeRetirement();
+        });
+    }
+
     private final class Pending {
         final Authority authority;
         final Access access;
@@ -302,10 +320,17 @@ public final class ActorStateRwLoans implements AutoCloseable {
                     removed = pending.remove(this);
                     if (removed) {
                         unreserveLocked(authority);
+                        // The winning cancellation CAS precedes this hook, but
+                        // its host observers run AFTER the hook returns.
+                        // Account for that window before close() can retire.
+                        terminalNotificationsInFlight++;
                         promoteLocked();
                     }
                 }
-                if (removed) publish();
+                if (removed) {
+                    trackNotificationDrain(future);
+                    publish();
+                }
             });
         }
     }
@@ -394,13 +419,32 @@ public final class ActorStateRwLoans implements AutoCloseable {
             abandoned = new ArrayDeque<>(pending);
             pending.clear();
             for (Pending waiter : abandoned) unreserveLocked(waiter.authority);
+            // A blocked terminal callback must not let the last physical loan
+            // retire its actor arena before all abandoned Futures drain.
+            terminalNotificationsInFlight += abandoned.size();
         }
+
+        Throwable firstFailure = null;
         for (Pending waiter : abandoned) {
-            waiter.future.failFromRuntime(new IllegalStateException(
-                    "actor state RW loans closed"));
+            try {
+                trackNotificationDrain(waiter.future);
+                waiter.future.failFromRuntime(new IllegalStateException(
+                        "actor state RW loans closed"));
+            } catch (Throwable failure) {
+                // Attempt to settle the other abandoned requests too. A
+                // failed/undrained Future retains its retirement fence.
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
         }
-        // Active loans remain physically held until handler cleanup closes them;
-        // logical close merely fences further state access.
+
+        // Active loans remain physically held until handler cleanup closes
+        // them; logical close merely fences further state access.
         maybeWakeRetirement();
+        if (firstFailure instanceof Error fatal) throw fatal;
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure != null) {
+            throw new IllegalStateException("state RW shutdown notification failed", firstFailure);
+        }
     }
 }
