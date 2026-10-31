@@ -28,6 +28,7 @@ on:
       - 'src/test/java/dev/oreslang/DefaultArgumentPolicyTest.java'
       - 'src/test/java/dev/oreslang/OptionalCallShapeBinderTest.java'
       - 'src/test/java/dev/oreslang/DirectNamedLiteralCallExecutionTest.java'
+      - 'src/test/java/dev/oreslang/NamedScalarTailCallRegressionTest.java'
       - '.github/workflows/default-parameter-compiler-conformance.yml'
   workflow_dispatch:
 
@@ -52,4 +53,4 @@ jobs:
       - name: Check actual compiler and source-order named-call tests on this PR head
         run: |
           java --version
-          mvn -B -ntp -DfailIfNoTests=true -Dtest=V3CallPreviewProofFlagTest,V3SourceContractFingerprintBudgetTest,V3ZeroArgumentCallRegressionTest,V3ScalarDefaultProgramNormalizerTest,V3DefaultBudgetAdmissionTest,V3ScalarDefaultLiteralLoweringTest,V3DefaultArgValsAdmissionTest,DefaultAnnotationAdmissionTest,DefaultArgumentPolicyTest,OptionalCallShapeBinderTest,DirectNamedLiteralCallExecutionTest test
+          mvn -B -ntp -DfailIfNoTests=true -Dtest=V3CallPreviewProofFlagTest,V3SourceContractFingerprintBudgetTest,V3ZeroArgumentCallRegressionTest,V3ScalarDefaultProgramNormalizerTest,V3DefaultBudgetAdmissionTest,V3ScalarDefaultLiteralLoweringTest,V3DefaultArgValsAdmissionTest,DefaultAnnotationAdmissionTest,DefaultArgumentPolicyTest,OptionalCallShapeBinderTest,DirectNamedLiteralCallExecutionTest,NamedScalarTailCallRegressionTest test
