@@ -6432,21 +6432,12 @@ public final class OresEvalRootNode extends RootNode {
                         "cannot rt take immutable/final class field '"
                                 + object.klass.name() + "." + name + "'");
             }
-            synchronized (object.fields) {
-                Object value = object.fields.get(name);
-                if (value == UNINITIALIZED_FIELD) {
-                    throw new IllegalArgumentException(
-                            "class field '" + object.klass.name() + "." + name
-                                    + "' is read before initialization");
-                }
-                if (value == MOVED_FIELD) {
-                    throw new IllegalStateException(
-                            "class field '" + object.klass.name() + "." + name
-                                    + "' was already moved");
-                }
-                object.fields.put(name, MOVED_FIELD);
-                return value;
-            }
+            return OresFieldSnapshots.take(
+                    object.fields,
+                    object.klass.name(),
+                    name,
+                    UNINITIALIZED_FIELD,
+                    MOVED_FIELD);
         }
 
         private Object applyRuntimeOwnership(String operation, Object value) {

@@ -18,4 +18,32 @@ final class OresFieldSnapshots {
             return new LinkedHashMap<>(fields);
         }
     }
+
+    // The actual affine class-field storage transition. Source-level
+    // permission, visibility and LET checks happen before this call.
+    static Object take(
+            Map<String, Object> fields,
+            String className,
+            String fieldName,
+            Object uninitialized,
+            Object moved) {
+        synchronized (fields) {
+            if (!fields.containsKey(fieldName)) {
+                throw new IllegalArgumentException("unknown class field '" + fieldName + "'");
+            }
+            Object current = fields.get(fieldName);
+            if (current == uninitialized) {
+                throw new IllegalArgumentException(
+                        "class field '" + className + "." + fieldName
+                                + "' is read before initialization");
+            }
+            if (current == moved) {
+                throw new IllegalStateException(
+                        "class field '" + className + "." + fieldName
+                                + "' was already moved");
+            }
+            fields.put(fieldName, moved);
+            return current;
+        }
+    }
 }

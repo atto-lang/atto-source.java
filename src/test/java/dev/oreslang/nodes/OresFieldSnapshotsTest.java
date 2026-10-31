@@ -74,6 +74,94 @@ final class OresFieldSnapshotsTest {
     }
 
     @Test
+    void classFieldMoveConsumesExactlyOneOwnerAndRejectsReplay() {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        Object uninitialized = new Object();
+        Object moved = new Object();
+        Object owner = new Object();
+        fields.put("producer", owner);
+        assertSame(owner, OresFieldSnapshots.take(
+                fields, "TaskCell", "producer", uninitialized, moved));
+        assertSame(moved, fields.get("producer"));
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class,
+                () -> OresFieldSnapshots.take(
+                        fields, "TaskCell", "producer", uninitialized, moved));
+        assertTrue(failure.getMessage().contains("was already moved"));
+    }
+
+    @Test
+    void competingThreadsCannotBothExtractOneClassHeldTask() throws Exception {
+        Object uninitialized = new Object();
+        Object moved = new Object();
+        int contenders = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(contenders);
+        try {
+            for (int round = 0; round < 100; round++) {
+                Map<String, Object> fields = new LinkedHashMap<>();
+                Object owner = new Object();
+                fields.put("producer", owner);
+                CountDownLatch start = new CountDownLatch(1);
+                List<Future<Boolean>> attempts = new ArrayList<>();
+                for (int i = 0; i < contenders; i++) {
+                    attempts.add(pool.submit(() -> {
+                        start.await();
+                        try {
+                            assertSame(owner, OresFieldSnapshots.take(
+                                    fields, "TaskCell", "producer", uninitialized, moved));
+                            return true;
+                        } catch (IllegalStateException alreadyMoved) {
+                            assertTrue(alreadyMoved.getMessage().contains("already moved"));
+                            return false;
+                        }
+                    }));
+                }
+                start.countDown();
+                int winners = 0;
+                for (Future<Boolean> attempt : attempts) {
+                    if (attempt.get(30, TimeUnit.SECONDS)) winners++;
+                }
+                assertEquals(1, winners, "exactly one owner must win the move race");
+                assertSame(moved, fields.get("producer"));
+            }
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void movedClassFieldMayReceiveFreshOwnerButCannotReplayOldOwner() {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        Object uninitialized = new Object();
+        Object moved = new Object();
+        Object first = new Object();
+        Object second = new Object();
+        fields.put("producer", first);
+        assertSame(first, OresFieldSnapshots.take(
+                fields, "TaskCell", "producer", uninitialized, moved));
+        synchronized (fields) {
+            fields.put("producer", second);
+        }
+        assertSame(second, OresFieldSnapshots.take(
+                fields, "TaskCell", "producer", uninitialized, moved));
+        assertSame(moved, fields.get("producer"));
+    }
+
+    @Test
+    void missingAndUninitializedClassFieldsCannotBeMoved() {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        Object uninitialized = new Object();
+        Object moved = new Object();
+        assertThrows(IllegalArgumentException.class,
+                () -> OresFieldSnapshots.take(fields, "TaskCell", "producer", uninitialized, moved));
+        fields.put("producer", uninitialized);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresFieldSnapshots.take(fields, "TaskCell", "producer", uninitialized, moved));
+        assertSame(uninitialized, fields.get("producer"));
+    }
+
+    @Test
     void snapshotDoesNotHoldMapMonitorDuringFurtherGuestTraversal() {
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("producer", new Object());

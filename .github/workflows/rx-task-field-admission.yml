@@ -41,7 +41,7 @@ jobs:
           java-version: '25'
           distribution: graalvm
           cache: maven
-      - name: Execute 8 guest tests and 3 host field-snapshot integrity tests
+      - name: Execute 8 guest tests and 7 atomic field/snapshot integrity tests
         shell: bash
         run: |
           set -euo pipefail
@@ -51,5 +51,5 @@ jobs:
           test -s "$guest_report"
           test -s "$host_report"
           grep -Eq '^Tests run: 8, Failures: 0, Errors: 0, Skipped: 0' "$guest_report"
-          grep -Eq '^Tests run: 3, Failures: 0, Errors: 0, Skipped: 0' "$host_report"
-          echo 'RX_TASK_JAVA_GUEST_8_8_AND_HOST_SNAPSHOTS_3_3_PASS'
+          grep -Eq '^Tests run: 7, Failures: 0, Errors: 0, Skipped: 0' "$host_report"
+          echo 'RX_TASK_JAVA_GUEST_8_8_AND_HOST_FIELD_ATOMICITY_7_7_PASS'
