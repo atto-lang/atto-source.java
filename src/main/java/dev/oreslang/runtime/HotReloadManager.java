@@ -283,16 +283,18 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
-        if (closed) {
-            return;
+    public void close() {
+        final java.util.List<Generation> toClose;
+        synchronized (this) {
+            if (closed) return;
+            // Seal admission and detach routes atomically. Closing contexts can
+            // invoke host callbacks and must not execute under this monitor.
+            closed = true;
+            toClose = java.util.List.copyOf(generations.values());
+            generations.clear();
+            activeByCodeUnit.clear();
+            active.set(null);
         }
-        closed = true;
-        // Snapshot first: each Generation.close() re-enters onGenerationClosed.
-        java.util.List<Generation> toClose = java.util.List.copyOf(generations.values());
-        generations.clear();
-        activeByCodeUnit.clear();
-        active.set(null);
         Throwable failure = null;
         for (Generation generation : toClose) {
             try {
