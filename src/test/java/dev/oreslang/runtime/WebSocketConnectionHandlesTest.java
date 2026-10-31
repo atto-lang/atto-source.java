@@ -144,9 +144,10 @@ final class WebSocketConnectionHandlesTest {
                 firstActor.stop();
                 firstActor.done().get(5, TimeUnit.SECONDS);
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-                while (!firstConnection.isRetired()
+                while (!firstConnection.isFullyRetired()
                         && System.nanoTime() < deadline) Thread.sleep(10);
-                assertTrue(firstConnection.isRetired());
+                assertTrue(firstConnection.isFullyRetired(),
+                        "slot reuse requires close, permit cleanup, and native loan exit");
                 assertEquals(-1, first.getInputStream().read());
                 var thirdAccept = listener.acceptAsync();
                 try (var third = new Socket("127.0.0.1", port)) {
