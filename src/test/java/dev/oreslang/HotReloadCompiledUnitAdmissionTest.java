@@ -66,6 +66,28 @@ final class HotReloadCompiledUnitAdmissionTest {
     }
 
     @Test
+    void forgedEmptyDependencySetCannotHideSourceImports() {
+        // The attacker controls both the public CompiledUnit AST and the
+        // dependencies set. Only independently parsed executable source
+        // determines whether an import closure needs authentication.
+        String withImport =
+                "import module dependency from \"dependency.ores\";\\n" + GOOD;
+        var parsed = dev.oreslang.parser.Parser.parse(withImport);
+        assertFalse(parsed.imports().isEmpty(), "fixture must contain a real import declaration");
+        var base = fixture();
+        var forged = counterfeit(base, withImport, digest(withImport), Set.of());
+        try (var loader = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var serving = loader.loadAndStart("healthy.ores", GOOD);
+            assertThrows(SecurityException.class, () -> loader.load(forged));
+            assertSame(serving, loader.active("healthy.ores"));
+            assertFalse(serving.closed());
+            assertNull(loader.active("app.ores"));
+            assertEquals(1, loader.liveGenerations());
+        }
+    }
+
+    @Test
     void rejectsUnverifiedDependencyClosures() {
         var base = fixture();
         var forged = counterfeit(base, GOOD, digest(GOOD), Set.of("dependency.ores"));
