@@ -2597,8 +2597,11 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "physical upgrade successor has not initialized successfully");
             ActorCell<?> admitted = actors.get(successor.id);
+            // The stop flag and termination cause are thread-safe lifecycle
+            // witnesses. finalized is guarded by lifecycleLock and must not
+            // be sampled here without its monitor.
             if (admitted == null || admitted.ref != successor
-                    || admitted.stopped.get() || admitted.finalized
+                    || admitted.stopped.get()
                     || successor.terminationCause.get() != null)
                 throw new IllegalStateException(
                         "physical upgrade successor is no longer serving");
