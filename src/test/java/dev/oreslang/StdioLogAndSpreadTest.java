@@ -130,6 +130,7 @@ final class StdioLogAndSpreadTest {
             // its blocked worker so even a failing test does not hang CI.
             release.countDown();
             if (closeAttempt != null) closeAttempt.get(6, java.util.concurrent.TimeUnit.SECONDS);
+            else context.close();
         }
     }
 
