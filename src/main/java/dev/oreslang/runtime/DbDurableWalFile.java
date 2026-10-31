@@ -100,6 +100,15 @@ final class DbDurableWalFile implements AutoCloseable {
                 throw new IOException("WAL already has an owner", alreadyOwned);
             }
             if (ownerLock == null) throw new IOException("WAL owner lock unavailable");
+            // FileChannel.force(true) on the WAL does not persist a newly
+            // created directory entry. Require directory metadata force
+            // BEFORE returning a writable owner; unsupported directory
+            // channels fail closed instead of permitting a false ACK.
+            // The caller must keep this directory private and non-hostile.
+            try (FileChannel parent = FileChannel.open(root,
+                    Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+                parent.force(true);
+            }
             return new DbDurableWalFile(opened, ownerLock, generation);
         } catch (IOException | RuntimeException error) {
             opened.close();
