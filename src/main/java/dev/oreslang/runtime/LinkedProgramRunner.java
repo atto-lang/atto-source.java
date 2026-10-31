@@ -59,8 +59,15 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             IsolatePolicy policy,
             PermissionCheckMode permissionCheckMode) throws IOException {
-        Path entry = entryFile.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
+        // Capture workspace ownership from the raw submitted path before
+        // lexical normalization can erase a symlink/.. component.
+        Path submittedEntry = entryFile.toAbsolutePath();
+        if (!Files.isRegularFile(submittedEntry)) {
+            throw new IllegalArgumentException("not a file: " + submittedEntry);
+        }
+        PackageNamespaceWorkspace.Workspace workspace =
+                PackageNamespaceWorkspace.discover(submittedEntry);
+        Path entry = submittedEntry.normalize();
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         projectConfig.requireStdJavaBackend();
@@ -69,7 +76,7 @@ public final class LinkedProgramRunner {
         SourceAdmissionBudget budget = new SourceAdmissionBudget();
         collectImportClosure(entry, units, projectConfig, importResolutions, budget, 0);
         PackageNamespaceIndex namespaceIndex = admitNamespaceWorkspace(
-                entry, units, projectConfig, importResolutions, budget);
+                workspace, units, projectConfig, importResolutions, budget);
         ensureJavaEntryContainsOres(entry, units);
 
         if (policy != null) {
@@ -178,8 +185,15 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
-        Path entry = entryFile.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
+        // Capture workspace ownership from the raw submitted path before
+        // lexical normalization can erase a symlink/.. component.
+        Path submittedEntry = entryFile.toAbsolutePath();
+        if (!Files.isRegularFile(submittedEntry)) {
+            throw new IllegalArgumentException("not a file: " + submittedEntry);
+        }
+        PackageNamespaceWorkspace.Workspace workspace =
+                PackageNamespaceWorkspace.discover(submittedEntry);
+        Path entry = submittedEntry.normalize();
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         projectConfig.requireStdJavaBackend();
@@ -188,7 +202,7 @@ public final class LinkedProgramRunner {
         SourceAdmissionBudget budget = new SourceAdmissionBudget();
         collectImportClosure(entry, units, projectConfig, importResolutions, budget, 0);
         PackageNamespaceIndex namespaceIndex = admitNamespaceWorkspace(
-                entry, units, projectConfig, importResolutions, budget);
+                workspace, units, projectConfig, importResolutions, budget);
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -408,12 +422,11 @@ public final class LinkedProgramRunner {
     }
 
     private static PackageNamespaceIndex admitNamespaceWorkspace(
-            Path entry,
+            PackageNamespaceWorkspace.Workspace workspace,
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
             Map<String, Map<String, String>> importResolutions,
             SourceAdmissionBudget budget) throws IOException {
-        PackageNamespaceWorkspace.Workspace workspace = PackageNamespaceWorkspace.discover(entry);
         if (workspace == null) return null;
         for (Path file : workspace.files()) {
             collectImportClosure(file, units, projectConfig, importResolutions, budget, 0);
