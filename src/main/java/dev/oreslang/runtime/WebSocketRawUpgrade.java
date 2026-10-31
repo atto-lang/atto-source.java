@@ -48,16 +48,16 @@ final class WebSocketRawUpgrade {
             String expectedHost,
             Set<String> allowedOrigins,
             Limits limits) throws IOException {
-        if (ActorRuntime.inActorExecution()) {
-            throw new SecurityException("WebSocket raw socket upgrade is host I/O only");
-        }
         Objects.requireNonNull(accepted, "accepted socket");
-        Objects.requireNonNull(limits, "handshake limits");
-        if (expectedHost == null || expectedHost.isBlank()
-                || allowedOrigins == null || allowedOrigins.isEmpty()) {
-            throw new IllegalArgumentException("explicit Host and Origin policy required");
-        }
         try {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket raw socket upgrade is host I/O only");
+            }
+            Objects.requireNonNull(limits, "handshake limits");
+            if (expectedHost == null || expectedHost.isBlank()
+                    || allowedOrigins == null || allowedOrigins.isEmpty()) {
+                throw new IllegalArgumentException("explicit Host and Origin policy required");
+            }
             if (!accepted.isConnected() || accepted.isClosed()
                     || accepted.getInetAddress() == null
                     || !accepted.getInetAddress().isLoopbackAddress()) {
