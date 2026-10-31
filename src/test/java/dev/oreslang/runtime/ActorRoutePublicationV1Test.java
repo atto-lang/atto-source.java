@@ -1105,6 +1105,7 @@ final class ActorRoutePublicationV1Test {
             candidate.ready().get(10, TimeUnit.SECONDS);
             try (var authority = new ActorRoutePublicationV1<>(
                     gate, mailbox, state(7), old)) {
+                boolean committed;
                 try (var stage = authority.stage(image('b'))) {
                     assertTrue(stage.quiescent());
                     var start = new CountDownLatch(1);
@@ -1124,10 +1125,9 @@ final class ActorRoutePublicationV1Test {
                         return true;
                     });
                     start.countDown();
-                    boolean committed = publish.get(10, TimeUnit.SECONDS);
+                    committed = publish.get(10, TimeUnit.SECONDS);
                     assertTrue(stop.get(10, TimeUnit.SECONDS));
                     if (committed) {
-                        assertEquals(2L, 2L);
                         candidate.done().get(10, TimeUnit.SECONDS);
                         assertThrows(IllegalStateException.class, authority::current,
                                 "STOP after route CAS must quarantine V2");
@@ -1142,7 +1142,7 @@ final class ActorRoutePublicationV1Test {
                 }
                 // A losing publication must have rolled back both ingress
                 // freezes and left the old physical actor live.
-                if (authority.current().routeEpoch() == 1L) {
+                if (!committed) {
                     old.send(List.of(1));
                     old.drain().get(10, TimeUnit.SECONDS);
                 }
