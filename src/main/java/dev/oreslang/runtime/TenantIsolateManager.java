@@ -186,18 +186,16 @@ public final class TenantIsolateManager implements AutoCloseable {
             if (tenant.state == TenantState.ACTIVE) tenant.state = TenantState.RETIRING;
         }
         synchronized (tenant) {
-            if (tenant.physicallyClosed) {
-                throw new SecurityException("INVALID_TENANT_HANDLE");
-            }
-            // OresContext.close() owns the physical actor/Task/native-I/O
-            // retirement barrier. On failure, retain context + actor heaps
-            // strongly reachable in this registry for quarantine/retry.
-            try {
-                tenant.context.close();
-                tenant.physicallyClosed = true;
-            } catch (RuntimeException | Error failure) {
-                tenant.state = TenantState.QUARANTINED;
-                throw failure;
+            if (!tenant.physicallyClosed) {
+                // Do not re-close an already retired context if two trusted
+                // callers raced on this same tenant handle.
+                try {
+                    tenant.context.close();
+                    tenant.physicallyClosed = true;
+                } catch (RuntimeException | Error failure) {
+                    tenant.state = TenantState.QUARANTINED;
+                    throw failure;
+                }
             }
         }
         synchronized (this) {
