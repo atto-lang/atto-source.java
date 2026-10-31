@@ -270,8 +270,13 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 future = nativeIo.submit("websocket.read", () -> {
                     workStarted.set(true);
                     try (var loan = nativeIo.borrow(socket)) {
+                        // This timeout is the one-frame *absolute* budget,
+                        // not a re-armed per-read idle timeout. A slow-drip
+                        // masked payload cannot monopolize an I/O worker.
                         var frame = WebSocketFrameCodec.readClientFrame(
-                                socket.getInputStream(), maxFrameBytes);
+                                new WebSocketSocketDeadlineInput(
+                                        socket, limits.handshakeTimeoutMillis()),
+                                maxFrameBytes);
                         var action = protocol.accept(frame);
                         if (action.kind() == WebSocketSessionState.ActionKind.SEND_PONG
                                 || action.kind() == WebSocketSessionState.ActionKind.SEND_CLOSE) {
