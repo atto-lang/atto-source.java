@@ -6,7 +6,7 @@
 
 - `stdio.stdout.log_async(values...)`, `stdio.stdout.logList_async(values)`, `stdio.stdout.println_async(value)`, and `stdio.println_async(values...)` format a complete immutable UTF-8 record synchronously on the calling guest task and enqueue it for a dedicated context worker.
 - Each returns `Future<void>`. Awaiting confirms the host `PrintWriter` accepted/flushed the data without reporting an error; it does **not** prove ingestion by an external collector, fsync durability, or independent line ordering against other contexts.
-- `await stdio.flush_async_logs()` returns a barrier for all records accepted before barrier admission. Concurrently accepted later records are outside its scope. The barrier does not consume or cancel queued records when its Future is dropped.
+- `await stdio.flush_async_logs()` returns a barrier for all records accepted before barrier admission. Concurrently accepted later records are outside its scope. The barrier does not consume or cancel queued records when its Future is dropped. After `close()` fences admission, **both new record submissions and new flush barriers are rejected**; existing accepted records and existing barriers may still finish while a stalled drain unwinds. A failed drain retains the context quarantine until an authorized successful close retry.
 - All APIs require the existing `STDOUT` capability. Source ownership checking treats values as ephemeral read-only formatting borrows; only rendered `String` data enters the worker.
 - Existing synchronous `stdio` APIs remain available for compatibility and can block guest actor carriers. The synchronous `stdio.stdout.log` path now sends one entire line to the PrintWriter per call, sharing the sink monitor with async writes, but cross-producer total order is not guaranteed.
 
@@ -27,7 +27,7 @@ This cannot guarantee bounded shutdown when **unrelated** services or the extern
 | Gate | Required proof | Current state |
 |---|---|---|
 | CI admission | Real runner and nonempty job steps on head SHA/attempt | BLOCKED, zero-step |
-| Focused host tests | `AsyncStdioLogsTest` queued writes, blocked writer, UTF-8 sizes, 8 MiB in-flight accounting, overflow, per-context sink error isolation, timeout/drain retry | AUTHORED, NOT EXECUTED |
+| Focused host tests | `AsyncStdioLogsTest` queued writes, blocked writer, UTF-8 sizes, 8 MiB in-flight accounting, overflow, per-context sink error isolation, closed-record/flush rejection, timeout/drain retry | AUTHORED, NOT EXECUTED |
 | Guest tests | `StdioLogAndSpreadTest` detached log, await barrier, spread/list, permission-denied and direct-only | AUTHORED, NOT EXECUTED |
 | Whole-context blocked writer | Polyglot `Context.close()` with actual blocked host `OutputStream`, timeout/exception chain, and no reflush deadlock | AUTHORED, NOT EXECUTED |
 | Retirement | Actor generation/cancellation, failed native-I/O physical join, quarantine release and retry | NOT EXECUTED |
