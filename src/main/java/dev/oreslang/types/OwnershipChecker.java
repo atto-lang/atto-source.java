@@ -1293,6 +1293,7 @@ public final class OwnershipChecker {
                     if (klass != null) {
                         ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                         if (target != null) {
+                            if (consuming) rejectConsumingCopyProjection(expr, scope);
                             Ast.TypeRef fieldType = substituteType(
                                     ownershipFieldType(target.field()),
                                     genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
@@ -4810,7 +4811,28 @@ public final class OwnershipChecker {
         } else if (expr instanceof Ast.IndexExpr indexed) {
             receiver = indexed.receiver();
             Object key = computedIndexConstant(indexed.index(), scope);
-            if (!(key instanceof String name)) return copyProjectionPolicy(receiver, scope);
+            if (!(key instanceof String name)) {
+                CopyPolicyProjection parent = copyProjectionPolicy(receiver, scope);
+                if (parent != null && parent.noCopy()) return parent;
+                Ast.TypeRef receiverClassType = receiverType(receiver, scope);
+                if (receiverClassType != null) {
+                    if (receiverClassType.isBorrow()) {
+                        receiverClassType = receiverClassType.borrowedTarget();
+                    }
+                    Ast.ClassDecl dynamicClass = findClass(receiverClassType.name());
+                    if (dynamicClass != null) {
+                        for (ResolvedField field : effectiveFieldTargets(
+                                dynamicClass, receiverClassType, new LinkedHashSet<>())) {
+                            if (hasCopyPolicy(field.field().annotations(), "NoCopy")) {
+                                return new CopyPolicyProjection(
+                                        field.owner().name() + ".[dynamic:" + field.field().name() + "]",
+                                        true, false);
+                            }
+                        }
+                    }
+                }
+                return parent;
+            }
             fieldName = name;
         } else return null;
 
