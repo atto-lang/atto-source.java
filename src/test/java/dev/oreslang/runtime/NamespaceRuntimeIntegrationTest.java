@@ -118,6 +118,31 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void symlinkBeforeDotDotCannotBeNormalizedAwayDuringEntryAdmission() throws Exception {
+        Path target = temp.resolve("other/target");
+        billing(target);
+        Path virtualParent = temp.resolve("other/inside");
+        Files.createDirectories(virtualParent);
+        Path alias = temp.resolve("jump");
+        try {
+            Files.createSymbolicLink(alias, virtualParent);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit symlink test fixture");
+        }
+        // Actual filesystem traversal: jump -> other/inside, then ../target.
+        // Lexical normalization wrongly erases "jump/.." to temp/target.
+        Path disguised = alias.resolve("../target/src/billing/charge.ores");
+        assertTrue(Files.isRegularFile(disguised), "symlink-dotdot fixture must be readable");
+        assertTrue(PackageNamespaceWorkspace.discover(target.resolve(
+                "src/billing/charge.ores")) != null);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.discover(disguised));
+        assertTrue(denied.getMessage().contains(
+                "symlinked namespace entry source ancestry is forbidden"), denied.getMessage());
+    }
+
+    @Test
     void samePackageSingleNamespaceImportDispatchesAcrossFourFiles() throws Exception {
         Path root = temp.resolve("checkout");
         billing(root);
