@@ -389,6 +389,89 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    void queuedAdmissionWithoutAnyDispatchBlocksShutdownAndRetainsCredits() {
+        try (var gate = new ActorUpgradeEpochGate(57, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            var queued = authority.admit(new byte[]{7, 8});
+            var before = mailbox.snapshot();
+            assertEquals(1, before.queuedMessages());
+            assertEquals(0, before.outstandingMessages());
+            assertThrows(IllegalStateException.class, authority::close,
+                    "an admitted FIFO envelope is not disposable by ordinary shutdown");
+            var unchanged = mailbox.snapshot();
+            assertFalse(unchanged.closed());
+            assertEquals(before.routeEpoch(), unchanged.routeEpoch());
+            assertEquals(before.nextMessageSequence(), unchanged.nextMessageSequence());
+            assertEquals(before.retainedMessages(), unchanged.retainedMessages());
+            assertEquals(before.retainedBytes(), unchanged.retainedBytes());
+            assertEquals(image('a'), authority.current().image());
+            assertTrue(authority.dispatchNext((route, envelope) -> {
+                assertEquals("old-physical", route);
+                assertEquals(queued.messageSequence(), envelope.messageSequence());
+                assertArrayEquals(new byte[]{7, 8}, envelope.payload());
+            }));
+            authority.complete(queued.messageSequence());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+            authority.close();
+            assertTrue(mailbox.snapshot().closed());
+        }
+    }
+
+    @Test
+    void rejectedShutdownPreservesMultipleQueuedMessagesAndFifoDrainOrder() {
+        try (var gate = new ActorUpgradeEpochGate(58, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            authority.admit(new byte[]{1});
+            authority.admit(new byte[]{2});
+            assertThrows(IllegalStateException.class, authority::close);
+            assertEquals(2, mailbox.snapshot().queuedMessages());
+            var delivered = new ArrayList<Long>();
+            for (long expected = 1; expected <= 2; expected++) {
+                long sequence = expected;
+                assertTrue(authority.dispatchNext((route, envelope) -> {
+                    assertEquals("old-physical", route);
+                    assertEquals(sequence, envelope.messageSequence());
+                    delivered.add(envelope.messageSequence());
+                }));
+                authority.complete(expected);
+            }
+            assertEquals(List.of(1L, 2L), delivered);
+            assertEquals(2L, mailbox.snapshot().completionWatermark());
+            assertEquals(0, mailbox.snapshot().retainedBytes());
+            authority.close();
+            assertTrue(mailbox.snapshot().closed());
+        }
+    }
+
+    @Test
+    void stagedUpgradeCannotDiscardMessagesAdmittedWhileOldDispatchFrozen() {
+        try (var gate = new ActorUpgradeEpochGate(59, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            var stage = authority.stage(image('b'));
+            var accepted = authority.admit(new byte[]{42});
+            assertEquals(1L, accepted.messageSequence());
+            assertEquals(1, mailbox.snapshot().queuedMessages());
+            assertThrows(IllegalStateException.class, authority::close);
+            assertTrue(mailbox.snapshot().dispatchFrozen());
+            assertFalse(mailbox.snapshot().closed());
+            assertEquals(1, mailbox.snapshot().retainedMessages());
+            stage.close(); // authorized rollback reopens V1 DATA
+            assertEquals(1L, authority.current().routeEpoch());
+            assertTrue(authority.dispatchNext((route, envelope) -> {
+                assertEquals("old-physical", route);
+                assertEquals(1L, envelope.messageSequence());
+                assertArrayEquals(new byte[]{42}, envelope.payload());
+            }));
+            authority.complete(accepted.messageSequence());
+            authority.close();
+            assertTrue(mailbox.snapshot().closed());
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
