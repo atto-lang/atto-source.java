@@ -48,12 +48,12 @@ final class ActorInitReservedAdmissionTest {
     private static String main(String spawn) {
         return ACTOR + """
                 pub async routine main(): void {
-                  val worker = await """ + spawn + """;
+                  val worker = await %s;
                   worker.send("go");
                   await worker.get_done();
                   return;
                 }
-                """;
+                """.formatted(spawn);
     }
 
     @Test
