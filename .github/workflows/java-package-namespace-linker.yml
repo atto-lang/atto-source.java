@@ -10,6 +10,8 @@ on:
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceLinker.java'
       - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - 'src/main/java/dev/oreslang/runtime/PinnedNamespaceProgramRunner.java'
+      - 'src/main/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlan.java'
+      - 'src/test/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlanSelfTest.java'
       - 'src/main/java/dev/oreslang/runtime/PinnedNamespacePackageInventory.java'
       - 'src/test/java/dev/oreslang/PinnedNamespacePackageInventoryTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
@@ -46,5 +48,15 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
+      - name: Source-free pinned namespace lifecycle checks (real JDK)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/namespace-init-classes"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/namespace-init-classes" \
+            src/main/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlan.java \
+            src/test/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlanSelfTest.java
+          java -cp "$RUNNER_TEMP/namespace-init-classes" \
+            dev.oreslang.runtime.PinnedNamespaceInitializationPlanSelfTest
       - name: Compile parser/linker and execute exact-head regression suite
         run: mvn -B -Dtest=PackageNamespaceLinkerTest,PinnedNamespaceRuntimeTest,PinnedNamespaceSharedCorpusTest,PinnedNamespacePackageInventoryTest,ImportSelectorSyntaxTest test
