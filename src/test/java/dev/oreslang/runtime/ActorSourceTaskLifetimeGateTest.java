@@ -370,4 +370,115 @@ final class ActorSourceTaskLifetimeGateTest {
     }
 
 
+    @Test
+    void privateActorWaitsForPhysicallyRunningScopedDescendantBeforeArenaRelease()
+            throws Exception {
+        CountDownLatch childStarted = new CountDownLatch(1);
+        CountDownLatch releaseChild = new CountDownLatch(1);
+        CountDownLatch parentWaitingForScope = new CountDownLatch(1);
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration ticket = scope.reserve();
+        AtomicReference<OresFuture<Void>> childFuture = new AtomicReference<>();
+
+        try (OresScheduler descendantScheduler = new OresScheduler(1);
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(2, 2, 8, 64))) {
+            OresFuture<Void> child = descendantScheduler.start(
+                    resume -> {
+                        ticket.beganExecution();
+                        childStarted.countDown();
+                        if (!releaseChild.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError(
+                                    "scoped descendant did not receive physical-release signal");
+                        }
+                        return OresScheduler.done(null);
+                    },
+                    ticket::quiesced);
+            ticket.attach(child);
+            childFuture.set(child);
+
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> memory =
+                    new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    actorContext -> {
+                        ActorRuntime.PrivateMemoryBlock block =
+                                actorContext.privateMemory()
+                                        .orElseThrow()
+                                        .allocatePrivateBytes(32);
+                        block.writeInt(0, 117);
+                        memory.set(block);
+
+                        return (message, context) -> {
+                            OresScheduler.Task<Void> parent =
+                                    new OresScheduler.Task<>() {
+                                        @Override
+                                        public OresScheduler.Step<Void> resume(
+                                                OresScheduler.Resume resume) {
+                                            return OresScheduler.done(null);
+                                        }
+
+                                        @Override
+                                        public void afterCarrierQuiescent(
+                                                Runnable retire) {
+                                            OresFuture<Void> drained =
+                                                    scope.cancelAndDrain();
+                                            parentWaitingForScope.countDown();
+                                            drained.whenCompleteRuntime(
+                                                    (ignored, failure) -> retire.run());
+                                        }
+                                    };
+                            context.runtime().startActorTask(parent);
+                        };
+                    });
+
+            try {
+                assertTrue(
+                        childStarted.await(5, TimeUnit.SECONDS),
+                        "scoped descendant never entered physical execution");
+
+                actor.send("launch");
+                assertTrue(
+                        parentWaitingForScope.await(5, TimeUnit.SECONDS),
+                        "parent SourceTask never entered descendant drain");
+
+                assertTrue(
+                        childFuture.get().isCancelled(),
+                        "scope cancellation should settle the child Future");
+                ActorRuntime.PrivateMemoryBlock block = memory.get();
+                assertNotNull(block);
+                assertFalse(block.closed());
+
+                actor.stop();
+
+                assertFalse(
+                        actor.done().isDone(),
+                        "terminal child Future must not authorize actor DONE");
+                assertFalse(
+                        actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                        "actor finalized while scoped descendant still owned a carrier");
+                assertFalse(
+                        block.closed(),
+                        "actor arena closed before descendant physical quiescence");
+                assertEquals(1, runtime.actorCount());
+
+                releaseChild.countDown();
+
+                assertTrue(
+                        actor.awaitTermination(5, TimeUnit.SECONDS),
+                        "actor did not finalize after descendant physical retirement");
+                assertTrue(block.closed());
+                assertTrue(actor.done().isDone());
+                assertEquals(0, runtime.actorCount());
+            } finally {
+                releaseChild.countDown();
+                actor.stop();
+            }
+        } finally {
+            releaseChild.countDown();
+        }
+    }
+
+
 }
