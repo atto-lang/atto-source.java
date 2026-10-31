@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.Set;
@@ -62,6 +63,8 @@ final class WebSocketRawUpgrade {
             // A socket SO_TIMEOUT alone is a per-read idle deadline: a peer
             // could send one byte just before each timeout and monopolize the
             // I/O worker for minutes. Enforce a single absolute head deadline.
+            long absoluteDeadline = WebSocketNioDuplex.deadlineAfterMillis(
+                    limits.handshakeTimeoutMillis());
             WebSocketSocketDeadlineInput boundedHead =
                     new WebSocketSocketDeadlineInput(
                             accepted, limits.handshakeTimeoutMillis());
@@ -80,10 +83,24 @@ final class WebSocketRawUpgrade {
                     + "Upgrade: websocket\r\n"
                     + "Connection: Upgrade\r\n"
                     + "Sec-WebSocket-Accept: " + acceptKey + "\r\n\r\n";
-            accepted.getOutputStream().write(
-                    response.getBytes(StandardCharsets.US_ASCII));
-            accepted.getOutputStream().flush();
-            accepted.setSoTimeout(limits.handshakeTimeoutMillis());
+            SocketChannel channel = accepted.getChannel();
+            if (channel != null) {
+                // The request head has been fully consumed on the blocking
+                // channel. Transition ONCE to nonblocking before any 101
+                // write or later frame operation; no mixed stream/channel I/O.
+                // The opening response shares the original absolute deadline.
+                channel.configureBlocking(false);
+                WebSocketNioDuplex.writeOpeningResponse(channel,
+                        response.getBytes(StandardCharsets.US_ASCII),
+                        absoluteDeadline);
+            } else {
+                // Legacy direct accepted-Socket host protocol fixture only.
+                // The production listener supplies channel-backed sockets.
+                accepted.getOutputStream().write(
+                        response.getBytes(StandardCharsets.US_ASCII));
+                accepted.getOutputStream().flush();
+                accepted.setSoTimeout(limits.handshakeTimeoutMillis());
+            }
             // Leave a bounded read timeout in force. A later connection owner
             // may narrow this bound but must not silently reset it to infinity.
             return new Admission(request.target(), origin);
