@@ -738,6 +738,38 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void fatalTrustedDeliveryFailureStillRequestsPhysicalHostCleanup()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                sendMaskedText(client, "fatal");
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        connection.readForActorAsync(handle, tenant, owner)
+                                .get(3, TimeUnit.SECONDS).kind());
+                assertThrows(AssertionError.class,
+                        () -> connection.pollAndEnqueueForActor(
+                                handle, tenant, owner,
+                                message -> { throw new AssertionError("scheduler fatal"); }));
+                assertEquals(-1, client.getInputStream().read());
+                assertEquals(0, listener.activeConnectionCount());
+                assertThrows(SecurityException.class,
+                        () -> connection.acquireActorLease(handle, tenant, owner));
+            }
+        }
+    }
+
+    @Test
     void foreignHandleDeliveryRejectionDoesNotCloseAuthorizedSocket()
             throws Exception {
         int port = unusedPort();
