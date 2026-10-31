@@ -42,7 +42,7 @@ let cases = 0;
 function test(name, callback) {
     callback();
     cases++;
-    process.stdout.write('PASS ' + name + '\\n');
+    process.stdout.write('PASS ' + name + '\n');
 }
 function val(label, symbol, value, effects) {
     return {label, evaluate: () => { effects.push(symbol); return value; }};
