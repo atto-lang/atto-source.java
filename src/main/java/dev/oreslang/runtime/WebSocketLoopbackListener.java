@@ -104,7 +104,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             listener.setReuseAddress(false);
             listener.bind(new InetSocketAddress(
                     InetAddress.getByName("127.0.0.1"), port), backlog);
-            context.nativeIo().register(listener);
+            nativeIo.register(listener);
             WebSocketLoopbackListener owned = new WebSocketLoopbackListener(
                     nativeIo, requireNet, listener, endpoint, origins, limits,
                     maxConnections, maxFrameBytes, maxMessageBytes);
@@ -112,9 +112,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             // native workers, this callback closes every active accepted
             // connection and retires the USER queues, not only its TCP fd.
             try {
-                context.nativeIo().register(owned);
+                nativeIo.register(owned);
             } catch (Exception registrationFailure) {
-                if (!context.nativeIo().ownsResource(owned)) {
+                if (!nativeIo.ownsResource(owned)) {
                     try { owned.close(); }
                     catch (RuntimeException cleanup) {
                         registrationFailure.addSuppressed(cleanup);
@@ -128,7 +128,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             // resource, whereas a *fully retired* context rejects without
             // ownership. Probe the actual native-I/O ledger: neither blindly
             // close a borrowed resource nor leak an unowned bound listener.
-            if (!context.nativeIo().ownsResource(listener)) {
+            if (!nativeIo.ownsResource(listener)) {
                 try { listener.close(); }
                 catch (IOException cleanup) { failure.addSuppressed(cleanup); }
             }
@@ -150,11 +150,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         AtomicBoolean workStarted = new AtomicBoolean();
         OresFuture<Connection> future;
         try {
-            future = context.nativeIo().submit("websocket.accept", () -> {
+            future = nativeIo.submit("websocket.accept", () -> {
                 workStarted.set(true);
                 boolean handedOff = false;
                 boolean admitted = false;
-                try (var listening = context.nativeIo().borrow(server)) {
+                try (var listening = nativeIo.borrow(server)) {
                     Socket accepted = server.accept();
                     if (!connections.tryAcquire()) {
                         accepted.close();
@@ -163,9 +163,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     admitted = true;
                     boolean registered = false;
                     try {
-                        context.nativeIo().register(accepted);
+                        nativeIo.register(accepted);
                         registered = true;
-                        try (var loan = context.nativeIo().borrow(accepted)) {
+                        try (var loan = nativeIo.borrow(accepted)) {
                             WebSocketRawUpgrade.upgrade(
                                     accepted, endpoint, allowedOrigins, limits);
                         }
@@ -183,11 +183,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         // Only a transferred native-I/O resource may survive
                         // a concurrent close for the later physical sweep.
                         // Fully retired contexts retain no such ownership.
-                        if (registered || !context.nativeIo().ownsResource(accepted)) {
+                        if (registered || !nativeIo.ownsResource(accepted)) {
                             try { accepted.close(); }
                             catch (IOException cleanup) { failure.addSuppressed(cleanup); }
                         }
-                        if (registered) context.nativeIo().unregister(accepted);
+                        if (registered) nativeIo.unregister(accepted);
                         throw failure;
                     }
                 } finally {
@@ -228,7 +228,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             firstFailure = new IllegalStateException(
                     "WebSocket listener close failed", failure);
         } finally {
-            context.nativeIo().unregister(server);
+            nativeIo.unregister(server);
         }
         // Do not hold lifecycleLock across native close callbacks. A parallel
         // connection.close() wins one retirement CAS and releases one permit.
@@ -242,7 +242,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         // The tracked owner stays in AsyncNativeIo until every native
         // close callback actually returns. Failed closes must be retried or
         // quarantined by the physical context-retirement sweep.
-        if (firstFailure == null) context.nativeIo().unregister(this);
+        if (firstFailure == null) nativeIo.unregister(this);
         else throw firstFailure;
     }
 
@@ -267,9 +267,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             AtomicBoolean workStarted = new AtomicBoolean();
             OresFuture<WebSocketSessionState.Action> future;
             try {
-                future = context.nativeIo().submit("websocket.read", () -> {
+                future = nativeIo.submit("websocket.read", () -> {
                     workStarted.set(true);
-                    try (var loan = context.nativeIo().borrow(socket)) {
+                    try (var loan = nativeIo.borrow(socket)) {
                         var frame = WebSocketFrameCodec.readClientFrame(
                                 socket.getInputStream(), maxFrameBytes);
                         var action = protocol.accept(frame);
@@ -316,7 +316,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             catch (IOException failure) {
                 throw new IllegalStateException("WebSocket peer close failed", failure);
             } finally {
-                context.nativeIo().unregister(socket);
+                nativeIo.unregister(socket);
                 synchronized (lifecycleLock) {
                     activeConnections.remove(this);
                 }
