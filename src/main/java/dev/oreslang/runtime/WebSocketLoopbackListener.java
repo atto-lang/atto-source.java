@@ -84,9 +84,24 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             listener.bind(new InetSocketAddress(
                     InetAddress.getByName("127.0.0.1"), port), backlog);
             context.nativeIo().register(listener);
-            return new WebSocketLoopbackListener(context, listener,
-                    endpoint, origins, limits, maxConnections,
-                    maxFrameBytes, maxMessageBytes);
+            WebSocketLoopbackListener owned = new WebSocketLoopbackListener(
+                    context, listener, endpoint, origins, limits,
+                    maxConnections, maxFrameBytes, maxMessageBytes);
+            // Retire the *logical* owner too. When context shutdown joins
+            // native workers, this callback closes every active accepted
+            // connection and retires the USER queues, not only its TCP fd.
+            try {
+                context.nativeIo().register(owned);
+            } catch (Exception registrationFailure) {
+                if (!context.nativeIo().ownsResource(owned)) {
+                    try { owned.close(); }
+                    catch (RuntimeException cleanup) {
+                        registrationFailure.addSuppressed(cleanup);
+                    }
+                }
+                throw registrationFailure;
+            }
+            return owned;
         } catch (Exception failure) {
             // A shutdown race may take responsibility for closing this
             // resource, whereas a *fully retired* context rejects without
@@ -204,7 +219,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
-        if (firstFailure != null) throw firstFailure;
+        // The tracked owner stays in AsyncNativeIo until every native
+        // close callback actually returns. Failed closes must be retried or
+        // quarantined by the physical context-retirement sweep.
+        if (firstFailure == null) context.nativeIo().unregister(this);
+        else throw firstFailure;
     }
 
     /** Host-only connection: never return Socket or JVM transport state to a guest. */
