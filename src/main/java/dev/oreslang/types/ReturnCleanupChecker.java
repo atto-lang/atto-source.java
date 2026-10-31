@@ -395,10 +395,11 @@ public final class ReturnCleanupChecker {
         } else if (expr instanceof Ast.ObjectExpr object) {
             object.fields().forEach(f -> expression(f.value(), scope, inDefer, state));
         } else if (expr instanceof Ast.StagedCallExpr call
-                && OptionalCallShapeBinder.isDirectScalarLiteralNamedCall(call)) {
-            // Only literal source expressions are admitted; they cannot
-            // mutate/move a returned binding during deferred cleanup.
-            // Scoped callbacks are still prohibited until fully analyzed.
+                && OptionalCallShapeBinder.isDirectNamedCallCandidate(call)) {
+            // Source arguments are inspected in lexical order, including
+            // nested writes, moves and calls. Nonliteral calls only lower if
+            // the checked binding keeps that same evaluation order. Deferred
+            // local callbacks still fail closed until separately analyzed.
             Ast.NameExpr callee = (Ast.NameExpr) call.callee();
             if (inDefer && scope.resolve(callee.name()) != null) {
                 throw new IllegalArgumentException(
@@ -410,7 +411,7 @@ public final class ReturnCleanupChecker {
             }
         } else if (expr instanceof Ast.StagedCallExpr
                 || expr instanceof Ast.StagedNewExpr) {
-            // Non-literal, optional and constructor ASTs remain non-executable
+            // Reordered-effectful, optional and constructor ASTs remain non-executable
             // until full ownership/Option/default ABI proof is implemented.
             throw new IllegalArgumentException(
                     "staged call cannot bypass deferred return cleanup analysis");
