@@ -1573,6 +1573,22 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
         }
+        // flush_async_logs is a runtime-owned Future<void>, not a generic
+        // unknown member result. Preserve its move-only Future type when
+        // checking locally held/awaited flush receipts. Shadowed "stdio"
+        // values must continue through normal user-defined call analysis.
+        if (call.callee() instanceof Ast.MemberExpr flush
+                && flush.member().equals("flush_async_logs")
+                && flush.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("stdio")
+                && scope.lookup("stdio") == null) {
+            if (!call.arguments().isEmpty()) {
+                throw error("stdio.flush_async_logs requires zero arguments");
+            }
+            return new ValueInfo(
+                    new Ast.TypeRef("Future", List.of(Ast.TypeRef.simple("void")), false),
+                    ValueKind.MOVE_ONLY, null);
+        }
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
             boolean async = isBuiltinStdoutCall(call, "log_async", scope)
