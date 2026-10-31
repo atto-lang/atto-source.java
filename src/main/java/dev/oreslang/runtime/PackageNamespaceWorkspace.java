@@ -418,13 +418,45 @@ final class PackageNamespaceWorkspace {
                 throw new IllegalArgumentException("duplicate namespace digest source: " + source);
             }
             parts.add(root.relativize(canonical).toString().replace('\\', '/')
-                    + "\n" + sha256(Files.readAllBytes(canonical)) + "\n");
+                    + "\n" + boundedSourceSha256(canonical) + "\n");
         }
         if (!digestedMembers.equals(manifestMembers)) {
             throw new SecurityException("namespace digest source set differs from manifest members");
         }
         parts.sort(String::compareTo);
         return sha256(String.join("", parts).getBytes(StandardCharsets.UTF_8));
+    }
+
+
+    /**
+     * The size check during manifest membership discovery is not a bound on
+     * a later read: a source file can grow between stat and digest. Stream
+     * the exact source SHA-256 with a hard per-file byte limit and no-follow
+     * semantics instead of Files.readAllBytes().
+     */
+    static String boundedSourceSha256(Path source) throws IOException {
+        if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+            throw new SecurityException("namespace digest source is not a regular file: " + source);
+        }
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+        try (var in = Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] chunk = new byte[8192];
+            long bytes = 0;
+            int count;
+            while ((count = in.read(chunk)) != -1) {
+                bytes += count;
+                if (bytes > 8L * 1024 * 1024) {
+                    throw new IllegalArgumentException("namespace digest source exceeds byte budget");
+                }
+                digest.update(chunk, 0, count);
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     static String sha256(byte[] bytes) {

@@ -909,6 +909,22 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void boundedSourceDigestPreservesBytesAndRejectsOverBudgetSource() throws Exception {
+        Path small = temp.resolve("small-digest.ores");
+        Files.writeString(small, "namespace billing; pub fnc value(): int { return 5; }");
+        assertEquals(PackageNamespaceWorkspace.sha256(Files.readAllBytes(small)),
+                PackageNamespaceWorkspace.boundedSourceSha256(small));
+
+        // Exercise the reader itself; a manifest-membership Files.size()
+        // precheck would reject this file before reaching the digest path.
+        Path oversized = temp.resolve("over-budget-digest.ores");
+        Files.write(oversized, new byte[8 * 1024 * 1024 + 1]);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceWorkspace.boundedSourceSha256(oversized));
+        assertTrue(denied.getMessage().contains("exceeds byte budget"));
+    }
+
+    @Test
     void pinnedSourceMutationMustFailBeforeGuestExecution() throws Exception {
         Path provider = temp.resolve("checkout");
         Path providerManifest = billing(provider);
