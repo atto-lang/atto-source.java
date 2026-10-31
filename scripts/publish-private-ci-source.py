@@ -393,8 +393,11 @@ def require_resolved_blocking_incidents():
                 + " lacks independent security disposition"
             )
         reviewer_comments.sort(key=lambda item: (item[0], item[1]))
-        _created_at, _comment_id, disposition_at, disposition_body = reviewer_comments[-1]
-        if disposition_at < closed_at:
+        disposition_created_at, _comment_id, _updated_at, disposition_body = reviewer_comments[-1]
+        # A pre-closure comment edited after closure is not fresh security
+        # authorization: only GitHub's immutable created_at proves that the
+        # independent reviewer posted this disposition after current closure.
+        if disposition_created_at <= closed_at:
             raise Denied(
                 "blocking P0 incident #" + str(number)
                 + " disposition predates current closure"
