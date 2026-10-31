@@ -442,6 +442,68 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void sameSourceCannotBeClaimedByTwoManifestPackages() throws IOException {
+        Path root = temporary.resolve("overlapping-owner-inventory");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/billing.ores", "billing",
+                "pub fnc answer(): int { return 42; }");
+        Path owned = manifest(root, "first", List.of("src/billing.ores"));
+        Files.writeString(owned, Files.readString(owned)
+                + "[packages.second]\nfiles = [\"src/billing.ores\"]\n");
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(owned), sources, Map.of()));
+        assertTrue(denied.getMessage().contains("multiple/duplicate packages"),
+                denied.getMessage());
+    }
+
+    @Test
+    void privateNamespaceFunctionsNeverBecomePublicExports() throws IOException {
+        Path root = temporary.resolve("private-provider-export");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/visible.ores", "billing",
+                "pub fnc visible(): int { return 42; }");
+        add(sources, root, "src/hidden.ores", "billing",
+                "fnc hidden(): int { return 99; }");
+        Path owned = manifest(root, "checkout",
+                List.of("src/visible.ores", "src/hidden.ores"));
+        var binding = PackageNamespaceIndex.load(List.of(owned), sources, Map.of())
+                .resolve(id(root.resolve("src/visible.ores")), "+/", "billing");
+        assertEquals(2, binding.providerUnitIds().size());
+        assertTrue(binding.exports().containsKey("function:visible:0"));
+        assertTrue(!binding.exports().containsKey("function:hidden:0"));
+    }
+
+    @Test
+    void sameNameDifferentValueAritiesRemainDistinctNamespaceExports() throws IOException {
+        Path root = temporary.resolve("namespace-arity-identities");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/zero.ores", "billing",
+                "pub fnc charge(): int { return 10; }");
+        add(sources, root, "src/one.ores", "billing",
+                "pub fnc charge(int amount): int { return amount; }");
+        Path owned = manifest(root, "checkout", List.of("src/zero.ores", "src/one.ores"));
+        var binding = PackageNamespaceIndex.load(List.of(owned), sources, Map.of())
+                .resolve(id(root.resolve("src/zero.ores")), "+/", "billing");
+        assertEquals(2, binding.exports().size());
+        assertTrue(binding.exports().containsKey("function:charge:0"));
+        assertTrue(binding.exports().containsKey("function:charge:1"));
+    }
+
+    @Test
+    void dependencyAliasCannotResolveToUnadmittedPackageIdentity() throws IOException {
+        Path root = temporary.resolve("stale-dependency-alias");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/provider.ores", "billing",
+                "pub fnc answer(): int { return 42; }");
+        Path owned = manifest(root, "checkout", List.of("src/provider.ores"));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(owned), sources,
+                        Map.of("checkout", "pkg:/unverified/.ores.pkg.toml#checkout")));
+        assertTrue(denied.getMessage().contains("dependency alias is not pinned"),
+                denied.getMessage());
+    }
+
+    @Test
     void runtimeLoaderRejectsNamespaceImportsWithoutVerifiedManifest() throws IOException {
         Path entry = temporary.resolve("entry.ores");
         Files.writeString(entry, """
