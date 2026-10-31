@@ -1040,7 +1040,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, CriticalStateModeExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, CriticalStateModeExpr, SpawnNamedArgExpr, InitStateExpr { }
 
     /** Intrinsic-only selector; a guest String cannot impersonate this capability. */
     public enum StateLoanMode { READ, WRITE }
@@ -1149,6 +1149,28 @@ public final class Ast {
     }
 
     /** Compiler-owned runtime namespace operation. The rt prefix cannot be rebound or shadowed. */
+    /** Compiler-internal named spawn argument; never a general guest expression. */
+    public record SpawnNamedArgExpr(String label, Expr value) implements Expr {
+        public SpawnNamedArgExpr {
+            if (label == null || label.isBlank() || label.startsWith("$"))
+                throw new IllegalArgumentException("invalid actor spawn label");
+            java.util.Objects.requireNonNull(value, "spawn argument value");
+        }
+    }
+
+    /** Complete-state value only admitted as the reserved actor init result. */
+    public record InitStateExpr(List<ObjectField> fields) implements Expr {
+        public InitStateExpr {
+            fields = List.copyOf(fields);
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (ObjectField field : fields) {
+                if (!names.add(field.name()))
+                    throw new IllegalArgumentException(
+                            "duplicate actor init state key '" + field.name() + "'");
+            }
+        }
+    }
+
     public record RuntimeCallExpr(String operation, List<Expr> arguments) implements Expr {
         public RuntimeCallExpr {
             if (operation == null || operation.isBlank()) {
