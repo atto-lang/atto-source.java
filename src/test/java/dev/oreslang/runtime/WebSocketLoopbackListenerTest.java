@@ -318,6 +318,57 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void actorBindRejectsPartialHostFragmentUntilCompletedAndDrained()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+
+                // Non-FIN TEXT frame leaves an unfinished host-owned USER
+                // fragment even though no complete USER message is queued.
+                var first = connection.readAsync();
+                client.getOutputStream().write(new byte[] {
+                        0x01, (byte) 0x81, 1, 2, 3, 4,
+                        (byte) ('h' ^ 1)
+                });
+                client.getOutputStream().flush();
+                assertEquals(WebSocketSessionState.ActionKind.NONE,
+                        first.get(3, TimeUnit.SECONDS).kind());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.bindActorHost(tenant, owner, () -> true));
+
+                var continuation = connection.readAsync();
+                client.getOutputStream().write(new byte[] {
+                        (byte) 0x80, (byte) 0x81, 1, 2, 3, 4,
+                        (byte) ('i' ^ 1)
+                });
+                client.getOutputStream().flush();
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        continuation.get(3, TimeUnit.SECONDS).kind());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.bindActorHost(tenant, owner, () -> true));
+                assertArrayEquals("hi".getBytes(StandardCharsets.UTF_8),
+                        connection.pollUserMessage().orElseThrow().payload());
+
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                try (var loan = connection.acquireActorLease(handle, tenant, owner)) {
+                    assertTrue(loan.mayDeliver(handle, tenant, owner));
+                }
+                connection.close();
+            }
+        }
+    }
+
+    @Test
     void actorBindRejectsPendingRawReadAndUndrainedHostUserMessage()
             throws Exception {
         int port = unusedPort();
