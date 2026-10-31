@@ -378,6 +378,86 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void privateActorFinalizationRequiresBothPhysicalCarrierAndNativeIoRetirement()
+            throws Exception {
+        for (boolean nativeFinishesFirst : new boolean[] { true, false }) {
+            CountDownLatch carrierInsideExecutor = new CountDownLatch(1);
+            CountDownLatch releaseCarrier = new CountDownLatch(1);
+            CountDownLatch nativeInsideWorker = new CountDownLatch(1);
+            CountDownLatch releaseNative = new CountDownLatch(1);
+            CountDownLatch admittedNative = new CountDownLatch(1);
+            var holdNextPhysicalTurn = new java.util.concurrent.atomic.AtomicBoolean();
+            ActorRuntime.TurnExecutor turnExecutor = turn -> {
+                // The actor's initial READY turn must run normally. After the
+                // supervisor explicitly arms the gate, block the next real
+                // carrier AFTER guest execution but BEFORE TurnExecutor exits.
+                boolean hold = holdNextPhysicalTurn.compareAndSet(true, false);
+                turn.run();
+                if (hold) {
+                    carrierInsideExecutor.countDown();
+                    try {
+                        assertTrue(releaseCarrier.await(5, TimeUnit.SECONDS),
+                                "physical carrier release never arrived");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                }
+            };
+            try (var io = new AsyncNativeIo(2);
+                 var runtime = new ActorRuntime(
+                         IsolatePolicy.developer(),
+                         new ActorRuntime.DispatcherConfig(1, 1, 8, 64),
+                         turnExecutor)) {
+                runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+                io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+                var actor = runtime.<String>spawnPrivateTrusted(
+                        factory -> (message, context) -> {
+                            io.submit("native-held-for-physical-join", () -> {
+                                nativeInsideWorker.countDown();
+                                releaseNative.await();
+                                return 17;
+                            });
+                            admittedNative.countDown();
+                        });
+                try {
+                    actor.ready().get(3, TimeUnit.SECONDS);
+                    holdNextPhysicalTurn.set(true);
+                    actor.send("run");
+                    assertTrue(admittedNative.await(3, TimeUnit.SECONDS));
+                    assertTrue(nativeInsideWorker.await(3, TimeUnit.SECONDS));
+                    assertTrue(carrierInsideExecutor.await(3, TimeUnit.SECONDS));
+                    assertEquals(1, io.outstandingActorOperations(actor.id()));
+                    actor.cancel();
+                    assertFalse(actor.done().isDone(),
+                            "STOP must not reclaim a private actor with two physical owners");
+                    if (nativeFinishesFirst) {
+                        releaseNative.countDown();
+                        // Physical worker completion is observable independently
+                        // of actor finalization, which remains carrier-fenced.
+                        assertTrue(io.submitControl("native-drain-probe", () -> 1)
+                                .get(3, TimeUnit.SECONDS) == 1);
+                        assertFalse(actor.done().isDone(),
+                                "native I/O completion must not bypass the occupied carrier");
+                        releaseCarrier.countDown();
+                    } else {
+                        releaseCarrier.countDown();
+                        assertFalse(actor.done().isDone(),
+                                "carrier exit must not bypass an outstanding native I/O loan");
+                        releaseNative.countDown();
+                    }
+                    assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                            "actor DONE must follow BOTH physical completions");
+                    assertEquals(0, io.outstandingActorOperations(actor.id()));
+                    assertTrue(io.actorPhysicallyRetired(actor.id()));
+                } finally {
+                    releaseCarrier.countDown();
+                    releaseNative.countDown();
+                }
+            }
+        }
+    }
+
     @Test void equalButDistinctNativeResourcesRetireIndependently()
             throws Exception {
         var io = new AsyncNativeIo(2);
