@@ -204,10 +204,22 @@ final class PackageNamespaceWorkspace {
     }
 
     private static void requireNoSymlinkComponents(Path path) {
-        Path absolute = path.toAbsolutePath().normalize();
+        // Do not normalize before examining the caller's path. Normalizing
+        // alias/../source erases the alias without proving that the filesystem
+        // traversed the same parent (the alias may point elsewhere).
+        Path absolute = path.toAbsolutePath();
         Path cursor = absolute.getRoot();
         if (cursor == null) throw new SecurityException("namespace dependency has no absolute root");
         for (Path component : absolute) {
+            String segment = component.toString();
+            if (".".equals(segment)) continue;
+            if ("..".equals(segment)) {
+                cursor = cursor.getParent();
+                if (cursor == null) {
+                    throw new SecurityException("namespace path escapes filesystem root");
+                }
+                continue;
+            }
             cursor = cursor.resolve(component);
             if (Files.isSymbolicLink(cursor)) {
                 throw new SecurityException("symlinked namespace dependency path: " + cursor);
