@@ -205,6 +205,59 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void directIndexCannotClaimNestedProjectRootOrAncestorPackage() throws IOException {
+        Path project = temporary.resolve("nested-root-index");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, project, "sources/pkg/worker.ores", "billing",
+                "pub fnc worker(): int { return 7; }");
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, """
+                schema_version = "2"
+                [project]
+                root = "sources/pkg"
+                [packages.checkout]
+                files = ["worker.ores"]
+                """);
+        // Direct PackageNamespaceIndex.load is a supported entry point.
+        // An explicit subdirectory project.root is valid in isolation.
+        var admitted = PackageNamespaceIndex.load(List.of(manifest), sources, Map.of());
+        assertEquals(1, admitted.resolve(id(project.resolve("sources/pkg/worker.ores")),
+                "+/", "billing").providerUnitIds().size());
+
+        Path intermediate = project.resolve("sources/.ores.pkg.toml");
+        Files.writeString(intermediate, "schema_version = \"2\"\n");
+        IllegalArgumentException atParent = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(manifest), sources, Map.of()));
+        assertTrue(atParent.getMessage().contains("nested manifest boundary"));
+        Files.delete(intermediate);
+
+        Path atRoot = project.resolve("sources/pkg/.ores.pkg.toml");
+        Files.writeString(atRoot, "schema_version = \"2\"\n");
+        IllegalArgumentException nested = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(manifest), sources, Map.of()));
+        assertTrue(nested.getMessage().contains("nested manifest boundary"));
+    }
+
+    @Test
+    void directIndexRejectsDanglingNestedManifestSymlink() throws IOException {
+        Map<String, String> sources = new LinkedHashMap<>();
+        Path project = temporary.resolve("dangling-index-boundary");
+        add(sources, project, "src/nested/file.ores", "billing",
+                "pub fnc charge(): int { return 1; }");
+        Path manifest = manifest(project, "checkout", List.of("src/nested/file.ores"));
+        Path marker = project.resolve("src/nested/.ores.pkg.toml");
+        try {
+            Files.createSymbolicLink(marker, Path.of("missing-future-manifest.toml"));
+        } catch (UnsupportedOperationException | IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(manifest), sources, Map.of()));
+        assertTrue(denied.getMessage().contains("nested manifest boundary"));
+    }
+
+    @Test
     void runtimeLoaderRejectsNamespaceImportsUntilProviderBindingIsImplemented() throws IOException {
         Path entry = temporary.resolve("entry.ores");
         Files.writeString(entry, """
