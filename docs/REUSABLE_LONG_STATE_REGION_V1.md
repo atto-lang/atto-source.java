@@ -235,3 +235,28 @@ but not yet executed**. The earlier JDK21 8,022-assertion exact-source
 smoke applied to earlier Git blobs and must not be attributed to the
 current `ReusableLongStateRegion.java` or smoke-test blob. The latest
 source-org PR run has no assigned runner and zero executed steps. Keep draft.
+
+
+## Current-blob JDK21 scalar region execution — 2026-10-31
+
+A dedicated standard-library-only regression is now committed at
+`tests/CurrentRegionSafetySmoke.java` (Git blob
+`dfcbbf2085d86fd5e5b22714ec4971d95b09e547`), and the source-repository
+workflow compiles/runs it alongside the existing physical-turn smoke.
+
+Locally reproduced the **exact current production**
+`ReusableLongStateRegion.java` blob
+`ec4fbc13ce520b4886fc44fef3688b9146f5aa49` and compiled it with
+JDK 21 `javac --release 21 -Xlint:all -Werror`.
+The exact committed regression independently compiled and executed:
+`EXACT_CURRENT_REGION_JDK21_PASS checks=130000 iterations=10000`.
+Every iteration verifies reentrant STOP aborting the write, physical pin
+retention, foreign/stale tickets, denied read/pin after STOP, reclamation
+only after the final pin, and overflow transactional rollback.
+
+This is actual source-byte-matching **scalar region class** execution,
+not full ActorRuntime/AsyncNativeIo JUnit execution, GraalVM Native Image
+or guest compiler evidence. The `ActorPhysicalTurnGate` source is unchanged
+from the earlier exact-source smoke, but that older combined smoke does not
+cover the current region mutation-fence blob. The new workflow is still
+runner-admission-blocked, so hosted exact-head proof remains pending.
