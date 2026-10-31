@@ -136,6 +136,20 @@ final class DbDurableWalFile implements AutoCloseable {
         return channel.size();
     }
 
+    /**
+     * Trusted single-generation recovery preflight through the physically
+     * locked owner file. The generation here identifies existing on-disk
+     * records, which may predate this newly opened owner's generation.
+     * Caller must hold the exclusive shard-recovery fence and stage state.
+     * Never auto-truncate, publish, or ACK based on a scan result alone.
+     */
+    synchronized DbWalReplayV1.Report scanRecovery(
+            int tenant, int segmentGeneration) throws IOException {
+        if (closed || uncertain) throw new IllegalStateException(
+                "WAL closed or prior physical result unresolved");
+        return DbWalReplayV1.scan(channel, tenant, segmentGeneration);
+    }
+
     synchronized boolean uncertain() { return uncertain; }
     synchronized boolean closed() { return closed; }
 
