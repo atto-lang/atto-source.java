@@ -139,15 +139,18 @@ public final class OptionalCallShapeBinder {
     }
 
     /**
-     * Restricted source-level lowering: all primitive literal permutations
-     * remain supported. Effectful/nonliteral values are supported only if
-     * the selected target's formal order is identical to source order.
-     * Never reorder
-     * effectful guest expressions: they require a source-order temporary
-     * schedule, typed Option adaptation, and ownership checks.
+     * Restricted source-level lowering. In-order calls can contain ordinary
+     * expressions. Reordered calls may contain only primitive literals and
+     * direct zero-argument calls, whose arguments cannot carry moves, loans
+     * or aliasing effects across the outer call's formal slots.
      *
-     * This method doesn't resolve the target; the caller must independently
-     * prove its local declaration identity, visibility and shadowing.
+     * The returned CallExpr is a STATIC-checking view in the reordered case:
+     * executing it would invert source effects. Runtime MUST evaluate the
+     * original StagedCallExpr values in lexical order, then assemble the
+     * already evaluated values by the verified Plan's formal-slot indexes.
+     *
+     * This method does not resolve lexical names: each compiler pass must
+     * independently reject shadowed targets and dynamic zero-arg callbacks.
      */
     public static Ast.CallExpr lowerDirectScalarLiteralNamedCall(
             Ast.StagedCallExpr call, Ast.FunctionDecl resolvedTarget) {
@@ -188,9 +191,11 @@ public final class OptionalCallShapeBinder {
                 break;
             }
         }
-        if (!identicalSourceAndFormalOrder && !isDirectScalarLiteralNamedCall(call)) {
+        if (!identicalSourceAndFormalOrder
+                && !call.arguments().stream().allMatch(item ->
+                        isSourceOrderSafeScalarArgument(item.value()))) {
             throw new IllegalArgumentException(
-                    "reordered nonliteral named arguments require lexical temporary lowering");
+                    "reordered named arguments require closed scalar source-order lowering");
         }
         List<Ast.Expr> ordered = new ArrayList<>(resolvedTarget.parameters().size());
         for (int formal = 0; formal < resolvedTarget.parameters().size(); formal++) {
@@ -211,17 +216,37 @@ public final class OptionalCallShapeBinder {
                             "named literal requires exact primitive scalar type: "
                                     + declared.name());
                 }
-            } else if (!identicalSourceAndFormalOrder) {
+            } else if (!identicalSourceAndFormalOrder
+                    && !isSourceOrderSafeScalarArgument(expression)) {
                 throw new IllegalArgumentException(
-                        "nonliteral named argument cannot be reordered without temporaries");
+                        "nonliteral named argument cannot be reordered without checked source-order evaluation");
             }
-            // Source order equals formal order for every nonliteral. Static
-            // type/effect/ownership and the ordinary runtime invocation each
-            // reuse the same normal CallExpr pipeline; neither receives a
-            // forged argument type from this shape-only binder.
+            // For reordered expressions this CallExpr is a STATIC checking
+            // view, never the runtime evaluation plan. Only the original
+            // StagedCallExpr owns lexical source order.
             ordered.add(expression);
         }
         return new Ast.CallExpr(call.callee(), List.copyOf(ordered));
+    }
+
+    /**
+     * Safe first effectful-reorder subset. A closed, direct zero-argument
+     * invocation transfers no argument loans or move-only values. Its scalar
+     * return type is independently checked by the ordinary TypeChecker and
+     * OwnershipChecker paths against a primitive formal. Dynamic/shadowed
+     * callbacks and any input arguments require a stronger lowering proof.
+     */
+    public static boolean isSourceOrderSafeScalarArgument(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            return value instanceof Long || value instanceof Double
+                    || value instanceof Boolean || value instanceof String;
+        }
+        return expression instanceof Ast.CallExpr nested
+                && nested.callee() instanceof Ast.NameExpr
+                && nested.origin() == Ast.CallOrigin.DIRECT
+                && !nested.typeArgumentsPresent()
+                && nested.arguments().isEmpty();
     }
 
     /**
