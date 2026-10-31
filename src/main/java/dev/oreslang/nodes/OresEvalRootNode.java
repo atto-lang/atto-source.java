@@ -1402,10 +1402,6 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             TaskScope scope = caller.taskScope;
-            if (scope != null && ActorRuntime.inActorExecution()) {
-                throw new IllegalStateException(
-                        "scoped Task execution inside actors is disabled until actor quota/hot-reload integration is proven");
-            }
 
             ReservedTaskTransfer<Env> reserved =
                     reserveBeforeTaskTransfer(
@@ -1477,7 +1473,10 @@ public final class OresEvalRootNode extends RootNode {
             // host worker carriers. Actor Tasks remain supervised by CONTROL.
             task.initialBlockEnv = env.snapshot();
             if (ActorRuntime.inActorExecution()) {
-                OresFuture<Object> future = context.actors().startActorTask(task, onQuiescent);
+                OresFuture<Object> future = context.actors().startActorTask(
+                        task,
+                        onQuiescent,
+                        onTerminalReady);
                 context.actors().ownCurrentActorFuture(future);
                 return future;
             }
@@ -2324,13 +2323,6 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (stmt instanceof Ast.BlockStmt block) {
                     if (block.taskScope()) {
-                        if (ActorRuntime.inActorExecution()) {
-                            continuation.accept(
-                                    task,
-                                    SourceFlow.throwing(new IllegalStateException(
-                                            "task scope inside actor execution is disabled until actor quota/hot-reload integration is proven")));
-                            return;
-                        }
                         TaskScope scope = new TaskScope();
                         task.registerTaskScope(scope);
                         Env scopedEnv = new Env(env);
