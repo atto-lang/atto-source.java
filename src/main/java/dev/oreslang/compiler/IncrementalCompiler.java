@@ -239,7 +239,9 @@ public final class IncrementalCompiler {
                                 Parser.parse(normalized.get(id)),
                                 linked.classes(), linked.aliases(), contracts,
                                 namespaceGraph == null ? Map.of()
-                                        : linkedNamespaceFunctions(id, namespaceGraph));
+                                        : linkedNamespaceFunctions(id, namespaceGraph),
+                                namespaceGraph == null ? Map.of()
+                                        : linkedProviderFunctions(id, namespaceGraph));
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.classes(), analysis.shortInferredAliases());
@@ -285,6 +287,39 @@ public final class IncrementalCompiler {
             bindings.put(entry.getKey(), Map.copyOf(members));
         }
         return Map.copyOf(bindings);
+    }
+
+    /**
+     * A provider can call public siblings only within its exact verified
+     * (package-instance, namespace) identity. This metadata is compiler-owned:
+     * no filesystem spelling, inferred package ID, or ambient module lookup.
+     * Same-file calls already resolve lexically and are not injected here.
+     */
+    private static Map<String, Map<Integer, Ast.FunctionDecl>>
+            linkedProviderFunctions(String source, PackageNamespaceLinker.Result graph) {
+        Map<String, Map<Integer, Ast.FunctionDecl>> members = new LinkedHashMap<>();
+        int groups = 0;
+        for (PackageNamespaceLinker.Namespace namespace : graph.namespaces().values()) {
+            if (!namespace.sourceUnits().contains(source)) continue;
+            if (++groups != 1) {
+                throw new IllegalArgumentException(
+                        "pinned provider source belongs to multiple namespace identities");
+            }
+            for (PackageNamespaceLinker.Export exported : namespace.exports()) {
+                if (source.equals(exported.sourceUnitId())) continue;
+                Map<Integer, Ast.FunctionDecl> overloads =
+                        members.computeIfAbsent(exported.name(), ignored -> new LinkedHashMap<>());
+                if (overloads.putIfAbsent(exported.arity(), exported.declaration()) != null) {
+                    throw new IllegalArgumentException(
+                            "ambiguous same-package namespace provider callable");
+                }
+            }
+        }
+        if (groups == 0) return Map.of();
+        Map<String, Map<Integer, Ast.FunctionDecl>> sealed = new LinkedHashMap<>();
+        for (var entry : members.entrySet())
+            sealed.put(entry.getKey(), Map.copyOf(entry.getValue()));
+        return Map.copyOf(sealed);
     }
 
     private record LinkedClasses(
