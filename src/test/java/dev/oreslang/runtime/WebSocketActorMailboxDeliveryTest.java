@@ -66,6 +66,39 @@ final class WebSocketActorMailboxDeliveryTest {
     }
 
     @Test
+    void turnExecutorRefusalRetiresAcceptedHostMailboxTicket() throws Exception {
+        var rejectNextTurn = new java.util.concurrent.atomic.AtomicBoolean();
+        var cleanup = new AtomicInteger();
+        var invoked = new AtomicInteger();
+        ActorRuntime.TurnExecutor turns = turn -> {
+            if (rejectNextTurn.getAndSet(false)) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "injected actor-turn host rejection");
+            }
+            turn.run();
+        };
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                ActorRuntime.DispatcherConfig.defaults(), turns)) {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    ctx -> (mail, context) -> { });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            rejectNextTurn.set(true);
+            assertTrue(runtime.enqueueHostActorDelivery(actor,
+                    invoked::incrementAndGet, cleanup::incrementAndGet));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+            while (cleanup.get() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, cleanup.get(),
+                    "dispatcher refusal must reclaim the admitted mailbox envelope");
+            assertEquals(0, invoked.get(),
+                    "host refusing a turn cannot execute guest delivery");
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> actor.done().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void fullAndStoppedMailboxNeverForgetsAcceptedCleanupOrRunsGuestWork()
             throws Exception {
         var entered = new CountDownLatch(1);
