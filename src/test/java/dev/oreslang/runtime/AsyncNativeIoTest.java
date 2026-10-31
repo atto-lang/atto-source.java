@@ -387,23 +387,27 @@ class AsyncNativeIoTest {
             CountDownLatch releaseNative = new CountDownLatch(1);
             CountDownLatch nativeRetired = new CountDownLatch(1);
             CountDownLatch admittedNative = new CountDownLatch(1);
-            var holdNextPhysicalTurn = new java.util.concurrent.atomic.AtomicBoolean();
+            // TurnExecutor runs synchronously on the same physical carrier
+            // as the guest turn. Tag that exact turn, not a global "next"
+            // flag that a READY/control/housekeeping turn could consume.
+            ThreadLocal<Boolean> nativeAdmittingTurn = new ThreadLocal<>();
+            var heldTurns = new java.util.concurrent.atomic.AtomicInteger();
             ActorRuntime.TurnExecutor turnExecutor = turn -> {
-                // The actor's initial READY turn must run normally. After the
-                // supervisor explicitly arms the gate, block the next real
-                // carrier AFTER guest execution but BEFORE TurnExecutor exits.
-                turn.run();
-                // Arm only the turn that actually admitted the native I/O.
-                // Startup/housekeeping turns cannot consume this barrier.
-                if (admittedNative.getCount() == 0
-                        && holdNextPhysicalTurn.compareAndSet(true, false)) {
-                    carrierInsideExecutor.countDown();
-                    try {
-                        assertTrue(releaseCarrier.await(5, TimeUnit.SECONDS),
-                                "physical carrier release never arrived");
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        throw new AssertionError(interrupted);
+                try {
+                    turn.run();
+                } finally {
+                    boolean hold = Boolean.TRUE.equals(nativeAdmittingTurn.get());
+                    nativeAdmittingTurn.remove();
+                    if (hold) {
+                        heldTurns.incrementAndGet();
+                        carrierInsideExecutor.countDown();
+                        try {
+                            assertTrue(releaseCarrier.await(5, TimeUnit.SECONDS),
+                                    "physical carrier release never arrived");
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
                     }
                 }
             };
@@ -424,11 +428,11 @@ class AsyncNativeIoTest {
                                 releaseNative.await();
                                 return 17;
                             });
+                            nativeAdmittingTurn.set(Boolean.TRUE);
                             admittedNative.countDown();
                         });
                 try {
                     actor.ready().get(3, TimeUnit.SECONDS);
-                    holdNextPhysicalTurn.set(true);
                     actor.send("run");
                     assertTrue(admittedNative.await(3, TimeUnit.SECONDS));
                     assertTrue(nativeInsideWorker.await(3, TimeUnit.SECONDS));
@@ -456,6 +460,8 @@ class AsyncNativeIoTest {
                             "actor DONE must follow BOTH physical completions");
                     assertEquals(0, io.outstandingActorOperations(actor.id()));
                     assertTrue(io.actorPhysicallyRetired(actor.id()));
+                    assertEquals(1, heldTurns.get(),
+                            "only the I/O-admitting physical actor turn may be held");
                 } finally {
                     releaseCarrier.countDown();
                     releaseNative.countDown();
