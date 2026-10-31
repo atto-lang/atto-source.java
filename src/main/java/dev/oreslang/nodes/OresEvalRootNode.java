@@ -216,6 +216,7 @@ public final class OresEvalRootNode extends RootNode {
         // Compiler-verified cross-file call slots inside this exact package
         // instance and namespace; not sourced from ambient filesystem lookup.
         private final Map<String, String> linkedNamespaceProviderFunctions = new HashMap<>();
+        private final Set<String> linkedNamespaceProviderNames = new LinkedHashSet<>();
         private final Set<String> verifiedNamespaceBindings = new LinkedHashSet<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
@@ -347,6 +348,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("pinned provider call slot limit exceeded");
             if (linkedNamespaceProviderFunctions.putIfAbsent(member + "/" + arity, targetId) != null)
                 throw new IllegalArgumentException("duplicate verified provider function slot");
+            linkedNamespaceProviderNames.add(member);
         }
 
         private Invocation prepareLinkedProviderInvocation(
@@ -7085,8 +7087,7 @@ public final class OresEvalRootNode extends RootNode {
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return functionInvocation(direct, args);
                 }
-                if (linkedNamespaceProviderFunctions.containsKey(
-                        directName.name() + "/" + call.arguments().size())) {
+                if (linkedNamespaceProviderNames.contains(directName.name())) {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return prepareLinkedProviderInvocation(directName.name(), args);
