@@ -100,6 +100,11 @@ final class ActorPhysicalTurnGate {
         try {
             dispatch(() -> {
                 try {
+                    if (!region.claimPinnedTurn(ticket)) {
+                        reject.accept(new RejectedExecutionException(
+                                "region retired before pinned turn entry"));
+                        return;
+                    }
                     task.run();
                 } finally {
                     complete.run();
