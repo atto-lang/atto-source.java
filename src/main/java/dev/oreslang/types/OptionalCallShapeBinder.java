@@ -971,6 +971,28 @@ public final class OptionalCallShapeBinder {
         }
 
         public int declaredArity() { return sourceIndexByParameter.size(); }
+
+        /**
+         * Inverse mapping for a *full-arity, nonvariadic scalar* call.
+         * Runtime evaluates the original source items in lexical order, then
+         * writes each value directly to its formal ABI slot. This avoids an
+         * additional dense-source buffer allocation on every invocation.
+         * Never use this inverse for omission or variadic signatures.
+         */
+        public int scalarFormalForSource(int sourceIndex) {
+            if (variadicParameterIndex != -1
+                    || suppliedArgumentCount() != declaredArity()
+                    || sourceIndex < 0 || sourceIndex >= declaredArity()) {
+                throw new IllegalArgumentException(
+                        "scalar formal lookup requires full-arity, nonvariadic binding");
+            }
+            for (int formal = 0; formal < declaredArity(); formal++) {
+                if (sourceIndexByParameter.get(formal) == sourceIndex) return formal;
+            }
+            throw new IllegalStateException(
+                    "checked scalar binding has no formal slot for lexical source index");
+        }
+
         /**
          * Original call-item index of an evaluated argument. Crucial because
          * '_' and 'omit' consume slots WITHOUT contributing an expression:
