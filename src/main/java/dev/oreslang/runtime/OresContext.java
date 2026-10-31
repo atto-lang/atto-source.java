@@ -496,27 +496,43 @@ public final class OresContext implements AutoCloseable {
     static void joinActorsAndNativeIo(ActorRuntime actors, AsyncNativeIo nativeIo) {
         java.util.Objects.requireNonNull(actors);
         java.util.Objects.requireNonNull(nativeIo);
-        RuntimeException failure = null;
+        joinRetirementStages(actors::sealShutdownAdmission,
+                nativeIo::requestShutdown, actors::close, nativeIo::close);
+    }
+
+    /**
+     * Exact production retirement ordering, exposed to package-local fault
+     * injection. A fatal stage Error must not accidentally skip the remaining
+     * independent revocation/join attempts. The owning context is still pinned
+     * and must not release its graph unless every stage succeeds.
+     */
+    static void joinRetirementStages(Runnable sealActors, Runnable revokeIo,
+            Runnable joinActors, Runnable joinIo) {
+        java.util.Objects.requireNonNull(sealActors);
+        java.util.Objects.requireNonNull(revokeIo);
+        java.util.Objects.requireNonNull(joinActors);
+        java.util.Objects.requireNonNull(joinIo);
+        Throwable failure = null;
         try {
-            actors.sealShutdownAdmission();
-        } catch (RuntimeException sealFailure) {
+            sealActors.run();
+        } catch (RuntimeException | Error sealFailure) {
             failure = sealFailure;
         }
         try {
-            nativeIo.requestShutdown();
-        } catch (RuntimeException revokeFailure) {
+            revokeIo.run();
+        } catch (RuntimeException | Error revokeFailure) {
             if (failure == null) failure = revokeFailure;
             else if (failure != revokeFailure) failure.addSuppressed(revokeFailure);
         }
         try {
-            actors.close();
-        } catch (RuntimeException actorFailure) {
+            joinActors.run();
+        } catch (RuntimeException | Error actorFailure) {
             if (failure == null) failure = actorFailure;
             else if (failure != actorFailure) failure.addSuppressed(actorFailure);
         }
         try {
-            nativeIo.close();
-        } catch (RuntimeException ioFailure) {
+            joinIo.run();
+        } catch (RuntimeException | Error ioFailure) {
             if (failure == null) failure = ioFailure;
             else if (failure != ioFailure) failure.addSuppressed(ioFailure);
         }
