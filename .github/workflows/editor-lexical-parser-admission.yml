@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "src/test/java/dev/oreslang/parser/EditorLexicalParserAdmissionTest.java"
+      - "src/test/resources/contracts/editor-syntax/v1/editor-lexical-contract.json"
       - ".github/workflows/editor-lexical-parser-admission.yml"
   workflow_dispatch:
 
