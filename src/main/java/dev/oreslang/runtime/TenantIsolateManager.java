@@ -8,7 +8,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -249,11 +248,11 @@ public final class TenantIsolateManager implements AutoCloseable {
     }
 
     private static void validate_tenant_id(String id) {
-        if (id == null || id.isEmpty() || id.length() > 128
-                || !Normalizer.isNormalized(id, Normalizer.Form.NFC)
-                || id.codePoints().anyMatch(c -> c <= 0x1f || c == 0x7f
-                        || (c >= 0xd800 && c <= 0xdfff))
-                || id.getBytes(StandardCharsets.UTF_8).length > 128) {
+        // Shared tenant-isolation-v1 contract: ASCII identifiers only, and
+        // filesystem-reserved dot components are never durable tenant IDs.
+        if (id == null || id.length() > 128
+                || !id.matches("[A-Za-z0-9_.-]{1,128}")
+                || ".".equals(id) || "..".equals(id)) {
             throw new IllegalArgumentException("INVALID_TENANT_ID");
         }
     }
