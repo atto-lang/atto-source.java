@@ -19,6 +19,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Semaphore;
@@ -38,6 +39,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
      */
     private static final Set<Connection> DEFERRED_HOST_CLOSES =
             ConcurrentHashMap.newKeySet();
+    /** FIFO fairness: at most one pending entry per already-owned socket. */
+    private static final ConcurrentLinkedQueue<Connection> DEFERRED_HOST_QUEUE =
+            new ConcurrentLinkedQueue<>();
     private static final ScheduledThreadPoolExecutor HOST_RETIREMENT =
             new ScheduledThreadPoolExecutor(1, task -> {
                 Thread carrier = new Thread(task, "ores-websocket-host-retirement");
@@ -51,9 +55,10 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             // Process up to 32 retired connections per pass. Each entry
             // references an already-owned socket, so there is no new
             // socket/worker admission on the fallback path.
-            int visited = 0;
-            for (Connection connection : DEFERRED_HOST_CLOSES) {
-                if (++visited > 32) break;
+            for (int visited = 0; visited < 32; visited++) {
+                Connection connection = DEFERRED_HOST_QUEUE.poll();
+                if (connection == null) break;
+                if (!DEFERRED_HOST_CLOSES.contains(connection)) continue;
                 try {
                     connection.close();
                 } catch (RuntimeException | Error failure) {
@@ -390,7 +395,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 // The single host sweeper owns this pending close; duplicate
                 // notifications collapse to one identity entry. Context
                 // shutdown separately retains and sweeps physical loans.
-                if (!retired.get()) DEFERRED_HOST_CLOSES.add(this);
+                if (!retired.get() && DEFERRED_HOST_CLOSES.add(this)) {
+                    DEFERRED_HOST_QUEUE.offer(this);
+                }
             }
         }
 
