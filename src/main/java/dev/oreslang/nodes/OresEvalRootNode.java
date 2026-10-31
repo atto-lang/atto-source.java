@@ -597,13 +597,37 @@ public final class OresEvalRootNode extends RootNode {
             if (init != null) {
                 if (klass.methods().stream().anyMatch(m -> m.name().equals("on_start")))
                     throw new IllegalStateException("actor init cannot coexist with on_start");
+                if (!klass.parents().isEmpty() || !klass.interfaces().isEmpty()) {
+                    throw new SecurityException(
+                            "actor init has no checked inherited/interface state layout ABI");
+                }
                 if (init.async() || init.suspends() || init.isStatic()
+                        || !init.genericParameters().isEmpty()
+                        || !init.effects().isEmpty()
+                        || !init.returnType().name().equals("state")
                         || init.body().size() != 1
                         || !(init.body().getFirst() instanceof Ast.ReturnStmt returned)
                         || !(returned.value() instanceof Ast.InitStateExpr state))
                     throw new IllegalStateException("invalid actor init lifecycle body");
                 if (init.parameters().size() != initArguments.size())
                     throw new IllegalArgumentException("actor init argument arity mismatch");
+                for (int i = 0; i < init.parameters().size(); i++) {
+                    Ast.Param param = init.parameters().get(i);
+                    if (param.mutable() || param.structural() || param.type().isBorrow()
+                            || !param.type().arguments().isEmpty())
+                        throw new SecurityException("actor init parameter ABI is not scalar-only");
+                    requireActorInitScalarType(param.type(), initArguments.get(i),
+                            "actor init parameter '" + param.name() + "'");
+                }
+                LinkedHashMap<String, Ast.FieldDecl> schema = new LinkedHashMap<>();
+                for (Ast.FieldDecl field : classFields) {
+                    if (!isActorStateSchemaField(field) || field.initializer() != null)
+                        throw new SecurityException(
+                                "actor init requires one complete state schema without legacy fields");
+                    schema.put(field.name(), field);
+                }
+                if (schema.size() != fields.size())
+                    throw new SecurityException("actor init field layout is not unique");
                 Env initEnv = new Env(null, false, klass);
                 bindCallableArguments(initEnv, init.parameters(), initArguments,
                         "actor " + klass.name() + ".init");
@@ -613,25 +637,21 @@ public final class OresEvalRootNode extends RootNode {
                             || (entry.value() instanceof Ast.NameExpr name
                                 && init.parameters().stream()
                                     .anyMatch(p -> p.name().equals(name.name())));
-                    if (!permitted || !fields.containsKey(entry.name())
-                            || prepared.containsKey(entry.name()))
+                    Ast.FieldDecl declared = schema.get(entry.name());
+                    if (!permitted || declared == null || prepared.containsKey(entry.name()))
                         throw new SecurityException(
                                 "actor init must supply exactly the declared state fields "
                                         + "using only scalar parameters or literals");
                     Object value = eval(entry.value(), initEnv);
-                    if (!(value instanceof String || value instanceof Boolean
-                            || value instanceof Long || value instanceof Integer
-                            || (value instanceof Double d && Double.isFinite(d))))
-                        throw new SecurityException(
-                                "actor init state cannot store unverified host or actor capabilities");
+                    requireActorInitScalarType(declared.type(), value,
+                            "actor init state field '" + entry.name() + "'");
                     prepared.put(entry.name(), value);
                 }
                 if (!prepared.keySet().equals(fields.keySet()))
                     throw new IllegalStateException(
                             "actor init must construct every state field exactly once");
-                // No guest code can observe 'object' before this complete map
-                // has been prepared, and actor readiness is not settled until
-                // this method returns the authenticated actor-owned state.
+                // The temporary map cannot escape: the state object only
+                // becomes ready after this complete, validated install.
                 fields.putAll(prepared);
                 return new SourceActorState(
                         actorContext.self().id(), actorTypeName, object);
@@ -802,6 +822,31 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' is not an actor");
             }
             return klass;
+        }
+
+        /**
+         * Runtime backstop: a host bridge or linked code path must not bypass
+         * the source type checker and install a value with the wrong scalar
+         * representation. Complex ownership and ActorRef require their own ABI.
+         */
+        private static void requireActorInitScalarType(
+                Ast.TypeRef type, Object value, String label) {
+            if (type == null || type.isBorrow() || type.inferArguments()
+                    || !type.arguments().isEmpty()) {
+                throw new SecurityException(label + " has no scalar initialization ABI");
+            }
+            boolean valid = switch (type.name()) {
+                case "int" -> value instanceof Long || value instanceof Integer;
+                case "bool" -> value instanceof Boolean;
+                case "float" -> value instanceof Double d && Double.isFinite(d);
+                case "string", "String" -> value instanceof String;
+                default -> false;
+            };
+            if (!valid) {
+                throw new SecurityException(
+                        label + " does not match its declared immutable scalar type "
+                                + type.name());
+            }
         }
 
         private void executeActorStartup(OresObject object, Ast.MethodDecl startup) {
