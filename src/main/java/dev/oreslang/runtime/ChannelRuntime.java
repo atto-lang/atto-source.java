@@ -607,6 +607,15 @@ public final class ChannelRuntime {
             return set.cases();
         }
 
+        /**
+         * The canonical arbitration descriptor owned by this immutable plan.
+         * Guest select must reuse it so FAIR state survives repeated selections;
+         * allocating a new SelectSet from cases() on each call resets fairness.
+         */
+        public SelectSet selectSetSnapshot() {
+            return set;
+        }
+
         public OresFuture<SelectResult> selectAsync() {
             return set.selectAsync();
         }
