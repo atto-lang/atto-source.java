@@ -28,6 +28,31 @@ final class SingletonDeclarationAdmissionTest {
     }
 
     @Test
+    void singletonInsideModuleDoesNotBypassCompilerAdmission() {
+        for (String declaration : new String[] {
+                "define singleton Settings as end",
+                "define pub singleton Settings as end",
+                "pub define singleton Settings as end"
+        }) {
+            String source = "define module app as\n" + declaration + "\nend\n";
+            IllegalArgumentException error = reject(source);
+            assertTrue(error.getMessage().contains("ORES-SINGLETON-UNSUPPORTED"),
+                    source + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void singletonInCommentsDoesNotImpersonateGuestDeclaration() {
+        String source = """
+                // define singleton Noop as end
+                /* define pub singleton Noop as end */
+                fnc singleton(): int { return 42; }
+                fnc main(): int { return singleton(); }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
+    }
+
+    @Test
     void singletonRemainsContextualAndLegalAsOrdinaryIdentifier() {
         String source = """
                 // define singleton CommentOnly as end
