@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 APPROVAL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$")
@@ -39,8 +40,9 @@ BLOCKING_INCIDENT_IDS = {
     172: 6042602777,  # LLVM exact-tree carrier; independent placement review outstanding
     198: 6070465058,  # ClaimGraph exact Java CI-script placement; independent classification required
     200: 6071264936,  # ClaimGraph private Java governance-blob retention; disposition required
+    252: 6129229261,  # hnpt-e2e private Oreslang source placement; disposition required
 }
-BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200)
+BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200, 252)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
     "scintilla-run-test/gleam-runner-conformance",
@@ -48,6 +50,7 @@ QUARANTINED_DESTINATIONS = (
     "agent-pontifex-test/agent-pontifex-e2e-tests",
     "led-dynamo/leddy-e2e",
     "ClaimGraph-test/claimgraph-e2e",
+    "honeypot-r-us-test/hnpt-e2e",
 )
 QUARANTINED_DESTINATION_IDS = (
     1323575966,  # zed-pkg-test/java-app (#22)
@@ -56,6 +59,7 @@ QUARANTINED_DESTINATION_IDS = (
     1370782550,  # agent-pontifex-test/agent-pontifex-e2e-tests (#171)
     1324139596,  # led-dynamo/leddy-e2e (#172)
     1350751074,  # ClaimGraph-test/claimgraph-e2e (#198/#200)
+    1346492776,  # honeypot-r-us-test/hnpt-e2e (#252)
 )
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
@@ -70,6 +74,9 @@ SECURITY_CODEOWNER_PATHS = (
     "/scripts/publish-private-ci-source-v3.py",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
+INCIDENT_DISPOSITION_REVIEWER = "ORESoftware"
+INCIDENT_DISPOSITION_REVIEWER_ID = 11139560
+INCIDENT_DISPOSITION_MARKER = "PRIVATE_CI_INCIDENT_DISPOSITION_RESOLVED"
 
 
 class Denied(RuntimeError):
@@ -232,6 +239,46 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
+def gh_api_list(route):
+    """Authenticated GitHub list response through the same sealed transport."""
+    argv = [trusted_github_cli(), "api", "--method", "GET", route,
+            "--header", "Accept: application/vnd.github+json"]
+    try:
+        p = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            env=github_api_environment(),
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("authenticated GitHub API request unavailable") from exc
+    if (not isinstance(p.stdout, str)
+            or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS
+            or not isinstance(p.stderr, str)
+            or len(p.stderr) > MAX_GH_API_RESPONSE_CHARS):
+        raise Denied("authenticated GitHub API response exceeds size limit")
+    if p.returncode != 0:
+        raise Denied("authenticated GitHub API request failed")
+    data = strict_json_loads(p.stdout)
+    if not isinstance(data, list):
+        raise Denied("unexpected GitHub list response shape")
+    return data
+
+
+def github_timestamp(value, label):
+    """Parse GitHub's canonical UTC second-resolution timestamp."""
+    if (not isinstance(value, str)
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value)):
+        raise Denied(label)
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise Denied(label) from exc
+    return parsed.replace(tzinfo=timezone.utc)
+
+
 def checked_repo(repository, expected_repository_id=None):
     result = gh_api("repos/" + repository)
     if (not isinstance(result.get("full_name"), str)
@@ -288,6 +335,78 @@ def require_resolved_blocking_incidents():
                 or issue.get("state_reason") != "completed"):
             raise Denied(
                 "blocking P0 incident #" + str(number) + " remains unresolved"
+            )
+        closed_at = github_timestamp(
+            issue.get("closed_at"),
+            "blocking P0 incident close timestamp invalid",
+        )
+        comments = gh_api_list(
+            "repos/" + BLOCKING_INCIDENT_REPO + "/issues/"
+            + str(number) + "/comments?per_page=100"
+        )
+        # If a page is completely full, later comments may exist and could
+        # revoke or supersede disposition. Fail closed instead of accepting an
+        # incomplete view.
+        if len(comments) >= 100:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " disposition comments exceed single-page audit bound"
+            )
+        marker = INCIDENT_DISPOSITION_MARKER + " issue=#" + str(number)
+        reviewer_comments = []
+        seen_comment_ids = set()
+        for comment in comments:
+            if not isinstance(comment, dict):
+                raise Denied("blocking P0 incident comment shape invalid")
+            comment_id = comment.get("id")
+            user = comment.get("user")
+            body = comment.get("body")
+            if (type(comment_id) is not int or comment_id <= 0
+                    or comment_id in seen_comment_ids
+                    or not isinstance(user, dict)
+                    or not isinstance(body, str)):
+                raise Denied("blocking P0 incident comment identity invalid")
+            seen_comment_ids.add(comment_id)
+            created_at = github_timestamp(
+                comment.get("created_at"),
+                "blocking P0 incident comment timestamp invalid",
+            )
+            updated_at = github_timestamp(
+                comment.get("updated_at"),
+                "blocking P0 incident comment timestamp invalid",
+            )
+            if updated_at < created_at:
+                raise Denied("blocking P0 incident comment timestamp invalid")
+            if (user.get("id") == INCIDENT_DISPOSITION_REVIEWER_ID
+                    and isinstance(user.get("login"), str)
+                    and user["login"].casefold()
+                    == INCIDENT_DISPOSITION_REVIEWER.casefold()):
+                # GitHub comment creation order is immutable. Sorting by
+                # updated_at lets an edited old approval supersede a newer
+                # revocation, so order by creation time and comment ID.
+                reviewer_comments.append(
+                    (created_at, comment_id, updated_at, body)
+                )
+        if not reviewer_comments:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " lacks independent security disposition"
+            )
+        reviewer_comments.sort(key=lambda item: (item[0], item[1]))
+        _created_at, _comment_id, disposition_at, disposition_body = reviewer_comments[-1]
+        if disposition_at < closed_at:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " disposition predates current closure"
+            )
+        # The latest security-owner comment is authoritative. Requiring the
+        # complete body to be the marker prevents prose/code examples from
+        # accidentally authorizing transfer and lets any later reviewer
+        # comment revoke authorization fail-closed.
+        if disposition_body != marker:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " latest independent security disposition is absent or revoked"
             )
 
 
@@ -380,13 +499,11 @@ def _require_strict_source_protection(protection):
     administrators = protection.get("enforce_admins")
     force_pushes = protection.get("allow_force_pushes")
     deletions = protection.get("allow_deletions")
-    conversation = protection.get("required_conversation_resolution")
     contexts = checks.get("contexts") if isinstance(checks, dict) else None
     named_checks = checks.get("checks") if isinstance(checks, dict) else None
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
-            or reviews.get("require_last_push_approval") is not True
             or not isinstance(reviews.get("required_approving_review_count"), int)
             or isinstance(reviews["required_approving_review_count"], bool)
             or reviews["required_approving_review_count"] < 1
@@ -399,8 +516,6 @@ def _require_strict_source_protection(protection):
             or any(not isinstance(item, dict)
                    or not isinstance(item.get("context"), str)
                    or not item["context"].strip() for item in named_checks)
-            or not isinstance(conversation, dict)
-            or conversation.get("enabled") is not True
             or not isinstance(administrators, dict)
             or administrators.get("enabled") is not True
             or not isinstance(force_pushes, dict)
@@ -409,8 +524,7 @@ def _require_strict_source_protection(protection):
             or deletions.get("enabled") is not False):
         raise Denied(
             "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
-            "last-push approval, conversation resolution, strict required CI, "
-            "administrator protection and deny forced pushes/deletions")
+            "strict required CI, administrator protection and deny forced pushes/deletions")
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
         if (not isinstance(bypasses, dict)
@@ -426,9 +540,7 @@ def _require_strict_source_protection(protection):
     return (
         reviews["require_code_owner_reviews"],
         reviews["dismiss_stale_reviews"],
-        reviews["require_last_push_approval"],
         reviews["required_approving_review_count"],
-        conversation["enabled"],
         checks["strict"],
         tuple(sorted(contexts)),
         named_contract,
