@@ -1554,6 +1554,12 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new SecurityException(
                         "queue authority requires an admitted owner mailbox envelope");
             }
+            ActorCell<?> parentCell = actors.get(supervisor);
+            if (parentCell != owner.parent || parentCell.stopped.get()
+                    || parentCell.finalized) {
+                throw new SecurityException(
+                        "queue supervisor has retired or lost structured ownership");
+            }
             return mail.sender().orElseThrow(() -> new SecurityException(
                     "host-origin or missing-sender mail cannot carry queue authority"));
         }
@@ -1567,6 +1573,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         /** Runtime authenticated queue incarnation, not a guest-chosen epoch. */
         public ActorId queueActorId() {
+            admittedSender();
             return owner.ref.id();
         }
 
@@ -1609,15 +1616,16 @@ public final class ActorRuntime implements AutoCloseable {
         public synchronized boolean permits(QueueOperation operation, int slot) {
             Objects.requireNonNull(operation, "queue operation");
             ActorId sender = admittedSender();
+            ActorCell<?> senderCell = actors.get(sender);
             return switch (operation) {
                 case ACTIVATE, RECEIVE, CLOSE, TERMINAL_ACK, RETIRE ->
                         sender.equals(supervisor);
                 case SEND, CANCEL -> slot >= 0
                         && slot < producerGrants.length
                         && sender.equals(producerGrants[slot])
-                        && actors.containsKey(sender)
-                        && !actors.get(sender).stopped.get()
-                        && !actors.get(sender).finalized;
+                        && senderCell != null
+                        && !senderCell.stopped.get()
+                        && !senderCell.finalized;
             };
         }
 
@@ -6143,7 +6151,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
-        private final QueueCommandAuthority queueAuthority;
+        /** Lazy, actor-owned authority; do not allocate for unused actors. */
+        private QueueCommandAuthority queueAuthority;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
@@ -6225,7 +6234,8 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
             this.parent = parent;
-            this.queueAuthority = parent == null ? null : new QueueCommandAuthority(this);
+            // Queue authority is constructed only on first explicitly trusted
+            // actor-context request, not for every ordinary child actor.
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
                     ? Integer.MAX_VALUE
@@ -6731,7 +6741,11 @@ public final class ActorRuntime implements AutoCloseable {
                         return Optional.ofNullable(activeMail);
                     }
                     @Override public Optional<QueueCommandAuthority> queueCommandAuthority() {
-                        return Optional.ofNullable(queueAuthority);
+                        if (parent == null) return Optional.empty();
+                        if (queueAuthority == null) {
+                            queueAuthority = new QueueCommandAuthority(ActorCell.this);
+                        }
+                        return Optional.of(queueAuthority);
                     }
                     @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
                         return Optional.ofNullable(codeImage);
