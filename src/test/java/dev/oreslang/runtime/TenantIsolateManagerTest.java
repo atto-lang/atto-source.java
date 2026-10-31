@@ -106,6 +106,12 @@ final class TenantIsolateManagerTest {
                     () -> manager.open_trusted_tenant("first" + (char) 0 + "other", IsolatePolicy.developer()));
             assertThrows(IllegalArgumentException.class,
                     () -> manager.open_trusted_tenant(String.valueOf((char) 0xd800), IsolatePolicy.developer()));
+            for (String blocked : new String[] {".", "..", "../other", "tenant/other",
+                    "tenant:other", "tenant other", "ténant"}) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> manager.open_trusted_tenant(blocked, IsolatePolicy.developer()),
+                        "tenant isolation v1 must reject " + blocked);
+            }
         }
     }
 
