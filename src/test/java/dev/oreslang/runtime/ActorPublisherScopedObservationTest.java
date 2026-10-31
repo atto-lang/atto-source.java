@@ -189,6 +189,14 @@ final class ActorPublisherScopedObservationTest {
             ActorRuntime.ActorRef<String> notJoined = runtime.spawnShared(
                     () -> (message, context) -> { });
 
+            // ActorId alone cannot reauthorize a stale incarnation.
+            ActorRuntime.ActorAddress address = producerA.address();
+            assertTrue(runtime.isLiveActorAddress(address));
+            assertFalse(runtime.isLiveActorAddress(new ActorRuntime.ActorAddress(
+                    address.runtimeId(), address.actorId(), address.generation() + 1,
+                    address.kind(), address.transport())));
+            assertFalse(runtime.isLiveActorAddress(foreignActor.address()));
+
             ActorRuntime.ActorRef<String> observer = runtime.spawnShared(
                     () -> (message, context) -> {
                         try {
@@ -224,6 +232,7 @@ final class ActorPublisherScopedObservationTest {
             // without removing or mutating the other producer's state.
             producerA.stop();
             assertTrue(producerA.awaitTermination(5, TimeUnit.SECONDS));
+            assertFalse(runtime.isLiveActorAddress(address));
             assertTrue(scoped.get().closed());
             assertEquals(0L, runtime.sharedMemoryBytes());
         }
