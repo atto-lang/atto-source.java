@@ -6815,20 +6815,49 @@ public final class OresEvalRootNode extends RootNode {
             return (ChannelRuntime.Channel<Object>) channel;
         }
 
+        private List<ChannelRuntime.SelectCase> asSelectCaseList(Object value) {
+            if (!(value instanceof List<?> list)) {
+                throw new IllegalArgumentException("from_list requires a list of SelectCase values");
+            }
+            ArrayList<ChannelRuntime.SelectCase> result = new ArrayList<>(list.size());
+            for (Object item : list) {
+                result.add(requireSelectCase(item));
+            }
+            return result;
+        }
+
+        private LinkedHashMap<String, ChannelRuntime.SelectCase> asSelectCaseMap(Object value) {
+            if (!(value instanceof Map<?, ?> map)) {
+                throw new IllegalArgumentException("from_map requires an ordered map of SelectCase values");
+            }
+            LinkedHashMap<String, ChannelRuntime.SelectCase> result = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (!(entry.getKey() instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "from_map requires non-null string keys");
+                }
+                result.put(key, requireSelectCase(entry.getValue()));
+            }
+            return result;
+        }
+
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
             if (value instanceof ChannelRuntime.SelectSet set) return set;
-
-            ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
+            if (value instanceof ChannelRuntime.SelectPlan plan) {
+                return plan.selectSetSnapshot();
+            }
+            if (value instanceof ChannelRuntime.DynamicSelectPlan<?> plan) {
+                return plan.selectSetSnapshot();
+            }
             if (value instanceof List<?> list) {
-                for (Object item : list) cases.add(requireSelectCase(item));
-                return new ChannelRuntime.SelectSet(cases);
+                return ChannelRuntime.SelectSet.from(asSelectCaseList(list));
             }
             if (value instanceof Map<?, ?> map) {
-                for (Object item : map.values()) cases.add(requireSelectCase(item));
-                return new ChannelRuntime.SelectSet(cases);
+                return ChannelRuntime.SelectSet.fromMap(asSelectCaseMap(map));
             }
             throw new IllegalArgumentException(
-                    "dynamic select requires SelectSet or list/map of SelectCase values");
+                    "dynamic select requires SelectSet, SelectPlan, DynamicSelectPlan, "
+                            + "or list/map of SelectCase values");
         }
 
         private ChannelRuntime.SelectCase requireSelectCase(Object value) {
@@ -7285,6 +7314,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
+                if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this);
+                if (name.name().equals("DynamicSelectPlan")) return new DynamicSelectPlanFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -8187,6 +8218,52 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("unknown SelectSet factory member " + name);
                 }
                 return (Invokable) factory::create;
+            }
+            if (receiver instanceof SelectPlanFactory factory) {
+                return switch (name) {
+                    case "from_list" -> (Invokable) factory::fromList;
+                    case "from_map" -> (Invokable) factory::fromMap;
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectPlan factory member " + name);
+                };
+            }
+            if (receiver instanceof DynamicSelectPlanFactory factory) {
+                return switch (name) {
+                    case "from_list" -> (Invokable) factory::fromList;
+                    case "from_map" -> (Invokable) factory::fromMap;
+                    default -> throw new IllegalArgumentException(
+                            "unknown DynamicSelectPlan factory member " + name);
+                };
+            }
+            if (receiver instanceof ChannelRuntime.DynamicSelectPlan<?> plan) {
+                return switch (name) {
+                    case "put" -> (Invokable) args -> {
+                        requireTwo(args, "DynamicSelectPlan.put");
+                        @SuppressWarnings("unchecked")
+                        ChannelRuntime.DynamicSelectPlan<Object> typed =
+                                (ChannelRuntime.DynamicSelectPlan<Object>) plan;
+                        typed.put(args.get(0), requireSelectCase(args.get(1)));
+                        return null;
+                    };
+                    case "remove" -> (Invokable) args -> {
+                        requireOne(args, "DynamicSelectPlan.remove");
+                        return plan.remove(args.getFirst());
+                    };
+                    case "version" -> (Invokable) args -> {
+                        requireZero(args, "DynamicSelectPlan.version");
+                        return plan.version();
+                    };
+                    case "size" -> (Invokable) args -> {
+                        requireZero(args, "DynamicSelectPlan.size");
+                        return (long) plan.size();
+                    };
+                    case "keys" -> (Invokable) args -> {
+                        requireZero(args, "DynamicSelectPlan.keys");
+                        return plan.keys();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown DynamicSelectPlan member " + name);
+                };
             }
             if (receiver instanceof SelectResultValue selected) {
                 return switch (name) {
@@ -11146,6 +11223,34 @@ public final class OresEvalRootNode extends RootNode {
         private Object create(List<Object> args) {
             requireOne(args, "SelectSet.new");
             return owner.asSelectSet(args.getFirst());
+        }
+    }
+
+    private record SelectPlanFactory(Evaluator owner) {
+        private Object fromList(List<Object> args) {
+            requireOne(args, "SelectPlan.from_list");
+            return ChannelRuntime.SelectPlan.fromList(
+                    owner.asSelectCaseList(args.getFirst()));
+        }
+
+        private Object fromMap(List<Object> args) {
+            requireOne(args, "SelectPlan.from_map");
+            return ChannelRuntime.SelectPlan.fromMap(
+                    owner.asSelectCaseMap(args.getFirst()));
+        }
+    }
+
+    private record DynamicSelectPlanFactory(Evaluator owner) {
+        private Object fromList(List<Object> args) {
+            requireOne(args, "DynamicSelectPlan.from_list");
+            return ChannelRuntime.DynamicSelectPlan.fromList(
+                    owner.asSelectCaseList(args.getFirst()));
+        }
+
+        private Object fromMap(List<Object> args) {
+            requireOne(args, "DynamicSelectPlan.from_map");
+            return ChannelRuntime.DynamicSelectPlan.fromMap(
+                    owner.asSelectCaseMap(args.getFirst()));
         }
     }
 
