@@ -262,32 +262,13 @@ def remote_file_at_source_main(path, main_sha, max_bytes):
 def authorized_source_authority_sha(
         repository, expected_policy_digest, expected_repository_id,
         source_pr, source_commit, authority_mode):
-    """Resolve the immutable source governance authority for this handoff."""
-    if authority_mode == "protected-main":
-        return authorized_main_sha(
-            repository, expected_policy_digest, expected_repository_id
-        )
-    if authority_mode != "reviewed-pr-head":
-        raise Denied("source authority mode invalid")
-
-    # The exact open PR head and latest independent ORESoftware review are the
-    # authority. Mutable unprotected main is deliberately not consulted.
-    if verify_source_pr(source_pr, source_commit) != SOURCE_REPOSITORY_ID:
-        raise Denied("source reviewed PR repository identity changed")
-    policy, _ = remote_file_at_source_main(
-        legacy.POLICY_PATH, source_commit, 16 * 1024
+    """Require protected source-main governance for every private handoff."""
+    del source_pr, source_commit
+    if authority_mode != "protected-main":
+        raise Denied("source authority requires protected main")
+    return authorized_main_sha(
+        repository, expected_policy_digest, expected_repository_id
     )
-    if hashlib.sha256(policy).digest() != expected_policy_digest:
-        raise Denied("source policy diverges from independently reviewed PR head")
-    codeowners, _ = remote_file_at_source_main(
-        legacy.CODEOWNERS_PATH, source_commit, MAX_GOVERNANCE_FILE
-    )
-    legacy.require_security_codeowners(codeowners)
-
-    # Close review/head TOCTOU after governance bytes are read.
-    if verify_source_pr(source_pr, source_commit) != SOURCE_REPOSITORY_ID:
-        raise Denied("source reviewed PR authorization changed during attestation")
-    return source_commit
 
 
 def parse_contract(raw, repository, source_pr, test_plan):
@@ -309,9 +290,7 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "repository_id", "base_sha", "workflow_path",
         "workflow_blob_sha", "test_plans"
     }
-    allowed_carrier_fields = required_carrier_fields | {
-        "review_pr", "governance_mode",
-    }
+    allowed_carrier_fields = required_carrier_fields | {"review_pr"}
     if (not required_carrier_fields.issubset(carrier)
             or not set(carrier).issubset(allowed_carrier_fields)):
         raise Denied("carrier contract fields are not exact")
@@ -324,11 +303,6 @@ def parse_contract(raw, repository, source_pr, test_plan):
             and (not isinstance(review_pr, int) or isinstance(review_pr, bool)
                  or review_pr <= 0)):
         raise Denied("carrier review PR invalid")
-    governance_mode = carrier.get("governance_mode", "protected-main")
-    if governance_mode not in ("protected-main", "reviewed-pr-head"):
-        raise Denied("carrier governance mode invalid")
-    if governance_mode == "reviewed-pr-head" and review_pr is None:
-        raise Denied("reviewed-pr-head carrier requires review PR")
     workflow_path = safe_policy_path(
         carrier.get("workflow_path"), ".github/workflows/", ".yml"
     )
@@ -358,7 +332,6 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "test_plan_path": plan_path,
         "test_plan_blob_sha": plan_blob,
         "review_pr": review_pr,
-        "governance_mode": governance_mode,
     }
 
 
@@ -604,11 +577,8 @@ def review_attested_carrier_pr_head(repository, contract):
 
 
 def checked_carrier_main(repository, contract):
-    governance_mode = contract.get("governance_mode", "protected-main")
-    if governance_mode == "reviewed-pr-head":
-        return review_attested_carrier_pr_head(repository, contract)
-    if governance_mode != "protected-main":
-        raise Denied("carrier governance mode invalid")
+    if contract.get("governance_mode", "protected-main") != "protected-main":
+        raise Denied("carrier governance requires protected main")
 
     branch = legacy.gh_api(f"repos/{repository}/branches/main")
     if branch.get("name") != "main":
@@ -1160,9 +1130,9 @@ def authorize_write(
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state changed during transfer")
-    # Re-attest the exact carrier authority before every write. Protected-main
-    # mode rechecks branch protection/CODEOWNERS; reviewed-pr-head mode rechecks
-    # the immutable PR head and latest independent exact-head approval.
+    # Re-attest protected carrier main before every source-bearing write.
+    # Exact-head review is additive evidence, never a substitute for enforced
+    # branch protection and security CODEOWNERS.
     if checked_carrier_main(repository, contract) != contract["base_sha"]:
         raise Denied("carrier authority changed during source-bearing write")
     if verify_source_pr(source_pr, source_commit) != source_repo_id:
@@ -1728,8 +1698,9 @@ def main(argv=None):
     parser.add_argument("--capacity-run-id", required=True, type=int)
     parser.add_argument(
         "--source-authority-mode",
-        choices=("protected-main", "reviewed-pr-head"),
+        choices=("protected-main",),
         default="protected-main",
+        help="private export requires enforced protected source main",
     )
     args = parser.parse_args(argv)
     root = SCRIPT_DIR.parent
