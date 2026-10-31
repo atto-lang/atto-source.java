@@ -4062,6 +4062,21 @@ public final class OresEvalRootNode extends RootNode {
 
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && member.member().equals("queue_authorized")) {
+                    if (env.lookup("self") != object || args.size() != 2
+                            || !(args.get(0) instanceof Long || args.get(0) instanceof Integer)
+                            || !(args.get(1) instanceof Long || args.get(1) instanceof Integer)) {
+                        throw new SecurityException(
+                                "queue authorization is actor-self-only with two int arguments");
+                    }
+                    int opcode = Math.toIntExact(((Number) args.get(0)).longValue());
+                    int producer = Math.toIntExact(((Number) args.get(1)).longValue());
+                    return object.owner.invokableInvocation(
+                            ignored -> object.owner.context.actors()
+                                    .isCurrentQueueCommandAuthorized(opcode, producer),
+                            List.of());
+                }
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
                     if (!args.isEmpty()) {
                         throw new IllegalArgumentException(
@@ -5448,6 +5463,21 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && methodCall.member().equals("queue_authorized")) {
+                        if (env.lookup("self") != object || args.size() != 2
+                                || !(args.get(0) instanceof Long || args.get(0) instanceof Integer)
+                                || !(args.get(1) instanceof Long || args.get(1) instanceof Integer)) {
+                            throw new SecurityException(
+                                    "queue authorization is actor-self-only with two int arguments");
+                        }
+                        int opcode = Math.toIntExact(((Number) args.get(0)).longValue());
+                        int producer = Math.toIntExact(((Number) args.get(1)).longValue());
+                        return object.owner.invokableInvocation(
+                                ignored -> object.owner.context.actors()
+                                        .isCurrentQueueCommandAuthorized(opcode, producer),
+                                List.of());
+                    }
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
                         if (!args.isEmpty()) {
