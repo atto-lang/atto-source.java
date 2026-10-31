@@ -376,6 +376,57 @@ final class HotReloadCurrentMainTransactionTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void concurrentServingLeasePinsV1UntilV2PublishesAndOldWorkCompletes() throws Exception {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var v1 = manager.loadAndStart("worker.ores", GOOD);
+            var oldAdmitted = new java.util.concurrent.CountDownLatch(1);
+            var releaseOld = new java.util.concurrent.CountDownLatch(1);
+            var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+            try {
+                // The simulated physical dispatch owns the V1 code image,
+                // even while CONTROL stages and publishes a V2 serving route.
+                var oldWork = pool.submit(() -> {
+                    try (var pinned = manager.pinServing("worker.ores")) {
+                        assertSame(v1, pinned.generation());
+                        oldAdmitted.countDown();
+                        assertTrue(releaseOld.await(10, java.util.concurrent.TimeUnit.SECONDS));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+                try {
+                    assertTrue(oldAdmitted.await(10, java.util.concurrent.TimeUnit.SECONDS));
+                    var upgrade = pool.submit(() -> manager.reloadAndStart(
+                            "worker.ores",
+                            "pub routine main(): void { val upgraded = 2; return; }"));
+                    var v2 = upgrade.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                    assertTrue(v2.initialized());
+                    assertSame(v2, manager.serving("worker.ores"));
+                    assertFalse(v1.closed(), "V1 remains live while old work is pinned");
+                    assertThrows(IllegalStateException.class, () -> manager.retire(v1.id()));
+                    try (var newWork = manager.pinServing("worker.ores")) {
+                        assertSame(v2, newWork.generation(),
+                                "new admissions select V2 after publication");
+                    }
+                    assertEquals(2, manager.liveGenerations());
+                } finally {
+                    releaseOld.countDown();
+                }
+                oldWork.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                manager.retire(v1.id());
+                assertTrue(v1.closed());
+                assertEquals(1, manager.liveGenerations());
+                assertSame(manager.active("worker.ores"), manager.serving("worker.ores"));
+            } finally {
+                releaseOld.countDown();
+                pool.shutdownNow();
+            }
+        }
+    }
+
+    @Test
     void unverifiedDeclaredDependenciesAreRejectedEvenWithValidSource() {
         var compiled = compiledGood();
         var forged = counterfeit(compiled, GOOD, sha256(GOOD), Set.of("other.ores"));
