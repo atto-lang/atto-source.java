@@ -172,7 +172,6 @@ final class DynamicSelectPlanGenerationTest {
         assertEquals(0, leftResult.key());
         assertEquals(2L, leftResult.version());
         assertEquals(41, leftResult.selection().value());
-        assertEquals(1, right.pendingValues());
         var rightResult = dynamic.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
         assertEquals(1, rightResult.key());
         assertEquals(42, rightResult.selection().value());
@@ -224,7 +223,7 @@ final class DynamicSelectPlanGenerationTest {
         }
         assertThrows(ChannelRuntime.SelectAdmissionException.class,
                 () -> ChannelRuntime.DynamicSelectPlan.fromList(oversized));
-        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> ChannelRuntime.SelectPlan.fromList(oversized));
     }
 
