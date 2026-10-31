@@ -4885,7 +4885,9 @@ public final class ActorRuntime implements AutoCloseable {
      * immutable scalar values, with bounded count and serialized size.
      * ActorRef/capability/owned-heap transfers must receive separate,
      * generation-fenced cross-tenant ownership proofs before admission.
-     * This method does NOT imply that source 'init' syntax is lowered yet.
+     * The current compiler candidate lowers only synchronous scalar init;
+     * the stronger atomic ActorRef-publication, ActorRef injection and
+     * physical actor-heap isolation contracts remain unverified.
      */
     public ActorRef<Object> spawnCodeActor(
             ActorKind kind,
