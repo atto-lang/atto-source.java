@@ -375,6 +375,18 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 if (actorOwnership != null) {
                     throw new RejectedExecutionException("WebSocket connection already bound");
                 }
+                // Binding must begin from a physically quiescent and logically
+                // drained host connection. Otherwise a pre-bind host read,
+                // write or queued fragment could be inherited by the actor
+                // without an actor-generation lease, bypassing the transfer
+                // safety rules on first publication.
+                if (abortRequested.get() || reading.get() || writerActive.get()
+                        || outbound.hasPending()
+                        || protocol.state() != WebSocketSessionState.State.OPEN
+                        || protocol.hasPendingUserState()) {
+                    throw new RejectedExecutionException(
+                            "WebSocket actor bind requires drained host read, write and USER state");
+                }
                 var ledger = WebSocketActorConnectionLease.bindHost(
                         authenticatedTenant, owner, ownerAlive);
                 // Liveness can change during issuance. Do not permanently
