@@ -726,6 +726,92 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void namespaceIndexUsesAdmittedRootManifestNotLaterOwnerEdit() throws Exception {
+        Path project = temp.resolve("immutable-root-index");
+        Path main = source(project, "src/main.ores", "app",
+                "pub fnc main(): void { return; }");
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.original]
+                files = ["src/main.ores"]
+                """);
+        PackageNamespaceWorkspace.Workspace snapshot =
+                PackageNamespaceWorkspace.discover(main);
+        String id = main.toRealPath().toString().replace('\\', '/');
+        Map<String, String> sources = Map.of(id, Files.readString(main));
+        String original = dev.oreslang.compiler.PackageNamespaceIndex.packageId(
+                manifest, "original");
+        var before = dev.oreslang.compiler.PackageNamespaceIndex.loadFromSnapshots(
+                snapshot.manifestSnapshots(), sources, snapshot.aliases());
+        assertEquals(original, before.ownerOf(id));
+
+        // Rewriting the file cannot retarget a previously admitted linker.
+        Files.writeString(manifest, Files.readString(manifest)
+                .replace("[packages.original]", "[packages.foreign]"));
+        var after = dev.oreslang.compiler.PackageNamespaceIndex.loadFromSnapshots(
+                snapshot.manifestSnapshots(), sources, snapshot.aliases());
+        assertEquals(original, after.ownerOf(id));
+        assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyRootManifestSnapshot(snapshot));
+        assertThrows(UnsupportedOperationException.class,
+                () -> snapshot.manifestSnapshots().clear());
+    }
+
+    @Test
+    void namespaceIndexUsesAdmittedDependencyNotLaterOwnerEdit() throws Exception {
+        Path provider = temp.resolve("immutable-dependency");
+        Path providerManifest = billing(provider);
+        List<Path> members = List.of(
+                provider.resolve("src/billing/charge.ores"),
+                provider.resolve("src/billing/refund.ores"),
+                provider.resolve("src/billing/balance.ores"),
+                provider.resolve("src/billing/invoice.ores"));
+        Path client = temp.resolve("immutable-client");
+        Path main = source(client, "src/main.ores", "app", """
+                import namespace billing as payments from "checkout";
+                pub fnc main(): void {
+                  stdio.println(payments.refund());
+                  return;
+                }
+                """);
+        Files.writeString(client.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                [namespace_dependencies.checkout]
+                manifest = "../immutable-dependency/.ores.pkg.toml"
+                package = "checkout"
+                manifest_sha256 = "%s"
+                sources_sha256 = "%s"
+                """.formatted(
+                PackageNamespaceWorkspace.sha256(Files.readAllBytes(providerManifest)),
+                PackageNamespaceWorkspace.sourceDigest(providerManifest, members)));
+        PackageNamespaceWorkspace.Workspace snapshot =
+                PackageNamespaceWorkspace.discover(main);
+        Map<String, String> sources = new java.util.LinkedHashMap<>();
+        for (Path file : snapshot.files()) {
+            sources.put(file.toRealPath().toString().replace('\\', '/'),
+                    Files.readString(file));
+        }
+        String importer = main.toRealPath().toString().replace('\\', '/');
+        String original = dev.oreslang.compiler.PackageNamespaceIndex.packageId(
+                providerManifest, "checkout");
+        Files.writeString(providerManifest, Files.readString(providerManifest)
+                .replace("[packages.checkout]", "[packages.foreign]"));
+
+        var index = dev.oreslang.compiler.PackageNamespaceIndex.loadFromSnapshots(
+                snapshot.manifestSnapshots(), sources, snapshot.aliases());
+        assertEquals(original, index.resolve(importer, "checkout", "billing").packageId());
+        assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, sources));
+    }
+
+    @Test
     void rootManifestChangeAfterDiscoveryMustFailBeforeLinking() throws Exception {
         Path project = temp.resolve("root-reassignment");
         Path main = source(project, "src/main.ores", "app", """
