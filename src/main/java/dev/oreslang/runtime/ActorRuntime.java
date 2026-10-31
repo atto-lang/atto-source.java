@@ -7888,7 +7888,8 @@ public final class ActorRuntime implements AutoCloseable {
                 stopped.set(true);
                 sealing = true;
                 // A reclamation receipt can exist only after shutdown seals
-                // source Task admission. Existing leases remain authoritative
+                // all actor-owned physical work admission. Existing Task,
+                // native-worker and registered-handle leases remain authoritative
                 // until their physical retirement callbacks succeed.
                 physicalRetirement.seal();
                 // Detach pending observers under the actor monitor. Settling an
