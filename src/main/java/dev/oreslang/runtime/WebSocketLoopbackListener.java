@@ -919,7 +919,18 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         () -> ticket.deliverOnActor(handler), ticket::close);
                 return admitted;
             } finally {
-                if (!admitted) ticket.close();
+                if (!admitted) {
+                    // The message has already left the protocol's USER queue.
+                    // A refused actor mailbox cannot silently drop it and
+                    // continue accepting new wire frames: fail closed.
+                    ticket.close();
+                    if (abortRequested.compareAndSet(false, true)) {
+                        synchronized (lifecycleLock) {
+                            if (actorOwnership != null) actorOwnership.revoke();
+                        }
+                        scheduleHostClose();
+                    }
+                }
             }
         }
 
