@@ -126,7 +126,7 @@ struct ParsedJob<'a> {
     steps: Option<Vec<Step<'a>>>,
 }
 impl<'a> ParsedJob<'a> {
-    fn as_model(&'a self) -> Job<'a> {
+    fn as_model(&self) -> Job<'_> {
         Job {id:self.id,sha:self.sha,run_id:self.run_id,attempt:self.attempt,
             status:self.status,conclusion:self.conclusion,steps:self.steps.as_deref()}
     }
