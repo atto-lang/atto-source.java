@@ -1136,6 +1136,15 @@ public final class OwnershipChecker {
                                 throw error("cannot rt take immutable/final class field '"
                                         + ownerClass.name() + "." + member.member() + "'");
                             }
+                            if (slot != null && !hasCopyPolicy(slot.annotations(), "NoCopy")) {
+                                // No partial-move ledger exists even for an
+                                // unannotated LET field: accepting a transfer
+                                // here would leave a live original owner.
+                                throw error("E_MOVE_UNPROVEN: rt take of class field '"
+                                        + ownerClass.name() + "." + member.member()
+                                        + "' lacks projection invalidation proof; "
+                                        + "move the entire class owner instead");
+                            }
                         }
                     }
                     // A field projection is not a new owned value. In particular an
