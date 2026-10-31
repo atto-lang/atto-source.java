@@ -32,7 +32,8 @@ final class PackageNamespaceWorkspace {
                      Map<Path, String> dependencyManifestPins,
                      String rootManifestSha256,
                      Map<Path, String> manifestSnapshots,
-                     Map<Path, Object> providerFileKeys) {
+                     Map<Path, Object> providerFileKeys,
+                     Map<Path, Object> manifestFileKeys) {
         Workspace {
             manifests = List.copyOf(manifests);
             files = List.copyOf(files);
@@ -42,6 +43,10 @@ final class PackageNamespaceWorkspace {
             dependencyManifestPins = Map.copyOf(dependencyManifestPins);
             manifestSnapshots = Map.copyOf(manifestSnapshots);
             providerFileKeys = Map.copyOf(providerFileKeys);
+            manifestFileKeys = Map.copyOf(manifestFileKeys);
+            if (!Set.copyOf(manifests).containsAll(manifestFileKeys.keySet())) {
+                throw new IllegalArgumentException("manifest identity map references unlisted manifests");
+            }
             if (!Set.copyOf(files).containsAll(providerFileKeys.keySet())) {
                 throw new IllegalArgumentException("provider identity map references unlisted sources");
             }
@@ -196,9 +201,18 @@ final class PackageNamespaceWorkspace {
                     LinkOption.NOFOLLOW_LINKS).fileKey();
             if (fileKey != null) providerFileKeys.put(file, fileKey);
         }
+        // Immutable content pins alone miss an identical-byte regular-file
+        // replacement. Preserve physical manifest identities where available.
+        LinkedHashMap<Path, Object> manifestFileKeys = new LinkedHashMap<>();
+        for (Path pinnedManifest : manifests) {
+            Object fileKey = Files.readAttributes(pinnedManifest,
+                    java.nio.file.attribute.BasicFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS).fileKey();
+            if (fileKey != null) manifestFileKeys.put(pinnedManifest, fileKey);
+        }
         Workspace snapshot = new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
                 aliases, rootPackageIds, sourcePins, manifestPins, rootManifestSha256,
-                manifestSnapshots, providerFileKeys);
+                manifestSnapshots, providerFileKeys, manifestFileKeys);
         verifyRootManifestSnapshot(snapshot);
         return snapshot;
     }
@@ -386,11 +400,27 @@ final class PackageNamespaceWorkspace {
      * Re-verify pinned dependency bytes against the *same admitted source text*
      * that the compiler will parse, not just an earlier filesystem read.
      */
+    private static void verifyManifestFileIdentity(Workspace workspace, Path manifest)
+            throws IOException {
+        if (Files.isSymbolicLink(manifest)
+                || !Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) {
+            throw new SecurityException("namespace manifest file identity changed during admission: " + manifest);
+        }
+        Object admittedKey = workspace.manifestFileKeys().get(manifest);
+        if (admittedKey != null) {
+            Object currentKey = Files.readAttributes(manifest,
+                    java.nio.file.attribute.BasicFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS).fileKey();
+            if (!admittedKey.equals(currentKey)) {
+                throw new SecurityException("namespace manifest file identity changed during admission: " + manifest);
+            }
+        }
+    }
+
     static void verifyRootManifestSnapshot(Workspace workspace) throws IOException {
         Path manifest = workspace.manifests().getFirst();
-        if (Files.isSymbolicLink(manifest)
-                || !Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)
-                || !sha256(readManifestBytes(manifest)).equals(workspace.rootManifestSha256())) {
+        verifyManifestFileIdentity(workspace, manifest);
+        if (!sha256(readManifestBytes(manifest)).equals(workspace.rootManifestSha256())) {
             throw new SecurityException("root namespace manifest changed during admission");
         }
     }
@@ -443,6 +473,7 @@ final class PackageNamespaceWorkspace {
 
         for (var entry : workspace.dependencySourcePins().entrySet()) {
             Path manifest = entry.getKey();
+            verifyManifestFileIdentity(workspace, manifest);
             String pinnedManifestHash = workspace.dependencyManifestPins().get(manifest);
             if (!sha256(readManifestBytes(manifest)).equals(pinnedManifestHash)) {
                 throw new SecurityException("dependency manifest changed during admission");
