@@ -9760,9 +9760,7 @@ public final class OresEvalRootNode extends RootNode {
         // under the lock, but traverse the snapshot outside it so a nested
         // guest object or host callback cannot execute while locked.
         private Map<String,Object> fieldSnapshot() {
-            synchronized (fields) {
-                return new LinkedHashMap<>(fields);
-            }
+            return OresFieldSnapshots.copy(fields);
         }
         @Override public Iterable<?> sharedStateChildren(){return fieldSnapshot().values();}
         @Override public String toString() { return CycleSafeDisplay.render(this); }

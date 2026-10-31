@@ -127,3 +127,25 @@ deep transactional snapshot or proof of owner/lifetime safety for
 nested values. The Java compiler/runtime JUnit, actual multithreaded
 stress tests, and Graal native executions are still **NOT_EXECUTED**
 until source-side or independently authorized CI steps run.
+
+
+## Testable host snapshot seam (2026-10-31 follow-up)
+
+`OresFieldSnapshots.copy(Map)` is now the package-private Java-only
+boundary used by `OresObject.fieldSnapshot()`. The production
+implementation is a synchronized `LinkedHashMap` shallow copy.
+`OresFieldSnapshotsTest` adds three JUnit host tests for field
+order/null/sentinel preservation, release of the monitor after
+copying, and concurrent atomic two-field updates against three
+simultaneous snapshot readers (20,000 writes and 60,000 reads).
+
+The focused workflow requires **both** exact Surefire reports:
+eight Oreslang compiler/Graal guest tests and three host Java
+snapshot tests, all zero failures/errors/skips. The host helper is
+JDK 17-compatible and can also be smoke-tested with a standalone
+JDK 21 compiler without importing the private full compiler tree.
+That smoke result **does not** replace the exact-head workflow.
+
+A shallow snapshot does not guarantee deep ownership safety, handle
+affinity or complete actor/TaskScope retirement. Those remain
+separate runtime/conformance gates.

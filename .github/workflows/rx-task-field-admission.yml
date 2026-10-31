@@ -39,12 +39,15 @@ jobs:
           java-version: '25'
           distribution: graalvm
           cache: maven
-      - name: Execute eight real compiler and guest JUnit tests
+      - name: Execute 8 guest tests and 3 host field-snapshot integrity tests
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -P '!native-thread-unix' -Dtest=RxTaskFieldTransferAdmissionTest test
-          report="target/surefire-reports/dev.oreslang.RxTaskFieldTransferAdmissionTest.txt"
-          test -s "$report"
-          grep -Eq '^Tests run: 8, Failures: 0, Errors: 0, Skipped: 0' "$report"
-          echo 'RX_TASK_JAVA_GUEST_8_8_PASS'
+          mvn -B -ntp -P '!native-thread-unix' -Dtest=RxTaskFieldTransferAdmissionTest,OresFieldSnapshotsTest test
+          guest_report="target/surefire-reports/dev.oreslang.RxTaskFieldTransferAdmissionTest.txt"
+          host_report="target/surefire-reports/dev.oreslang.nodes.OresFieldSnapshotsTest.txt"
+          test -s "$guest_report"
+          test -s "$host_report"
+          grep -Eq '^Tests run: 8, Failures: 0, Errors: 0, Skipped: 0' "$guest_report"
+          grep -Eq '^Tests run: 3, Failures: 0, Errors: 0, Skipped: 0' "$host_report"
+          echo 'RX_TASK_JAVA_GUEST_8_8_AND_HOST_SNAPSHOTS_3_3_PASS'
