@@ -47,7 +47,10 @@ final class DbDurableWalAuthority {
                 io.register(opened);
                 return new DbDurableWalAuthority(context, actor, filePath, opened);
             } catch (Exception rejected) {
-                opened.close();
+                // register() can retain the resource when context shutdown
+                // raced the I/O worker; physical close then belongs ONLY to
+                // the context's post-join sweep.
+                if (!io.retainsRegisteredResource(opened)) opened.close();
                 throw rejected;
             }
         });
@@ -69,7 +72,7 @@ final class DbDurableWalAuthority {
         AsyncNativeIo io = context.nativeIo();
         // If admission is refused or queued work is discarded, this gate can
         // stay sealed. Fail closed until trusted supervisor reconciliation.
-        return io.submit("db.wal.append_sync", () -> {
+        return io.submitWithNonStartHook("db.wal.append_sync", () -> {
             try (AsyncNativeIo.IoLoan loan = io.borrow(file)) {
                 return file.appendAndSync(generation, operationId, frame);
             } finally {
@@ -77,7 +80,7 @@ final class DbDurableWalAuthority {
                 // admission. Never trust a terminal/cancelled Future for it.
                 lifecycle.physicalWriteRetired();
             }
-        });
+        }, lifecycle::neverStartedWrite);
     }
 
     synchronized OresFuture<Void> revoke() {

@@ -21,6 +21,17 @@ final class DbWalAuthorityLifecycle {
         return true;
     }
 
+    /**
+     * Called only by AsyncNativeIo's atomic never-started admission hook.
+     * It is NOT a Future cancellation callback: if a kernel write may have
+     * started, this transition is forbidden and physical retirement is needed.
+     */
+    synchronized void neverStartedWrite() {
+        if (!physicallyActive) throw new IllegalStateException(
+                "DB WAL duplicate/spurious never-started retirement");
+        physicallyActive = false;
+    }
+
     /** Only the owning I/O worker may report its actual physical exit. */
     synchronized void physicalWriteRetired() {
         if (!physicallyActive) throw new IllegalStateException(

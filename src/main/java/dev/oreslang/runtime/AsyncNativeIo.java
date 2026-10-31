@@ -237,20 +237,34 @@ public final class AsyncNativeIo implements AutoCloseable {
     }
 
     synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
-        return admit(operation, work, controls, CONTROL_CAPACITY, controlWorkers);
+        return admit(operation, work, controls, CONTROL_CAPACITY, controlWorkers, null);
     }
 
     synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
-        return admit(operation, work, pending, capacity, workers);
+        return admit(operation, work, pending, capacity, workers, null);
+    }
+
+    /**
+     * Internal physical I/O admission hook. The callback runs exactly once
+     * only if the operation provably never entered its worker. It must be
+     * short, nonblocking, and must not reenter this AsyncNativeIo monitor.
+     * It NEVER reports cancellation of work that started or may have written.
+     */
+    synchronized <T> OresFuture<T> submitWithNonStartHook(
+            String operation, Callable<T> work, Runnable onNeverStarted) {
+        Objects.requireNonNull(onNeverStarted);
+        return admit(operation, work, pending, capacity, workers, onNeverStarted);
     }
 
     private <T> OresFuture<T> admit(String operation, Callable<T> work,
-            Set<Operation<?>> admitted, int limit, ThreadPoolExecutor executor) {
+            Set<Operation<?>> admitted, int limit, ThreadPoolExecutor executor,
+            Runnable onNeverStarted) {
         Objects.requireNonNull(operation);
         Objects.requireNonNull(work);
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
         if (closed || admitted.size() >= limit) {
             CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
+            notifyNeverStarted(onNeverStarted);
             result.failFromRuntime(new RejectedExecutionException(
                     closed ? "I/O context closed" : "I/O admission capacity exhausted"));
             return result;
@@ -258,7 +272,7 @@ public final class AsyncNativeIo implements AutoCloseable {
 
         Operation<T> op = new Operation<>(
                 operation, work, result, admitted,
-                ActorRuntime.currentActorId().orElse(null));
+                ActorRuntime.currentActorId().orElse(null), onNeverStarted);
         admitted.add(op); // Reserve before publishing work to any executor.
         incrementActorOperationLocked(op.admittedActor);
         long queuedAt = CorePerf.start();
@@ -270,9 +284,26 @@ public final class AsyncNativeIo implements AutoCloseable {
             admitted.remove(op);
             decrementActorOperationLocked(op.admittedActor);
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
+            notifyNeverStarted(onNeverStarted);
             result.failFromRuntime(failure);
         }
         return result;
+    }
+
+    private void notifyNeverStarted(Runnable callback) {
+        if (callback == null) return;
+        try {
+            callback.run();
+        } catch (RuntimeException | Error failure) {
+            recordIncomplete(failure);
+            throw failure;
+        }
+    }
+
+    /** For post-seal registration failure: a retained handle is owned by
+     * the quarantined I/O context and must not be closed by its creator. */
+    synchronized boolean retainsRegisteredResource(AutoCloseable resource) {
+        return resourceLoans.containsKey(resource);
     }
 
     private final class Operation<T> implements Runnable {
@@ -281,17 +312,20 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final OresFuture<T> completion;
         private final Set<Operation<?>> owner;
         private final ActorRuntime.ActorId admittedActor;
+        private final Runnable onNeverStarted;
         private final AtomicReference<OperationState> state =
                 new AtomicReference<>(OperationState.ADMITTED);
         private long queuedAt;
 
         private Operation(String operation, Callable<T> work, OresFuture<T> completion,
-                Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor) {
+                Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor,
+                Runnable onNeverStarted) {
             this.operation = operation;
             this.work = work;
             this.completion = completion;
             this.owner = owner;
             this.admittedActor = admittedActor;
+            this.onNeverStarted = onNeverStarted;
         }
 
         @Override public void run() {
@@ -345,6 +379,9 @@ public final class AsyncNativeIo implements AutoCloseable {
         private void cancelledBeforeStart(Throwable failure) {
             if (!state.compareAndSet(OperationState.ADMITTED,
                     OperationState.CANCELLED_BEFORE_START)) return;
+            // Only the ADMITTED -> CANCELLED_BEFORE_START winner knows
+            // a worker never began. Failed hooks quarantine this context.
+            notifyNeverStarted(onNeverStarted);
             // A Future terminal subscriber may block indefinitely. Deliver
             // never-started cancellation from a detached host notification
             // carrier, never on the close() caller or CONTROL thread. At most
