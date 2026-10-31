@@ -6192,12 +6192,21 @@ public final class OresEvalRootNode extends RootNode {
                                 "field",
                                 ownedField.field().name());
                     }
-                    Object fieldValue = object.fields.get(methodCall.member());
-                    if (fieldValue == UNINITIALIZED_FIELD) {
-                        throw new IllegalArgumentException(
-                                "field '" + object.klass.name() + "." + methodCall.member()
-                                        + "' is read before constructor initialization");
+                    Object fieldValue;
+                    synchronized (object.fields) {
+                        fieldValue = object.fields.get(methodCall.member());
+                        if (fieldValue == UNINITIALIZED_FIELD) {
+                            throw new IllegalArgumentException(
+                                    "field '" + object.klass.name() + "." + methodCall.member()
+                                            + "' is read before constructor initialization");
+                        }
+                        if (fieldValue == MOVED_FIELD) {
+                            throw new IllegalStateException(
+                                    "field '" + object.klass.name() + "." + methodCall.member()
+                                            + "' was already moved");
+                        }
                     }
+                    // Invoke the callable outside the storage lock.
                     if (fieldValue instanceof Invokable invokable) {
                         return object.owner.invokableInvocation(invokable, args);
                     }
@@ -6588,16 +6597,16 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "field",
                                 field.name());
-                        Object currentValue = object.fields.get(target.member());
-                        boolean constructorInitialization =
-                                env.canInitialize(object)
-                                        && currentValue == UNINITIALIZED_FIELD;
-                        if (field.bindingKind() != Ast.BindingKind.LET
-                                && !constructorInitialization) {
-                            throw new IllegalArgumentException("field '" + object.klass.name() + "."
-                                    + target.member() + "' is immutable");
-                        }
                         synchronized (object.fields) {
+                            Object currentValue = object.fields.get(target.member());
+                            boolean constructorInitialization =
+                                    env.canInitialize(object)
+                                            && currentValue == UNINITIALIZED_FIELD;
+                            if (field.bindingKind() != Ast.BindingKind.LET
+                                    && !constructorInitialization) {
+                                throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                                        + target.member() + "' is immutable");
+                            }
                             object.fields.put(target.member(), value);
                         }
                         return value;
@@ -8649,10 +8658,17 @@ public final class OresEvalRootNode extends RootNode {
                         || owned.field().visibility() != Ast.Visibility.PUBLIC) {
                     return Env.MISSING;
                 }
-                Object member = object.fields.get(name);
-                return member == null || member == UNINITIALIZED_FIELD
-                        ? Env.MISSING
-                        : member;
+                synchronized (object.fields) {
+                    Object member = object.fields.get(name);
+                    if (member == MOVED_FIELD) {
+                        throw new IllegalStateException(
+                                "field '" + object.klass.name() + "." + name
+                                        + "' was already moved");
+                    }
+                    return member == null || member == UNINITIALIZED_FIELD
+                            ? Env.MISSING
+                            : member;
+                }
             }
             return Env.MISSING;
         }
@@ -9333,14 +9349,23 @@ public final class OresEvalRootNode extends RootNode {
                 return member;
             }
             if (value instanceof OresObject object) {
-                if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
-                Object field = object.fields.get(name);
-                if (field == UNINITIALIZED_FIELD) {
-                    throw new IllegalArgumentException(
-                            "field '" + object.klass.name() + "." + name
-                                    + "' is read before constructor initialization");
+                synchronized (object.fields) {
+                    if (!object.fields.containsKey(name)) {
+                        throw new IllegalArgumentException("object destructure missing field " + name);
+                    }
+                    Object field = object.fields.get(name);
+                    if (field == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException(
+                                "field '" + object.klass.name() + "." + name
+                                        + "' is read before constructor initialization");
+                    }
+                    if (field == MOVED_FIELD) {
+                        throw new IllegalStateException(
+                                "field '" + object.klass.name() + "." + name
+                                        + "' was already moved");
+                    }
+                    return field;
                 }
-                return field;
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
