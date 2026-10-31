@@ -92,6 +92,25 @@
       "id": "copy.actor",
       "outcome": "reject",
       "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "nocopy.class.take.owner",
+      "outcome": "accept"
+    },
+    {
+      "id": "nocopy.field.take.unproven",
+      "outcome": "reject",
+      "code": "E_MOVE_UNPROVEN"
+    },
+    {
+      "id": "nocopy.field.dynamic_index",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "nocopy.field.cast_copy",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
     }
   ]
 }
