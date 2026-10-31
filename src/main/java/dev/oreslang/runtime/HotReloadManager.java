@@ -239,6 +239,18 @@ public final class HotReloadManager implements AutoCloseable {
         return activeByCodeUnit.get(codeUnitId);
     }
 
+    /**
+     * Readiness-filtered route for generic serving. Legacy load() publishes
+     * an uninitialized candidate for compatibility; that candidate is NEVER
+     * eligible here until its entrypoint has returned successfully. Readiness
+     * does not replace application health, ABI or actor quiescence checks.
+     */
+    public synchronized Generation serving(String codeUnitId) {
+        Generation selected = activeByCodeUnit.get(codeUnitId);
+        return selected != null && selected.initialized() && !selected.closed()
+                ? selected : null;
+    }
+
     public synchronized Map<String, Generation> activeGenerations() {
         return Map.copyOf(activeByCodeUnit);
     }
@@ -351,6 +363,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final Source source;
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicBoolean initialized = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
         // True only while the synchronous manager-owned Context.eval call is
         // executing. It is NOT a complete Task/continuation/FFI quiescence ledger.
@@ -373,6 +386,8 @@ public final class HotReloadManager implements AutoCloseable {
         public Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
         public boolean started() { return started.get(); }
+        /** Only true after entrypoint returns without an exception. */
+        public boolean initialized() { return initialized.get(); }
         public boolean closed() { return closed.get(); }
 
         /** Starts once, reserving a lifecycle lease before entering Graal. */
@@ -399,7 +414,9 @@ public final class HotReloadManager implements AutoCloseable {
             }
             Throwable failure = null;
             try {
-                return context.eval(source);
+                Value value = context.eval(source);
+                initialized.set(true);
+                return value;
             } catch (RuntimeException | Error evaluationFailure) {
                 failure = evaluationFailure;
                 throw evaluationFailure;
