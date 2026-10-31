@@ -921,7 +921,7 @@ public final class OwnershipChecker {
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
         if (expr instanceof Ast.StagedCallExpr named
-                && OptionalCallShapeBinder.isDirectScalarLiteralNamedCall(named)) {
+                && OptionalCallShapeBinder.isDirectNamedCallCandidate(named)) {
             Ast.NameExpr name = (Ast.NameExpr) named.callee();
             if (scope.lookup(name.name()) != null) {
                 throw new IllegalArgumentException(
