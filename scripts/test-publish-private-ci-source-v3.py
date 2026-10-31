@@ -1496,8 +1496,9 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             v3.authorize_write(
                 Path("."), "trusted/ci", POLICY, carrier,
-                1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
-            )
+                1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                "protected-main"
+)
             governance.assert_called_once_with(
                 Path("."), "trusted/ci", POLICY, carrier,
                 1482, "8" * 40, PROTECTED, "protected-main"
@@ -1569,8 +1570,9 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             v3.authorize_write(
                 Path("."), "trusted/ci", POLICY, carrier,
-                1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
-            )
+                1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                "protected-main"
+)
         source_pr_check.assert_called_once_with(1482, "8" * 40)
         governance.assert_called_once_with(
             Path("."), "trusted/ci", POLICY, carrier,
@@ -1719,8 +1721,9 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "#77 remains unresolved"):
                 v3.authorize_write(
                 Path("."), "trusted/ci", POLICY, carrier,
-                1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
-            )
+                1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                "protected-main"
+)
             incident_gate.assert_called_once_with()
             policy.assert_not_called()
             repo.assert_not_called()
@@ -1739,8 +1742,9 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "#127 remains unresolved"):
                 v3.authorize_write(
                 Path("."), "trusted/ci", POLICY, carrier,
-                1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
-            )
+                1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                "protected-main"
+)
             incident_gate.assert_called_once_with()
             policy.assert_not_called()
             repo.assert_not_called()
