@@ -53,6 +53,13 @@ final class WebSocketActorConnectionLease {
             }
         }
 
+        boolean remainsAuthorized() {
+            synchronized (WebSocketActorConnectionLease.this) {
+                return !released && !retired && admittedGeneration == generation
+                        && ownerAlive.getAsBoolean();
+            }
+        }
+
         boolean mayDeliver(Handle handle, UUID tenant,
                 ActorRuntime.ActorAddress currentActor) {
             synchronized (WebSocketActorConnectionLease.this) {
