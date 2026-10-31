@@ -881,7 +881,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             Objects.requireNonNull(handler, "actor message handler");
             requireContextActor(context, actor, "websocket.dispatch");
             return dispatchActorMessage(handle, context.contextId(),
-                    context.actors(), actor, handler, true);
+                    context.actors(), actor, handler);
         }
 
         /** Host-only real-actor fixture with the same mailbox admission logic. */
@@ -889,14 +889,13 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
                 ActorRuntime runtime, ActorRuntime.ActorRef<?> actor,
                 java.util.function.Consumer<WebSocketFrameCodec.Message> handler) {
-            return dispatchActorMessage(handle, tenant, runtime, actor, handler, false);
+            return dispatchActorMessage(handle, tenant, runtime, actor, handler);
         }
 
         private boolean dispatchActorMessage(
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
                 ActorRuntime runtime, ActorRuntime.ActorRef<?> actor,
-                java.util.function.Consumer<WebSocketFrameCodec.Message> handler,
-                boolean contextValidated) {
+                java.util.function.Consumer<WebSocketFrameCodec.Message> handler) {
             Objects.requireNonNull(runtime, "actor runtime");
             Objects.requireNonNull(actor, "actor");
             Objects.requireNonNull(handler, "mailbox delivery handler");
@@ -905,10 +904,6 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             }
             if (!runtime.isAlive(actor)) {
                 throw new SecurityException("actor mailbox target is foreign or retired");
-            }
-            if (contextValidated) {
-                // The caller already established context/NET authority. Keep
-                // the canonical dequeue's physical/ownership accounting.
             }
             ActorDeliveryTicket ticket = dequeueActorTicket(handle, tenant,
                     actor.address(), runtime, actor);
