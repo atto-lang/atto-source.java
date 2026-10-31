@@ -196,6 +196,53 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void slowDripMaskedPayloadExpiresWholeFrameDeadlineAndRetiresPeer() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var owned = accept.get(3, TimeUnit.SECONDS);
+                var pending = owned.readAsync();
+                // FIN text, MASK, 8-byte payload but send fewer than 8 data
+                // bytes in total. Every partial read makes progress yet the
+                // complete frame must expire at the original 750ms deadline.
+                client.getOutputStream().write(new byte[] {
+                    (byte) 0x81, (byte) 0x88, 1, 2, 3, 4
+                });
+                client.getOutputStream().flush();
+                for (int i = 0; i < 5; i++) {
+                    try {
+                        client.getOutputStream().write((byte) ('x' ^ (i % 4 + 1)));
+                        client.getOutputStream().flush();
+                    } catch (java.io.IOException closedPeer) {
+                        break;
+                    }
+                    Thread.sleep(175);
+                }
+                ExecutionException failure = assertThrows(ExecutionException.class,
+                        () -> pending.get(3, TimeUnit.SECONDS));
+                assertInstanceOf(java.net.SocketTimeoutException.class, failure.getCause());
+                assertEquals(0, listener.activeConnectionCount());
+            }
+        }
+    }
+
+    @Test
+    void fullyRetiredNativeIoRejectsListenWithoutLeakingBoundSocket() throws Exception {
+        int port = unusedPort();
+        var io = new AsyncNativeIo(1);
+        io.close();
+        assertThrows(IllegalStateException.class, () -> listen(io, port, 1));
+        try (var reclaim = new ServerSocket(port, 1,
+                InetAddress.getByName("127.0.0.1"))) {
+            assertEquals(port, reclaim.getLocalPort());
+        }
+    }
+
+    @Test
     void netPolicyDenialHappensBeforeSocketBind() throws Exception {
         int port = unusedPort();
         try (var io = new AsyncNativeIo(2)) {
