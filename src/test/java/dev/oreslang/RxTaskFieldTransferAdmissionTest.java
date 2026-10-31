@@ -116,19 +116,33 @@ final class RxTaskFieldTransferAdmissionTest {
 
     @Test
     void readingAClassFieldAfterItsOwnerWasTakenMustFailClosed() {
-        String program = MUTABLE_TASK_FIELD + """
+        String declaration = """
+                define class TaskCell as
+                  pub let Task<int> producer;
+                  constructor(Task<int> producer) {
+                    self.producer = rt take producer;
+                  }
+                  pub take_task(mut self)(): Task<int> {
+                    return rt take self.producer;
+                  }
+                  pub peek_task(): Task<int> {
+                    return self.producer;
+                  }
+                end
+                """;
+        String program = declaration + """
                 pub routine main(): void {
                   let Task<int> producer = task { return 42; };
                   let TaskCell holder = new TaskCell(rt take producer);
                   let Task<int> once = holder.take_task();
-                  let Task<int> stolen = holder.producer;
+                  let Task<int> stolen = holder.peek_task();
                   stdio.stdout.write(await once);
                   stdio.stdout.write(await stolen);
                   return;
                 }
                 """;
-        // Static class-private access must be rejected, or runtime moved
-        // field access must reject. Never produce two live Task handles.
+        // The checker can reject a move-only peek, or the evaluator must
+        // reject a read of the consumed class-field sentinel.
         assertThrows(RuntimeException.class, () -> run(program));
     }
 

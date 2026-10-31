@@ -4721,15 +4721,19 @@ public final class OresEvalRootNode extends RootNode {
                             ownedField.field().visibility(), ownedField.owner(),
                             env.accessClass(), "field", ownedField.field().name());
                 }
-                Object fieldValue = object.fields.get(member.member());
-                if (fieldValue == UNINITIALIZED_FIELD) {
-                    throw new IllegalArgumentException("field '" + object.klass.name() + "."
-                            + member.member() + "' is read before constructor initialization");
-                }
-                if (fieldValue instanceof Invokable invokable) {
-                    return object.owner.invokableInvocation(
-                            invokable,
-                            args);
+                synchronized (object.fields) {
+                    Object fieldValue = object.fields.get(member.member());
+                    if (fieldValue == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                                + member.member() + "' is read before constructor initialization");
+                    }
+                    if (fieldValue == MOVED_FIELD) {
+                        throw new IllegalStateException("field '" + object.klass.name() + "."
+                                + member.member() + "' was already moved");
+                    }
+                    if (fieldValue instanceof Invokable invokable) {
+                        return object.owner.invokableInvocation(invokable, args);
+                    }
                 }
             }
 
@@ -4845,7 +4849,9 @@ public final class OresEvalRootNode extends RootNode {
                                         + "." + member.member()
                                         + "' is immutable");
                     }
-                    object.fields.put(member.member(), value);
+                    synchronized (object.fields) {
+                        object.fields.put(member.member(), value);
+                    }
                     return value;
                 }
                 if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
@@ -6589,7 +6595,9 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                     + target.member() + "' is immutable");
                         }
-                        object.fields.put(target.member(), value);
+                        synchronized (object.fields) {
+                            object.fields.put(target.member(), value);
+                        }
                         return value;
                     }
                     // Explicit anonymous structs use this mutable map path.
