@@ -280,6 +280,39 @@ globally bounded memory, selector/runtime execution evidence or backend parity. 
 branch draft until authorized exact-head CI records nonzero steps and
 independent review is complete.
 
+## Selector cancellation and actor-handle ownership gate (2026-10-31)
+
+The NIO bridge now removes stale selected keys after a readiness poll so a
+zero-byte read/write does not spin on a selected key from the previous poll.
+It also rejects a pre-interrupted worker **before** a channel read/write,
+even when the socket would otherwise be immediately ready. In the listener,
+a read crossing the retired-connection boundary fails rather than publishing
+a USER action on a newly revoked transport.
+
+Authored focused negative tests for pre-interrupted read/write with zero
+server output, parent-listener close during an incomplete masked payload,
+channel close during an incomplete selector read, and channel close during
+a backpressured multi-megabyte write. The selector tests use real loopback
+`SocketChannel` pairs, not a mock. These changes are **not a verified
+JDK25/Graal, JUnit, or Oreslang guest execution pass** until a trusted
+exact-head runner completes nonzero steps.
+
+The next guest-facing WebSocket handle must be a *runtime capability*, not
+a raw `Socket`, `SocketChannel`, or a freely constructible actor ID.
+Host authority should bind the handle to a tenant-unique isolate authority
+and `ActorRuntime.ActorAddress(runtimeId, actorId, generation, kind, transport)`,
+plus a non-reusable connection generation. Acceptance and each operation
+must validate the **current** owner and isolate; actor stop/retirement or
+tenant shutdown revokes the capability and cancels/wakes the owning physical
+I/O. An explicit transfer must atomically fence the old generation before
+activating the new owner, including against pending writes and callbacks.
+Neither matching `ActorId` alone nor a thread/carrier identity suffices.
+
+Do not expose the current host-only listener/connection objects to guest
+code. No actor-owned guest handle, generation-fenced transfer API, native
+guest execution, or cross-backend parity is implemented by this milestone.
+Physical close remains separate from the actor logical revocation receipt.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
