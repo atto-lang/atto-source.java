@@ -1574,8 +1574,27 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
         }
         if (isBuiltinFormattingCall(call, scope)) {
+            // Guest expressions are rendered before enqueuing immutable bytes.
+            // Borrowed values cannot be retained by the writer after this turn.
             checkFormattingArguments(call.arguments(), scope);
-            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            boolean asyncLog = isBuiltinStdoutCall(call, "log_async", scope)
+                    || isBuiltinStdoutCall(call, "logList_async", scope)
+                    || isBuiltinStdoutCall(call, "println_async", scope)
+                    || (call.callee() instanceof Ast.MemberExpr console
+                        && console.receiver() instanceof Ast.NameExpr namespace
+                        && namespace.name().equals("stdio") && scope.lookup("stdio") == null
+                        && console.member().equals("println_async"));
+            return new ValueInfo(asyncLog
+                    ? new Ast.TypeRef("Future", List.of(Ast.TypeRef.simple("void")), false)
+                    : Ast.TypeRef.simple("void"),
+                    asyncLog ? ValueKind.MOVE_ONLY : ValueKind.COPY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr flush
+                && flush.receiver() instanceof Ast.NameExpr stdio
+                && stdio.name().equals("stdio") && scope.lookup("stdio") == null
+                && flush.member().equals("flush_async_logs")) {
+            return new ValueInfo(new Ast.TypeRef("Future",
+                    List.of(Ast.TypeRef.simple("void")), false), ValueKind.MOVE_ONLY, null);
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
