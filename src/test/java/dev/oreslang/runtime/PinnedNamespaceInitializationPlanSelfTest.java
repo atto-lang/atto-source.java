@@ -87,7 +87,11 @@ public final class PinnedNamespaceInitializationPlanSelfTest {
         rejects(() -> plan(Map.of("app", Set.of()),
                 List.of(List.of("app", "foreign")), "app"), "outside verified");
 
-        // 13. Neither caller inventory insertion order nor unrelated package
+        // 13. A forged SCC must not hide one-way initialization ordering.
+        rejects(() -> plan(Map.of("app", Set.of("foo"), "foo", Set.of()),
+                List.of(List.of("app", "foo")), "app"), "strongly connected");
+
+        // 14. Neither caller inventory insertion order nor unrelated package
         // order determines which guest init code is admitted.
         equal(List.of(List.of("foo"), List.of("app")),
                 plan(Map.of("foreign", Set.of(), "app", Set.of("foo"),
