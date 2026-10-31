@@ -402,6 +402,101 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void actorReadDeliveryAndWriteRequireHandleAndDrainBeforeTransfer()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var pending = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = pending.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var runtime = java.util.UUID.randomUUID();
+                var a = new ActorRuntime.ActorAddress(runtime,
+                        ActorRuntime.ActorId.create(), 1,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var b = new ActorRuntime.ActorAddress(runtime,
+                        ActorRuntime.ActorId.create(), 2,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, a, () -> true);
+                assertThrows(SecurityException.class, connection::readAsync);
+                assertThrows(SecurityException.class,
+                        () -> connection.sendTextAsync("unscoped"));
+                sendMaskedText(client, "echo");
+                var action = connection.readForActorAsync(handle, tenant, a)
+                        .get(3, TimeUnit.SECONDS);
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        action.kind());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.transferActorHost(
+                                handle, tenant, a, b, () -> true),
+                        "handoff must reject USER messages admitted by former owner");
+                var delivered = new java.util.ArrayList<WebSocketFrameCodec.Message>();
+                assertTrue(connection.pollAndEnqueueForActor(
+                        handle, tenant, a, delivered::add));
+                assertEquals(1, delivered.size());
+                assertArrayEquals("echo".getBytes(StandardCharsets.UTF_8),
+                        delivered.get(0).payload());
+                assertFalse(connection.pollAndEnqueueForActor(
+                        handle, tenant, a, delivered::add));
+                var newHandle = connection.transferActorHost(
+                        handle, tenant, a, b, () -> true);
+                assertThrows(SecurityException.class,
+                        () -> connection.readForActorAsync(handle, tenant, a));
+                assertThrows(SecurityException.class,
+                        () -> connection.sendTextForActorAsync(
+                                handle, tenant, a, "stale"));
+                connection.sendTextForActorAsync(
+                        newHandle, tenant, b, "echo").get(3, TimeUnit.SECONDS);
+                assertArrayEquals(new byte[] {
+                    (byte) 0x81, 4, 'e', 'c', 'h', 'o'
+                }, client.getInputStream().readNBytes(6));
+                connection.close();
+                assertThrows(SecurityException.class,
+                        () -> connection.sendBinaryForActorAsync(
+                                newHandle, tenant, b, new byte[] {1}));
+            }
+        }
+    }
+
+    @Test
+    void outstandingActorReadBlocksTransferUntilPhysicalShutdown() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var runtime = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(runtime,
+                        ActorRuntime.ActorId.create(), 1,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var successor = new ActorRuntime.ActorAddress(runtime,
+                        ActorRuntime.ActorId.create(), 2,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                var read = connection.readForActorAsync(handle, tenant, owner);
+                assertFalse(read.cancel(true),
+                        "native read cannot forge physical loan completion");
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.transferActorHost(
+                                handle, tenant, owner, successor, () -> true));
+                listener.close();
+                assertThrows(ExecutionException.class,
+                        () -> read.get(3, TimeUnit.SECONDS));
+                assertEquals(0, listener.activeConnectionCount());
+                assertThrows(SecurityException.class,
+                        () -> connection.readForActorAsync(handle, tenant, owner));
+            }
+        }
+    }
+
+    @Test
     void hostOutboundTextBinaryAndPongHaveCanonicalUnmaskedWire() throws Exception {
         int port = unusedPort();
         try (var io = new AsyncNativeIo(4);
