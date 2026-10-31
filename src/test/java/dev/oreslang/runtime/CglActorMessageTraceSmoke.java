@@ -25,6 +25,16 @@ public final class CglActorMessageTraceSmoke {
         require(edge.record(actor, 0, Long.MIN_VALUE, Long.MAX_VALUE, true));
         require(edge.snapshot().invalid() == 1);
         require(!edge.snapshot().hasCompleteCapture(1));
+        var duplicate = new CglActorMessageTrace(2);
+        require(duplicate.record(actor, 0, 10, 13, true));
+        require(duplicate.record(actor, 0, 20, 23, true));
+        duplicate.sealAfterActorsStopped();
+        require(!duplicate.snapshot().hasCompleteCapture(2));
+        var distinct = new CglActorMessageTrace(2);
+        require(distinct.record(actor, 0, 10, 13, true));
+        require(distinct.record(actor, 1, 20, 23, true));
+        distinct.sealAfterActorsStopped();
+        require(distinct.snapshot().hasCompleteCapture(2));
         var clean = new CglActorMessageTrace(1);
         require(clean.record(actor, 0, -10, -9, true));
         clean.sealAfterActorsStopped();
