@@ -40,7 +40,6 @@ final class DbDurableWalAuthority {
         // grant reserves the shard through actor drain/physical close.
         if (!grant.issuedBy(context.dbWalGrants()))
             throw new SecurityException("WAL grant was not issued by owning context");
-        grant.reserveOpen(context.actors());
         int ownerGeneration = grant.generation();
         // Caller is a trusted host service. Never derive this directory from
         // guest DATA. Source guest cannot instantiate DbDurableWalAuthority.
@@ -50,6 +49,9 @@ final class DbDurableWalAuthority {
         context.requirePermission(RuntimePermissions.Permission.WRITE,
                 filePath.toString(), "db.wal.open.write");
         AsyncNativeIo io = context.nativeIo();
+        // LAST synchronous step before worker admission. All path and
+        // permission checks above can throw without stranding the grant.
+        grant.reserveOpen(context.actors());
         return io.submitWithNonStartHook("db.wal.open", () -> {
             DbDurableWalFile opened = null;
             try {
