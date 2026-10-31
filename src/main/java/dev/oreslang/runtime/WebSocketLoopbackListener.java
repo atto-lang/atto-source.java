@@ -327,8 +327,29 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (text.length() > maxFrameBytes) {
                 throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
             }
+            // String.getBytes(UTF_8) silently replaces unpaired UTF-16
+            // surrogates with '?'. Reject malformed text rather than changing
+            // the caller's message on the wire without an error.
+            requireValidUnicodeScalars(text);
             return sendUser(WebSocketFrameCodec.OPCODE_TEXT,
                     text.getBytes(StandardCharsets.UTF_8));
+        }
+
+        private static void requireValidUnicodeScalars(String text) {
+            for (int i = 0; i < text.length(); i++) {
+                char value = text.charAt(i);
+                if (Character.isHighSurrogate(value)) {
+                    if (i + 1 >= text.length()
+                            || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                        throw new IllegalArgumentException(
+                                "WebSocket text contains an unpaired UTF-16 surrogate");
+                    }
+                    i++; // The valid low surrogate belongs to this scalar.
+                } else if (Character.isLowSurrogate(value)) {
+                    throw new IllegalArgumentException(
+                            "WebSocket text contains an unpaired UTF-16 surrogate");
+                }
+            }
         }
 
         OresFuture<Void> sendBinaryAsync(byte[] payload) {
