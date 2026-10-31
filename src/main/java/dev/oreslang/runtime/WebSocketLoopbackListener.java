@@ -423,7 +423,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     throw new SecurityException("WebSocket actor connection retired");
                 }
                 if (abortRequested.get() || reading.get() || writerActive.get()
-                        || outbound.hasPending()
+                        || pendingActorTickets != 0 || outbound.hasPending()
                         || protocol.state() != WebSocketSessionState.State.OPEN
                         || protocol.hasPendingUserState()) {
                     throw new RejectedExecutionException(
