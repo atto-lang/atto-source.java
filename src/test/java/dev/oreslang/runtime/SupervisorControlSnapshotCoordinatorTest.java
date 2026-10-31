@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayDeque;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -31,7 +32,7 @@ final class SupervisorControlSnapshotCoordinatorTest {
                 ActorRuntime.TurnExecutor.direct(), dispatcher);
     }
 
-    private static CompletableFuture<SupervisorRegistryObservation.Snapshot> read(
+    private static CompletionStage<SupervisorRegistryObservation.Snapshot> read(
             SupervisorControlSnapshotCoordinator service,
             SupervisorRegistryObservation.Grant grant, Object session) {
         return service.request(grant, session, TENANT, 1, 16, 8,
@@ -44,10 +45,10 @@ final class SupervisorControlSnapshotCoordinatorTest {
         return service.issueGrant(session, TENANT, runtime.rootSupervisor(), TTL);
     }
 
-    private static void assertCode(CompletableFuture<?> future, String expected)
+    private static void assertCode(CompletionStage<?> future, String expected)
             throws InterruptedException {
         ExecutionException failure = assertThrows(ExecutionException.class,
-                () -> future.get(5, TimeUnit.SECONDS));
+                () -> future.toCompletableFuture().get(5, TimeUnit.SECONDS));
         assertInstanceOf(SupervisorControlSnapshotCoordinator.SnapshotFailure.class,
                 failure.getCause());
         assertEquals(expected,
@@ -94,7 +95,7 @@ final class SupervisorControlSnapshotCoordinatorTest {
                 var child = runtime.createChildSupervisor(root);
                 Object session = new Object();
                 var result = read(service, grant(service, runtime, session), session)
-                        .get(5, TimeUnit.SECONDS);
+                        .toCompletableFuture().get(5, TimeUnit.SECONDS);
                 assertEquals("partial", result.status());
                 assertEquals(2, result.supervisors().size());
                 assertTrue(result.supervisors().stream().anyMatch(n ->
@@ -145,7 +146,7 @@ final class SupervisorControlSnapshotCoordinatorTest {
             var pending = service.request(g, session, TENANT, 1, 16, 8,
                     TimeUnit.MILLISECONDS.toNanos(20));
             assertThrows(ExecutionException.class,
-                    () -> pending.get(5, TimeUnit.SECONDS));
+                    () -> pending.toCompletableFuture().get(5, TimeUnit.SECONDS));
             assertEquals(1, service.activeControlRequests());
             assertThrows(SupervisorControlSnapshotCoordinator.SnapshotFailure.class,
                     () -> read(service, g, session));
