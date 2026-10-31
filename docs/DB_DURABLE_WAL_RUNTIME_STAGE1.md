@@ -207,3 +207,30 @@ directory; Java path-based file attribute checks are not a descriptor
 fstat. Parent directory sync and a file-backed, actor-authenticated
 commit/ACK protocol are still missing. A returned host SyncReceipt
 is not DB durability proof.
+
+
+## Stage 1.6 — strict ODB1 frame-to-grant matching
+
+`DbWalFrameV1.requireMatching` now validates an already detached frame:
+ODB1 version/kind, positive signed-31-bit tenant/generation/sequence/op ID,
+key/value limits, total length, DELETE value restriction, and Adler32
+trailer. It rejects a tenant, generation or operation ID that differs
+from the context-issued shard grant and requested operation. Validation
+occurs on a copied buffer **before** reserving an async physical write.
+The checksum detects corruption but does not authenticate the sender.
+
+Added JUnit `DbWalFrameV1Test` for positive limits, wrong owner, mutated
+bytes, invalid delete/sequence/high bit. Exact Java source blobs
+`DbWalFrameV1.java` = `ec1a23fadeaeff0e88b71fe62ddb46f004a9ba31`
+and `DbDurableWalFile.java` =
+`1a031f417e2ed4db2634c1e687b12978b47e7ef5`
+were reconstructed locally and independently checked with `git hash-object`.
+Both compiled under Java 21 `--release 21 -Xlint:all -Werror`; a
+standalone host harness passed 5,000 generated frames, deliberate byte
+corruption rejections, and 100 validated physical appends with
+`FileChannel.force(true)` and successful reopen.
+
+This is **host execution, NOT exact-head full Maven/JUnit/JDK25/GraalVM
+or .ores guest evidence**. The live actor does not yet call this runtime
+binding, and authenticated tenant issuance, sequence/idempotency persistence,
+parent directory sync and WAL replay/ACK remain absent.
