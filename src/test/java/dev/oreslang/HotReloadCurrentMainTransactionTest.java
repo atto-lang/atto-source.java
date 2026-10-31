@@ -58,6 +58,8 @@ final class HotReloadCurrentMainTransactionTest {
             assertThrows(RuntimeException.class,
                     () -> manager.reloadAndStart("worker.ores", BAD_AT_START));
             assertSame(previous, manager.active("worker.ores"));
+            assertSame(previous, manager.serving("worker.ores"));
+            assertTrue(previous.initialized());
             assertSame(previous, manager.active());
             assertFalse(previous.closed());
             assertEquals(1, manager.liveGenerations());
@@ -71,7 +73,9 @@ final class HotReloadCurrentMainTransactionTest {
             var current = manager.reloadAndStart("worker.ores",
                     "pub routine main(): void { val version = 2; return; }");
             assertTrue(current.started());
+            assertTrue(current.initialized());
             assertSame(current, manager.active("worker.ores"));
+            assertSame(current, manager.serving("worker.ores"));
             assertFalse(previous.closed());
             assertEquals(2, manager.liveGenerations());
             manager.retire(previous.id());
@@ -98,6 +102,9 @@ final class HotReloadCurrentMainTransactionTest {
         try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
             var staged = manager.load("legacy.ores", GOOD);
             assertFalse(staged.started());
+            assertFalse(staged.initialized());
+            assertNull(manager.serving("legacy.ores"),
+                    "a staged legacy candidate is never automatically service-ready");
             // The existing load() publication API is compatibility-only; use
             // reloadAndStart() as the serving-route upgrade entry point.
             assertSame(staged, manager.active("legacy.ores"));
@@ -173,6 +180,7 @@ final class HotReloadCurrentMainTransactionTest {
             candidate.close();
             assertTrue(candidate.closed());
             assertNull(manager.active("direct-close.ores"));
+            assertNull(manager.serving("direct-close.ores"));
             assertThrows(IllegalStateException.class, candidate::start);
             assertEquals(0, manager.liveGenerations());
         }
