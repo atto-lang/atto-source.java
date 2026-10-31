@@ -5,6 +5,8 @@ on:
     paths:
       - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
       - "src/test/java/dev/oreslang/RxTaskFieldTransferAdmissionTest.java"
+      - "src/main/java/dev/oreslang/nodes/OresFieldSnapshots.java"
+      - "src/test/java/dev/oreslang/nodes/OresFieldSnapshotsTest.java"
       - ".github/workflows/rx-task-field-admission.yml"
   workflow_dispatch:
 
