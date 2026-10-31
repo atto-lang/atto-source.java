@@ -48,6 +48,7 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    private final List<String> copyWarnings = new ArrayList<>();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -79,6 +80,19 @@ public final class OwnershipChecker {
         Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
+    }
+
+    /** Copy-policy warnings are compile-time diagnostics, never runtime effects. */
+    public record OwnershipCheckResult(Ast.Program program, List<String> warnings) {
+        public OwnershipCheckResult { warnings = List.copyOf(warnings); }
+    }
+
+    public static OwnershipCheckResult checkWithDiagnostics(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+        checker.validate(program);
+        checker.publishTaskAdmissions();
+        return new OwnershipCheckResult(program, checker.copyWarnings);
     }
 
     public static Ast.Program check(Ast.Program program) {
@@ -219,7 +233,13 @@ public final class OwnershipChecker {
     private Set<String> constructorFixedFieldWrites;
 
     private void checkClass(Ast.ClassDecl klass) {
+        validateCopyPolicyAnnotations(klass.annotations(), "class " + klass.name());
+        if (hasCopyPolicy(klass.annotations(), "Copyable")) {
+            throw error("E_COPY_UNPROVEN: @" + "Copyable on class '" + klass.name()
+                    + "' requires compiler-verified duplication lowering; no class copy contract is enabled");
+        }
         for (Ast.FieldDecl field : klass.fields()) {
+            validateCopyPolicyAnnotations(field.annotations(), "field " + klass.name() + "." + field.name());
             Ast.TypeRef fieldType = ownershipFieldType(field);
             if (fieldType != null && fieldType.isBorrow()) {
                 throw error("field '" + klass.name() + "." + field.name()
@@ -1134,15 +1154,32 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
+                    if (projected != null && projected.noCopy()) {
+                        throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy field '" + projected.origin() + "'");
+                    }
+                    Ast.ClassDecl sourceClass = source.type == null ? null : findClass(source.type.name());
+                    if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
+                        throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy class '" + sourceClass.name() + "'");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
                                         + "this current-main convergence patch fails closed instead of aliasing");
                     }
+                    if (projected != null && projected.warnOnCopy()) {
+                        copyWarnings.add("W_COPY_DISCOURAGED: rt copy of @"
+                                + "WarnOnCopy field '" + projected.origin() + "'");
+                    }
                     yield source;
                 }
                 case "share" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
+                    if (projected != null && projected.noCopy()) {
+                        throw error("E_COPY_FORBIDDEN: cannot materialize @NoCopy field '"
+                                + projected.origin() + "' through legacy rt share; use a scoped borrow");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt share of move-only values requires the owning Shared<T> convergence; "
@@ -1280,6 +1317,7 @@ public final class OwnershipChecker {
             if (klass != null) {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                 if (target != null) {
+                    if (consuming) rejectConsumingCopyProjection(expr, scope);
                     Ast.TypeRef fieldType = substituteType(
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
@@ -1299,6 +1337,7 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
+            if (consuming) rejectConsumingCopyProjection(indexed, scope);
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
@@ -4679,6 +4718,69 @@ public final class OwnershipChecker {
         Ast.ClassDecl actorTarget = findClass(target.name());
         return actorTarget != null
                 && actorTarget.actorKind() != Ast.ActorKind.NONE;
+    }
+
+    /** A policy on any owning projection prevents laundering via a nested field. */
+    private record CopyPolicyProjection(String origin, boolean noCopy, boolean warnOnCopy) { }
+
+    private static boolean hasCopyPolicy(List<Ast.Annotation> annotations, String name) {
+        return annotations.stream().anyMatch(annotation -> annotation.name().equals(name));
+    }
+
+    private void validateCopyPolicyAnnotations(List<Ast.Annotation> annotations, String owner) {
+        Set<String> seen = new HashSet<>();
+        for (Ast.Annotation annotation : annotations) {
+            String name = annotation.name();
+            if (!Set.of("NoCopy", "WarnOnCopy", "Copyable").contains(name)) continue;
+            if (!annotation.arguments().isEmpty() || !seen.add(name)) {
+                throw error("E_COPY_ANNOTATION: invalid or duplicate @" + name + " on " + owner);
+            }
+            if (name.equals("Copyable") && owner.startsWith("field ")) {
+                throw error("E_COPY_ANNOTATION: @Copyable is only valid on a class declaration");
+            }
+        }
+        if (seen.contains("NoCopy") && (seen.contains("Copyable") || seen.contains("WarnOnCopy"))) {
+            throw error("E_COPY_ANNOTATION: conflicting copy policies on " + owner);
+        }
+    }
+
+    private CopyPolicyProjection copyProjectionPolicy(Ast.Expr expr, Scope scope) {
+        Ast.Expr receiver;
+        String fieldName;
+        if (expr instanceof Ast.MemberExpr member) {
+            receiver = member.receiver();
+            fieldName = member.member();
+        } else if (expr instanceof Ast.IndexExpr indexed) {
+            receiver = indexed.receiver();
+            Object key = computedIndexConstant(indexed.index(), scope);
+            if (!(key instanceof String name)) return copyProjectionPolicy(receiver, scope);
+            fieldName = name;
+        } else return null;
+
+        CopyPolicyProjection parent = copyProjectionPolicy(receiver, scope);
+        if (parent != null && parent.noCopy()) return parent;
+        Ast.TypeRef receiverClassType = receiverType(receiver, scope);
+        if (receiverClassType == null) return parent;
+        if (receiverClassType.isBorrow()) receiverClassType = receiverClassType.borrowedTarget();
+        Ast.ClassDecl klass = findClass(receiverClassType.name());
+        if (klass == null) return parent;
+        ResolvedField field = findFieldTarget(
+                klass, receiverClassType, fieldName, new LinkedHashSet<>());
+        if (field == null) return parent;
+        boolean forbidden = hasCopyPolicy(field.field().annotations(), "NoCopy");
+        boolean warned = hasCopyPolicy(field.field().annotations(), "WarnOnCopy");
+        if (!forbidden && !warned) return parent;
+        CopyPolicyProjection local = new CopyPolicyProjection(
+                field.owner().name() + "." + field.field().name(), forbidden, warned);
+        return parent != null && parent.warnOnCopy() && !local.noCopy() ? parent : local;
+    }
+
+    private void rejectConsumingCopyProjection(Ast.Expr expr, Scope scope) {
+        CopyPolicyProjection policy = copyProjectionPolicy(expr, scope);
+        if (policy != null && policy.noCopy()) {
+            throw error("E_COPY_FORBIDDEN: cannot duplicate @NoCopy field '"
+                    + policy.origin() + "' by owned projection; use rt borrow");
+        }
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
