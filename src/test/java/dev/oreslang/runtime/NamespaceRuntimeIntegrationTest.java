@@ -637,6 +637,57 @@ final class NamespaceRuntimeIntegrationTest {
 
 
     @Test
+    void pinnedManifestSymlinkBeforeDotDotCannotSelectAnotherPhysicalPackage() throws Exception {
+        Path provider = temp.resolve("checkout");
+        Path providerManifest = billing(provider);
+        // An unrelated physical provider tree sits behind a mutable alias.
+        // The literal manifest path resolves there, but lexical .normalize()
+        // would silently select temp/checkout instead.
+        Path unrelated = temp.resolve("other/checkout");
+        billing(unrelated);
+        Path inside = temp.resolve("other/inside");
+        Files.createDirectories(inside);
+        Path alias = temp.resolve("manifest-jump");
+        try {
+            Files.createSymbolicLink(alias, inside);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        assertTrue(Files.isRegularFile(
+                alias.resolve("../checkout/.ores.pkg.toml")));
+
+        Path client = temp.resolve("client-dotdot-manifest");
+        Path main = source(client, "src/main.ores", "client", """
+                import namespace billing as payments from "checkout";
+                pub fnc main(): void { return; }
+                """);
+        List<Path> members = List.of(
+                provider.resolve("src/billing/charge.ores"),
+                provider.resolve("src/billing/refund.ores"),
+                provider.resolve("src/billing/balance.ores"),
+                provider.resolve("src/billing/invoice.ores"));
+        Files.writeString(client.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                [namespace_dependencies.checkout]
+                manifest = "../manifest-jump/../checkout/.ores.pkg.toml"
+                package = "checkout"
+                manifest_sha256 = "%s"
+                sources_sha256 = "%s"
+                """.formatted(
+                PackageNamespaceWorkspace.sha256(Files.readAllBytes(providerManifest)),
+                PackageNamespaceWorkspace.sourceDigest(providerManifest, members)));
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.discover(main));
+        assertTrue(denied.getMessage().contains(
+                "symlinked namespace dependency path"), denied.getMessage());
+    }
+
+    @Test
     void nestedManifestAtExplicitProjectRootCannotClaimParentPackage() throws Exception {
         Path project = temp.resolve("root-boundary");
         Path entry = source(project, "entry.ores", "app",
