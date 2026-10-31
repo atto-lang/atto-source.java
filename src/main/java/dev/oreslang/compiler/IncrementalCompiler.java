@@ -104,7 +104,7 @@ public final class IncrementalCompiler {
 
     private static void requireCanonicalPinnedSourceId(String id) {
         if (id == null || id.isEmpty() || id.length() > 1024
-                || id.charAt(0) == '/' || id.indexOf('\\\\') >= 0
+                || id.charAt(0) == '/' || id.indexOf('\\') >= 0
                 || id.indexOf(':') >= 0) {
             throw new IllegalArgumentException("noncanonical pinned namespace source identity");
         }
