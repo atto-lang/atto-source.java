@@ -738,6 +738,45 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void foreignHandleDeliveryRejectionDoesNotCloseAuthorizedSocket()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                assertThrows(SecurityException.class,
+                        () -> connection.pollAndEnqueueForActor(
+                                handle, java.util.UUID.randomUUID(), owner,
+                                msg -> fail("foreign tenant delivered a message")));
+                assertEquals(1, listener.activeConnectionCount(),
+                        "unauthorized admission is not a protocol error");
+                sendMaskedText(client, "still alive");
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        connection.readForActorAsync(handle, tenant, owner)
+                                .get(3, TimeUnit.SECONDS).kind());
+                var received = new java.util.concurrent.atomic.AtomicReference<
+                        WebSocketFrameCodec.Message>();
+                assertTrue(connection.pollAndEnqueueForActor(
+                        handle, tenant, owner, received::set));
+                assertArrayEquals("still alive".getBytes(StandardCharsets.UTF_8),
+                        received.get().payload());
+                assertEquals(1, listener.activeConnectionCount());
+                connection.close();
+                assertEquals(-1, client.getInputStream().read());
+            }
+        }
+    }
+
+    @Test
     void failedActorDeliveryUsesHostCleanupOutsideLifecycleMonitor()
             throws Exception {
         int port = unusedPort();
