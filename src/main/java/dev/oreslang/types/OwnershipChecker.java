@@ -930,7 +930,24 @@ public final class OwnershipChecker {
             Ast.FunctionDecl target = findFunction(name.name(), named.arguments().size());
             Ast.CallExpr lowered = OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(
                     named, target);
-            // Reuse the authoritative consuming/move/borrow argument checks.
+            // Permuted nonliteral source items are restricted to closed,
+            // zero-argument calls. A local callback can capture a loan or
+            // moved value, so never inspect it in formal rather than lexical
+            // order without a proper captured-effect lowering proof.
+            var plan = OptionalCallShapeBinder.directScalarBindingPlan(named, target);
+            if (OptionalCallShapeBinder.isReorderedNamedCall(plan)) {
+                for (Ast.CallArgument item : named.arguments()) {
+                    if (item.value() instanceof Ast.CallExpr nested
+                            && nested.callee() instanceof Ast.NameExpr callee
+                            && scope.lookup(callee.name()) != null) {
+                        throw new IllegalArgumentException(
+                                "reordered named call cannot use captured local callback '"
+                                        + callee.name() + "'");
+                    }
+                }
+            }
+            // Primitive formal parameters cannot receive borrows or moves.
+            // Nested zero-argument calls carry no argument loans.
             return checkCall(lowered, scope);
         }
         if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
