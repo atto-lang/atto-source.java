@@ -81,6 +81,20 @@ final class PhysicalRetirementReceipt {
             owner.retire(this, failure);
             retired.set(true);
         }
+
+        /**
+         * Continue already-admitted physical ownership into a descendant
+         * resource even after shutdown has sealed new root admission. The
+         * parent must still be live; this is a structured lifetime transfer,
+         * not a way to reopen a drained generation.
+         */
+        synchronized Lease fork(String childKind) {
+            if (retired.get()) {
+                throw new IllegalStateException(
+                        "retired physical lease cannot fork a descendant");
+            }
+            return owner.fork(this, childKind);
+        }
     }
 
     private final long generation;
@@ -116,11 +130,7 @@ final class PhysicalRetirementReceipt {
     }
 
     synchronized Lease acquire(String kind) {
-        Objects.requireNonNull(kind, "physical retirement lease kind");
-        if (kind.isBlank()) {
-            throw new IllegalArgumentException(
-                    "physical retirement lease kind cannot be blank");
-        }
+        validateKind(kind);
         if (sealed) {
             throw new RejectedExecutionException(
                     "physical retirement admission is sealed for generation "
@@ -131,6 +141,36 @@ final class PhysicalRetirementReceipt {
                     "physical retirement generation " + generation
                             + " is quarantined after a failed retirement");
         }
+        return mint(kind);
+    }
+
+    private synchronized Lease fork(Lease parent, String childKind) {
+        validateKind(childKind);
+        if (parent.owner != this || parent.generation != generation
+                || parent.retired.get()) {
+            throw new IllegalStateException(
+                    "foreign, stale or retired physical parent lease");
+        }
+        if (failure != null) {
+            throw new RejectedExecutionException(
+                    "physical retirement generation " + generation
+                            + " is quarantined after a failed retirement");
+        }
+        // A live parent proves this descendant is continuation of work admitted
+        // before sealing. Sealed root admission therefore stays closed while
+        // structured descendants may still extend the same generation.
+        return mint(childKind);
+    }
+
+    private void validateKind(String kind) {
+        Objects.requireNonNull(kind, "physical retirement lease kind");
+        if (kind.isBlank()) {
+            throw new IllegalArgumentException(
+                    "physical retirement lease kind cannot be blank");
+        }
+    }
+
+    private Lease mint(String kind) {
         if (activeLeases == Integer.MAX_VALUE) {
             throw new RejectedExecutionException(
                     "physical retirement lease capacity exceeded");
