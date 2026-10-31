@@ -30,7 +30,8 @@ final class PackageNamespaceWorkspace {
     record Workspace(List<Path> manifests, List<Path> files, Map<String, String> aliases,
                      Set<String> rootPackageIds, Map<Path, String> dependencySourcePins,
                      Map<Path, String> dependencyManifestPins,
-                     String rootManifestSha256) {
+                     String rootManifestSha256,
+                     Map<Path, String> manifestSnapshots) {
         Workspace {
             manifests = List.copyOf(manifests);
             files = List.copyOf(files);
@@ -38,6 +39,12 @@ final class PackageNamespaceWorkspace {
             rootPackageIds = Set.copyOf(rootPackageIds);
             dependencySourcePins = Map.copyOf(dependencySourcePins);
             dependencyManifestPins = Map.copyOf(dependencyManifestPins);
+            manifestSnapshots = Map.copyOf(manifestSnapshots);
+            if (manifests.isEmpty() || !manifestSnapshots.keySet().equals(Set.copyOf(manifests))
+                    || !sha256(manifestSnapshots.get(manifests.getFirst())
+                            .getBytes(StandardCharsets.UTF_8)).equals(rootManifestSha256)) {
+                throw new IllegalArgumentException("incomplete or inconsistent manifest snapshot");
+            }
         }
     }
 
@@ -63,9 +70,13 @@ final class PackageNamespaceWorkspace {
         LinkedHashMap<String, String> aliases = new LinkedHashMap<>();
         LinkedHashMap<Path, String> sourcePins = new LinkedHashMap<>();
         LinkedHashMap<Path, String> manifestPins = new LinkedHashMap<>();
+        LinkedHashMap<Path, String> manifestSnapshots = new LinkedHashMap<>();
         manifests.add(manifest);
-        String rootManifestSha256 = sha256(Files.readAllBytes(manifest));
-        TomlParseResult root = checkedManifest(manifest);
+        byte[] rootManifestBytes = readManifestBytes(manifest);
+        String rootManifestSha256 = sha256(rootManifestBytes);
+        String rootManifestText = decodeManifestText(rootManifestBytes);
+        manifestSnapshots.put(manifest, rootManifestText);
+        TomlParseResult root = checkedManifestText(rootManifestText);
         files.addAll(members(manifest, root));
         LinkedHashSet<String> rootPackageIds = new LinkedHashSet<>();
         TomlTable rootPackages = (TomlTable) root.get("packages");
@@ -110,14 +121,13 @@ final class PackageNamespaceWorkspace {
                 if (!Files.isRegularFile(dependencyManifest)) {
                     throw new IllegalArgumentException("namespace dependency manifest not found: " + alias);
                 }
-                if (Files.size(dependencyManifest) > 1024 * 1024) {
-                    throw new IllegalArgumentException("dependency manifest exceeds byte budget");
-                }
-                if (!sha256(Files.readAllBytes(dependencyManifest)).equals(manifestSha)) {
+                byte[] dependencyBytes = readManifestBytes(dependencyManifest);
+                if (!sha256(dependencyBytes).equals(manifestSha)) {
                     throw new SecurityException("namespace dependency manifest pin mismatch: " + alias);
                 }
                 Path canonical = dependencyManifest.toRealPath();
-                TomlParseResult parsed = checkedManifest(canonical);
+                String dependencyText = decodeManifestText(dependencyBytes);
+                TomlParseResult parsed = checkedManifestText(dependencyText);
                 Object packageTable = parsed.get("packages." + packageKey);
                 if (!(packageTable instanceof TomlTable)) {
                     throw new IllegalArgumentException("pinned package not declared: " + packageKey);
@@ -133,11 +143,15 @@ final class PackageNamespaceWorkspace {
                             "pinned dependency manifest must contain exactly one package: " + alias);
                 }
                 List<Path> owned = members(canonical, parsed);
-                if (!sourceDigest(canonical, owned).equals(sourcesSha)) {
+                if (!sourceDigest(canonical, owned, parsed).equals(sourcesSha)) {
                     throw new SecurityException("namespace dependency source pin mismatch: " + alias);
                 }
                 manifests.add(canonical);
                 files.addAll(owned);
+                String olderSnapshot = manifestSnapshots.putIfAbsent(canonical, dependencyText);
+                if (olderSnapshot != null && !olderSnapshot.equals(dependencyText)) {
+                    throw new SecurityException("conflicting immutable dependency manifests: " + canonical);
+                }
                 String olderSourcePin = sourcePins.putIfAbsent(canonical, sourcesSha);
                 String olderManifestPin = manifestPins.putIfAbsent(canonical, manifestSha);
                 if ((olderSourcePin != null && !olderSourcePin.equals(sourcesSha))
@@ -154,7 +168,7 @@ final class PackageNamespaceWorkspace {
             throw new IllegalArgumentException("namespace workspace exceeds manifest/source limits");
         }
         Workspace snapshot = new Workspace(new ArrayList<>(manifests), new ArrayList<>(files),
-                aliases, rootPackageIds, sourcePins, manifestPins, rootManifestSha256);
+                aliases, rootPackageIds, sourcePins, manifestPins, rootManifestSha256, manifestSnapshots);
         verifyRootManifestSnapshot(snapshot);
         return snapshot;
     }
@@ -171,11 +185,33 @@ final class PackageNamespaceWorkspace {
         }
     }
 
-    private static TomlParseResult checkedManifest(Path path) throws IOException {
+    private static byte[] readManifestBytes(Path path) throws IOException {
         if (Files.size(path) > 1024 * 1024) {
             throw new IllegalArgumentException("package manifest exceeds byte budget");
         }
-        TomlParseResult parsed = Toml.parse(path);
+        return Files.readAllBytes(path);
+    }
+
+    private static String decodeManifestText(byte[] bytes) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+        } catch (java.nio.charset.CharacterCodingException invalid) {
+            throw new IllegalArgumentException("namespace manifest must be valid UTF-8", invalid);
+        }
+    }
+
+    private static TomlParseResult checkedManifest(Path path) throws IOException {
+        return checkedManifestText(decodeManifestText(readManifestBytes(path)));
+    }
+
+    private static TomlParseResult checkedManifestText(String text) {
+        if (text.getBytes(StandardCharsets.UTF_8).length > 1024 * 1024) {
+            throw new IllegalArgumentException("package manifest exceeds byte budget");
+        }
+        TomlParseResult parsed = Toml.parse(text);
         if (!parsed.errors().isEmpty()) {
             throw new IllegalArgumentException("invalid namespace manifest: " + parsed.errors().getFirst());
         }
@@ -314,9 +350,12 @@ final class PackageNamespaceWorkspace {
             if (!sha256(Files.readAllBytes(manifest)).equals(pinnedManifestHash)) {
                 throw new SecurityException("dependency manifest changed during admission");
             }
-            Path root = checkedProjectRoot(manifest, checkedManifest(manifest));
+            String captured = workspace.manifestSnapshots().get(manifest);
+            if (captured == null) throw new SecurityException("pinned namespace manifest snapshot missing");
+            TomlParseResult parsed = checkedManifestText(captured);
+            Path root = checkedProjectRoot(manifest, parsed);
             List<String> parts = new ArrayList<>();
-            for (Path source : members(manifest, checkedManifest(manifest))) {
+            for (Path source : members(manifest, parsed)) {
                 String id = source.toRealPath().toString().replace('\\', '/');
                 String admittedText = admitted.get(id);
                 if (admittedText == null) {
@@ -334,7 +373,11 @@ final class PackageNamespaceWorkspace {
     }
 
     static String sourceDigest(Path manifest, List<Path> sourceFiles) throws IOException {
-        TomlParseResult parsed = checkedManifest(manifest);
+        return sourceDigest(manifest, sourceFiles, checkedManifest(manifest));
+    }
+
+    private static String sourceDigest(Path manifest, List<Path> sourceFiles,
+                                       TomlParseResult parsed) throws IOException {
         Path root = checkedProjectRoot(manifest, parsed);
         // A pinned sources digest authenticates the ENTIRE manifest-owned
         // inventory, not a caller-selected subset. Recompute membership from
