@@ -696,13 +696,10 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (actorOwnership != null) actorOwnership.revoke();
             }
-            // If CONTROL is unavailable, the already-running writer still
-            // owns a finite NIO deadline and will close in its finally.
-            // No cancellation callback releases a physical actor loan.
-            nativeIo.submitControl("websocket.cancel-write", () -> {
-                close();
-                return null;
-            });
+            // The same one-shot host close path handles actor termination and
+            // active outbound cancellation. A saturated CONTROL pool falls
+            // back to bounded host cleanup, never an actor-carrier close.
+            scheduleHostClose();
         }
 
         Optional<WebSocketFrameCodec.Message> pollUserMessage() {
