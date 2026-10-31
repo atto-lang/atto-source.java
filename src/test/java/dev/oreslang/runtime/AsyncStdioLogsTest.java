@@ -149,6 +149,79 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void shutdownProducersMayEmitBeforeAdmissionSeals() throws Exception {
+        // Models the admission window during physical actor retirement.
+        // This is NOT an actual actor-generation/native-I/O retirement proof.
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        AsyncStdioLogs logs = new AsyncStdioLogs(
+                new PrintWriter(new OutputStreamWriter(bytes, StandardCharsets.UTF_8), true));
+        CountDownLatch retiring = new CountDownLatch(1);
+        CountDownLatch allowFinalLog = new CountDownLatch(1);
+        var producer = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            retiring.countDown();
+            try {
+                if (!allowFinalLog.await(2, TimeUnit.SECONDS)) {
+                    throw new AssertionError("producer was not released");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+            logs.logAsync("actor-retirement\n");
+        });
+        try {
+            logs.logAsync("normal-turn\n");
+            assertTrue(retiring.await(2, TimeUnit.SECONDS));
+            allowFinalLog.countDown();
+            producer.get(2, TimeUnit.SECONDS);
+            logs.sealAdmission();
+            assertThrows(IllegalStateException.class, () -> logs.logAsync("too-late\n"));
+            logs.close();
+            assertEquals("normal-turn\nactor-retirement\n",
+                    bytes.toString(StandardCharsets.UTF_8));
+        } finally {
+            allowFinalLog.countDown();
+        }
+    }
+
+    @Test
+    void sealingAdmissionNeverWaitsOnStuckStdoutWriter() throws Exception {
+        CountDownLatch enteredWrite = new CountDownLatch(1);
+        CountDownLatch releaseSink = new CountDownLatch(1);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        Writer blocked = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                enteredWrite.countDown();
+                try {
+                    if (!releaseSink.await(10, TimeUnit.SECONDS)) {
+                        throw new IOException("sink deadline");
+                    }
+                    bytes.write(new String(chars, off, len).getBytes(StandardCharsets.UTF_8));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, true));
+        try {
+            OresFuture<Void> accepted = logs.logAsync("accepted-before-seal\n");
+            assertTrue(enteredWrite.await(2, TimeUnit.SECONDS));
+            java.util.concurrent.CompletableFuture.runAsync(logs::sealAdmission)
+                    .get(1, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class, () -> logs.logAsync("rejected-after-seal\n"));
+            assertFalse(accepted.cancel(false), "accepted output cannot be retracted");
+            releaseSink.countDown();
+            logs.close();
+            assertEquals("accepted-before-seal\n", bytes.toString(StandardCharsets.UTF_8));
+        } finally {
+            releaseSink.countDown();
+        }
+    }
+
+    @Test
     void timedOutDrainMustNotReenterBlockedWriterForFinalFlush() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
