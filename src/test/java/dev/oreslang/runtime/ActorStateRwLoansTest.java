@@ -383,4 +383,97 @@ final class ActorStateRwLoansTest {
         loans.close();
         assertEquals(1, notifications.get());
     }
+
+    @Test
+    void closingPendingFutureWaitsForPhysicalFailureNotificationDrain()
+            throws Exception {
+        var notifications = new AtomicInteger();
+        var loans = new ActorStateRwLoans(2, notifications::incrementAndGet);
+        var held = loans.acquireWriteAsync(actor(8101, 211, 1)).join();
+        var pending = loans.acquireReadAsync(actor(8102, 212, 1));
+        var observedFailure = new AtomicBoolean();
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var unblock = new java.util.concurrent.CountDownLatch(1);
+        pending.whenCompleteRuntime((value, failure) -> {
+            observedFailure.set(value == null && failure instanceof IllegalStateException);
+            entered.countDown();
+            try {
+                if (!unblock.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("failure subscriber was never unblocked");
+                }
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interruption);
+            }
+        });
+        var closingError = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread closing = Thread.ofPlatform().start(() -> {
+            try { loans.close(); }
+            catch (Throwable failure) { closingError.set(failure); }
+        });
+        try {
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                    "pending failure callback must begin before physical release");
+            held.close();
+            assertFalse(loans.physicallyRetired(),
+                    "settled Future may still have a physical notification in flight");
+            assertEquals(0, notifications.get());
+        } finally {
+            unblock.countDown();
+            closing.join(5000);
+        }
+        assertFalse(closing.isAlive());
+        assertNull(closingError.get());
+        assertTrue(observedFailure.get());
+        assertTrue(loans.physicallyRetired());
+        assertEquals(1, notifications.get());
+    }
+
+    @Test
+    void cancelledPendingFutureAlsoWaitsForCancellationObserverDrain()
+            throws Exception {
+        var notifications = new AtomicInteger();
+        var loans = new ActorStateRwLoans(2, notifications::incrementAndGet);
+        var held = loans.acquireWriteAsync(actor(8201, 221, 1)).join();
+        var pending = loans.acquireReadAsync(actor(8202, 222, 1));
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var unblock = new java.util.concurrent.CountDownLatch(1);
+        var sawCancellation = new AtomicBoolean();
+        pending.whenCompleteRuntime((value, failure) -> {
+            sawCancellation.set(failure instanceof java.util.concurrent.CancellationException);
+            entered.countDown();
+            try {
+                if (!unblock.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("cancellation subscriber was never unblocked");
+                }
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interruption);
+            }
+        });
+        var cancelResult = new AtomicBoolean();
+        var cancellingError = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread cancelling = Thread.ofPlatform().start(() -> {
+            try { cancelResult.set(pending.cancel(false)); }
+            catch (Throwable failure) { cancellingError.set(failure); }
+        });
+        try {
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                    "cancelled Future must begin notifying its subscriber");
+            loans.close();
+            held.close();
+            assertFalse(loans.physicallyRetired(),
+                    "cancelled-but-undrained Future must retain the physical barrier");
+            assertEquals(0, notifications.get());
+        } finally {
+            unblock.countDown();
+            cancelling.join(5000);
+        }
+        assertFalse(cancelling.isAlive());
+        assertNull(cancellingError.get());
+        assertTrue(cancelResult.get());
+        assertTrue(sawCancellation.get());
+        assertTrue(loans.physicallyRetired());
+        assertEquals(1, notifications.get());
+    }
 }
