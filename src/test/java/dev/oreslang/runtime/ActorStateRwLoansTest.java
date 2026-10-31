@@ -562,4 +562,42 @@ final class ActorStateRwLoansTest {
         assertEquals(1, notifications.get(),
                 "retirement must be notified once after cancellation drains");
     }
+
+    @Test
+    void failedCancellationRevokerQuarantinesPhysicalRetirement()
+            throws Exception {
+        var wakes = new AtomicInteger();
+        var loans = new ActorStateRwLoans(2, wakes::incrementAndGet);
+        var holder = loans.acquireWriteAsync(actor(8601, 261, 1)).join();
+        var pending = loans.acquireReadAsync(actor(8602, 262, 1));
+        var injected = new IllegalStateException("injected revocation failure");
+
+        // OresFuture intentionally catches revoker failures and stores them
+        // for runtime inspection. Inject AFTER its normal owner revocation,
+        // proving that even a fully removed waiter cannot hide the failure.
+        var hookField = OresFuture.class.getDeclaredField("cancelHook");
+        hookField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var hook = (java.util.concurrent.atomic.AtomicReference<Runnable>)
+                hookField.get(pending);
+        Runnable original = hook.get();
+        hook.set(() -> {
+            original.run();
+            throw injected;
+        });
+        assertTrue(pending.cancel(false));
+        assertTrue(pending.isCancelled());
+        assertSame(injected, pending.cancellationHookFailureFromRuntime());
+        assertSame(injected, loans.retirementQuarantineCause(),
+                "the state arbiter must preserve the physical revocation failure");
+
+        loans.close();
+        holder.close();
+        assertEquals(0, loans.activeWriterCount());
+        assertEquals(0, loans.pendingCount());
+        assertFalse(loans.physicallyRetired(),
+                "failed revocation must quarantine the actor arena even after loan cleanup");
+        assertEquals(0, wakes.get(),
+                "the runtime must not receive a false safe-reclamation receipt");
+    }
 }
