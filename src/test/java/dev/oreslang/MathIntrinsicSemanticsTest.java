@@ -79,7 +79,11 @@ final class MathIntrinsicSemanticsTest {
     void portableMinFixturesTakeCheckedOverflowPath() throws Exception {
         for (String name : new String[] {
                 "math-i64-abs-min.ores",
-                "math-i64-neg-min.ores"
+                "math-i64-neg-min.ores",
+                "i64-add-overflow.ores",
+                "i64-sub-overflow.ores",
+                "i64-mul-overflow.ores",
+                "i64-neg-overflow.ores"
         }) {
             String guest = sharedFixture(name);
             try (Context context = Context.newBuilder(OresLanguage.ID)
