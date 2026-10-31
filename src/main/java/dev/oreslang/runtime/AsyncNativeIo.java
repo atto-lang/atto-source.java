@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -16,7 +19,13 @@ public final class AsyncNativeIo implements AutoCloseable {
             Thread.ofVirtual().name("ores-native-io-", 0).factory());
     private final Set<OresFuture<?>> pending = new HashSet<>();
     private final Set<OresFuture<?>> controls = new HashSet<>();
-    private final Set<AutoCloseable> resources = new HashSet<>();
+    /**
+     * Registered native handles are physical actor loans when registration
+     * happens during an actor turn. Identity semantics avoid alias/equality
+     * surprises from host resource implementations.
+     */
+    private final Map<AutoCloseable, ActorRuntime.ActorPhysicalLease> resources =
+            new IdentityHashMap<>();
     private final int capacity;
     private boolean closed;
 
@@ -144,23 +153,57 @@ public final class AsyncNativeIo implements AutoCloseable {
         return result;
     }
 
-    synchronized void register(AutoCloseable resource) throws Exception {
-        if (closed) {
-            resource.close();
-            throw new IllegalStateException("I/O context closed");
+    void register(AutoCloseable resource) throws Exception {
+        Objects.requireNonNull(resource, "native I/O resource");
+        ActorRuntime.ActorPhysicalLease actorLease =
+                captureActorPhysicalLease("native-registration");
+
+        boolean closeImmediately;
+        boolean duplicate;
+        synchronized (this) {
+            closeImmediately = closed;
+            duplicate = !closed && resources.containsKey(resource);
+            if (!closeImmediately && !duplicate) {
+                resources.put(resource, actorLease);
+            }
         }
-        resources.add(resource);
+
+        if (duplicate) {
+            if (actorLease != null) actorLease.retire();
+            return;
+        }
+        if (!closeImmediately) return;
+
+        try {
+            resource.close();
+            if (actorLease != null) actorLease.retire();
+        } catch (Exception | Error closeFailure) {
+            if (actorLease != null) actorLease.fail(closeFailure);
+            throw closeFailure;
+        }
+        throw new IllegalStateException("I/O context closed");
     }
 
-    synchronized void unregister(AutoCloseable resource) { resources.remove(resource); }
+    /**
+     * Detach only after the caller has physically closed the resource. This
+     * method retires the actor's registration lease and therefore must never be
+     * used as a pre-close bookkeeping operation.
+     */
+    void unregister(AutoCloseable resource) {
+        ActorRuntime.ActorPhysicalLease actorLease;
+        synchronized (this) {
+            actorLease = resources.remove(resource);
+        }
+        if (actorLease != null) actorLease.retire();
+    }
 
     @Override public void close() {
-        Set<AutoCloseable> closing;
+        Map<AutoCloseable, ActorRuntime.ActorPhysicalLease> closing;
         Set<OresFuture<?>> failing;
         synchronized (this) {
             if (closed) return;
             closed = true;
-            closing = new HashSet<>(resources);
+            closing = new IdentityHashMap<>(resources);
             resources.clear();
             failing = new HashSet<>(pending);
             failing.addAll(controls);
@@ -168,8 +211,18 @@ public final class AsyncNativeIo implements AutoCloseable {
             pending.clear();
         }
         workers.shutdownNow();
-        for (AutoCloseable resource : closing) {
-            try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
+        for (Map.Entry<AutoCloseable, ActorRuntime.ActorPhysicalLease> entry
+                : closing.entrySet()) {
+            try {
+                entry.getKey().close();
+                if (entry.getValue() != null) entry.getValue().retire();
+            } catch (Exception | Error closeFailure) {
+                if (entry.getValue() != null) entry.getValue().fail(closeFailure);
+                if (closeFailure instanceof VirtualMachineError fatal) throw fatal;
+                if (closeFailure instanceof ThreadDeath fatal) throw fatal;
+                if (closeFailure instanceof LinkageError fatal) throw fatal;
+                // Ordinary close failures quarantine the owning actor receipt.
+            }
         }
         for (OresFuture<?> future : failing)
             future.failFromRuntime(new IllegalStateException("I/O context closed"));
