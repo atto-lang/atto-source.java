@@ -2609,6 +2609,37 @@ public final class ActorRuntime implements AutoCloseable {
 
 
 
+        /**
+         * Trusted CONTROL-only candidate publication lease. STOP/failure and
+         * the final route assignment linearize on the same candidate lifecycle
+         * monitor. The callback MUST be an allocation-free route field swap,
+         * not guest code, Future notification, stage cleanup or I/O.
+         *
+         * This grants an atomic publication point, not immunity to STOP after
+         * publication. Callers must arrange independent terminal quarantine.
+         */
+        void withReadyUpgradeSuccessorPublication(
+                ActorRef<?> successor, Runnable publishRoute) {
+            requireSupervisorContext("publish physical actor upgrade successor");
+            requireCallerRuntimeAffinity("publish physical actor upgrade successor");
+            Objects.requireNonNull(publishRoute, "physical route publication");
+            Objects.requireNonNull(successor, "physical successor");
+            if (!successor.ownedBy(ActorRuntime.this))
+                throw new ActorInvalidReferenceException(
+                        "physical successor belongs to a different ActorRuntime");
+            ActorCell<?> candidate = actors.get(successor.id);
+            if (candidate == null || candidate.ref != successor)
+                throw new IllegalStateException("physical successor is not registered");
+            synchronized (candidate.lifecycleLock) {
+                requireReadyUpgradeSuccessor(successor);
+                if (candidate.sealing || candidate.forceKillFenced
+                        || candidate.finalized || closed.get())
+                    throw new IllegalStateException(
+                            "physical successor lost publication lifecycle authority");
+                publishRoute.run();
+            }
+        }
+
         /** Seal admission and finish previously admitted messages before stopping.
          * An actor failure still fails getDone(); this is NOT a restart policy. */
         public OresFuture<Void> gracefulStop() {
