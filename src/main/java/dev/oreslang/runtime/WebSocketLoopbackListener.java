@@ -12,6 +12,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -22,7 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * host I/O worker may hold the accept loan and each connection read loan.
  */
 final class WebSocketLoopbackListener implements AutoCloseable {
-    private final OresContext context;
+    private final AsyncNativeIo nativeIo;
+    private final BiConsumer<String, String> requireNet;
     private final ServerSocket server;
     private final String endpoint;
     private final Set<String> allowedOrigins;
@@ -39,11 +41,13 @@ final class WebSocketLoopbackListener implements AutoCloseable {
     private final java.util.Set<Connection> activeConnections =
             Collections.newSetFromMap(new IdentityHashMap<>());
 
-    private WebSocketLoopbackListener(OresContext context, ServerSocket server,
+    private WebSocketLoopbackListener(AsyncNativeIo nativeIo,
+            BiConsumer<String, String> requireNet, ServerSocket server,
             String endpoint, Set<String> allowedOrigins,
             WebSocketRawUpgrade.Limits limits, int maxConnections,
             int maxFrameBytes, int maxMessageBytes) {
-        this.context = context;
+        this.nativeIo = nativeIo;
+        this.requireNet = requireNet;
         this.server = server;
         this.endpoint = endpoint;
         this.allowedOrigins = allowedOrigins;
@@ -58,10 +62,27 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             int backlog, int maxConnections, int maxFrameBytes,
             int maxMessageBytes, Set<String> allowedOrigins,
             WebSocketRawUpgrade.Limits limits) throws IOException {
+        Objects.requireNonNull(context, "OresContext");
+        return bind(context.nativeIo(),
+                (endpoint, action) -> context.requirePermission(
+                        RuntimePermissions.Permission.NET, endpoint, action),
+                port, backlog, maxConnections, maxFrameBytes,
+                maxMessageBytes, allowedOrigins, limits);
+    }
+
+    // Package-private test seam: the production entrypoint supplies the
+    // scoped runtime NET authorization above. It shares exactly the same bind,
+    // admission, native-loan, and shutdown implementation as host tests.
+    static WebSocketLoopbackListener bind(AsyncNativeIo nativeIo,
+            BiConsumer<String, String> requireNet, int port,
+            int backlog, int maxConnections, int maxFrameBytes,
+            int maxMessageBytes, Set<String> allowedOrigins,
+            WebSocketRawUpgrade.Limits limits) throws IOException {
         if (ActorRuntime.inActorExecution()) {
             throw new SecurityException("WebSocket listener belongs to the supervisor");
         }
-        Objects.requireNonNull(context, "OresContext");
+        Objects.requireNonNull(nativeIo, "native I/O owner");
+        Objects.requireNonNull(requireNet, "NET authority");
         Objects.requireNonNull(limits, "WebSocket handshake limits");
         if (port < 1 || port > 65535 || backlog < 1 || backlog > 128
                 || maxConnections < 1 || maxConnections > 16
@@ -77,7 +98,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             WebSocketHandshake.requireAllowedOrigin(origin, origins);
         }
         String endpoint = "127.0.0.1:" + port;
-        context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "websocket.listen");
+        requireNet.accept(endpoint, "websocket.listen");
         var listener = new ServerSocket();
         try {
             listener.setReuseAddress(false);
@@ -85,7 +106,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     InetAddress.getByName("127.0.0.1"), port), backlog);
             context.nativeIo().register(listener);
             WebSocketLoopbackListener owned = new WebSocketLoopbackListener(
-                    context, listener, endpoint, origins, limits,
+                    nativeIo, requireNet, listener, endpoint, origins, limits,
                     maxConnections, maxFrameBytes, maxMessageBytes);
             // Retire the *logical* owner too. When context shutdown joins
             // native workers, this callback closes every active accepted
@@ -122,8 +143,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         if (ActorRuntime.inActorExecution()) {
             throw new SecurityException("WebSocket raw accept belongs to host I/O");
         }
-        context.requirePermission(RuntimePermissions.Permission.NET, endpoint,
-                "websocket.accept");
+        requireNet.accept(endpoint, "websocket.accept");
         if (closed.get() || !accepting.compareAndSet(false, true)) {
             throw new RejectedExecutionException("WebSocket listener unavailable or accept outstanding");
         }
@@ -240,8 +260,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (ActorRuntime.inActorExecution()) {
                 throw new SecurityException("WebSocket raw read belongs to host I/O");
             }
-            context.requirePermission(RuntimePermissions.Permission.NET,
-                    endpoint, "websocket.read");
+            requireNet.accept(endpoint, "websocket.read");
             if (retired.get() || !reading.compareAndSet(false, true)) {
                 throw new RejectedExecutionException("WebSocket read closed or already outstanding");
             }
@@ -285,8 +304,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (ActorRuntime.inActorExecution()) {
                 throw new SecurityException("WebSocket raw poll belongs to host I/O");
             }
-            context.requirePermission(RuntimePermissions.Permission.NET,
-                    endpoint, "websocket.poll");
+            requireNet.accept(endpoint, "websocket.poll");
             if (retired.get()) return Optional.empty();
             return protocol.pollUserMessage();
         }
