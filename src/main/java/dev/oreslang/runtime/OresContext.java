@@ -544,12 +544,12 @@ public final class OresContext implements AutoCloseable {
             java.util.Objects.requireNonNull(closeAsyncRuntime);
             java.util.Objects.requireNonNull(closeVm);
             java.util.Objects.requireNonNull(drainStdio);
-            RuntimeException auxiliaryFailure = null;
+            Throwable auxiliaryFailure = null;
             if (!httpClosed) {
                 try {
                     closeHttp.run();
                     httpClosed = true;
-                } catch (RuntimeException httpFailure) {
+                } catch (RuntimeException | Error httpFailure) {
                     auxiliaryFailure = httpFailure;
                 }
             }
@@ -557,7 +557,7 @@ public final class OresContext implements AutoCloseable {
                 try {
                     closeAsyncRuntime.run();
                     asyncRuntimeClosed = true;
-                } catch (RuntimeException asyncFailure) {
+                } catch (RuntimeException | Error asyncFailure) {
                     if (auxiliaryFailure == null) auxiliaryFailure = asyncFailure;
                     else if (auxiliaryFailure != asyncFailure) {
                         auxiliaryFailure.addSuppressed(asyncFailure);
@@ -568,7 +568,7 @@ public final class OresContext implements AutoCloseable {
                 try {
                     closeVm.run();
                     vmClosed = true;
-                } catch (RuntimeException vmFailure) {
+                } catch (RuntimeException | Error vmFailure) {
                     if (auxiliaryFailure == null) auxiliaryFailure = vmFailure;
                     else if (auxiliaryFailure != vmFailure) {
                         auxiliaryFailure.addSuppressed(vmFailure);
@@ -579,12 +579,12 @@ public final class OresContext implements AutoCloseable {
             // Shutdown admission and actor/native retirement were already
             // fenced. The bounded drain must run even after auxiliary failure,
             // without allowing final synchronous stdout flush or graph release.
-            RuntimeException logFailure = null;
+            Throwable logFailure = null;
             if (!stdioDrained) {
                 try {
                     drainStdio.run();
                     stdioDrained = true;
-                } catch (RuntimeException failedDrain) {
+                } catch (RuntimeException | Error failedDrain) {
                     logFailure = failedDrain;
                 }
             }
