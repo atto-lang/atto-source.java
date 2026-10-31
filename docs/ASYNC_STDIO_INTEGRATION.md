@@ -18,7 +18,7 @@ Writer I/O happens on a daemon platform thread. Accepted records are FIFO per co
 
 ## Shutdown and quarantine
 
-The current-main `OresContext.close()` retains the physical actor and native-I/O join gate and `QUARANTINED_CONTEXTS` strong-reference retention. After actor/native-I/O retirement and auxiliary VM close, the async writer stops accepting and drains accepted records, with a 5-second deadline. If physical retirement or the async drain fails, the context remains quarantined rather than clearing the graph or synchronously reacquiring a potentially blocked host stdout writer. The normal completed-drain path still flushes stdout before releasing the quarantine pin.
+The current-main `OresContext.close()` retains the physical actor and native-I/O join gate and `QUARANTINED_CONTEXTS` strong-reference retention. A per-context atomic exclusive-close admission guard rejects a second concurrent shutdown attempt without executing teardown stages; failed attempts release the guard for an explicit retry, and completed close is idempotent. After actor/native-I/O retirement and auxiliary VM close, the async writer stops accepting and drains accepted records, with a 5-second deadline. If physical retirement or the async drain fails, the context remains quarantined rather than clearing the graph or synchronously reacquiring a potentially blocked host stdout writer. The normal completed-drain path still flushes stdout before releasing the quarantine pin.
 
 This cannot guarantee bounded shutdown when **unrelated** services or the external writer are non-cooperating; it is specifically a guard against an extra synchronous reflush after a known async drain timeout. Cancellation, close retries, in-flight root-task production, and callbacks during retirement still require executed adversarial tests.
 
@@ -30,6 +30,8 @@ This cannot guarantee bounded shutdown when **unrelated** services or the extern
 | Focused host tests | `AsyncStdioLogsTest` queued writes, blocked writer, UTF-8 sizes, 8 MiB in-flight accounting, overflow, per-context sink error isolation, closed-record/flush rejection, timeout/drain retry | AUTHORED, NOT EXECUTED |
 | Guest tests | `StdioLogAndSpreadTest` detached log, await barrier, spread/list, permission-denied and direct-only | AUTHORED, NOT EXECUTED |
 | Whole-context blocked writer | Polyglot `Context.close()` with actual blocked host `OutputStream`, timeout/exception chain, and no reflush deadlock | AUTHORED, NOT EXECUTED |
+| Competing context close + quarantine recovery | Real Polyglot context blocked-sink timeout, overlapping close rejection, retained pin, same-object retry, pin removal and idempotence | AUTHORED, NOT EXECUTED |
+| Flush/close race | Previously accepted record/barrier completion after close admission fences new flush/record requests | AUTHORED, NOT EXECUTED |
 | Retirement | Actor generation/cancellation, failed native-I/O physical join, quarantine release and retry | NOT EXECUTED |
 | Native | Exact-tree GraalVM guest and native AOT/hybrid builds, carrier liveness | NOT EXECUTED |
 | OTel | Exact compiler `SOURCE_REF`, `oreslang-otel` smoke, int64, span lifecycle | NOT EXECUTED |
@@ -46,3 +48,11 @@ The byte counter increases only after a record is accepted and decreases only af
 `StdioLogAndSpreadTest.blockedAsyncSinkCannotHangWholeContextClose` invokes an actual Polyglot guest async log against a latch-blocked host `OutputStream`. The test closes the Polyglot context on a separate thread, requires an explicit async-drain timeout failure rather than success or indefinite monitor reacquisition, and releases the test sink in `finally` to prevent a stuck CI worker. This exercises the real `OresContext.close()` path rather than only `flushOutputAfterAsyncDrain`.
 
 This fixture has **not executed**; no guarantee of correct result or lifecycle behavior is claimed. It does not independently prove quarantine release or a successful retry through the Polyglot wrapper after failed disposal. Follow with a separate actor/native-I/O retirement and recovery test once a nonzero-step runner can build the exact head. The five-second drain deadline is not a deadline for unrelated context teardown stages.
+
+### Exclusive context close and recovery characterization (2026-10-31)
+
+`OresContext.close()` now uses an atomic exclusive-admission guard around physical retirement, auxiliary closure, async writer drain, final flush, and quarantine release. A second concurrent closer fails immediately, rather than running these teardown stages concurrently. A failed closer preserves `QUARANTINED_CONTEXTS` and releases only the close-admission guard; after the blocked sink recovers, explicit retry on the same runtime object may complete and release the pin. A successful close is idempotent. No source path can remove the quarantine pin after an incomplete mandatory stage.
+
+`AsyncStdioContextCloseTest.concurrentCloseCannotReleaseQuarantineBeforeFailedDrainRetry` uses a real Polyglot context and latch-blocked host sink, observes the actual strong-reference quarantine, probes a second closer, asserts timeout and closed writer admission, releases the sink, then retries the same `OresContext`. The test uses a package-private snapshot strictly for native JUnit inspection, not guest access. `AsyncStdioLogsTest.acceptedFlushBarrierOutlivesCloseAdmissionRace` checks that previously accepted record/barrier futures settle while later admission is denied.
+
+**Evidence:** source changes and fixtures are authored only; no executed compiler/JUnit/guest/AOT receipt exists. The Polyglot wrapper may not support retry after a failed disposal, hence the test explicitly retries the same retained `OresContext`. Independent execution must validate all assumptions and catch any VM or resource close non-idempotence. The close guard does not establish a global tenant byte budget or eliminate host sink I/O stalls.
