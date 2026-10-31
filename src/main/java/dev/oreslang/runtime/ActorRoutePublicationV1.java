@@ -192,20 +192,44 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         private final ActorUpgradeEpochGate.Image image;
         private final ActorUpgradePreflightV1 preflight;
         private final long dispatchWatermark;
+        private final ActorRuntime.UpgradeIngressLease physicalIngress;
+        // Physical drain is observed only AFTER the direct-ActorRef send gate
+        // has been frozen. A Future that fails never counts as quiescence.
+        private final java.util.concurrent.atomic.AtomicBoolean physicalDrained =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        private final OresFuture<Void> physicalDrain;
         private boolean finished;
 
         private Stage(Published<R> prior, ActorUpgradeEpochGate.Image image,
-                      ActorUpgradePreflightV1 preflight, long dispatchWatermark) {
+                      ActorUpgradePreflightV1 preflight, long dispatchWatermark,
+                      ActorRuntime.UpgradeIngressLease physicalIngress,
+                      OresFuture<Void> physicalDrain) {
             this.prior = prior;
             this.image = image;
             this.preflight = preflight;
             this.dispatchWatermark = dispatchWatermark;
+            this.physicalIngress = physicalIngress;
+            this.physicalDrain = physicalDrain;
+            if (physicalDrain == null) physicalDrained.set(true);
+        }
+
+        private void observePhysicalDrain() {
+            if (physicalDrain == null) return; // host-only non-ActorRef route
+            physicalDrain.whenCompleteRuntime((ignored, failure) -> {
+                synchronized (lock) {
+                    if (failure != null) {
+                        poisoned = true; // old actor may have died; no rollback
+                    } else {
+                        physicalDrained.set(true);
+                    }
+                }
+            });
         }
 
         boolean quiescent() {
             synchronized (lock) {
                 requireStage(this);
-                return preflight.quiescentSnapshot();
+                return physicalDrained.get() && preflight.quiescentSnapshot();
             }
         }
 
@@ -223,7 +247,8 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                 if (!validatedState.schemaSha256().equals(image.stateSchemaSha256()))
                     throw new SecurityException("checkpoint schema mismatch");
                 return preflight.withPreparedAuthority(() -> {
-                if (!preflight.quiescentSnapshot()) return false;
+                if (!physicalDrained.get()
+                        || !preflight.quiescentSnapshot()) return false;
                 var snapshot = mailbox.snapshot();
                 if (snapshot.closed() || !snapshot.dispatchFrozen()
                         || snapshot.routeEpoch() != prior.routeEpoch()
@@ -274,6 +299,7 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                 requireStage(this);
                 try {
                     preflight.close(); // old image abort precedes old DATA reopen
+                    if (physicalIngress != null) physicalIngress.close();
                     finished = true;
                     pending = null;
                 } catch (RuntimeException | Error failure) {
@@ -338,27 +364,41 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             if (physicalSubmissions != 0)
                 throw new IllegalStateException(
                         "cannot freeze route while physical submit is in flight");
-            // preflight takes the only old-generation and mailbox DATA freezes.
+            // Freeze the logical proxy first and direct ActorRef ingress
+            // second. An uncommitted physical send cannot cross the actor's
+            // final mailbox-admission lock after its freeze is acquired.
             var preflight = ActorUpgradePreflightV1.prepare(
                     active.taskAdmission(), mailbox, candidateImage);
+            ActorRuntime.UpgradeIngressLease ingress = null;
             try {
-                // Stage/ticket allocation can fail AFTER the independent
-                // generation and mailbox freezes have succeeded. Never
-                // strand a frozen actor without an owned rollback handle.
+                OresFuture<Void> physicalDrain = null;
+                if (active.physicalRoute() instanceof ActorRuntime.ActorRef<?> old) {
+                    ingress = old.freezeUpgradeIngress();
+                    // Snapshot AFTER direct ingress is frozen, so every
+                    // previously admitted operation is covered by this barrier.
+                    physicalDrain = old.physicalDrain();
+                }
                 Stage ready = new Stage(active, candidateImage, preflight,
-                        preflight.dispatchWatermark());
+                        preflight.dispatchWatermark(), ingress, physicalDrain);
                 pending = ready;
+                ready.observePhysicalDrain();
                 return ready;
             } catch (RuntimeException | Error admissionFailure) {
                 try {
                     preflight.close();
                 } catch (RuntimeException | Error rollbackFailure) {
-                    // An ambiguous rollback is terminal for DATA. Do not
-                    // reopen an unknown old image or hide the primary fault.
                     poisoned = true;
                     if (admissionFailure != rollbackFailure)
                         admissionFailure.addSuppressed(rollbackFailure);
                 }
+                try {
+                    if (ingress != null) ingress.close();
+                } catch (RuntimeException | Error rollbackFailure) {
+                    poisoned = true;
+                    if (admissionFailure != rollbackFailure)
+                        admissionFailure.addSuppressed(rollbackFailure);
+                }
+                pending = null;
                 throw admissionFailure;
             }
         }
