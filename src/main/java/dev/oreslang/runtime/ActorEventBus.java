@@ -494,27 +494,8 @@ public final class ActorEventBus implements AutoCloseable {
                             "ActorGroup event topic is no longer registered: " + topic.name);
                 }
 
-                long sequence = topic.sequence.incrementAndGet();
-                @SuppressWarnings("unchecked")
-                Event<Object> created = new Event<>(
-                        topic.name,
-                        sequence,
-                        publisher,
-                        System.nanoTime(),
-                        frozenPayload.value(),
-                        frozenPayload.reservation());
-                event = created;
-                // Commit only after the topic's admission/close fence, before readers
-                // can observe the notification. Reduction callers hold their state lock.
-                commitState.run();
-
                 List<Subscription<?>> snapshot =
                         List.copyOf(topic.subscriptions.values());
-                if (snapshot.isEmpty()) {
-                    topic.published.incrementAndGet();
-                    return new PublishReceipt(
-                            0, 0, 0, 0, OresFuture.completed(List.of()));
-                }
 
                 List<Subscription<?>> active =
                         new ArrayList<>(snapshot.size());
@@ -536,6 +517,44 @@ public final class ActorEventBus implements AutoCloseable {
                         active.add(subscription);
                     }
                 }
+                // Reliable admission must reserve every participating credit
+                // BEFORE assigning a committed sequence, creating an event,
+                // or mutating reduction state. A rejected publication cannot
+                // create a phantom event or sequence gap.
+                List<Subscription<?>> reserved = null;
+                if (topic.policy == DeliveryPolicy.RELIABLE) {
+                    reserved = new ArrayList<>(active.size());
+                    try {
+                        for (Subscription<?> subscription : active) {
+                            if (!subscription.reserveReliableEvent()) {
+                                throw new EventBackpressureException(
+                                        topic.name,
+                                        subscription.subscriber,
+                                        subscription.reliableOutstandingLimit);
+                            }
+                            reserved.add(subscription);
+                        }
+                    } catch (Throwable failure) {
+                        for (Subscription<?> admitted : reserved) {
+                            admitted.releaseReliableEvent();
+                        }
+                        throw failure;
+                    }
+                }
+
+                long sequence = topic.sequence.incrementAndGet();
+                Event<Object> created = new Event<>(
+                        topic.name,
+                        sequence,
+                        publisher,
+                        System.nanoTime(),
+                        frozenPayload.value(),
+                        frozenPayload.reservation());
+                event = created;
+                // Commit only after the topic's admission/close fence and
+                // successful reliable preflight, before any reader can see it.
+                commitState.run();
+
                 if (active.isEmpty()) {
                     topic.published.incrementAndGet();
                     return new PublishReceipt(
@@ -543,21 +562,6 @@ public final class ActorEventBus implements AutoCloseable {
                 }
 
                 if (topic.policy == DeliveryPolicy.RELIABLE) {
-                    List<Subscription<?>> reserved =
-                            new ArrayList<>(active.size());
-                    for (Subscription<?> subscription : active) {
-                        if (!subscription.reserveReliableEvent()) {
-                            for (Subscription<?> admitted : reserved) {
-                                admitted.releaseReliableEvent();
-                            }
-                            throw new EventBackpressureException(
-                                    topic.name,
-                                    subscription.subscriber,
-                                    subscription.reliableOutstandingLimit);
-                        }
-                        reserved.add(subscription);
-                    }
-
                     List<OresFuture<Void>> writes =
                             new ArrayList<>(reserved.size());
                     int started = 0;
