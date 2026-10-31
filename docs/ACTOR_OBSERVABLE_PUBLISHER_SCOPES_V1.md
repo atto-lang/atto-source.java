@@ -4,6 +4,8 @@
 `ObservableActor<E>` implementation, not a cross-backend parity claim and not
 a guarantee of reliable processing acknowledgement.
 
+**Security boundary:** `subscribePublisher` remains package-private in Java until a publisher-issued, nonforgeable observation grant is enforced. It is not an API exposed to untrusted guest source or general host callers.
+
 This is the first backwards-compatible Java slice for the shared-language
 `ObservableActor<E>` contract
 ([oreslang-common-source PR #200](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/200)).
