@@ -149,6 +149,63 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void lateFlushCannotOvertakeEarlierBarrierWhileRecordCompletionIsNotified() throws Exception {
+        CountDownLatch sinkEntered = new CountDownLatch(1);
+        CountDownLatch releaseSink = new CountDownLatch(1);
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseCallback = new CountDownLatch(1);
+        Writer sink = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                sinkEntered.countDown();
+                try {
+                    if (!releaseSink.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(e);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(sink))) {
+            OresFuture<Void> record = logs.logAsync("record\n");
+            assertTrue(sinkEntered.await(2, TimeUnit.SECONDS));
+            record.whenCompleteRuntime((value, failure) -> {
+                callbackEntered.countDown();
+                try {
+                    if (!releaseCallback.await(10, TimeUnit.SECONDS))
+                        throw new AssertionError("callback timeout");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            });
+            java.util.List<Integer> observed =
+                    java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+            OresFuture<Void> first = logs.flushAsync();
+            first.whenCompleteRuntime((value, failure) -> observed.add(1));
+            try {
+                releaseSink.countDown();
+                assertTrue(callbackEntered.await(2, TimeUnit.SECONDS));
+                OresFuture<Void> second = logs.flushAsync();
+                second.whenCompleteRuntime((value, failure) -> observed.add(2));
+                assertFalse(first.isDone());
+                assertFalse(second.isDone(), "late flush must wait for earlier callbacks");
+                releaseCallback.countDown();
+                first.get(3, TimeUnit.SECONDS);
+                second.get(3, TimeUnit.SECONDS);
+                assertEquals(java.util.List.of(1, 2), observed);
+            } finally {
+                releaseSink.countDown();
+                releaseCallback.countDown();
+            }
+        } finally {
+            releaseSink.countDown();
+            releaseCallback.countDown();
+        }
+    }
+
+    @Test
     void flushBarrierSubscribersReceiveFifoNotifications() throws Exception {
         CountDownLatch writerEntered = new CountDownLatch(1);
         CountDownLatch releaseWriter = new CountDownLatch(1);
