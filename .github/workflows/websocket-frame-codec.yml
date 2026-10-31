@@ -4,6 +4,7 @@ on:
     branches:
       - feat/websocket-frame-codec-20261026
     paths:
+      - src/main/java/dev/oreslang/runtime/ActorRuntime.java
       - src/main/java/dev/oreslang/runtime/AsyncNativeIo.java
       - src/main/java/dev/oreslang/runtime/WebSocketFrameCodec.java
       - src/main/java/dev/oreslang/runtime/WebSocketHandshake.java
