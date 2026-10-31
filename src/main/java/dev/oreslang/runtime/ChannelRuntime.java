@@ -447,7 +447,16 @@ public final class ChannelRuntime {
          */
         public static SelectSet fromMap(Map<?, ? extends SelectCase> cases) {
             Objects.requireNonNull(cases, "cases");
-            return new SelectSet(cases.values());
+            ArrayList<SelectCase> copy = new ArrayList<>();
+            for (Map.Entry<?, ? extends SelectCase> entry : cases.entrySet()) {
+                if (copy.size() >= MAX_SELECT_CASES) {
+                    throw new SelectAdmissionException(
+                            "select case count exceeds maximum " + MAX_SELECT_CASES);
+                }
+                Objects.requireNonNull(entry.getKey(), "select map key");
+                copy.add(Objects.requireNonNull(entry.getValue(), "select map case"));
+            }
+            return new SelectSet(copy);
         }
 
         public List<SelectCase> cases() {
