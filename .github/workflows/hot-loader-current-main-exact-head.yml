@@ -43,13 +43,13 @@ jobs:
         run: >-
           mvn -B -ntp -Dtest=HotReloadCurrentMainTransactionTest
           -DfailIfNoTests=true test
-      - name: Check JUnit XML for eleven non-skipped tests
+      - name: Check JUnit XML for thirteen non-skipped tests
         shell: bash
         run: |
           set -euo pipefail
           report=target/surefire-reports/TEST-dev.oreslang.HotReloadCurrentMainTransactionTest.xml
           test -s "$report"
-          grep -Eq 'tests="11"' "$report"
+          grep -Eq 'tests="13"' "$report"
           grep -q 'errors="0"' "$report"
           grep -q 'failures="0"' "$report"
           grep -q 'skipped="0"' "$report"
