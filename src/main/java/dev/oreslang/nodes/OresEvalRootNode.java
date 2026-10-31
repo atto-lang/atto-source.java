@@ -56,6 +56,8 @@ public final class OresEvalRootNode extends RootNode {
             "__ores_internal_register_namespace_member__";
     public static final String REGISTER_NAMESPACE_BINDING_COMMAND =
             "__ores_internal_register_namespace_binding__";
+    public static final String REGISTER_NAMESPACE_PROVIDER_MEMBER_COMMAND =
+            "__ores_internal_register_namespace_provider_member__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -108,6 +110,14 @@ public final class OresEvalRootNode extends RootNode {
                 && arguments[3] instanceof Integer arity
                 && arguments[4] instanceof String targetId) {
             current.registerNamespaceMember(binding, member, arity, targetId);
+            return null;
+        }
+        if (arguments.length == 4
+                && REGISTER_NAMESPACE_PROVIDER_MEMBER_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof String member
+                && arguments[2] instanceof Integer arity
+                && arguments[3] instanceof String targetId) {
+            current.registerNamespaceProviderMember(member, arity, targetId);
             return null;
         }
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
@@ -203,6 +213,9 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Map<String, Map<String, String>> linkedNamespaceFunctions = new HashMap<>();
+        // Compiler-verified cross-file call slots inside this exact package
+        // instance and namespace; not sourced from ambient filesystem lookup.
+        private final Map<String, String> linkedNamespaceProviderFunctions = new HashMap<>();
         private final Set<String> verifiedNamespaceBindings = new LinkedHashSet<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
@@ -320,6 +333,30 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("duplicate registered namespace slot " + binding + "." + slot);
         }
 
+        private void registerNamespaceProviderMember(
+                String member, int arity, String targetId) {
+            if (program.namespace() == null || program.namespace().isBlank()
+                    || linkedCodeImage != null || startupPhase != StartupPhase.CREATED
+                    || member == null || member.isBlank() || arity < 0
+                    || targetId == null || targetId.isBlank()
+                    || targetId.equals(codeUnitId)) {
+                throw new IllegalArgumentException(
+                        "cross-file namespace provider slot requires verified pre-link identity");
+            }
+            if (linkedNamespaceProviderFunctions.size() >= 2048)
+                throw new IllegalArgumentException("pinned provider call slot limit exceeded");
+            if (linkedNamespaceProviderFunctions.putIfAbsent(member + "/" + arity, targetId) != null)
+                throw new IllegalArgumentException("duplicate verified provider function slot");
+        }
+
+        private Invocation prepareLinkedProviderInvocation(
+                String member, List<Object> args) {
+            String selected = linkedNamespaceProviderFunctions.get(member + "/" + args.size());
+            if (selected == null)
+                throw new IllegalArgumentException("missing verified same-package namespace provider slot");
+            return checkedNamespaceFunctionInvocation(selected, member, args, program.namespace());
+        }
+
         private Invocation prepareLinkedNamespaceInvocation(
                 String binding, String member, List<Object> args) {
             String selected = linkedNamespaceFunctions.getOrDefault(binding, Map.of())
@@ -328,6 +365,11 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("namespace '" + binding
                         + "' does not export function '" + member + "' at arity " + args.size());
             }
+            return checkedNamespaceFunctionInvocation(selected, member, args, binding);
+        }
+
+        private Invocation checkedNamespaceFunctionInvocation(
+                String selected, String member, List<Object> args, String binding) {
             Object target = context.linkedCodeUnit(selected);
             if (!(target instanceof Evaluator owner)) {
                 throw new IllegalStateException("namespace target unit '" + selected + "' not linked");
@@ -7042,6 +7084,12 @@ public final class OresEvalRootNode extends RootNode {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return functionInvocation(direct, args);
+                }
+                if (linkedNamespaceProviderFunctions.containsKey(
+                        directName.name() + "/" + call.arguments().size())) {
+                    requireExplicitClassCallableImport(env, directName.name());
+                    List<Object> args = evaluateArguments(call.arguments(), env);
+                    return prepareLinkedProviderInvocation(directName.name(), args);
                 }
             }
 
