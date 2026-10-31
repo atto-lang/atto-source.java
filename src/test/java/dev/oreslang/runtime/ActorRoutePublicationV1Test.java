@@ -904,6 +904,86 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void foreignRuntimeCandidateCannotPublishEvenIfInitialized()
+            throws Exception {
+        var admittedV1 = new CountDownLatch(1);
+        try (var oldRuntime = new ActorRuntime();
+             var foreignRuntime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(68, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = oldRuntime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> admittedV1.countDown());
+            var foreign = foreignRuntime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> fail("foreign runtime must not serve this actor"));
+            old.ready().get(10, TimeUnit.SECONDS);
+            foreign.ready().get(10, TimeUnit.SECONDS);
+            try (var authority = new ActorRoutePublicationV1<>(
+                    gate, mailbox, state(7), old)) {
+                try (var stage = authority.stage(image('b'))) {
+                    assertTrue(stage.quiescent());
+                    assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                            () -> stage.publish(state(9), foreign));
+                    assertEquals(1L, authority.current().routeEpoch());
+                    assertTrue(mailbox.snapshot().dispatchFrozen());
+                }
+                assertFalse(mailbox.snapshot().dispatchFrozen(),
+                        "rejected publication must leave rollback available");
+                old.send(List.of(7));
+                assertTrue(admittedV1.await(10, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void uninitializedV2CannotPublishButSameStageMayRetryOnceReady()
+            throws Exception {
+        var startingV2 = new CountDownLatch(1);
+        var releaseV2 = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(69, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            old.ready().get(10, TimeUnit.SECONDS);
+            var candidate = runtime.<List<Integer>>spawnShared(() -> {
+                startingV2.countDown();
+                try {
+                    if (!releaseV2.await(10, TimeUnit.SECONDS))
+                        throw new IllegalStateException("V2 initialization release timed out");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return (message, context) -> {};
+            });
+            try {
+                var init = candidate.ready();
+                assertTrue(startingV2.await(10, TimeUnit.SECONDS));
+                assertFalse(init.isDone());
+                try (var authority = new ActorRoutePublicationV1<>(
+                        gate, mailbox, state(7), old)) {
+                    try (var stage = authority.stage(image('b'))) {
+                        assertTrue(stage.quiescent(),
+                                "V1 must be idle independently of candidate readiness");
+                        assertThrows(IllegalStateException.class,
+                                () -> stage.publish(state(9), candidate));
+                        assertEquals(1L, authority.current().routeEpoch());
+                        releaseV2.countDown();
+                        init.get(10, TimeUnit.SECONDS);
+                        assertTrue(stage.publish(state(9), candidate));
+                        assertSame(candidate, authority.current().physicalRoute());
+                        assertEquals(2L, authority.current().routeEpoch());
+                    }
+                }
+            } finally {
+                releaseV2.countDown();
+            }
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
