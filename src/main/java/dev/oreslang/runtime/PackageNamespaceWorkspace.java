@@ -51,6 +51,12 @@ final class PackageNamespaceWorkspace {
     private PackageNamespaceWorkspace() { }
 
     static Workspace discover(Path entry) throws IOException {
+        // Do not canonicalize away a caller-controlled source entry symlink.
+        // A link can be replaced after resolution and reinterpret package
+        // ownership without changing the bytes of the admitted target file.
+        if (Files.isSymbolicLink(entry)) {
+            throw new SecurityException("symlinked namespace entry source is forbidden");
+        }
         Path canonicalEntry = entry.toRealPath();
         Path manifest = null;
         for (Path cursor = canonicalEntry.getParent(); cursor != null; cursor = cursor.getParent()) {
