@@ -604,7 +604,14 @@ public final class OresContext implements AutoCloseable {
     }
 
     static void flushOutputAfterAsyncDrain(PrintWriter output, boolean drained) {
-        if (drained) output.flush();
+        // PrintWriter silently records IOException in its sticky error flag.
+        // checkError() performs the flush and reports that failure; plain
+        // flush() would incorrectly let the context release its quarantine.
+        // Never touch the writer on an incomplete async drain.
+        if (drained && output.checkError()) {
+            throw new IllegalStateException(
+                    "Oreslang final stdout flush reported an error; context quarantined");
+        }
     }
 
     @Override
