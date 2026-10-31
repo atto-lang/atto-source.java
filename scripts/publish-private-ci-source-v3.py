@@ -278,7 +278,9 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "repository_id", "base_sha", "workflow_path",
         "workflow_blob_sha", "test_plans"
     }
-    allowed_carrier_fields = required_carrier_fields | {"review_pr"}
+    allowed_carrier_fields = required_carrier_fields | {
+        "review_pr", "governance_mode",
+    }
     if (not required_carrier_fields.issubset(carrier)
             or not set(carrier).issubset(allowed_carrier_fields)):
         raise Denied("carrier contract fields are not exact")
@@ -291,6 +293,11 @@ def parse_contract(raw, repository, source_pr, test_plan):
             and (not isinstance(review_pr, int) or isinstance(review_pr, bool)
                  or review_pr <= 0)):
         raise Denied("carrier review PR invalid")
+    governance_mode = carrier.get("governance_mode", "protected-main")
+    if governance_mode not in ("protected-main", "reviewed-pr-head"):
+        raise Denied("carrier governance mode invalid")
+    if governance_mode == "reviewed-pr-head" and review_pr is None:
+        raise Denied("reviewed-pr-head carrier requires review PR")
     workflow_path = safe_policy_path(
         carrier.get("workflow_path"), ".github/workflows/", ".yml"
     )
@@ -320,6 +327,7 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "test_plan_path": plan_path,
         "test_plan_blob_sha": plan_blob,
         "review_pr": review_pr,
+        "governance_mode": governance_mode,
     }
 
 
@@ -498,7 +506,79 @@ def review_attested_carrier_main(repository, contract, branch):
     return base_sha
 
 
+def review_attested_carrier_pr_head(repository, contract):
+    """Authorize an immutable carrier PR head without trusting unprotected main.
+
+    This mode exists for private repositories whose GitHub plan does not expose
+    branch protection. The source-bearing carrier commit is parented directly
+    to the independently reviewed PR head. Any PR-head movement or review
+    change revokes authorization before the next persistent write.
+    """
+    review_pr = contract.get("review_pr")
+    if (not isinstance(review_pr, int) or isinstance(review_pr, bool)
+            or review_pr <= 0):
+        raise Denied("reviewed-pr-head carrier requires reviewed carrier PR")
+    expected_head = valid_sha(
+        contract.get("base_sha"), "carrier reviewed PR head SHA invalid"
+    )
+
+    def checked_pr():
+        pr = legacy.gh_api(f"repos/{repository}/pulls/{review_pr}")
+        head = pr.get("head")
+        base = pr.get("base")
+        author = pr.get("user")
+        if (pr.get("number") != review_pr
+                or pr.get("state") != "open"
+                or pr.get("draft") is not False
+                or not isinstance(author, dict)
+                or type(author.get("id")) is not int
+                or author["id"] <= 0
+                or author["id"] == CARRIER_REVIEW_USER_ID
+                or not isinstance(head, dict)
+                or head.get("sha") != expected_head
+                or not isinstance(head.get("repo"), dict)
+                or head["repo"].get("full_name") != repository
+                or head["repo"].get("id") != contract["repository_id"]
+                or not isinstance(base, dict)
+                or base.get("ref") != "main"
+                or not isinstance(base.get("repo"), dict)
+                or base["repo"].get("full_name") != repository
+                or base["repo"].get("id") != contract["repository_id"]):
+            raise Denied(
+                "carrier reviewed PR head is not the exact open same-repo candidate"
+            )
+        return pr
+
+    checked_pr()
+    review = latest_carrier_review(repository, review_pr)
+    review_id = review.get("id")
+    if (type(review_id) is not int or review_id <= 0
+            or review.get("state") != "APPROVED"
+            or review.get("commit_id") != expected_head):
+        raise Denied("carrier reviewed PR approval is stale or revoked")
+
+    codeowners, _ = remote_carrier_file(
+        repository, legacy.CODEOWNERS_PATH, expected_head, MAX_GOVERNANCE_FILE
+    )
+    require_carrier_security_codeowners(codeowners)
+
+    # Close PR/review TOCTOU after reading governance bytes.
+    checked_pr()
+    final_review = latest_carrier_review(repository, review_pr)
+    if (final_review.get("id") != review_id
+            or final_review.get("state") != "APPROVED"
+            or final_review.get("commit_id") != expected_head):
+        raise Denied("carrier reviewed PR approval changed during attestation")
+    return expected_head
+
+
 def checked_carrier_main(repository, contract):
+    governance_mode = contract.get("governance_mode", "protected-main")
+    if governance_mode == "reviewed-pr-head":
+        return review_attested_carrier_pr_head(repository, contract)
+    if governance_mode != "protected-main":
+        raise Denied("carrier governance mode invalid")
+
     branch = legacy.gh_api(f"repos/{repository}/branches/main")
     if branch.get("name") != "main":
         raise Denied("carrier main branch identity changed")
@@ -1047,14 +1127,11 @@ def authorize_write(
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state changed during transfer")
-    branch = legacy.gh_api(f"repos/{repository}/branches/main")
-    if (branch.get("name") != "main"
-            or branch.get("commit", {}).get("sha") != contract["base_sha"]):
-        raise Denied("carrier main changed during source-bearing write")
-    # A stable main SHA alone is insufficient: protection and CODEOWNERS can
-    # be weakened without creating a commit. Re-attest them before every
-    # source-bearing write.
-    checked_carrier_main(repository, contract)
+    # Re-attest the exact carrier authority before every write. Protected-main
+    # mode rechecks branch protection/CODEOWNERS; reviewed-pr-head mode rechecks
+    # the immutable PR head and latest independent exact-head approval.
+    if checked_carrier_main(repository, contract) != contract["base_sha"]:
+        raise Denied("carrier authority changed during source-bearing write")
     if verify_source_pr(source_pr, source_commit) != source_repo_id:
         raise Denied("source PR authorization changed during transfer")
     revalidate_source_governance(
