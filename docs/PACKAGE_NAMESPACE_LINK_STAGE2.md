@@ -99,7 +99,10 @@ same-byte source symlink swaps fail closed at the checked boundaries.
 The entry source path is also checked component-by-component **before**
 canonicalizing or lexically eliminating `.` / `..`: symlinked ancestors,
 including a component hidden by a subsequent `..`, must not redefine package
-ownership. The direct-file symlink denial remains distinct from an aliased
+ownership. Pinned dependency manifest locations use that same raw-component
+check **before** normalizing their permitted relative paths, so a
+`symlink/../` segment cannot silently select a different physical package.
+The direct-file symlink denial remains distinct from an aliased
 parent-directory denial. The component scan and subsequent reads are not an
 atomic filesystem snapshot under adversarial concurrent mutation.
 
