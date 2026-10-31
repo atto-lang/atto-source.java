@@ -45,6 +45,37 @@ final class EditorLexicalParserAdmissionTest {
     );
 
     @Test
+    void checkedInManifestExactlyMatchesThePinnedSourceGitBlobAndKeywordInventory()
+            throws Exception {
+        byte[] raw;
+        try (var stream = getClass().getResourceAsStream(
+                "/contracts/editor-syntax/v1/editor-lexical-contract.json")) {
+            assertNotNull(stream, "shared lexical contract test resource must exist");
+            raw = stream.readAllBytes();
+        }
+
+        var sha1 = java.security.MessageDigest.getInstance("SHA-1");
+        sha1.update(("blob " + raw.length + "\0")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String gitBlob = java.util.HexFormat.of().formatHex(sha1.digest(raw));
+        assertEquals("e9dbf3b6fad5562b7ca6df631ab3c45f478480ba", gitBlob,
+                "exact source manifest bytes must be preserved");
+
+        String json = new String(raw, java.nio.charset.StandardCharsets.UTF_8);
+        var keyMatch = java.util.regex.Pattern.compile(
+                "\"reservedWords\"\\s*:\\s*\\[(.*?)\\]",
+                java.util.regex.Pattern.DOTALL).matcher(json);
+        assertTrue(keyMatch.find(), "contract must contain reservedWords array");
+        var words = java.util.regex.Pattern.compile("\"([a-z]+)\"")
+                .matcher(keyMatch.group(1))
+                .results().map(match -> match.group(1)).toList();
+        assertEquals(PINNED_RESERVED_WORDS, words,
+                "Java lexer inventory must match byte-pinned manifest");
+        assertTrue(json.contains("NOT parser or backend acceptance"),
+                "lexical contract must not imply compiler/backend conformance");
+    }
+
+    @Test
     void everyPinnedReservedWordHasAnActualNonIdentifierLexerToken() {
         assertEquals(93, PINNED_RESERVED_WORDS.size());
         assertEquals(93, new java.util.HashSet<>(PINNED_RESERVED_WORDS).size());
