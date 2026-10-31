@@ -278,8 +278,14 @@ public final class NativeIo {
             socket.connect(new InetSocketAddress(host, port), 15_000);
             return new TcpConnection(context, endpoint, socket);
         } catch (Exception failure) {
-            context.nativeIo().unregister(socket);
-            try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+            try {
+                socket.close();
+                context.nativeIo().unregister(socket);
+            } catch (IOException cleanup) {
+                // Keep the registration lease live when physical close fails;
+                // actor reclamation must remain quarantined.
+                failure.addSuppressed(cleanup);
+            }
             throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
         }
     }
