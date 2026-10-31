@@ -41,6 +41,31 @@ final class WebSocketActorMailboxDeliveryTest {
     }
 
     @Test
+    void failedActorTurnStillReleasesItsAcceptedHostDelivery() throws Exception {
+        var releases = new AtomicInteger();
+        var attempted = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    ctx -> (mail, turn) -> { });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            assertTrue(runtime.enqueueHostActorDelivery(actor,
+                    () -> {
+                        attempted.countDown();
+                        throw new IllegalArgumentException("host-only delivery failure");
+                    }, releases::incrementAndGet));
+            assertTrue(attempted.await(3, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (releases.get() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, releases.get(),
+                    "try-with-resources actor envelope must close on exception");
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> actor.done().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void fullAndStoppedMailboxNeverForgetsAcceptedCleanupOrRunsGuestWork()
             throws Exception {
         var entered = new CountDownLatch(1);

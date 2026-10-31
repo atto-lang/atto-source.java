@@ -669,6 +669,73 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void fullActorMailboxRejectsDeliveryAndClosesConnectionWithoutLeakingTicket()
+            throws Exception {
+        var handlerEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseHandler = new java.util.concurrent.CountDownLatch(1);
+        var discarded = new java.util.concurrent.atomic.AtomicInteger();
+        try (var actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = actors.spawnPrivateTrusted(
+                    ctx -> (mail, turn) -> {
+                        handlerEntered.countDown();
+                        if (!releaseHandler.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("held mailbox exceeded test deadline");
+                        }
+                    });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            actor.send("hold");
+            assertTrue(handlerEntered.await(3, TimeUnit.SECONDS));
+            int filled = 0;
+            try {
+                while (filled < 1_100
+                        && actors.enqueueHostActorDelivery(actor,
+                                () -> fail("mailbox-full filler ran"),
+                                discarded::incrementAndGet)) filled++;
+                assertTrue(filled > 0 && filled <= 1_024);
+                int port = unusedPort();
+                try (var io = new AsyncNativeIo(4);
+                     var listener = listen(io, port, 1)) {
+                    var accepted = listener.acceptAsync();
+                    try (var client = new Socket("127.0.0.1", port)) {
+                        sendOpening(client, port);
+                        assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                        var conn = accepted.get(3, TimeUnit.SECONDS);
+                        var tenant = java.util.UUID.randomUUID();
+                        var handle = conn.bindActorHost(
+                                tenant, actor.address(), actor::isAlive);
+                        sendMaskedText(client, "overflow");
+                        assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                                conn.readForActorAsync(handle, tenant, actor.address())
+                                        .get(3, TimeUnit.SECONDS).kind());
+                        assertFalse(conn.dispatchHostActorMessage(
+                                handle, tenant, actors, actor,
+                                frame -> fail("rejected frame reached actor")));
+                        assertEquals(0, conn.pendingActorTicketCount(),
+                                "rejected mailbox admission must return ownership lease");
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                        while (listener.activeConnectionCount() != 0
+                                && System.nanoTime() < deadline) Thread.sleep(10);
+                        assertEquals(0, listener.activeConnectionCount(),
+                                "no silent USER drop: failed admission retires the wire");
+                        assertThrows(SecurityException.class, () ->
+                                conn.acquireActorLease(handle, tenant, actor.address()));
+                    }
+                }
+                assertTrue(actor.cancel());
+            } finally {
+                releaseHandler.countDown();
+            }
+            final int expected = filled;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (discarded.get() != expected && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(expected, discarded.get(),
+                    "STOP must reclaim every queued host continuation");
+        }
+    }
+
+    @Test
     void actorReadDeliveryAndWriteRequireHandleAndDrainBeforeTransfer()
             throws Exception {
         int port = unusedPort();
