@@ -340,6 +340,52 @@ def require_resolved_blocking_incidents():
             issue.get("closed_at"),
             "blocking P0 incident close timestamp invalid",
         )
+
+        events = gh_api_list(
+            "repos/" + BLOCKING_INCIDENT_REPO + "/issues/"
+            + str(number) + "/events?per_page=100"
+        )
+        if len(events) >= 100:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " closure events exceed single-page audit bound"
+            )
+        matching_close_events = []
+        seen_event_ids = set()
+        for event in events:
+            if not isinstance(event, dict):
+                raise Denied("blocking P0 incident event shape invalid")
+            event_id = event.get("id")
+            if (type(event_id) is not int or event_id <= 0
+                    or event_id in seen_event_ids):
+                raise Denied("blocking P0 incident event identity invalid")
+            seen_event_ids.add(event_id)
+            if event.get("event") != "closed":
+                continue
+            actor = event.get("actor")
+            if not isinstance(actor, dict):
+                raise Denied("blocking P0 incident closure actor missing")
+            event_at = github_timestamp(
+                event.get("created_at"),
+                "blocking P0 incident closure timestamp invalid",
+            )
+            if event_at == closed_at:
+                matching_close_events.append((event_id, actor))
+        if len(matching_close_events) != 1:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " lacks an unambiguous current close event"
+            )
+        _close_event_id, close_actor = matching_close_events[0]
+        if (close_actor.get("id") != INCIDENT_DISPOSITION_REVIEWER_ID
+                or not isinstance(close_actor.get("login"), str)
+                or close_actor["login"].casefold()
+                != INCIDENT_DISPOSITION_REVIEWER.casefold()):
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " was not closed by the independent security owner"
+            )
+
         comments = gh_api_list(
             "repos/" + BLOCKING_INCIDENT_REPO + "/issues/"
             + str(number) + "/comments?per_page=100"
@@ -393,8 +439,13 @@ def require_resolved_blocking_incidents():
                 + " lacks independent security disposition"
             )
         reviewer_comments.sort(key=lambda item: (item[0], item[1]))
-        _created_at, _comment_id, disposition_at, disposition_body = reviewer_comments[-1]
-        if disposition_at < closed_at:
+        disposition_created_at, _comment_id, disposition_updated_at, disposition_body = reviewer_comments[-1]
+        if disposition_created_at != disposition_updated_at:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " latest independent security disposition was edited"
+            )
+        if disposition_created_at < closed_at:
             raise Denied(
                 "blocking P0 incident #" + str(number)
                 + " disposition predates current closure"
