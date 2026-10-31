@@ -169,11 +169,11 @@ final class DynamicSelectPlanGenerationTest {
         assertTrue(left.tryWrite(41));
         assertTrue(right.tryWrite(42));
         var leftResult = dynamic.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
-        assertEquals(0, leftResult.key());
+        assertEquals(Integer.valueOf(0), leftResult.key());
         assertEquals(2L, leftResult.version());
         assertEquals(41, leftResult.selection().value());
         var rightResult = dynamic.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
-        assertEquals(1, rightResult.key());
+        assertEquals(Integer.valueOf(1), rightResult.key());
         assertEquals(42, rightResult.selection().value());
         assertEquals(0, left.pendingRegistrations());
         assertEquals(0, right.pendingRegistrations());
