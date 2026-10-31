@@ -80,6 +80,36 @@ final class ActorEndCleanupTest {
     }
 
     @Test
+    void actorCleanupCanLogBeforeWriterAdmissionIsSealed() throws Exception {
+        // Integration of a real actor STOP cleanup turn with the stdout gate.
+        // This is not yet the complete OresContext/Truffle guest shutdown path.
+        var bytes = new java.io.ByteArrayOutputStream();
+        AsyncStdioLogs logs = new AsyncStdioLogs(new java.io.PrintWriter(
+                new java.io.OutputStreamWriter(bytes, java.nio.charset.StandardCharsets.UTF_8), true));
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnSharedTrusted(
+                    context -> (message, turn) -> {
+                        logs.logAsync("before-retirement\n");
+                        turn.runtime().endCurrentActorWithCleanup(
+                                () -> logs.logAsync("actor-cleanup\n"));
+                    });
+            actor.ready().join();
+            actor.send("stop");
+            actor.done().get(3, java.util.concurrent.TimeUnit.SECONDS);
+            // Physical actor STOP must reach completion before OresContext
+            // closes stdout admission; otherwise cleanup telemetry is lost.
+            logs.sealAdmission();
+            assertThrows(IllegalStateException.class,
+                    () -> logs.logAsync("after-retirement\n"));
+            logs.close();
+            assertEquals("before-retirement\nactor-cleanup\n",
+                    bytes.toString(java.nio.charset.StandardCharsets.UTF_8));
+        } finally {
+            logs.sealAdmission();
+        }
+    }
+
+    @Test
     void repeatedEndCannotReplaceTheRegisteredCleanup() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicInteger cleanups = new AtomicInteger();
