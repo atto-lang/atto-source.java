@@ -2188,8 +2188,23 @@ public final class TypeChecker {
                     name.name(), named.arguments().size());
             Ast.CallExpr lowered = OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(
                     named, resolved);
-            // Existing callable resolution, visibility, return-type and
-            // argument checks remain authoritative for this pure subset.
+            // The static checking view is in formal order. Reordering a
+            // closure or any shadowed zero-arg callback would require its
+            // captured loan/effect summary in lexical source order.
+            var plan = OptionalCallShapeBinder.directScalarBindingPlan(named, resolved);
+            if (OptionalCallShapeBinder.isReorderedNamedCall(plan)) {
+                for (Ast.CallArgument item : named.arguments()) {
+                    if (item.value() instanceof Ast.CallExpr nested
+                            && nested.callee() instanceof Ast.NameExpr callee
+                            && env.lookup(callee.name()) != null) {
+                        throw new IllegalArgumentException(
+                                "reordered named call requires a closed zero-argument function, not local callback '"
+                                        + callee.name() + "'");
+                    }
+                }
+            }
+            // The declared primitive parameter types and source expressions
+            // are checked by the authoritative normal-call type checker.
             return typeOf(lowered, env, generics, self);
         }
         if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
