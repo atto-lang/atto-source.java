@@ -319,6 +319,38 @@ final class HotReloadCurrentMainTransactionTest {
     }
 
     @Test
+    void legacyStagingCannotShadowPreviouslyCommittedServingRoute() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var healthy = manager.loadAndStart("worker.ores", GOOD);
+            var legacyCandidate = manager.load("worker.ores", GOOD);
+            assertSame(legacyCandidate, manager.active("worker.ores"),
+                    "legacy active pointer remains for backward compatibility");
+            assertSame(healthy, manager.serving("worker.ores"),
+                    "production serving route cannot be shadowed by unready staging");
+            assertFalse(legacyCandidate.initialized());
+            assertEquals(2, manager.liveGenerations());
+            legacyCandidate.close();
+            assertSame(healthy, manager.serving("worker.ores"));
+            assertFalse(healthy.closed());
+            assertEquals(1, manager.liveGenerations());
+        }
+    }
+
+    @Test
+    void explicitLegacyStartIsNotAnAuthorizedServingPublication() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var candidate = manager.load("worker.ores", GOOD);
+            candidate.start();
+            assertTrue(candidate.initialized());
+            assertSame(candidate, manager.active("worker.ores"));
+            assertNull(manager.serving("worker.ores"),
+                    "only the transactional coordinator publishes serving routes");
+            candidate.close();
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
     void unverifiedDeclaredDependenciesAreRejectedEvenWithValidSource() {
         var compiled = compiledGood();
         var forged = counterfeit(compiled, GOOD, sha256(GOOD), Set.of("other.ores"));
