@@ -588,6 +588,11 @@ public final class ChannelRuntime {
             return set.cases();
         }
 
+        /** The descriptor is reusable, but selection registrations never are. */
+        public SelectSet selectSetSnapshot() {
+            return set;
+        }
+
         public OresFuture<SelectResult> selectAsync() {
             return set.selectAsync();
         }
@@ -634,6 +639,22 @@ public final class ChannelRuntime {
         }
 
         public DynamicSelectPlan() { }
+
+        /** Lists become stable zero-based keyed dynamic cases. */
+        public static DynamicSelectPlan<Integer> fromList(
+                Iterable<? extends SelectCase> initial) {
+            Objects.requireNonNull(initial, "initial");
+            DynamicSelectPlan<Integer> plan = new DynamicSelectPlan<>();
+            int index = 0;
+            for (SelectCase selectCase : initial) {
+                if (index == MAX_SELECT_CASES) {
+                    throw new SelectAdmissionException(
+                            "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
+                }
+                plan.put(index++, Objects.requireNonNull(selectCase, "selectCase"));
+            }
+            return plan;
+        }
 
         public DynamicSelectPlan(Map<? extends K, ? extends SelectCase> initial) {
             Objects.requireNonNull(initial, "initial");

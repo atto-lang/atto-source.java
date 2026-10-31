@@ -22,6 +22,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.TaskScope;
@@ -6817,6 +6818,12 @@ public final class OresEvalRootNode extends RootNode {
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
             if (value instanceof ChannelRuntime.SelectSet set) return set;
+            if (value instanceof ChannelRuntime.SelectPlan plan)
+                return plan.selectSetSnapshot();
+            if (value instanceof ChannelRuntime.DynamicSelectPlan<?> plan)
+                return plan.selectSetSnapshot();
+            if (value instanceof OresKeyedMap<?, ?> map)
+                value = map.shallowSnapshot();
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
@@ -7285,6 +7292,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
+                if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this, false);
+                if (name.name().equals("DynamicSelectPlan")) return new SelectPlanFactory(this, true);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -8185,6 +8194,12 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof SelectSetFactory factory) {
                 if (!name.equals("new")) {
                     throw new IllegalArgumentException("unknown SelectSet factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof SelectPlanFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException("unknown select plan factory member " + name);
                 }
                 return (Invokable) factory::create;
             }
@@ -11146,6 +11161,43 @@ public final class OresEvalRootNode extends RootNode {
         private Object create(List<Object> args) {
             requireOne(args, "SelectSet.new");
             return owner.asSelectSet(args.getFirst());
+        }
+    }
+
+    /** Plan construction copies values before publishing reusable descriptors. */
+    private record SelectPlanFactory(Evaluator owner, boolean dynamic) {
+        private Object create(List<Object> args) {
+            String where = dynamic ? "DynamicSelectPlan.new" : "SelectPlan.new";
+            requireOne(args, where);
+            Object input = args.getFirst();
+            if (input instanceof OresKeyedMap<?, ?> map)
+                input = map.shallowSnapshot();
+            if (input instanceof List<?> list) {
+                ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
+                for (Object item : list)
+                    cases.add(owner.requireSelectCase(item));
+                return dynamic
+                        ? ChannelRuntime.DynamicSelectPlan.fromList(cases)
+                        : ChannelRuntime.SelectPlan.from(cases);
+            }
+            if (input instanceof Map<?, ?> map) {
+                LinkedHashMap<Object, ChannelRuntime.SelectCase> cases =
+                        new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    Object key = Objects.requireNonNull(entry.getKey(), "select plan key");
+                    if (cases.size() == ChannelRuntime.MAX_SELECT_CASES) {
+                        throw new ChannelRuntime.SelectAdmissionException(
+                                "select plan case count exceeds maximum "
+                                        + ChannelRuntime.MAX_SELECT_CASES);
+                    }
+                    cases.put(key, owner.requireSelectCase(entry.getValue()));
+                }
+                return dynamic
+                        ? new ChannelRuntime.DynamicSelectPlan<>(cases)
+                        : ChannelRuntime.SelectPlan.fromMap(cases);
+            }
+            throw new IllegalArgumentException(
+                    where + " requires a list or map of SelectCase values");
         }
     }
 

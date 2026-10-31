@@ -327,7 +327,7 @@ public final class TypeChecker {
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
-                "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
+                "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "HttpClientResponse", "HttpClientBody",
@@ -2434,7 +2434,10 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("SelectCase")
+                    || name.name().equals("SelectSet") || name.name().equals("SelectPlan")
+                    || name.name().equals("DynamicSelectPlan"))
+                return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -3087,8 +3090,26 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "SelectSet.new expects one list/map of SelectCase values");
                 }
-                typeOf(call.arguments().getFirst(), env, generics, self);
+                requireSelectCaseInput(
+                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        false, "SelectSet.new");
                 return new Named("SelectSet", List.of());
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr planCall
+                    && planCall.receiver() instanceof Ast.NameExpr factory
+                    && (factory.name().equals("SelectPlan")
+                            || factory.name().equals("DynamicSelectPlan"))
+                    && planCall.member().equals("new")) {
+                String kind = factory.name();
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            kind + ".new expects one list/map of SelectCase values");
+                }
+                requireSelectCaseInput(
+                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        false, kind + ".new");
+                return new Named(kind, List.of());
             }
 
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -4447,7 +4468,9 @@ public final class TypeChecker {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
             // remain Unknown until collection generic constraints are richer.
-            typeOf(selected.cases(), env, generics, self);
+            requireSelectCaseInput(
+                    typeOf(selected.cases(), env, generics, self),
+                    true, "select from");
             Type result = new Named("SelectResult", List.of());
             Type optional = new Named("Option", List.of(result));
             return switch (selected.mode()) {
@@ -5881,7 +5904,9 @@ public final class TypeChecker {
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("ActorStream") || named.name().equals("StreamOperator")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
+                || named.name().equals("SelectSet") || named.name().equals("SelectPlan")
+                || named.name().equals("DynamicSelectPlan")
+                || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
@@ -6002,7 +6027,8 @@ public final class TypeChecker {
                 "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock",
                 "Mutex", "MutexGuard", "SharedMutex",
                 "Future", "Iterator", "AsyncIterator", "ActorStream", "StreamOperator",
-                "Channel", "SelectCase", "SelectSet", "SelectResult")
+                "Channel", "SelectCase", "SelectSet", "SelectPlan",
+                "DynamicSelectPlan", "SelectResult")
                 .contains(named.name())) {
             return false;
         }
@@ -7496,6 +7522,43 @@ public final class TypeChecker {
             };
         }
         return null;
+    }
+
+    /** Reject concrete invalid case collections before starting selection. */
+    private void requireSelectCaseInput(Type raw, boolean allowPlans, String where) {
+        Type type = deref(raw);
+        if (type == Unknown.INSTANCE) return; // Checked again at runtime.
+        if (type instanceof Named named) {
+            if (named.name().equals("SelectSet")
+                    || (allowPlans && (named.name().equals("SelectPlan")
+                            || named.name().equals("DynamicSelectPlan")))) return;
+            if (named.name().equals("Map") && named.arguments().size() == 2) {
+                requireSelectCaseValue(named.arguments().get(1), where);
+                return;
+            }
+        }
+        if (type instanceof ListType list) {
+            requireSelectCaseValue(list.element(), where);
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Type value : record.members().values())
+                requireSelectCaseValue(value, where);
+            return;
+        }
+        throw new IllegalArgumentException(
+                where + " requires SelectSet, list/map of SelectCase"
+                        + (allowPlans ? ", or a select plan" : "")
+                        + "; got " + type);
+    }
+
+    private void requireSelectCaseValue(Type raw, String where) {
+        Type value = deref(raw);
+        if (value == Unknown.INSTANCE) return; // Runtime validates imports.
+        if (value instanceof Named named && named.name().equals("SelectCase")
+                && named.arguments().isEmpty()) return;
+        throw new IllegalArgumentException(
+                where + " requires SelectCase values; got " + value);
     }
 
     private Type builtinCollectionMember(Type receiver, String member) {
