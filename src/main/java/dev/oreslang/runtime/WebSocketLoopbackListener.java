@@ -342,6 +342,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
 
         private Connection(Socket socket) { this.socket = socket; }
 
+        /** Host-side retirement state; no raw Socket or OS handle escapes. */
+        boolean isRetired() { return retired.get(); }
+
         /**
          * One-time supervisor transfer from an accepted host connection to a
          * live actor incarnation. A second claim (including a rebind after
