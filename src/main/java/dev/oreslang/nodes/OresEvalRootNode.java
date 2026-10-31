@@ -7770,6 +7770,12 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
+                    case "println_async" -> (Invokable) stdio::printlnAsync;
+                    case "flush_async_logs" -> (Invokable) args -> {
+                        context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.flush_async_logs");
+                        requireZero(args, "stdio.flush_async_logs");
+                        return context.asyncStdio().flushAsync();
+                    };
                     case "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin" -> new StdinFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
@@ -7781,6 +7787,9 @@ public final class OresEvalRootNode extends RootNode {
                     case "println" -> (Invokable) stdout::println;
                     case "log" -> (Invokable) stdout::log;
                     case "logList" -> (Invokable) stdout::logList;
+                    case "log_async" -> (Invokable) stdout::logAsync;
+                    case "logList_async" -> (Invokable) stdout::logListAsync;
+                    case "println_async" -> (Invokable) stdout::printlnAsync;
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
             }
