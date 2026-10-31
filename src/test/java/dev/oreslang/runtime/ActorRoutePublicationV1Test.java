@@ -1090,6 +1090,67 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void concurrentCandidateStopAndPublishHaveOneFencedLinearization()
+            throws Exception {
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(73, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var pool = Executors.newFixedThreadPool(2)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            var candidate = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            old.ready().get(10, TimeUnit.SECONDS);
+            candidate.ready().get(10, TimeUnit.SECONDS);
+            try (var authority = new ActorRoutePublicationV1<>(
+                    gate, mailbox, state(7), old)) {
+                try (var stage = authority.stage(image('b'))) {
+                    assertTrue(stage.quiescent());
+                    var start = new CountDownLatch(1);
+                    var publish = pool.submit(() -> {
+                        if (!start.await(10, TimeUnit.SECONDS))
+                            throw new IllegalStateException("concurrent test start timed out");
+                        try {
+                            return stage.publish(state(9), candidate);
+                        } catch (IllegalStateException stoppedFirst) {
+                            return false;
+                        }
+                    });
+                    var stop = pool.submit(() -> {
+                        if (!start.await(10, TimeUnit.SECONDS))
+                            throw new IllegalStateException("concurrent STOP start timed out");
+                        candidate.stop();
+                        return true;
+                    });
+                    start.countDown();
+                    boolean committed = publish.get(10, TimeUnit.SECONDS);
+                    assertTrue(stop.get(10, TimeUnit.SECONDS));
+                    if (committed) {
+                        assertEquals(2L, 2L);
+                        candidate.done().get(10, TimeUnit.SECONDS);
+                        assertThrows(IllegalStateException.class, authority::current,
+                                "STOP after route CAS must quarantine V2");
+                        assertThrows(ActorRuntime.ActorSealedException.class,
+                                () -> old.send(List.of(1)),
+                                "published route must not reopen V1 after candidate STOP");
+                    } else {
+                        assertSame(old, authority.current().physicalRoute(),
+                                "STOP before route CAS must preserve V1");
+                        assertEquals(1L, authority.current().routeEpoch());
+                    }
+                }
+                // A losing publication must have rolled back both ingress
+                // freezes and left the old physical actor live.
+                if (authority.current().routeEpoch() == 1L) {
+                    old.send(List.of(1));
+                    old.drain().get(10, TimeUnit.SECONDS);
+                }
+            }
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
