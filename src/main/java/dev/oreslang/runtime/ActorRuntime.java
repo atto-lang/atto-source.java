@@ -8572,7 +8572,8 @@ public final class ActorRuntime implements AutoCloseable {
                             // Runs after actor lease/cancellation admission, at
                             // the source/host handler call boundary only.
                             CglActorMessageTrace trace = ActorRuntime.this.cglMessageTrace;
-                            long handlerEnterNanos = trace == null ? 0L : System.nanoTime();
+                            long handlerEnterNanos = 0L;
+                            boolean handlerInvoked = false;
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -8586,16 +8587,23 @@ public final class ActorRuntime implements AutoCloseable {
                                     @SuppressWarnings("unchecked")
                                     ActorContext<Object> sourceContext =
                                             (ActorContext<Object>) (ActorContext<?>) context;
+                                    // Ownership has been validated: this is
+                                    // the source handler CALL boundary, not
+                                    // mailbox retrieval or a rejected dispatch.
+                                    if (trace != null) handlerEnterNanos = System.nanoTime();
+                                    handlerInvoked = true;
                                     codeExecutor.receiveActor(
                                             codeActorType,
                                             codeActorState,
                                             sourceMail,
                                             sourceContext);
                                 } else {
+                                    if (trace != null) handlerEnterNanos = System.nanoTime();
+                                    handlerInvoked = true;
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                if (trace != null) {
+                                if (trace != null && handlerInvoked) {
                                     trace.record(ref.id().value(), ref.generation(), mail.sequence(),
                                             handlerEnterNanos, System.nanoTime(),
                                             codeExecutor != null);
