@@ -335,13 +335,13 @@ class AsyncNativeIoTest {
             CountDownLatch submissionsFinished = new CountDownLatch(1);
             var rejected = new java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>>();
             var actor = runtime.<String>spawnPrivateTrusted(factory -> (mail, turn) -> {
-                if ("first".equals(mail.value())) {
+                if ("first".equals(mail)) {
                     io.submit("physical-first", () -> {
                         firstEntered.countDown();
                         releaseFirst.await();
                         return 1;
                     });
-                } else if ("second".equals(mail.value())) {
+                } else if ("second".equals(mail)) {
                     // This separate actor message is sent only AFTER the
                     // physical first worker enters. The second operation is
                     // deterministically queued and the third must reject.
