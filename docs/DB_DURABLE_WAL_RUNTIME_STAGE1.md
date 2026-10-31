@@ -173,3 +173,37 @@ real WAL durability/recovery. **Exact-head Maven/JDK25, Java host tests,
 Graal Native Image and compiled .ores guest tests are NOT EXECUTED.**
 Suggested first runner gate:
 `mvn -Dtest=DbWalTrustedGrantRegistryTest,DbWalAsyncAdmissionTest,DbWalAuthorityLifecycleTest,DbDurableWalFileTest test`.
+
+
+## 31 October exact-blob local host-only execution
+
+Source PR head at the time of local tests:
+`d3a5b4588250abe0dd7ab09a258db2a00d2f256b`.
+The isolated `DbWalAuthorityLifecycle.java` source had Git object SHA
+`9a3a650d4fd35a1cf882fcfffc3951a106ec8f37`
+and `DbDurableWalFile.java` had SHA
+`1a031f417e2ed4db2634c1e687b12978b47e7ef5`.
+Both were independently reconstructed in the local container, checked
+with `git hash-object`, and compiled under Java 21 with
+`javac --release 21 -Xlint:all -Werror`. A separate host-only lifecycle
+harness passed **1,000 concurrent drain/physical-worker retirement
+rounds**, as well as never-started reservation retry checks. A separate
+physical file smoke harness passed bounded append + `FileChannel.force(true)`,
+sync receipt offsets, stale-generation rejection, exclusive file lock,
+physical bytes/size after close and reopen. These ARE executions of
+the exact isolated source blobs, but NOT Maven/JUnit/Java 25/Truffle/
+Graal Native Image or source-generated .ores execution.
+
+Private runner capacity was probed without copying Oreslang source:
+`akrion-sim/akrion-sim-sync` canary
+`41231418786` and `agent-pontifex/agent-pontifex-docs` canary
+`41231508338` both failed before runner admission with zero steps
+and `runner_id=0`. Recent other private carrier runs had equivalent
+pre-execution failures. Neither a private exact-tree mirror nor full
+source compilation was run. Private source remains in the source org.
+
+**Caution:** `openHostOnly` is not race-free under a hostile
+directory; Java path-based file attribute checks are not a descriptor
+fstat. Parent directory sync and a file-backed, actor-authenticated
+commit/ACK protocol are still missing. A returned host SyncReceipt
+is not DB durability proof.
