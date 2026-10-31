@@ -212,11 +212,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             accepting.set(false);
             throw failure;
         }
-        if (future.isDone() && !workStarted.get()) {
-            // Synchronous queue rejection started no worker. A worker-completed
-            // Future may still have terminal callbacks; do not reset early.
-            accepting.set(false);
-        }
+        future.whenCompleteRuntime((value, failure) -> {
+            // Shutdown can discard a queued accept before its worker starts.
+            // There is no future worker finally-block to clear admission.
+            if (!workStarted.get()) accepting.set(false);
+        });
         return future;
     }
 
@@ -458,11 +458,15 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 if (ownerLoan != null) ownerLoan.close();
                 throw failure;
             }
-            if (future.isDone() && !workStarted.get()) {
-                // Admission rejected synchronously: no native worker started.
-                reading.set(false);
-                if (ownerLoan != null) ownerLoan.close();
-            }
+            future.whenCompleteRuntime((value, failure) -> {
+                if (!workStarted.get()) {
+                    // Native I/O discarded a queued operation before start,
+                    // including during requestShutdown(). This callback is
+                    // host accounting only; no actor continuation executes.
+                    reading.set(false);
+                    if (ownerLoan != null) ownerLoan.close();
+                }
+            });
             return future;
         }
 
@@ -555,11 +559,18 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (!writerActive.compareAndSet(false, true)) return;
             // Only one writer worker may exist per physical connection.
             // A rejected worker must close rather than retain unsent Futures.
+            AtomicBoolean writerStarted = new AtomicBoolean();
             OresFuture<Void> launched = nativeIo.submit("websocket.write", () -> {
+                writerStarted.set(true);
                 drainWriter();
                 return null;
             });
-            if (launched.isCompletedExceptionally()) close();
+            launched.whenCompleteRuntime((ignored, failure) -> {
+                // The native executor can discard a queued writer on context
+                // shutdown. Its drainWriter() finally never ran, so retire
+                // every queued receipt/actor loan rather than stranding it.
+                if (failure != null && !writerStarted.get()) close();
+            });
         }
 
         private void drainWriter() {
