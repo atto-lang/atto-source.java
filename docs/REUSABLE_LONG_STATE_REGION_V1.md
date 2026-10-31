@@ -77,6 +77,39 @@ per-dispatch scheduler cost. It does not establish cross-carrier guest
 execution provenance, hard-real-time nonparking scheduling, or authoritative
 source compiler borrow checks.
 
+## Production native-I/O-to-actor-reclamation bridge
+
+The existing `OresContext` startup path installs
+`AsyncNativeIo.actorPhysicallyRetired` as the ActorRuntime native-I/O
+retirement gate and forwards last-loan completion to
+`ActorRuntime.onNativeIoLoanRetired`. ActorRuntime checks the gate **before**
+it closes the real private `ActorMemorySlice`. This is distinct from the
+opt-in `ReusableLongStateRegion` and is the current production route for
+I/O physical completion receipts.
+
+The October 30 audit hardened `AsyncNativeIo.admit` in two places:
+
+1. A submitter must atomically change an operation's state from
+   `ADMITTED` to `CANCELLED_BEFORE_START` before refunding that actor's
+   outstanding I/O count. A worker that already won `RUNNING` exclusively
+   owns the final completion notification even if `execute()` subsequently
+   throws. A stale dequeued operation whose admission was cancelled is inert.
+2. The rejected Future and the last-actor-loan notification are published
+   only **after** leaving the AsyncNativeIo admission monitor. A final loan
+   refund now wakes the actor's already-stopping finalization gate; a failed
+   Future observer cannot suppress that wakeup.
+
+A new `AsyncNativeIoTest` adversarial JUnit scenario exercises an actual
+private actor with one native I/O worker and one queued work slot: the third
+request is rejected by the real executor, while two remaining physical
+operations must keep the actor's state alive through STOP until they finish.
+
+The source-level actor/critical-state compiler and all alternative native I/O
+adapters still need independently executed source and runtime proofs. A pin
+is never permission to mutate state after STOP. There is no claim that the
+JVM never garbage collects or that the full actor dispatch path allocates
+zero bytes.
+
 ## Evidence/limits
 
 - Local JDK 21, exact Git-blob-equivalent `ReusableLongStateRegion.java`
