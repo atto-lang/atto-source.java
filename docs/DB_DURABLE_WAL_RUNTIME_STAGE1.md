@@ -48,3 +48,27 @@ Next: trusted context-owned capability/handle registry with authenticated
 incarnation and storage authority; AsyncNativeIo submission/physical loans;
 native guest API lowering; typed `Unknown(op_id)` on uncertainty;
 streaming WAL recovery, directory sync, crash injection and LLVM parity.
+
+
+## Stage 1.1: revocation physical-retirement fence
+
+Package-private `DbWalAuthorityLifecycle` replaces the unsafe
+`revoked` boolean in `DbDurableWalAuthority`. The one-way physical lifecycle
+is `OPEN -> DRAINING -> CLOSING -> CLOSED`. The first drain request seals
+all new writes even when a write is running, but a subsequent owner retry
+may begin a *single* close once `physicalWriteRetired()` has been called
+by the actual I/O worker. Only after `DbDurableWalFile.close()` and its
+I/O resource loan exit does the adapter unregister the file and finalize
+`CLOSED`. A never-started/discarded job retains the slot; an asynchronous
+CONTROL close that never executes remains CLOSING and is subject to
+context-owned physical resource quarantine/retirement. A Future's logical
+completion is not physical retirement or proof of disk durability.
+
+`DbWalAuthorityLifecycleTest` checks running drain, duplicate close,
+never-started operation and 250 concurrent races; execute with
+`mvn -Dtest=DbWalAuthorityLifecycleTest,DbDurableWalFileTest test`.
+Local Java 21 compile and 500-iteration standalone state-machine stress
+passed against a corresponding local source copy, but exact-head Maven,
+compiler guest, JDK25 and CI runner are **NOT EXECUTED**. There is no
+physical-worker race test of the complete `DbDurableWalAuthority`
+in this stage.
