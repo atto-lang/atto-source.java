@@ -1,4 +1,4 @@
-name: Actor init scalar guest — exact-source Graal proof
+name: Actor init scalar JVM/JUnit guest — exact-source proof
 on:
   push:
     branches:
@@ -26,20 +26,26 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           git diff --exit-code
           git diff --cached --exit-code
-          test -z "$(git status --porcelain)"
+          test -z "$(git status --porcelain --untracked-files=all)"
           for file in \
             src/main/java/dev/oreslang/ast/Ast.java \
             src/main/java/dev/oreslang/parser/Parser.java \
             src/main/java/dev/oreslang/types/TypeChecker.java \
+            src/main/java/dev/oreslang/types/OwnershipChecker.java \
+            src/main/java/dev/oreslang/types/ReturnCleanupChecker.java \
             src/main/java/dev/oreslang/nodes/OresEvalRootNode.java \
             src/main/java/dev/oreslang/runtime/ActorRuntime.java \
+            src/main/java/dev/oreslang/runtime/ActorInitPublicationGate.java \
+            .github/workflows/actor-init-scalar-guest.yml \
             src/test/java/dev/oreslang/ActorInitReservedAdmissionTest.java \
             src/test/java/dev/oreslang/runtime/ActorInitPublicationGateTest.java \
             src/test/java/dev/oreslang/runtime/SourceActorCodeExecutorTest.java; do
             git ls-files --error-unmatch -- "$file" >/dev/null
+            test "$(git hash-object "$file")" = "$(git rev-parse "HEAD:$file")"
             echo "ACTOR_INIT_SOURCE_BLOB $file $(git hash-object "$file")"
           done
           echo "ACTOR_INIT_HEAD=$EXPECTED_SHA"
+          echo "ACTOR_INIT_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Install exact GraalVM and Maven
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -68,4 +74,5 @@ jobs:
             done
             echo "ACTOR_INIT_SUITE_PASS class=$class tests=$expected"
           done
-          echo "ACTOR_INIT_SCALAR_NATIVE_GUEST_PASS tests=37"
+          # JVM JUnit + Graal guest only. This job does not build Native Image.
+          echo "ACTOR_INIT_SCALAR_JVM_JUNIT_GUEST_PASS tests=37 native_image=NOT_EXECUTED"
