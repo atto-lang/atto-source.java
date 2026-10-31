@@ -58,6 +58,44 @@ final class ArithmeticOverflowGuestErrorTest {
     }
 
     @Test
+    void everyCheckedI64SurfaceUsesTheSameGuestErrorHierarchy() {
+        String[] expressions = {
+                "9223372036854775807 + 1",
+                "(-9223372036854775807 - 1) - 1",
+                "3037000500 * 3037000500",
+                "-(-9223372036854775807 - 1)",
+                "Math.abs((-9223372036854775807 - 1))",
+                "Math.neg((-9223372036854775807 - 1))"
+        };
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            for (String expression : expressions) {
+                String guest = """
+                        pub fnc main():int{
+                          try {
+                            return %s;
+                          } catch (err) {
+                            if err is type ArithmeticOverflowError {
+                              if err is type Error {
+                                return 42;
+                              } else {
+                                return 2;
+                              } fi
+                            } else {
+                              return 1;
+                            } fi
+                          } finally {
+                          }
+                        }
+                        """.formatted(expression);
+                assertEquals(42L, context.eval(OresLanguage.ID, guest).asLong(),
+                        "guest error identity drift for " + expression);
+            }
+        }
+    }
+
+    @Test
     void trapCanConsumeOrdinaryOverflowWithoutSeeingHostArithmeticException() {
         String guest = """
                 pub fnc main():int{
