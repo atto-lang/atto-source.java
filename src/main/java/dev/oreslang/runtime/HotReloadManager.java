@@ -243,7 +243,13 @@ public final class HotReloadManager implements AutoCloseable {
         return Map.copyOf(activeByCodeUnit);
     }
 
-    /** Explicit retirement permits old actors/requests to drain before teardown. */
+    /**
+     * Retire only an idle generation. Reservation and retirement are serialized
+     * with start() under manager -> generation lock order; a concurrent guest
+     * entrypoint cannot be invalidated by an unchecked Context.close(true).
+     * This protects manager-owned startup only, not guest-created async Tasks
+     * or external callers holding the exposed Context reference.
+     */
     public void retire(long generationId) {
         final Generation generation;
         synchronized (this) {
@@ -252,15 +258,16 @@ public final class HotReloadManager implements AutoCloseable {
                 boolean selected = active.get() == generation
                         || activeByCodeUnit.get(generation.codeUnitId()) == generation;
                 if (selected) requireRoutingEpochCapacity();
+                if (!generation.beginClose()) return;
                 generations.remove(generationId, generation);
                 boolean removed = active.compareAndSet(generation, null);
                 removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
                 if (removed) ++routingEpoch;
             }
         }
-        // Context close can call guest-host callbacks; never do that while
-        // holding the supervisor routing monitor.
-        if (generation != null) generation.close();
+        // Do not run context cleanup or user unwind callbacks under the
+        // supervisor monitor; the generation is already fenced from starts.
+        if (generation != null) generation.finishClose();
     }
 
     public synchronized int liveGenerations() { return generations.size(); }
@@ -288,10 +295,19 @@ public final class HotReloadManager implements AutoCloseable {
         final java.util.List<Generation> toClose;
         synchronized (this) {
             if (closed) return;
-            // Seal admission and detach routes atomically. Closing contexts can
-            // invoke host callbacks and must not execute under this monitor.
-            closed = true;
+            // All starts must acquire the manager monitor, so checking every
+            // execution lease here is an atomic precondition. If any candidate
+            // still executes, leave the manager and all registrations intact.
             toClose = java.util.List.copyOf(generations.values());
+            for (Generation generation : toClose) {
+                generation.requireIdleForClose();
+            }
+            for (Generation generation : toClose) {
+                generation.beginClose();
+            }
+            // Seal admission and detach routes atomically. Context cleanup is
+            // performed later, outside the supervisor monitor.
+            closed = true;
             generations.clear();
             activeByCodeUnit.clear();
             active.set(null);
@@ -299,7 +315,7 @@ public final class HotReloadManager implements AutoCloseable {
         Throwable failure = null;
         for (Generation generation : toClose) {
             try {
-                generation.close();
+                generation.finishClose();
             } catch (RuntimeException | Error closingFailure) {
                 if (failure == null) {
                     failure = closingFailure;
@@ -336,6 +352,9 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
+        // True only while the synchronous manager-owned Context.eval call is
+        // executing. It is NOT a complete Task/continuation/FFI quiescence ledger.
+        private boolean executing;
 
         private Generation(HotReloadManager owner, long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
             this.owner = new java.lang.ref.WeakReference<>(owner);
@@ -356,30 +375,84 @@ public final class HotReloadManager implements AutoCloseable {
         public boolean started() { return started.get(); }
         public boolean closed() { return closed.get(); }
 
-        /** Starts the staged generation exactly once. */
+        /** Starts once, reserving a lifecycle lease before entering Graal. */
         public Value start() {
-            if (closed.get()) throw new IllegalStateException("generation is closed");
-            if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
+            HotReloadManager manager = owner.get();
+            if (manager == null) {
+                throw new IllegalStateException("generation owner is no longer available");
+            }
+            // manager -> generation lock order is identical to retire/close.
+            synchronized (manager) {
+                manager.requireOpen();
+                if (manager.generations.get(id) != this) {
+                    throw new IllegalStateException("generation has been retired");
+                }
+                synchronized (this) {
+                    if (closed.get()) {
+                        throw new IllegalStateException("generation is closed");
+                    }
+                    if (!started.compareAndSet(false, true)) {
+                        throw new IllegalStateException("generation already started");
+                    }
+                    executing = true;
+                }
+            }
+            Throwable failure = null;
             try {
                 return context.eval(source);
-            } catch (RuntimeException | Error failure) {
-                close();
-                throw failure;
+            } catch (RuntimeException | Error evaluationFailure) {
+                failure = evaluationFailure;
+                throw evaluationFailure;
+            } finally {
+                synchronized (this) {
+                    executing = false;
+                }
+                if (failure != null) {
+                    try {
+                        close();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        if (cleanupFailure != failure) {
+                            failure.addSuppressed(cleanupFailure);
+                        }
+                    }
+                }
             }
+        }
+
+        private synchronized void requireIdleForClose() {
+            if (executing) {
+                throw new IllegalStateException(
+                        "cannot retire generation " + id + " while guest entrypoint executes");
+            }
+        }
+
+        /** Called only under the manager monitor or when owner is gone. */
+        private synchronized boolean beginClose() {
+            if (closed.get()) return false;
+            requireIdleForClose();
+            closed.set(true);
+            return true;
+        }
+
+        /** Context cleanup is NEVER called under the manager routing monitor. */
+        private void finishClose() {
+            context.close(true);
         }
 
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) {
-                try {
-                    context.close(true);
-                } finally {
-                    HotReloadManager manager = owner.get();
-                    if (manager != null) {
-                        manager.onGenerationClosed(this);
-                    }
+            HotReloadManager manager = owner.get();
+            if (manager != null) {
+                synchronized (manager) {
+                    if (!beginClose()) return;
+                    // Detach before cleanup. An in-flight start cannot race
+                    // because it also requires this monitor.
+                    manager.onGenerationClosed(this);
                 }
+            } else if (!beginClose()) {
+                return;
             }
+            finishClose();
         }
     }
 }
