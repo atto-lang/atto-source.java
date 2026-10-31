@@ -3,8 +3,9 @@ package dev.oreslang.runtime;
 /**
  * Host-only physical WAL authority lifecycle. An admitted operation holds
  * its slot through the entire worker callback, not merely Future completion.
- * A discarded never-started operation intentionally cannot retire its slot:
- * only the context's verified shutdown/quarantine can reclaim its file.
+ * A never-started WRITE can retire its exclusive slot only through the
+ * atomic AsyncNativeIo admission hook. Actual in-flight work is held until
+ * the executing worker exits, never a logical Future cancellation.
  *
  * This is local retirement bookkeeping, NOT a tenant capability, durable
  * commit receipt, or safe-to-ACK predicate.

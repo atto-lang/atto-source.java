@@ -53,11 +53,18 @@ final class DbWalTrustedGrantRegistryTest {
             assertNull(error.get());
             assertEquals(1, registry.activeShardCount());
             assertNotNull(second.get());
-            // This test models a trusted worker proving that an attempted
-            // physical open failed before it acquired/registered any file.
-            second.get().failedOpenWithoutResource();
+            // An attempted worker open with an uncertain result must keep
+            // the shard fenced. Only a known physical file whose close()
+            // returned successfully can be retired. A fabricated/lost file
+            // cannot be used as an authority release receipt.
+            var physical = DbDurableWalFile.openHostOnly(root, "retry.wal", 2);
             assertThrows(IllegalStateException.class,
-                    () -> second.get().failedOpenWithoutResource());
+                    () -> second.get().failedOpenAfterVerifiedClose(physical));
+            assertEquals(1, registry.activeShardCount());
+            physical.close();
+            second.get().failedOpenAfterVerifiedClose(physical);
+            assertThrows(IllegalStateException.class,
+                    () -> second.get().failedOpenAfterVerifiedClose(physical));
             assertEquals(0, registry.activeShardCount());
         }
     }

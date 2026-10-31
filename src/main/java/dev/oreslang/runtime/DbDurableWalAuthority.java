@@ -65,12 +65,10 @@ final class DbDurableWalAuthority {
                 // A resource retained by post-shutdown registration belongs
                 // to AsyncNativeIo's physical join/sweep. Never free its FD
                 // or make its shard available to another incarnation here.
-                if (opened == null) {
-                    grant.failedOpenWithoutResource();
-                } else if (!io.retainsRegisteredResource(opened)) {
+                if (opened != null && !io.retainsRegisteredResource(opened)) {
                     try {
                         opened.close();
-                        grant.failedOpenWithoutResource();
+                        grant.failedOpenAfterVerifiedClose(opened);
                     } catch (Exception closeFailure) {
                         rejected.addSuppressed(closeFailure);
                         // Uncertain close leaves OPENING fenced permanently

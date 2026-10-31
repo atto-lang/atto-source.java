@@ -65,8 +65,8 @@ final class DbWalTrustedGrantRegistry {
             issuer.retireProvenNeverStartedOpen(this);
         }
 
-        void failedOpenWithoutResource() {
-            issuer.retireFailedOpenWithoutResource(this);
+        void failedOpenAfterVerifiedClose(DbDurableWalFile file) {
+            issuer.retireFailedOpenAfterVerifiedClose(this, file);
         }
 
         void beginDrain(ActorRuntime expectedRuntime) {
@@ -144,11 +144,15 @@ final class DbWalTrustedGrantRegistry {
         owners.remove(grant.shard);
     }
 
-    synchronized void retireFailedOpenWithoutResource(Grant grant) {
+    synchronized void retireFailedOpenAfterVerifiedClose(
+            Grant grant, DbDurableWalFile physicalFile) {
         Objects.requireNonNull(grant);
+        Objects.requireNonNull(physicalFile);
         if (grant.issuer != this || owners.get(grant.shard) != grant
-                || grant.phase != Phase.OPENING || grant.boundFile != null)
-            throw new IllegalStateException("WAL failed-open resource not retired");
+                || grant.phase != Phase.OPENING || grant.boundFile != null
+                || !physicalFile.closed())
+            throw new IllegalStateException(
+                    "WAL failed open needs verified physical file close");
         grant.phase = Phase.RETIRED;
         owners.remove(grant.shard);
     }
