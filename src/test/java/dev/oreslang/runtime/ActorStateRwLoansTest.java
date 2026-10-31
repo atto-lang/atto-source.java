@@ -605,8 +605,16 @@ final class ActorStateRwLoansTest {
         assertTrue(queuedReader.isCompletedExceptionally(),
                 "quarantine must fail preexisting queued work without granting state authority");
         assertTrue(queuedReader.isDone(), "failed waiter must never remain parked");
-        assertTrue(loans.acquireReadAsync(actor(8605, 265, 1))
-                .isCompletedExceptionally(), "new admission remains closed");
+        var failedQueued = assertThrows(
+                java.util.concurrent.ExecutionException.class, queuedReader::get);
+        assertSame(injected, failedQueued.getCause().getCause(),
+                "failed queued operation must retain the original revoker failure");
+        var denied = loans.acquireReadAsync(actor(8605, 265, 1));
+        assertTrue(denied.isCompletedExceptionally(), "new admission remains closed");
+        var deniedFailure = assertThrows(
+                java.util.concurrent.ExecutionException.class, denied::get);
+        assertSame(injected, deniedFailure.getCause().getCause(),
+                "even after automatic shutdown admission must expose quarantine provenance");
         holder.close();
         loans.close();
         assertEquals(0, loans.activeWriterCount());
