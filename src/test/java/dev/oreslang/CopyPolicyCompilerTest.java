@@ -290,4 +290,31 @@ final class CopyPolicyCompilerTest {
                 () -> OresCompiler.parseAndTypeCheck(source));
         assertTrue(ex.getMessage().contains("E_COPY_FORBIDDEN"), ex.getMessage());
     }
+
+    @Test
+    void ordinaryMutableClassFieldMoveFailsWithoutPartialMoveLedger() {
+        String source = """
+                define class Holder as
+                  pub let int id = 42;
+                end
+                fnc bad(Holder holder): int {
+                  return rt take holder.id;
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("E_MOVE_UNPROVEN"), ex.getMessage());
+    }
+
+    @Test
+    void immutableProtectedFieldMoveCannotBeReclassifiedAsLegalMove() {
+        String source = HEADER + """
+                fnc bad(Vault vault): int {
+                  return rt take vault.token;
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("immutable/final"), ex.getMessage());
+    }
 }
