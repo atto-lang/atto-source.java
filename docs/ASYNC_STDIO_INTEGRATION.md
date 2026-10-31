@@ -35,7 +35,7 @@ This cannot guarantee bounded shutdown when **unrelated** services or the extern
 | Auxiliary shutdown retry journal | Injected HTTP/async-runtime/VM/drain failures, suppressed error retention and successful-stage once-only accounting in production helper | AUTHORED, NOT EXECUTED |
 | Real auxiliary carrier retry | Actual `AsyncRuntime` virtual-thread close timeout and `OresVM` physical STOP worker timeout; a later close must recheck actual executor termination | AUTHORED, NOT EXECUTED |
 | Final host stdout error | `PrintWriter.checkError()` detects a suppressed final flush I/O error before quarantine removal | AUTHORED, NOT EXECUTED |
-| Retirement | Actor generation/cancellation, failed native-I/O physical join, quarantine release and retry | NOT EXECUTED |
+| Retirement | `OresContextRetirementStagesTest` Error-class fault injection plus actual actor generation/cancellation, native-I/O physical join, quarantine release and retry | ERROR FIXTURES AUTHORED; NATIVE NOT EXECUTED |
 | Native | Exact-tree GraalVM guest and native AOT/hybrid builds, carrier liveness | NOT EXECUTED |
 | OTel | Exact compiler `SOURCE_REF`, `oreslang-otel` smoke, int64, span lifecycle | NOT EXECUTED |
 | Governance | Protected main + independent approval | OPEN |
@@ -83,3 +83,13 @@ New real-service regressions `AsyncRuntimeTest.failedCloseRetryMustWaitForPhysic
 A separate source-level bug was that `PrintWriter.flush()` hides `IOException` by setting the writer's sticky error flag; the prior context code marked the final flush successful and removed quarantine without observing the error. `flushOutputAfterAsyncDrain` now uses `PrintWriter.checkError()` (which flushes and checks that flag) after successful async drain; a reported error raises before the context can remove quarantine. It **never** touches the writer after an incomplete async drain. `AsyncStdioLogsTest.finalHostFlushCannotHidePrintWriterIoFailure` is the focused regression. Sticky host writer errors may prevent recovery; there is no implicit data-loss or quarantine-release bypass.
 
 **Status: AUTHORED, NOT EXECUTED.** The local development container does not provide the exact JDK25/GraalVM/Maven build setup or a private source checkout. Source-org GitHub Actions runner admission remains unresolved. A fully constructed `OresContext` with deliberately failing HTTP/async-runtime/VM service closure is still a separate end-to-end gate; do not treat these real-service unit tests as a completed full-context integration receipt.
+
+### Error-class retirement fault containment (2026-10-31)
+
+A source-level audit found a second shutdown exception-class gap: the production `OresContext.joinActorsAndNativeIo` and `AuxiliaryCloseStages.closeRemaining` sequences previously caught only `RuntimeException`, not `Error`. A Java `AssertionError` or `LinkageError` from an actor-seal/native-revoke/physical-join or HTTP/VM/drain stage could therefore skip later independently required revocation, physical joins or the accepted-output drain.
+
+The production code now catches `RuntimeException | Error` **at each independent stage**, records the primary cause with distinct secondary failures as suppressed, and raises a fail-closed `IllegalStateException` when any required stage failed. Quarantine and the exclusive close guard remain in charge; no final synchronous stdout flush or graph-release receipt follows a failed stage. `joinRetirementStages` is the package-visible same-order stage controller invoked by the production actor/native-I/O routine, so tests exercise the actual control flow rather than a second imitation.
+
+New authored JUnit fixtures: `OresContextRetirementStagesTest` verifies seal/revoke/join ordering, fatal seal/revoke/join Errors, secondary failures and duplicate throwable identity; `OresContextAuxiliaryCloseTest` adds fatal auxiliary/stdio errors and verifies that drain still runs and failed stages remain retryable.
+
+**Evidence classification:** source-reviewed and fixture-authored only; not an executed JDK 25/GraalVM/JUnit result. This best-effort teardown cannot claim recovery from `OutOfMemoryError`, irrecoverable host faults, or successful physical worker exit just because all shutdown callbacks returned. Actual actor/native loan retirement, complete Polyglot disposal, native-image execution and independent review remain separate acceptance gates.
