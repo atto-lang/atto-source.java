@@ -181,6 +181,22 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Optional.empty() : Optional.of(current.actorId());
     }
 
+    /**
+     * Authenticated actor incarnation of the currently executing mailbox
+     * turn. In contrast to a caller-provided ActorAddress or ActorId, this
+     * is resolved from the actual actor cell installed on this carrier.
+     */
+    public static Optional<ActorAddress> currentActorAddress() {
+        ActorExecutionContext execution = CURRENT_ACTOR_EXECUTION.get();
+        if (execution == null) return Optional.empty();
+        ActorCell<?> cell = execution.runtime().currentActor.get();
+        if (cell == null || !cell.ref.id().equals(execution.actorId())
+                || cell.kind != execution.kind() || cell.stopped.get()) {
+            return Optional.empty();
+        }
+        return Optional.of(cell.ref.address());
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
