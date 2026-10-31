@@ -618,8 +618,50 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 throw new SecurityException("WebSocket raw poll belongs to host I/O");
             }
             requireNet.accept(endpoint, "websocket.poll");
-            if (retired.get()) return Optional.empty();
-            return protocol.pollUserMessage();
+            synchronized (lifecycleLock) {
+                if (retired.get()) return Optional.empty();
+                if (actorOwnership != null) {
+                    throw new SecurityException("actor-owned WebSocket requires authenticated poll");
+                }
+                return protocol.pollUserMessage();
+            }
+        }
+
+        /**
+         * Trusted scheduler handoff only: atomically authenticate, dequeue,
+         * and enqueue a USER message before allowing ownership transfer.
+         * trustedEnqueue MUST be a short, bounded, nonblocking host scheduler
+         * queue operation, never direct guest execution. The scheduler must
+         * still revalidate the handle on eventual actor delivery.
+         */
+        boolean pollAndEnqueueForActor(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime.ActorAddress authenticatedCaller,
+                java.util.function.Consumer<WebSocketFrameCodec.Message> trustedEnqueue) {
+            Objects.requireNonNull(trustedEnqueue, "trusted enqueue");
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket poll requires host scheduler");
+            }
+            requireNet.accept(endpoint, "websocket.poll");
+            synchronized (lifecycleLock) {
+                var loan = acquireActorLease(handle, tenant, authenticatedCaller);
+                try {
+                    var next = protocol.pollUserMessage();
+                    if (next.isEmpty()) return false;
+                    // No actor guest code may execute in this callback.
+                    // Failure to enqueue causes connection close to avoid
+                    // silently losing an admitted USER message.
+                    if (!loan.enqueueIfCurrent(() -> trustedEnqueue.accept(next.orElseThrow()))) {
+                        throw new SecurityException("WebSocket actor retired before dispatch");
+                    }
+                    return true;
+                } catch (RuntimeException failure) {
+                    close();
+                    throw failure;
+                } finally {
+                    loan.close();
+                }
+            }
         }
 
         @Override public void close() {
