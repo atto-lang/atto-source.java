@@ -27,7 +27,7 @@ final class DbWalTrustedGrantRegistry {
     }
 
     private record Shard(int tenantId, int shardId) { }
-    private enum Phase { ACTIVE, DRAINING, RETIRED }
+    private enum Phase { ACTIVE, OPENING, BOUND, DRAINING, RETIRED }
 
     static final class Grant {
         private final DbWalTrustedGrantRegistry issuer;
@@ -55,6 +55,18 @@ final class DbWalTrustedGrantRegistry {
 
         void requireLive(ActorRuntime expectedRuntime) {
             issuer.requireCurrentActor(this, expectedRuntime);
+        }
+
+        void reserveOpen(ActorRuntime expectedRuntime) {
+            issuer.reserveOpenForCurrentActor(this, expectedRuntime);
+        }
+
+        void neverStartedOpen() {
+            issuer.retireProvenNeverStartedOpen(this);
+        }
+
+        void failedOpenWithoutResource() {
+            issuer.retireFailedOpenWithoutResource(this);
         }
 
         void beginDrain(ActorRuntime expectedRuntime) {
@@ -102,11 +114,50 @@ final class DbWalTrustedGrantRegistry {
         return grant;
     }
 
+    /**
+     * Atomically reserve exactly one physical open per issued shard grant.
+     * Actor ownership is checked before state transitions, so two queued
+     * host opens cannot race to acquire different files for one grant.
+     */
+    synchronized void reserveOpenForCurrentActor(
+            Grant grant, ActorRuntime expectedRuntime) {
+        Objects.requireNonNull(grant);
+        if (runtime != expectedRuntime || sealed || grant.issuer != this
+                || owners.get(grant.shard) != grant
+                || grant.phase != Phase.ACTIVE || grant.boundFile != null
+                || !grant.actorId.equals(currentActor()))
+            throw new SecurityException("WAL open grant is stale, foreign or reserved");
+        grant.phase = Phase.OPENING;
+    }
+
+    /**
+     * Called ONLY from AsyncNativeIo's atomic never-started hook.
+     * Once an opening worker may have started, use failedOpenWithoutResource
+     * only after proving no file/registration remains physically owned.
+     */
+    synchronized void retireProvenNeverStartedOpen(Grant grant) {
+        Objects.requireNonNull(grant);
+        if (grant.issuer != this || owners.get(grant.shard) != grant
+                || grant.phase != Phase.OPENING || grant.boundFile != null)
+            throw new IllegalStateException("WAL open cancellation not proven");
+        grant.phase = Phase.RETIRED;
+        owners.remove(grant.shard);
+    }
+
+    synchronized void retireFailedOpenWithoutResource(Grant grant) {
+        Objects.requireNonNull(grant);
+        if (grant.issuer != this || owners.get(grant.shard) != grant
+                || grant.phase != Phase.OPENING || grant.boundFile != null)
+            throw new IllegalStateException("WAL failed-open resource not retired");
+        grant.phase = Phase.RETIRED;
+        owners.remove(grant.shard);
+    }
+
     synchronized void requireCurrentActor(Grant grant, ActorRuntime expectedRuntime) {
         Objects.requireNonNull(grant);
         if (runtime != expectedRuntime || sealed || grant.issuer != this
                 || owners.get(grant.shard) != grant
-                || grant.phase != Phase.ACTIVE
+                || grant.phase != Phase.BOUND
                 || !grant.actorId.equals(currentActor()))
             throw new SecurityException("foreign, stale, or inactive WAL shard grant");
     }
@@ -116,7 +167,8 @@ final class DbWalTrustedGrantRegistry {
         Objects.requireNonNull(grant);
         if (runtime != expectedRuntime || grant.issuer != this
                 || owners.get(grant.shard) != grant
-                || grant.phase == Phase.RETIRED
+                || (grant.phase != Phase.BOUND
+                    && grant.phase != Phase.DRAINING)
                 || !grant.actorId.equals(currentActor()))
             throw new SecurityException("WAL shard drain requires its exact owner");
         grant.phase = Phase.DRAINING;
@@ -131,10 +183,11 @@ final class DbWalTrustedGrantRegistry {
         Objects.requireNonNull(grant);
         Objects.requireNonNull(file);
         if (sealed || grant.issuer != this || owners.get(grant.shard) != grant
-                || grant.phase != Phase.ACTIVE || grant.boundFile != null
+                || grant.phase != Phase.OPENING || grant.boundFile != null
                 || file.closed())
             throw new SecurityException("WAL grant already bound, stale or draining");
         grant.boundFile = file;
+        grant.phase = Phase.BOUND;
     }
 
     /**

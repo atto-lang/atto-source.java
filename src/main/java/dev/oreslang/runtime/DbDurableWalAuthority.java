@@ -40,7 +40,7 @@ final class DbDurableWalAuthority {
         // grant reserves the shard through actor drain/physical close.
         if (!grant.issuedBy(context.dbWalGrants()))
             throw new SecurityException("WAL grant was not issued by owning context");
-        grant.requireLive(context.actors());
+        grant.reserveOpen(context.actors());
         int ownerGeneration = grant.generation();
         // Caller is a trusted host service. Never derive this directory from
         // guest DATA. Source guest cannot instantiate DbDurableWalAuthority.
@@ -50,22 +50,34 @@ final class DbDurableWalAuthority {
         context.requirePermission(RuntimePermissions.Permission.WRITE,
                 filePath.toString(), "db.wal.open.write");
         AsyncNativeIo io = context.nativeIo();
-        return io.submit("db.wal.open", () -> {
-            DbDurableWalFile opened = DbDurableWalFile.openHostOnly(
-                    trustedDirectory, basename, ownerGeneration);
+        return io.submitWithNonStartHook("db.wal.open", () -> {
+            DbDurableWalFile opened = null;
             try {
+                opened = DbDurableWalFile.openHostOnly(
+                        trustedDirectory, basename, ownerGeneration);
                 io.register(opened);
                 grant.bindPhysicalFile(opened);
                 return new DbDurableWalAuthority(
                         context, actor, filePath, opened, grant);
             } catch (Exception rejected) {
-                // register() can retain the resource when context shutdown
-                // raced the I/O worker; physical close then belongs ONLY to
-                // the context's post-join sweep.
-                if (!io.retainsRegisteredResource(opened)) opened.close();
+                // A resource retained by post-shutdown registration belongs
+                // to AsyncNativeIo's physical join/sweep. Never free its FD
+                // or make its shard available to another incarnation here.
+                if (opened == null) {
+                    grant.failedOpenWithoutResource();
+                } else if (!io.retainsRegisteredResource(opened)) {
+                    try {
+                        opened.close();
+                        grant.failedOpenWithoutResource();
+                    } catch (Exception closeFailure) {
+                        rejected.addSuppressed(closeFailure);
+                        // Uncertain close leaves OPENING fenced permanently
+                        // until context-controlled cleanup/reconciliation.
+                    }
+                }
                 throw rejected;
             }
-        });
+        }, grant::neverStartedOpen);
     }
 
     synchronized OresFuture<DbDurableWalFile.SyncReceipt> appendAndSync(
