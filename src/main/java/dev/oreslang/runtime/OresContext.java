@@ -34,6 +34,13 @@ public final class OresContext implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicBoolean closeInProgress =
             new java.util.concurrent.atomic.AtomicBoolean();
     private volatile boolean closeCompleted;
+    // Stages that finished must not be closed twice during a retry after
+    // another stage fails; all state is owned by closeInProgress.
+    private final AuxiliaryCloseStages auxiliaryCloseStages = new AuxiliaryCloseStages();
+    private boolean stdioDrainCompleted;
+    private boolean sharedCodeImagesClosed;
+    private boolean garbageCollectorClosed;
+    private boolean outputFlushed;
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
 
     // Package-local inspection for executable lifecycle tests; never unpins an
@@ -520,6 +527,52 @@ public final class OresContext implements AutoCloseable {
         }
     }
 
+    /**
+     * Retry journal for the three auxiliary services. The exclusive context
+     * close guard owns it; no guest operation may mutate these receipts.
+     * A successful stage is not replayed after another stage fails.
+     */
+    static final class AuxiliaryCloseStages {
+        private boolean httpClosed;
+        private boolean asyncRuntimeClosed;
+        private boolean vmClosed;
+
+        RuntimeException closeRemaining(
+                Runnable closeHttp, Runnable closeAsyncRuntime, Runnable closeVm) {
+            java.util.Objects.requireNonNull(closeHttp);
+            java.util.Objects.requireNonNull(closeAsyncRuntime);
+            java.util.Objects.requireNonNull(closeVm);
+            RuntimeException failure = null;
+            if (!httpClosed) {
+                try {
+                    closeHttp.run();
+                    httpClosed = true;
+                } catch (RuntimeException httpFailure) {
+                    failure = httpFailure;
+                }
+            }
+            if (!asyncRuntimeClosed) {
+                try {
+                    closeAsyncRuntime.run();
+                    asyncRuntimeClosed = true;
+                } catch (RuntimeException asyncFailure) {
+                    if (failure == null) failure = asyncFailure;
+                    else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
+                }
+            }
+            if (!vmClosed) {
+                try {
+                    closeVm.run();
+                    vmClosed = true;
+                } catch (RuntimeException vmFailure) {
+                    if (failure == null) failure = vmFailure;
+                    else if (failure != vmFailure) failure.addSuppressed(vmFailure);
+                }
+            }
+            return failure;
+        }
+    }
+
     static void flushOutputAfterAsyncDrain(PrintWriter output, boolean drained) {
         if (drained) output.flush();
     }
@@ -554,47 +607,53 @@ public final class OresContext implements AutoCloseable {
                     "Oreslang context cleanup incomplete; physical state quarantined",
                     incomplete);
         }
-        RuntimeException failure = null;
-        try {
-            http.close();
-        } catch (RuntimeException httpFailure) {
-            failure = httpFailure;
+        RuntimeException auxiliaryFailure = auxiliaryCloseStages.closeRemaining(
+                http::close, asyncRuntime::close, vm::close);
+
+        // We already joined actors/native I/O and sealed stdout admission.
+        // Always attempt the bounded writer drain, even if an auxiliary close
+        // failed. This must never release quarantine or final-flush stdout
+        // while the auxiliary stage is incomplete.
+        RuntimeException logFailure = null;
+        if (!stdioDrainCompleted) {
+            try {
+                asyncStdio.close();
+                stdioDrainCompleted = true;
+            } catch (RuntimeException failedDrain) {
+                logFailure = failedDrain;
+            }
         }
-        try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            if (failure == null) failure = asyncFailure;
-            else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
-        }
-        try {
-            vm.close();
-        } catch (RuntimeException vmFailure) {
-            if (failure == null) failure = vmFailure;
-            else if (failure != vmFailure) failure.addSuppressed(vmFailure);
-        }
-        if (failure != null) {
-            // Preserve quarantine without a potentially blocked writer flush.
+        if (auxiliaryFailure != null) {
+            if (logFailure != null && auxiliaryFailure != logFailure) {
+                auxiliaryFailure.addSuppressed(logFailure);
+            }
             throw new IllegalStateException(
                     "Oreslang context auxiliary shutdown incomplete; context quarantined",
-                    failure);
+                    auxiliaryFailure);
         }
-
-        // Drain only after physical actor/native-I/O and VM retirement.
-        // On a stuck sink, preserve quarantine and never reflush synchronously.
-        try {
-            asyncStdio.close();
-        } catch (RuntimeException logFailure) {
+        if (logFailure != null) {
             throw new IllegalStateException(
                     "Oreslang logging drain incomplete; context quarantined", logFailure);
         }
 
+        // The remaining teardown stages are also one-shot on success. On
+        // failure they remain retryable while the whole context stays pinned.
         synchronized (this) {
-            linkedCodeUnits.clear();
-            linkedImportResolutions.clear();
-            sharedCodeImages.close();
+            if (!sharedCodeImagesClosed) {
+                linkedCodeUnits.clear();
+                linkedImportResolutions.clear();
+                sharedCodeImages.close();
+                sharedCodeImagesClosed = true;
+            }
         }
-        garbageCollector.close();
-        flushOutputAfterAsyncDrain(output, true);
+        if (!garbageCollectorClosed) {
+            garbageCollector.close();
+            garbageCollectorClosed = true;
+        }
+        if (!outputFlushed) {
+            flushOutputAfterAsyncDrain(output, true);
+            outputFlushed = true;
+        }
         QUARANTINED_CONTEXTS.remove(this);
         closeCompleted = true;
     }
