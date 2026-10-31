@@ -98,6 +98,23 @@ public final class ExactSourcePhysicalTurnSmoke {
         check(region.tryClose(), "failed admission prevents close");
         gate.close();
     }
+    private static void acceptedReplayIsInert() {
+        var gate = new ActorPhysicalTurnGate(1, 2);
+        var region = new ReusableLongStateRegion(1);
+        var accepted = new AtomicReference<Runnable>();
+        var guest = new AtomicInteger();
+        gate.dispatchPinned(region, guest::incrementAndGet,
+            accepted::set, failure -> { throw new AssertionError(failure); });
+        check(region.activePins() == 1, "accepted turn missing physical pin");
+        accepted.get().run();
+        check(region.activePins() == 0 && guest.get() == 1,
+            "first completed turn should release exactly once");
+        accepted.get().run();
+        check(region.activePins() == 0 && guest.get() == 1,
+            "duplicate callback reentered guest or released twice");
+        check(region.tryClose(), "replayed task left pending ownership");
+        gate.close();
+    }
     private static void competingStartAndRetire() throws Exception {
         for (int iteration = 0; iteration < 2000; iteration++) {
             var gate = new ActorPhysicalTurnGate(1, 2);
@@ -125,6 +142,7 @@ public final class ExactSourcePhysicalTurnSmoke {
         executorThrowsAfterPhysicalStart();
         queuedRejectionDoesNotReleaseRunning();
         staleAfterEnqueueAndThrow();
+        acceptedReplayIsInert();
         competingStartAndRetire();
         System.out.printf("EXACT_SOURCE_JDK21_PASS assertions=%d racing_rounds=2000%n", assertions);
     }
