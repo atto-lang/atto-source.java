@@ -613,6 +613,85 @@ final class WebSocketLoopbackListenerTest {
         }
     }
 
+
+    @Test
+    void rejectedControlAdmissionStillRetiresActorOwnedIdleSocket()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+                connection.bindActorHost(tenant, owner, () -> true);
+
+                // Saturate all sixteen bounded native CONTROL admissions.
+                // The callback is forced to use the shared host fallback;
+                // it must NEVER create one virtual cleanup worker per peer.
+                var running = new java.util.concurrent.CountDownLatch(16);
+                var release = new java.util.concurrent.CountDownLatch(1);
+                try {
+                    for (int i = 0; i < 16; i++) {
+                        io.submitControl("test.block-control", () -> {
+                            running.countDown();
+                            release.await(3, TimeUnit.SECONDS);
+                            return null;
+                        });
+                    }
+                    assertTrue(running.await(3, TimeUnit.SECONDS));
+                    var done = new OresFuture<Void>();
+                    connection.watchHostActorDone(done, owner);
+                    done.completeFromRuntime(null);
+                    assertEquals(-1, client.getInputStream().read());
+                    assertEquals(0, listener.activeConnectionCount());
+                } finally {
+                    release.countDown();
+                }
+            }
+        }
+    }
+
+    @Test
+    void failedActorDeliveryUsesHostCleanupOutsideLifecycleMonitor()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                sendMaskedText(client, "delivery");
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        connection.readForActorAsync(handle, tenant, owner)
+                                .get(3, TimeUnit.SECONDS).kind());
+                var failed = assertThrows(IllegalStateException.class,
+                        () -> connection.pollAndEnqueueForActor(
+                                handle, tenant, owner,
+                                message -> { throw new IllegalStateException("scheduler full"); }));
+                assertEquals("scheduler full", failed.getMessage());
+                // Failure releases the logical delivery lease and requests
+                // host retirement outside the lifecycle lock.
+                assertEquals(-1, client.getInputStream().read());
+                assertEquals(0, listener.activeConnectionCount());
+                assertThrows(SecurityException.class,
+                        () -> connection.acquireActorLease(handle, tenant, owner));
+            }
+        }
+    }
+
     @Test
     void peerCloseFrameIsSerializedAndRetiresThePhysicalConnection() throws Exception {
         int port = unusedPort();
