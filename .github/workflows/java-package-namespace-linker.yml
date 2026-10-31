@@ -57,6 +57,10 @@ jobs:
             src/main/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlan.java \
             src/test/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlanSelfTest.java
           java -cp "$RUNNER_TEMP/namespace-init-classes" \
-            dev.oreslang.runtime.PinnedNamespaceInitializationPlanSelfTest
+            dev.oreslang.runtime.PinnedNamespaceInitializationPlanSelfTest \
+            | tee "$RUNNER_TEMP/namespace-init-receipt.txt"
+          grep -Fxq 'PINNED_NAMESPACE_INIT_SOURCE_ONLY_PASS checks=13' \
+            "$RUNNER_TEMP/namespace-init-receipt.txt"
+          test -z "$(git status --porcelain --untracked-files=all)"
       - name: Compile parser/linker and execute exact-head regression suite
         run: mvn -B -Dtest=PackageNamespaceLinkerTest,PinnedNamespaceRuntimeTest,PinnedNamespaceSharedCorpusTest,PinnedNamespacePackageInventoryTest,ImportSelectorSyntaxTest test
