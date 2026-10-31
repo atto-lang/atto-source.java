@@ -97,6 +97,27 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void symlinkedParentOfEntryCannotBypassPackageDiscovery() throws Exception {
+        Path project = temp.resolve("entry-parent-real");
+        billing(project);
+        Path actual = project.resolve("src/billing/charge.ores");
+        assertTrue(PackageNamespaceWorkspace.discover(actual) != null);
+        Path parentAlias = temp.resolve("entry-parent-alias");
+        try {
+            Files.createSymbolicLink(parentAlias, project);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit symlink test fixture");
+        }
+        Path aliasedEntry = parentAlias.resolve("src/billing/charge.ores");
+        assertTrue(Files.isRegularFile(aliasedEntry));
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.discover(aliasedEntry));
+        assertTrue(denied.getMessage().contains(
+                "symlinked namespace entry source ancestry is forbidden"), denied.getMessage());
+    }
+
+    @Test
     void samePackageSingleNamespaceImportDispatchesAcrossFourFiles() throws Exception {
         Path root = temp.resolve("checkout");
         billing(root);
