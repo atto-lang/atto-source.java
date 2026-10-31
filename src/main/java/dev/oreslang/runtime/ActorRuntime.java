@@ -5526,7 +5526,12 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
         ActorCell<?> cell = actors.get(ref.id());
-        return cell != null && !cell.stopped.get();
+        // A stable ActorId is not itself a live incarnation capability.
+        // Reject stale refs after a cell replacement/restart even if that
+        // ActorId now resolves to a different generation in this runtime.
+        return cell != null && cell.ref == ref
+                && cell.ref.generation() == ref.generation()
+                && !cell.stopped.get();
     }
 
     public void stop(ActorRef<?> ref) {
