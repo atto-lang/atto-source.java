@@ -153,6 +153,16 @@ final class WebSocketActorConnectionLease {
         if (nextOwner.equals(owner)) {
             throw new IllegalArgumentException("WebSocket transfer requires distinct owner");
         }
+        // A host bridge must additionally authenticate the new actor's
+        // tenant membership. The address only carries runtime incarnation,
+        // actor generation, actor kind and transport; it does not prove tenant
+        // membership by itself. This narrow v1 transfer disallows runtime,
+        // trust-class, or transport changes entirely.
+        if (!owner.runtimeId().equals(nextOwner.runtimeId())
+                || owner.kind() != nextOwner.kind()
+                || !owner.transport().equals(nextOwner.transport())) {
+            throw new SecurityException("cross-runtime or cross-policy WebSocket transfer denied");
+        }
         if (!nextAlive.getAsBoolean()) {
             throw new RejectedExecutionException("new actor already retired");
         }
