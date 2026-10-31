@@ -32,6 +32,20 @@ final class ActorRoutePublicationV1Test {
         return new ActorRoutePublicationV1<>(gate, mailbox, state(7), "old-physical");
     }
 
+    private static void awaitRouteQuarantine(ActorRoutePublicationV1<?> authority)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            try {
+                authority.current();
+            } catch (IllegalStateException quarantined) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        fail("terminal V2 actor must quarantine logical serving authority");
+    }
+
     @Test
     void singleSnapshotPublishesIdentityCodeStatePhysicalAndWatermarkTogether() {
         try (var gate = new ActorUpgradeEpochGate(40, image('a'));
@@ -1037,6 +1051,9 @@ final class ActorRoutePublicationV1Test {
                 assertSame(candidate, authority.current().physicalRoute());
                 candidate.stop();
                 candidate.done().get(10, TimeUnit.SECONDS);
+                // The Future can become terminal before its trusted callback
+                // subscribers have finished publishing the quarantine flag.
+                awaitRouteQuarantine(authority);
                 assertThrows(IllegalStateException.class, authority::current,
                         "post-publication physical death must quarantine logical DATA");
                 assertThrows(ActorRuntime.ActorSealedException.class,
@@ -1129,6 +1146,7 @@ final class ActorRoutePublicationV1Test {
                     assertTrue(stop.get(10, TimeUnit.SECONDS));
                     if (committed) {
                         candidate.done().get(10, TimeUnit.SECONDS);
+                        awaitRouteQuarantine(authority);
                         assertThrows(IllegalStateException.class, authority::current,
                                 "STOP after route CAS must quarantine V2");
                         assertThrows(ActorRuntime.ActorSealedException.class,
