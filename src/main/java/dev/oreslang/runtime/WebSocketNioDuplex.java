@@ -138,6 +138,10 @@ final class WebSocketNioDuplex {
         // Never pass zero to Selector.select: zero means infinite wait.
         long millis = Math.max(1L, (remaining + 999_999L) / 1_000_000L);
         selector.select(millis);
+        // Selection keys are level-triggered and remain in selectedKeys until
+        // removed. Reusing an old key after an EAGAIN/zero-byte I/O result
+        // can otherwise spin on stale readiness instead of parking.
+        selector.selectedKeys().clear();
         requireBeforeDeadline(deadline);
         if (Thread.currentThread().isInterrupted()) {
             throw new ClosedByInterruptException();
