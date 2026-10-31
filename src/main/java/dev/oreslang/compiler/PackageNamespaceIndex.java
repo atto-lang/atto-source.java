@@ -85,6 +85,9 @@ public final class PackageNamespaceIndex {
         if (manifestSnapshots.size() > 128 || sources.size() > 4096) {
             throw new IllegalArgumentException("namespace admission budget exceeded");
         }
+        // Capture the map structure as well as its immutable String values.
+        // A caller cannot retarget a provider halfway through the index pass.
+        Map<Path, String> fixedSnapshots = new LinkedHashMap<>(manifestSnapshots);
 
         Map<String, String> admittedSources = new LinkedHashMap<>();
         long sourceBytes = 0;
@@ -105,7 +108,7 @@ public final class PackageNamespaceIndex {
         Map<NamespaceKey, Map<String, Symbol>> exports = new LinkedHashMap<>();
         Map<NamespaceKey, Set<String>> providers = new LinkedHashMap<>();
         Set<String> packageIds = new LinkedHashSet<>();
-        for (Map.Entry<Path, String> snapshot : manifestSnapshots.entrySet()) {
+        for (Map.Entry<Path, String> snapshot : fixedSnapshots.entrySet()) {
             Path manifestReal = snapshot.getKey().toAbsolutePath().normalize();
             if (!".ores.pkg.toml".equals(manifestReal.getFileName().toString())) {
                 throw new IllegalArgumentException("expected .ores.pkg.toml: " + manifestReal);
