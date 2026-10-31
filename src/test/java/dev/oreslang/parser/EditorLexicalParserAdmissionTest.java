@@ -142,6 +142,45 @@ final class EditorLexicalParserAdmissionTest {
     }
 
     @Test
+    void symbolUnicodeNormalizationEscapesAndUtf8BudgetsAreCompilerChecked() {
+        // A decomposed canonical character is normalized exactly once.
+        assertEquals("é", lex("#\"e\u0301\"").get(0).lexeme());
+        assertEquals("a", lex("#\"\\u0061\"").get(0).lexeme());
+        assertEquals("a", lex("#'\\u0061'").get(0).lexeme());
+
+        // 128 ASCII bytes is the inclusive unquoted limit.
+        String atLimit = "a".repeat(128);
+        assertEquals(atLimit, lex("#" + atLimit).get(0).lexeme());
+
+        // The quoted limit counts NFC-encoded UTF-8 bytes, not UTF-16 units.
+        String exact256 = "a".repeat(254) + "é";
+        assertEquals(exact256, lex("#\"" + exact256 + "\"").get(0).lexeme());
+        String over256 = exact256 + "b";
+        assertThrows(IllegalArgumentException.class,
+                () -> lex("#\"" + over256 + "\""));
+
+        // Decoded controls, invisible format characters and malformed UTF-16
+        // are rejected even when their source is ASCII escape text.
+        for (String source : List.of(
+                "#\"\\n\"", "#\"\\r\"", "#\"\\t\"",
+                "#\"\\u0000\"", "#\"\\u202e\"", "#\"\\uD800\"")) {
+            assertThrows(IllegalArgumentException.class, () -> lex(source), source);
+        }
+    }
+
+    @Test
+    void nestedCommentsAndNearbyCompoundPrefixesRemainLexerBounded() {
+        String nested = "/*".repeat(128) + "throw #ready" + "*/".repeat(128) + " return";
+        assertEquals(List.of(RETURN, EOF), types(nested));
+        assertThrows(IllegalArgumentException.class, () -> lex("/* outer /* inner */"));
+
+        // 'nb-select' is a special lexer compound; a longer identifier must
+        // not be consumed as an accidental matching prefix.
+        assertEquals(List.of(NB, MINUS, IDENT, EOF), types("nb-selector"));
+        assertEquals(List.of(NB, MINUS, IDENT, EOF), types("nb-select_extra"));
+    }
+
+    @Test
     void malformedHashSymbolsFailLexerBeforeParser() {
         for (String text : List.of(
                 "#", "# ready", "#123", "#\"\"", "#''", "#\"unterminated",
