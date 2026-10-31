@@ -209,3 +209,29 @@ passed separately on JDK21; it does not prove this combined path. Current
 source-org hosted Actions still report no runner and zero steps, including
 the new exact-head JDK21 workflow. Source-only checkout remains restricted to
 this repository; no private cross-org mirroring is authorized.
+
+
+## Reentrant STOP mutation fence — 2026-10-31 (current draft)
+
+`ReusableLongStateRegion.update()` previously allowed a callback to request
+`beginRetire()` or `tryClose()` while the reentrant Java monitor was held,
+then commit the pre-STOP scalar write after the retirement flag was set. The
+callback can legitimately request STOP, so the pending write now checks the
+monotonic retirement bit **after** calculating the candidate value but
+**before** committing to the backing array. A reentrant STOP fails the
+mutation and leaves the logical region retired; physical reclamation still
+requires all outstanding Task/FFI lifetime pins to finish.
+
+`ReusableLongStateRegionTest` now expects STOP inside a callback to veto
+the write. A second JUnit regression asserts STOP during the mutation never
+releases a physical pin. `tests/ExactSourcePhysicalTurnSmoke.java` includes
+the same case. Separately, the `AsyncNativeIoTest` dual-owner test now marks
+the **exact physical carrier thread** executing the native-I/O-admitting
+guest turn using ThreadLocal identity, avoiding a global next-turn gate that
+could consume the wrong carrier.
+
+**Evidence boundary:** these newest source/test revisions are **authored
+but not yet executed**. The earlier JDK21 8,022-assertion exact-source
+smoke applied to earlier Git blobs and must not be attributed to the
+current `ReusableLongStateRegion.java` or smoke-test blob. The latest
+source-org PR run has no assigned runner and zero executed steps. Keep draft.
