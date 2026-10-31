@@ -28,3 +28,19 @@ Remaining release gates: actual compiler guest lowering, authenticated
 producer delegation lifecycle, output-full failure atomicity, bounded
 mailbox + reply budgets, exact CI runner execution and independent
 five-backend conformance.
+
+Additional negative compiler guards:
+- QueueAuthorityGuestBoundaryTest confirms that guest source cannot invoke
+  self.queueCommandAuthority() or directly construct QueueCommandAuthority.
+- QueueRuntimeAuthorityTest verifies no actor authority at on-start before
+  a mail is admitted, no authority on root actors, and rejection of unknown
+  synthetic ActorId grant targets.
+These tests are authored but require a real JDK25 run. They do not assert
+that the unimplemented guest bridge is present.
+
+Local/private CI status (2026-10-31): source organization PR runs are
+failing before runner assignment with zero steps. A separate private
+agent-pontifex-test carrier successfully executed two source-free steps
+in run 41236080271. Attempt to create an exact-tree mirror branch was
+rejected, so **no private Java or queue source has been copied** into
+that carrier. No compiler or JUnit result is certified.
