@@ -2944,6 +2944,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Host-only, bounded-observation substrate: make an immutable copy of the
+     * registered supervisor identities. This is NOT CONTROL admission, a
+     * globally atomic actor-health snapshot, or a guest-callable API.
+     *
+     * The returned handles remain runtime-local. In particular, this method
+     * never exposes actor heaps, mailbox payloads or foreign runtime state.
+     */
+    Map<SupervisorId, ActorSupervisor> supervisorRegistryForObservation() {
+        requireSupervisorContext("observe supervisor registry");
+        requireCallerRuntimeAffinity("observe supervisor registry");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        return Map.copyOf(supervisors);
+    }
+
     /** The runtime's non-null fallback supervisor for legacy group creation. */
     public ActorSupervisor rootSupervisor() {
         requireSupervisorContext("inspect the root ActorSupervisor");
