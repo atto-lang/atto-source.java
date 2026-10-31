@@ -11,8 +11,17 @@ final class DbWalFrameV1 {
 
     static void requireMatching(byte[] frame, int tenant, int generation,
             int operationId) {
-        if (frame == null || frame.length < DbDurableWalFile.MIN_FRAME
-                || frame.length > DbDurableWalFile.MAX_FRAME)
+        requireMatching(frame, frame == null ? 0 : frame.length,
+                tenant, generation, operationId);
+    }
+
+    // Buffer-prefix variant for recovery scanners: callers may reuse a
+    // bounded array and avoid per-record heap allocations. The VALID prefix,
+    // not the array capacity, is the complete ODB1 frame.
+    static void requireMatching(byte[] frame, int length, int tenant,
+            int generation, int operationId) {
+        if (frame == null || length < DbDurableWalFile.MIN_FRAME
+                || length > DbDurableWalFile.MAX_FRAME || length > frame.length)
             throw new IllegalArgumentException("invalid WAL frame length");
         if (tenant <= 0 || generation <= 0 || operationId <= 0)
             throw new SecurityException("WAL caller identity invalid");
@@ -39,15 +48,15 @@ final class DbWalFrameV1 {
         int valLen = u16(frame, 24);
         if (keyLen < 1 || keyLen > 64 || valLen > 1024
                 || (kind == 2 && valLen != 0)
-                || frame.length != 26 + keyLen + valLen + 4)
+                || length != 26 + keyLen + valLen + 4)
             throw new IllegalArgumentException("WAL payload length mismatch");
         int a = 1, b = 0;
-        for (int i = 0; i < frame.length - 4; ++i) {
+        for (int i = 0; i < length - 4; ++i) {
             a = (a + (frame[i] & 255)) % 65521;
             b = (b + a) % 65521;
         }
-        if (u16(frame, frame.length - 4) != a
-                || u16(frame, frame.length - 2) != b)
+        if (u16(frame, length - 4) != a
+                || u16(frame, length - 2) != b)
             throw new IllegalArgumentException("WAL checksum mismatch");
         if (storedTenant != tenant || storedGeneration != generation
                 || storedOperation != operationId)
