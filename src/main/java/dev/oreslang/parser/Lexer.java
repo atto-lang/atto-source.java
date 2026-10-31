@@ -9,6 +9,9 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
+    // Bound hostile source while scanning, not only after constructing a name.
+    private static final int MAX_QUOTED_SYMBOL_UNITS = 1_024;
+    private static final int MAX_BLOCK_COMMENT_DEPTH = 4_096;
 
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
@@ -142,6 +145,9 @@ public final class Lexer {
                 };
             }
             value.append(ch);
+            if (value.length() > MAX_QUOTED_SYMBOL_UNITS) {
+                throw error("quoted Symbol name exceeds normalization budget");
+            }
         }
         if (isAtEnd()) throw error("unterminated quoted Symbol literal");
         advance();
@@ -163,7 +169,11 @@ public final class Lexer {
             if (isAtEnd()) throw error("unterminated block comment");
             char c = advance();
             if (c == '\n') newline();
-            else if (c == '/' && match('*')) depth++;
+            else if (c == '/' && match('*')) {
+                if (++depth > MAX_BLOCK_COMMENT_DEPTH) {
+                    throw error("block comment nesting limit exceeded");
+                }
+            }
             else if (c == '*' && match('/')) depth--;
         }
     }
