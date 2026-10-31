@@ -331,7 +331,7 @@ final class ActorPhysicalTurnGateTest {
                 AtomicInteger active = new AtomicInteger();
                 AtomicInteger maximum = new AtomicInteger();
 
-                java.util.function.Function<Object, ActorRuntime.MessageHandler<Integer>> handler =
+                ActorRuntime.BehaviorFactory<Integer> handler =
                         ignored -> (mail, turn) -> {
                             int now = active.incrementAndGet();
                             maximum.accumulateAndGet(now, Math::max);
@@ -348,9 +348,9 @@ final class ActorPhysicalTurnGateTest {
                         };
 
                 ActorRuntime.ActorRef<Integer> first =
-                        runtime.spawnSharedTrusted(handler::apply);
+                        runtime.spawnSharedTrusted(handler);
                 ActorRuntime.ActorRef<Integer> second =
-                        runtime.spawnSharedTrusted(handler::apply);
+                        runtime.spawnSharedTrusted(handler);
 
                 first.send(1);
                 second.send(1);
