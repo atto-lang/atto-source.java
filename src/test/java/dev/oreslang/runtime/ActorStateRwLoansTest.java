@@ -600,16 +600,15 @@ final class ActorStateRwLoansTest {
                 .isCompletedExceptionally(), "failed revocation must deny new readers");
         assertTrue(loans.acquireWriteAsync(actor(8604, 264, 1))
                 .isCompletedExceptionally(), "failed revocation must deny new writers");
-        assertEquals(1, loans.pendingCount(),
-                "denied new requests must not increase the one preexisting queued reader");
-
-        assertFalse(queuedReader.isDone(), "queued reader must not be granted in quarantine");
-        holder.close();
-        assertFalse(queuedReader.isDone(),
-                "physical writer release must not promote an untrusted queued waiter");
-        loans.close();
+        assertEquals(0, loans.pendingCount(),
+                "first revoker failure must automatically fail and drain older queued work");
         assertTrue(queuedReader.isCompletedExceptionally(),
-                "shutdown must settle queued work without granting state authority");
+                "quarantine must fail preexisting queued work without granting state authority");
+        assertTrue(queuedReader.isDone(), "failed waiter must never remain parked");
+        assertTrue(loans.acquireReadAsync(actor(8605, 265, 1))
+                .isCompletedExceptionally(), "new admission remains closed");
+        holder.close();
+        loans.close();
         assertEquals(0, loans.activeWriterCount());
         assertEquals(0, loans.pendingCount());
         assertFalse(loans.physicallyRetired(),
