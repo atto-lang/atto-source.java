@@ -55,9 +55,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/cgl-java-classes"
           javac -Xlint:all -Werror -d "$RUNNER_TEMP/cgl-java-classes" \
             src/main/java/dev/oreslang/runtime/CglActorMessageTrace.java \
-            src/test/java/dev/oreslang/runtime/CglActorMessageTraceSmoke.java
+            src/test/java/dev/oreslang/runtime/CglActorMessageTraceSmoke.java \
+            src/test/java/dev/oreslang/runtime/CglActorMessageTraceConcurrencySmoke.java
           java -cp "$RUNNER_TEMP/cgl-java-classes" \
             dev.oreslang.runtime.CglActorMessageTraceSmoke
+          java -cp "$RUNNER_TEMP/cgl-java-classes" \
+            dev.oreslang.runtime.CglActorMessageTraceConcurrencySmoke
       - name: Run Maven tests, build launcher, and execute actual guest source
         run: |
           set -euo pipefail
