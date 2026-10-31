@@ -551,6 +551,53 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void failedPhysicalActorDrainQuarantinesWithoutCreditingLogicalDelivery()
+            throws Exception {
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(61, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var attempted = new CountDownLatch(1);
+            var failingRoute = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {
+                        attempted.countDown();
+                        throw new IllegalStateException("physical actor turn failed");
+                    });
+            var authority = new ActorRoutePublicationV1<>(
+                    gate, mailbox, state(7), failingRoute);
+            authority.admit(new byte[]{1});
+            var trusted = ActorRoutePublicationV1.actorRuntimeDrainSubmitter(
+                    (java.util.function.Function<byte[], List<Integer>>) bytes ->
+                            List.of(Byte.toUnsignedInt(bytes[0])));
+            assertTrue(authority.dispatchNextTracked(trusted));
+            assertTrue(attempted.await(10, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            boolean quarantined = false;
+            while (System.nanoTime() < deadline) {
+                try {
+                    authority.current();
+                } catch (IllegalStateException rejected) {
+                    quarantined = true;
+                    break;
+                }
+                Thread.sleep(10);
+            }
+            assertTrue(quarantined, "failed actor drain must quarantine DATA");
+            assertEquals(1, mailbox.snapshot().outstandingMessages());
+            assertEquals(1, mailbox.snapshot().retainedMessages());
+            assertEquals(0L, mailbox.snapshot().completionWatermark(),
+                    "failed physical delivery never earns a completion receipt");
+            assertThrows(IllegalStateException.class, authority::close);
+            assertThrows(IllegalStateException.class,
+                    () -> authority.dispatchNextTracked(trusted),
+                    "ambiguous physical failure cannot replay DATA");
+            // Test fixture owns the host runtime and mailbox teardown. The
+            // logical authority intentionally stays quarantined; this is NOT
+            // a proof of an authorized production cancellation/disposition.
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
