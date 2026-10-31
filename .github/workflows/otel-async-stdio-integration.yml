@@ -47,4 +47,4 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
       - name: Compile current-main integration and run focused JUnit
-        run: mvn -B -ntp '-Dtest=AsyncStdioLogsTest,StdioLogAndSpreadTest' test
+        run: mvn -B -ntp '-Dtest=AsyncStdioLogsTest,StdioLogAndSpreadTest,ActorEndCleanupTest,FormalContextShutdownOrderModelCheckTest' test
