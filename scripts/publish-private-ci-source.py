@@ -40,8 +40,9 @@ BLOCKING_INCIDENT_IDS = {
     172: 6042602777,  # LLVM exact-tree carrier; independent placement review outstanding
     198: 6070465058,  # ClaimGraph exact Java CI-script placement; independent classification required
     200: 6071264936,  # ClaimGraph private Java governance-blob retention; disposition required
+    252: 6129229261,  # hnpt-e2e private Oreslang source placement; disposition required
 }
-BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200)
+BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200, 252)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
     "scintilla-run-test/gleam-runner-conformance",
@@ -49,6 +50,7 @@ QUARANTINED_DESTINATIONS = (
     "agent-pontifex-test/agent-pontifex-e2e-tests",
     "led-dynamo/leddy-e2e",
     "ClaimGraph-test/claimgraph-e2e",
+    "honeypot-r-us-test/hnpt-e2e",
 )
 QUARANTINED_DESTINATION_IDS = (
     1323575966,  # zed-pkg-test/java-app (#22)
@@ -57,6 +59,7 @@ QUARANTINED_DESTINATION_IDS = (
     1370782550,  # agent-pontifex-test/agent-pontifex-e2e-tests (#171)
     1324139596,  # led-dynamo/leddy-e2e (#172)
     1350751074,  # ClaimGraph-test/claimgraph-e2e (#198/#200)
+    1346492776,  # honeypot-r-us-test/hnpt-e2e (#252)
 )
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
