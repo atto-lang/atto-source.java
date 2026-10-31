@@ -109,9 +109,13 @@ final class RxTaskFieldTransferAdmissionTest {
                   return;
                 }
                 """;
-        // Either the ownership checker must reject this, or the runtime
-        // moved-slot sentinel must make a second transfer impossible.
-        assertThrows(RuntimeException.class, () -> run(program));
+        // Verify compiler admission separately: a parse/type failure cannot
+        // stand in for a runtime moved-slot enforcement receipt.
+        OresCompiler.parseAndTypeCheck(program);
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(program));
+        assertTrue(failure.getMessage() != null
+                        && failure.getMessage().contains("already moved"),
+                "expected runtime moved-slot denial, got: " + failure);
     }
 
     @Test
@@ -141,9 +145,70 @@ final class RxTaskFieldTransferAdmissionTest {
                   return;
                 }
                 """;
-        // The checker can reject a move-only peek, or the evaluator must
-        // reject a read of the consumed class-field sentinel.
-        assertThrows(RuntimeException.class, () -> run(program));
+        // Read occurs within the class; fail unless the runtime explicitly
+        // rejects this moved slot (not a private-access or parse error).
+        OresCompiler.parseAndTypeCheck(program);
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(program));
+        assertTrue(failure.getMessage() != null
+                        && failure.getMessage().contains("already moved"),
+                "expected read-after-move denial, got: " + failure);
+    }
+
+    @Test
+    void movedClassFieldMayBeReinitializedWithAUniqueNewTask() throws Exception {
+        String declaration = """
+                define class TaskCell as
+                  let Task<int> producer;
+                  constructor(Task<int> producer) {
+                    self.producer = rt take producer;
+                  }
+                  pub take_task(mut self)(): Task<int> {
+                    return rt take self.producer;
+                  }
+                  pub reset_task(mut self)(Task<int> fresh): void {
+                    self.producer = rt take fresh;
+                    return;
+                  }
+                end
+                """;
+        String program = declaration + """
+                pub routine main(): void {
+                  let Task<int> first = task { return 40; };
+                  let TaskCell holder = new TaskCell(rt take first);
+                  let Task<int> old = holder.take_task();
+                  let Task<int> fresh = task { return 2; };
+                  holder.reset_task(rt take fresh);
+                  let Task<int> current = holder.take_task();
+                  let int a = await old;
+                  let int b = await current;
+                  stdio.stdout.write(a + b);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("42", run(program));
+    }
+
+    @Test
+    void nestedTaskContinuationCannotTakeSameClassFieldTwice() {
+        String program = MUTABLE_TASK_FIELD + """
+                pub routine main(): void {
+                  let Task<int> outer = task {
+                    let Task<int> worker = task { return 42; };
+                    let TaskCell holder = new TaskCell(rt take worker);
+                    let Task<int> first = holder.take_task();
+                    let Task<int> second = holder.take_task();
+                    return await first + await second;
+                  };
+                  stdio.stdout.write(await outer);
+                  return;
+                }
+                """;
+        OresCompiler.parseAndTypeCheck(program);
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(program));
+        assertTrue(failure.getMessage() != null
+                        && failure.getMessage().contains("already moved"),
+                "expected suspendable moved-slot denial, got: " + failure);
     }
 
     private static String run(String code) throws Exception {
