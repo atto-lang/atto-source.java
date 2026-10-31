@@ -186,10 +186,15 @@ final class PackageNamespaceWorkspace {
     }
 
     private static byte[] readManifestBytes(Path path) throws IOException {
-        if (Files.size(path) > 1024 * 1024) {
-            throw new IllegalArgumentException("package manifest exceeds byte budget");
+        // Bound the read itself: a file can grow after a size precheck.
+        // NOFOLLOW_LINKS rejects a mutable symlink at the final component.
+        try (var in = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] bytes = in.readNBytes(1024 * 1024 + 1);
+            if (bytes.length > 1024 * 1024) {
+                throw new IllegalArgumentException("package manifest exceeds byte budget");
+            }
+            return bytes;
         }
-        return Files.readAllBytes(path);
     }
 
     private static String decodeManifestText(byte[] bytes) {
@@ -336,7 +341,7 @@ final class PackageNamespaceWorkspace {
         Path manifest = workspace.manifests().getFirst();
         if (Files.isSymbolicLink(manifest)
                 || !Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)
-                || !sha256(Files.readAllBytes(manifest)).equals(workspace.rootManifestSha256())) {
+                || !sha256(readManifestBytes(manifest)).equals(workspace.rootManifestSha256())) {
             throw new SecurityException("root namespace manifest changed during admission");
         }
     }
@@ -347,7 +352,7 @@ final class PackageNamespaceWorkspace {
         for (var entry : workspace.dependencySourcePins().entrySet()) {
             Path manifest = entry.getKey();
             String pinnedManifestHash = workspace.dependencyManifestPins().get(manifest);
-            if (!sha256(Files.readAllBytes(manifest)).equals(pinnedManifestHash)) {
+            if (!sha256(readManifestBytes(manifest)).equals(pinnedManifestHash)) {
                 throw new SecurityException("dependency manifest changed during admission");
             }
             String captured = workspace.manifestSnapshots().get(manifest);
