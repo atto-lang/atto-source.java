@@ -521,7 +521,7 @@ public final class OresContext implements AutoCloseable {
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
-            output.flush();
+            // Keep physical state quarantined without acquiring a live sink lock.
             throw new IllegalStateException(
                     "Oreslang context cleanup incomplete; physical state quarantined",
                     incomplete);
@@ -545,7 +545,7 @@ public final class OresContext implements AutoCloseable {
             else if (failure != vmFailure) failure.addSuppressed(vmFailure);
         }
         if (failure != null) {
-            output.flush();
+            // Preserve quarantine without a potentially blocked writer flush.
             throw new IllegalStateException(
                     "Oreslang context auxiliary shutdown incomplete; context quarantined",
                     failure);
