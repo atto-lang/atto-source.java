@@ -28,22 +28,6 @@
           ]
         }
       }
-    },
-    "chapter-publishing-test/zed-pkg-integration-e2e": {
-      "repository_id": 1344442382,
-      "base_sha": "f40bd9dd1133da92a1c2c9cb46941211e912c0c3",
-      "governance_mode": "reviewed-pr-head",
-      "review_pr": 12,
-      "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
-      "workflow_blob_sha": "346501098374d48a835755d47a44f2869fe5c043",
-      "test_plans": {
-        "ci/test-plans/java-pr2302.json": {
-          "blob_sha": "fb5c44170b016fd690d2ecddaace13fc1b908a42",
-          "allowed_prs": [
-            2302
-          ]
-        }
-      }
     }
   }
 }
