@@ -368,6 +368,60 @@ until an authorized exact-head JDK25/GraalVM workflow executes nonzero
 steps. The package-private methods are NOT an exposed Oreslang guest API
 or a verified isolate security boundary.
 
+## Actor-authorized operation accounting (2026-10-31)
+
+New host-only `Connection.readForActorAsync`,
+`sendTextForActorAsync`, and `sendBinaryForActorAsync` enforce
+authenticated tenant+ActorAddress+generation against a bound
+`WebSocketActorConnectionLease`. Raw host read/send/poll entry points
+reject requests after binding. These are **package-private native host
+bridges**, not guest-visible API declarations. The tenant and actor
+identity parameters remain trusted host inputs; a guest must never be
+allowed to supply them.
+
+An actor read acquires a lease before native worker submission and
+releases it in the executing read worker's `finally` after its socket
+borrow ends. The separate `AsyncNativeIo` never-started callback also
+reclaims a lease when an admitted read is discarded during shutdown.
+The future's observer `cancel()` cannot forge that physical completion.
+The socket read is still bounded by its absolute NIO frame deadline.
+Accept admission similarly clears its single-accept flag on a discarded
+never-started native worker.
+
+Actor USER writes acquire ownership before bounded outbound admission.
+The `WebSocketOutboundGate.Write` retains the lease across queueing,
+physical drain, and in-flight cancellation. A queued cancellation,
+terminal CLOSE supersession, or connection retirement releases a
+**non-started queued** lease; an active write releases it only from
+`finish()` after the owning native worker exits its SocketChannel
+borrow, even if the public receipt was already cancelled. A queued
+native writer discarded before worker startup retires its queued writes.
+The CONTROL protocol responses have their own bounded host authority.
+
+Active receipt cancellation now atomically revokes actor ownership
+and requests a socket close via the bounded native-I/O CONTROL pool.
+It never calls `Socket.close()` on the actor that requests
+cancellation. If CONTROL admission fails, the already-running NIO
+writer retains its finite deadline and closes in its own `finally`.
+No physical-loan success is synthesized by this path.
+
+Actor transfer rejects any outstanding read/write owner loan, pending
+writer, non-OPEN session, queued USER message, or partially assembled
+fragment. `pollAndEnqueueForActor` authenticates and dequeues a USER
+message while enqueuing it to a trusted **nonblocking** host scheduler.
+The scheduler still must authenticate the handle at the actual actor
+delivery point, and must not execute guest code in that callback. The
+source regression suite now covers real-loopback actor-bound read/write,
+queue-drain transfer fences, stale-handle failures, actor read shutdown,
+queued cancellation vs active writer credits, and fragmented USER state.
+
+**Not yet verified:** tests are authored but no exact-head JDK25/Graal
+Maven/JUnit steps have executed. The package-private host APIs do not
+implement guest-language lowering, automatic actor-stop subscriptions,
+tenant/isolate membership proof, or native guest execution. Logical
+revocation and ownership lease release still do not prove the global
+`AsyncNativeIo` actor arena join receipt or socket-fd isolation.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
