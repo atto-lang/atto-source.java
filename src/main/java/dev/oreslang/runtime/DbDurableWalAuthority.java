@@ -16,22 +16,30 @@ final class DbDurableWalAuthority {
     private final ActorRuntime.ActorId owner;
     private final Path filePath;
     private final DbDurableWalFile file;
+    private final DbWalTrustedGrantRegistry.Grant grant;
     private final DbWalAuthorityLifecycle lifecycle = new DbWalAuthorityLifecycle();
 
     private DbDurableWalAuthority(OresContext context,
-            ActorRuntime.ActorId owner, Path filePath, DbDurableWalFile file) {
+            ActorRuntime.ActorId owner, Path filePath, DbDurableWalFile file,
+            DbWalTrustedGrantRegistry.Grant grant) {
         this.context = context;
         this.owner = owner;
         this.filePath = filePath;
         this.file = file;
+        this.grant = grant;
     }
 
     static OresFuture<DbDurableWalAuthority> openForActor(
             OresContext context, Path trustedDirectory, String basename,
-            int ownerGeneration) {
+            DbWalTrustedGrantRegistry.Grant grant) {
         Objects.requireNonNull(context);
         Objects.requireNonNull(trustedDirectory);
+        Objects.requireNonNull(grant);
         ActorRuntime.ActorId actor = requireCurrentOwner(context);
+        // The issuing host must authenticate tenant and shard. The opaque
+        // grant reserves the shard through actor drain/physical close.
+        grant.requireLive(context.actors());
+        int ownerGeneration = grant.generation();
         // Caller is a trusted host service. Never derive this directory from
         // guest DATA. Source guest cannot instantiate DbDurableWalAuthority.
         Path filePath = trustedDirectory.resolve(Objects.requireNonNull(basename));
@@ -45,7 +53,8 @@ final class DbDurableWalAuthority {
                     trustedDirectory, basename, ownerGeneration);
             try {
                 io.register(opened);
-                return new DbDurableWalAuthority(context, actor, filePath, opened);
+                return new DbDurableWalAuthority(
+                        context, actor, filePath, opened, grant);
             } catch (Exception rejected) {
                 // register() can retain the resource when context shutdown
                 // raced the I/O worker; physical close then belongs ONLY to
@@ -59,6 +68,9 @@ final class DbDurableWalAuthority {
     synchronized OresFuture<DbDurableWalFile.SyncReceipt> appendAndSync(
             int generation, int operationId, byte[] boundedFrame) {
         requireOwner();
+        grant.requireLive(context.actors());
+        if (generation != grant.generation())
+            throw new SecurityException("stale WAL generation");
         context.requirePermission(RuntimePermissions.Permission.WRITE,
                 filePath.toString(), "db.wal.append_sync");
         Objects.requireNonNull(boundedFrame);
@@ -87,7 +99,11 @@ final class DbDurableWalAuthority {
         requireOwner();
         // DRAINING permanently seals new writes, even if one is in flight.
         // A second owner call after physical retirement can finish close.
-        if (!lifecycle.requestDrain())
+        boolean readyToClose = lifecycle.requestDrain();
+        // The grant remains owned by this incarnation while physically
+        // draining. No replacement generation may acquire the shard yet.
+        grant.beginDrain(context.actors());
+        if (!readyToClose)
             throw new IllegalStateException(
                     "WAL drain pending, closing, or already closed");
         if (!lifecycle.beginClose())
@@ -104,6 +120,7 @@ final class DbDurableWalAuthority {
             // final physical loan have actually retired.
             io.unregister(file);
             lifecycle.physicalCloseRetired();
+            grant.physicalRetire();
             return null;
         });
     }
