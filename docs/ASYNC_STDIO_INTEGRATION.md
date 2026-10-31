@@ -29,6 +29,7 @@ This cannot guarantee bounded shutdown when **unrelated** services or the extern
 | CI admission | Real runner and nonempty job steps on head SHA/attempt | BLOCKED, zero-step |
 | Focused host tests | `AsyncStdioLogsTest` queued writes, blocked writer, UTF-8 sizes, 8 MiB in-flight accounting, overflow, per-context sink error isolation, timeout/drain retry | AUTHORED, NOT EXECUTED |
 | Guest tests | `StdioLogAndSpreadTest` detached log, await barrier, spread/list, permission-denied and direct-only | AUTHORED, NOT EXECUTED |
+| Whole-context blocked writer | Polyglot `Context.close()` with actual blocked host `OutputStream`, timeout/exception chain, and no reflush deadlock | AUTHORED, NOT EXECUTED |
 | Retirement | Actor generation/cancellation, failed native-I/O physical join, quarantine release and retry | NOT EXECUTED |
 | Native | Exact-tree GraalVM guest and native AOT/hybrid builds, carrier liveness | NOT EXECUTED |
 | OTel | Exact compiler `SOURCE_REF`, `oreslang-otel` smoke, int64, span lifecycle | NOT EXECUTED |
@@ -39,3 +40,9 @@ Preserve backend, repository, head/tree, compiler/toolchain, job attempt and non
 ### Pending-byte admission note (2026-10-31)
 
 The byte counter increases only after a record is accepted and decreases only after that record is processed, including its in-flight write; a dequeued but blocked writer still consumes quota. Failed admissions do not allocate a record or Future into the queue. The quota is **not** a measure of total process heap usage: pre-admission string rendering, Java object overhead, and other contexts remain additional allocations. Physical-isolate and actor scheduling proof requires executed native tests.
+
+### Whole-context blocked-writer test (2026-10-31)
+
+`StdioLogAndSpreadTest.blockedAsyncSinkCannotHangWholeContextClose` invokes an actual Polyglot guest async log against a latch-blocked host `OutputStream`. The test closes the Polyglot context on a separate thread, requires an explicit async-drain timeout failure rather than success or indefinite monitor reacquisition, and releases the test sink in `finally` to prevent a stuck CI worker. This exercises the real `OresContext.close()` path rather than only `flushOutputAfterAsyncDrain`.
+
+This fixture has **not executed**; no guarantee of correct result or lifecycle behavior is claimed. It does not independently prove quarantine release or a successful retry through the Polyglot wrapper after failed disposal. Follow with a separate actor/native-I/O retirement and recovery test once a nonzero-step runner can build the exact head. The five-second drain deadline is not a deadline for unrelated context teardown stages.
