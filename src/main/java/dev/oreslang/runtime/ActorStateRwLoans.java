@@ -38,6 +38,9 @@ public final class ActorStateRwLoans implements AutoCloseable {
     // two different logical tasks at the same time.
     private final Set<ExecutionContext.ExecutionId> reservedExecutions = new HashSet<>();
     private final Set<ExecutionContext.ExecutionHandle> reservedHandles = new HashSet<>();
+    // Generations fence ABA, but they do not permit two physically live
+    // generations of the same scheduler slot to hold state concurrently.
+    private final Set<Long> reservedSlots = new HashSet<>();
     private StateLoan writer;
     private ExecutionContext.AllocationDomain boundAllocation;
     private long nextEpoch;
@@ -77,7 +80,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
         return closed && writer == null && readers.isEmpty()
                 && pending.isEmpty() && completions.isEmpty() && !publishing
                 && reserved.isEmpty() && reservedExecutions.isEmpty()
-                && reservedHandles.isEmpty()
+                && reservedHandles.isEmpty() && reservedSlots.isEmpty()
                 && terminalNotificationsInFlight == 0;
     }
 
@@ -178,19 +181,22 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private boolean reserveLocked(Authority candidate) {
         if (reserved.contains(candidate)
                 || reservedExecutions.contains(candidate.id())
-                || reservedHandles.contains(candidate.handle())) {
+                || reservedHandles.contains(candidate.handle())
+                || reservedSlots.contains(candidate.handle().slot())) {
             return false;
         }
         reserved.add(candidate);
         reservedExecutions.add(candidate.id());
         reservedHandles.add(candidate.handle());
+        reservedSlots.add(candidate.handle().slot());
         return true;
     }
 
     private void unreserveLocked(Authority authority) {
         if (!reserved.remove(authority)
                 || !reservedExecutions.remove(authority.id())
-                || !reservedHandles.remove(authority.handle())) {
+                || !reservedHandles.remove(authority.handle())
+                || !reservedSlots.remove(authority.handle().slot())) {
             throw new IllegalStateException("state RW execution reservation ledger corrupted");
         }
     }
@@ -381,7 +387,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 // execution has no *new* active or queued loan. Consult the
                 // current ledger as well as the physical release receipt.
                 return released && !reservedExecutions.contains(authority.id())
-                        && !reservedHandles.contains(authority.handle());
+                        && !reservedHandles.contains(authority.handle())
+                        && !reservedSlots.contains(authority.handle().slot());
             }
         }
 
