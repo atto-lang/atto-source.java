@@ -258,7 +258,7 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
-    void runtimeLoaderRejectsNamespaceImportsUntilProviderBindingIsImplemented() throws IOException {
+    void runtimeLoaderRejectsNamespaceImportsWithoutVerifiedManifest() throws IOException {
         Path entry = temporary.resolve("entry.ores");
         Files.writeString(entry, """
                 namespace client;
@@ -267,7 +267,12 @@ final class PackageNamespaceIndexTest {
                 """);
         IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
                 () -> LinkedProgramRunner.validate(entry));
-        assertTrue(rejection.getMessage().contains("runtime linking"));
+        // The index-only stage rejects as unimplemented; the stacked runtime
+        // linker rejects because no authenticated v2 manifest was provided.
+        // Both must fail closed instead of silently treating the dependency
+        // alias as a filesystem path or an ambient namespace.
+        assertTrue(rejection.getMessage().contains("runtime linking")
+                || rejection.getMessage().contains("explicit v2 package manifest"));
     }
 
     @Test
