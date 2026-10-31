@@ -29,7 +29,7 @@ The core proof vocabulary is:
 
 - Moving the Box transfers ownership without copying T.
 - Drop destroys T exactly once.
-- Shared/exclusive borrows dereference to `&T` / `&mut T`.
+- Shared/exclusive borrows use canonical `borrow T` / `borrow mut T` type capabilities, with expression-level `rt borrow` / `rt mut borrow`.
 - Box does not itself imply Share.
 - An actor-boundary move of unique storage requires a compiler/runtime
   allocation-domain transfer proof; raw actor-private pointers never escape.
@@ -41,6 +41,8 @@ authority.
 
 - Cloning Arc increments the strong count and never clones T.
 - Normal access is immutable.
+- `rt mut share` does not expose writable `T`; the current Java/Graal slice
+  permits only builtin `SharedMutex<T>` handles and requires a lock guard.
 - Shared mutation requires a synchronization primitive such as Mutex/RwLock
   or atomics.
 - Cross-domain Arc admission requires T's Send+Sync proof and shared backing.
@@ -64,8 +66,8 @@ metadata; it does not require runtime reflection.
 
 Examples of intended forms:
 
-    &dyn Handler
-    &mut dyn Handler
+    borrow dyn Handler
+    borrow mut dyn Handler
     Box<dyn Handler>
     Arc<dyn Handler + Send + Sync + Share>
 
@@ -80,7 +82,7 @@ remains compatible with closed-world tree shaking.
 
 ## Interior mutability and pinning
 
-A shared `&T` never regains ordinary mutation. Safe shared mutation requires
+A shared `borrow T` never regains ordinary mutation. Safe shared mutation requires
 compiler-recognized synchronization/interior-mutability types.
 
 `Pin` exists for address-stable values needed by async continuation frames,
