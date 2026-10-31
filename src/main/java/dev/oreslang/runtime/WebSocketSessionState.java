@@ -15,6 +15,8 @@ import java.util.Optional;
 public final class WebSocketSessionState {
     public static final int CLOSE_TRY_AGAIN_LATER = 1013;
     public static final int MAX_USER_QUEUE_CAPACITY = 65_536;
+    /** A queue-count cap alone permits catastrophic count * message-size memory use. */
+    public static final int MAX_QUEUED_USER_BYTES = 16 * 1024 * 1024;
 
     public enum State {
         OPEN, CLOSING, CLOSED
@@ -51,6 +53,8 @@ public final class WebSocketSessionState {
             closePayload(CLOSE_TRY_AGAIN_LATER, "user queue full");
 
     private final int userCapacity;
+    private final int userByteCapacity;
+    private int queuedUserBytes;
     private final ArrayDeque<WebSocketFrameCodec.Message> userMessages;
     private final WebSocketFrameCodec.MessageAssembler assembler;
     private State state = State.OPEN;
@@ -58,13 +62,30 @@ public final class WebSocketSessionState {
     private boolean closeReceived;
 
     public WebSocketSessionState(int userCapacity, int maxMessageBytes) {
+        this(userCapacity, maxMessageBytes, MAX_QUEUED_USER_BYTES);
+    }
+
+    /**
+     * The message limit and the queued-data limit are independent, but one
+     * whole admitted message must fit in the queue. Retained fragments are
+     * separately bounded by MessageAssembler.
+     */
+    public WebSocketSessionState(
+            int userCapacity, int maxMessageBytes, int maxQueuedUserBytes) {
+        if (maxQueuedUserBytes < 1 || maxQueuedUserBytes > MAX_QUEUED_USER_BYTES
+                || maxMessageBytes > maxQueuedUserBytes) {
+            throw new IllegalArgumentException(
+                    "WebSocket USER byte quota must fit one message and stay within "
+                            + MAX_QUEUED_USER_BYTES);
+        }
         if (userCapacity < 1 || userCapacity > MAX_USER_QUEUE_CAPACITY) {
             throw new IllegalArgumentException(
                     "WebSocket USER queue capacity must be in 1.."
                             + MAX_USER_QUEUE_CAPACITY);
         }
         this.userCapacity = userCapacity;
-        this.userMessages = new ArrayDeque<>(userCapacity);
+        this.userByteCapacity = maxQueuedUserBytes;
+        this.userMessages = new ArrayDeque<>(Math.min(userCapacity, 1024));
         this.assembler = new WebSocketFrameCodec.MessageAssembler(maxMessageBytes);
     }
 
@@ -76,8 +97,13 @@ public final class WebSocketSessionState {
         return userMessages.size();
     }
 
+    public synchronized int queuedUserBytes() {
+        return queuedUserBytes;
+    }
+
     public synchronized Optional<WebSocketFrameCodec.Message> pollUserMessage() {
         WebSocketFrameCodec.Message message = userMessages.pollFirst();
+        if (message != null) queuedUserBytes -= message.payloadLength();
         return Optional.ofNullable(message);
     }
 
@@ -105,6 +131,7 @@ public final class WebSocketSessionState {
         state = State.CLOSED;
         assembler.reset();
         userMessages.clear();
+        queuedUserBytes = 0;
     }
 
     private Action receiveClose(WebSocketFrameCodec.Frame frame) {
@@ -128,7 +155,10 @@ public final class WebSocketSessionState {
         Optional<WebSocketFrameCodec.Message> completed = assembler.accept(frame);
         if (completed.isEmpty()) return Action.none();
 
-        if (userMessages.size() >= userCapacity) {
+        WebSocketFrameCodec.Message message = completed.orElseThrow();
+        // Subtract before comparing to avoid signed integer overflow.
+        if (userMessages.size() >= userCapacity
+                || message.payloadLength() > userByteCapacity - queuedUserBytes) {
             if (!closeSent) {
                 closeSent = true;
                 state = State.CLOSING;
@@ -137,7 +167,8 @@ public final class WebSocketSessionState {
             return Action.none();
         }
 
-        userMessages.addLast(completed.orElseThrow());
+        userMessages.addLast(message);
+        queuedUserBytes += message.payloadLength();
         return Action.userEnqueued();
     }
 
