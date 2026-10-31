@@ -14,6 +14,7 @@ on:
       - 'src/test/java/dev/oreslang/PinnedNamespacePackageInventoryTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/PinnedNamespaceRuntimeTest.java'
+      - 'src/test/java/dev/oreslang/PinnedNamespaceSharedCorpusTest.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/test/java/dev/oreslang/PackageNamespaceLinkerTest.java'
       - 'docs/PACKAGE_LOCAL_NAMESPACE_PHASE1.md'
@@ -45,4 +46,4 @@ jobs:
           java-version: '25'
           cache: maven
       - name: Compile parser/linker and execute exact-head regression suite
-        run: mvn -B -Dtest=PackageNamespaceLinkerTest,PinnedNamespaceRuntimeTest,PinnedNamespacePackageInventoryTest,ImportSelectorSyntaxTest test
+        run: mvn -B -Dtest=PackageNamespaceLinkerTest,PinnedNamespaceRuntimeTest,PinnedNamespaceSharedCorpusTest,PinnedNamespacePackageInventoryTest,ImportSelectorSyntaxTest test
