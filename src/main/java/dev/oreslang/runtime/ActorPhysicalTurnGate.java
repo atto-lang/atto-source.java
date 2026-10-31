@@ -94,11 +94,14 @@ final class ActorPhysicalTurnGate {
         long ticket = region.pin();
         java.util.concurrent.atomic.AtomicBoolean released =
                 new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicBoolean started =
+                new java.util.concurrent.atomic.AtomicBoolean();
         Runnable complete = () -> {
             if (released.compareAndSet(false, true)) region.releasePin(ticket);
         };
         try {
             dispatch(() -> {
+                started.set(true);
                 try {
                     if (!region.claimPinnedTurn(ticket)) {
                         reject.accept(new RejectedExecutionException(
@@ -117,9 +120,12 @@ final class ActorPhysicalTurnGate {
                 }
             });
         } catch (RuntimeException | Error failure) {
-            // Includes immediate gate closure, backlog rejection, and an
-            // inline task that already finished. Never double-release.
-            complete.run();
+            // An executor may START a runnable and only then throw from
+            // submission. If the physical turn owns the pin, its finally
+            // block, not this submitting thread, must release it. If start
+            // lost, ActorPhysicalTurnGate has marked the wrapper rejected
+            // before propagating failure, so no later execution is possible.
+            if (!started.get()) complete.run();
             throw failure;
         }
     }
