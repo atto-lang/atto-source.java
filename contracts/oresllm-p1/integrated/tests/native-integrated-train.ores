@@ -21,18 +21,22 @@ pub routine main(): void {
   val float target = 6.0;
   val SgdPolicy policy = new SgdPolicy(0.01, 50.0);
   if !valid_policy(&policy); do rt fail("SGD policy invalid"); fi
-  let TinyState state = new TinyState(0.5, 0.0, 1.0, 0.0);
-  val float starting_loss = squared_loss(&state, input, target);
+  let float w0 = 0.5;
+  let float b0 = 0.0;
+  let float w1 = 1.0;
+  let float b1 = 0.0;
+  val TinyState initial_state = new TinyState(w0, b0, w1, b1);
+  val float starting_loss = squared_loss(&initial_state, input, target);
   if starting_loss != 25.0; do rt fail("initial NN forward loss"); fi
 
   // Independent finite-difference gradient against the shared autograd VJP.
-  val float activation = relu(state.w0 * input + state.b0);
+  val float activation = relu(w0 * input + b0);
   val Affine2Tape initial_tape = new Affine2Tape(
-    activation, 0.0, state.w1, 0.0, state.b1, target
+    activation, 0.0, w1, 0.0, b1, target
   );
   val float epsilon = 0.001;
-  val TinyState plus = new TinyState(state.w0, state.b0, state.w1 + epsilon, state.b1);
-  val TinyState minus = new TinyState(state.w0, state.b0, state.w1 - epsilon, state.b1);
+  val TinyState plus = new TinyState(w0, b0, w1 + epsilon, b1);
+  val TinyState minus = new TinyState(w0, b0, w1 - epsilon, b1);
   // The compiler types the function results before arithmetic.
   val float upper_loss = squared_loss(&plus, input, target);
   val float lower_loss = squared_loss(&minus, input, target);
@@ -45,14 +49,17 @@ pub routine main(): void {
     rt fail("integrated JVP mismatch");
   fi
 
-  // Every gradient comes from the SAME immutable state snapshot.
-  // The hidden-layer chain rule uses the shared affine VJP and NN ReLU.
+  // Compute every gradient from an immutable per-step NN parameter snapshot.
+  // Explicit scalar parameter locals avoid a mutable class-typed loop backedge.
   for let step = 0; step < 20; step++ do
-    val float preactivation = state.w0 * input + state.b0;
+    val TinyState snapshot = new TinyState(w0, b0, w1, b1);
+    val float preactivation = w0 * input + b0;
     val float hidden_activation = relu(preactivation);
     val Affine2Tape tape = new Affine2Tape(
-      hidden_activation, 0.0, state.w1, 0.0, state.b1, target
+      hidden_activation, 0.0, w1, 0.0, b1, target
     );
+    val float output = predict(&snapshot, input);
+    val float error = output - target;
     val float grad_w1 = vjp_weight0(&tape);
     val float grad_b1 = vjp_bias(&tape);
     let float grad_hidden = 0.0;
@@ -61,21 +68,25 @@ pub routine main(): void {
     fi
     val float grad_w0 = grad_hidden * input;
     val float grad_b0 = grad_hidden;
+    if error * error < 0.0; do rt fail("invalid NN loss"); fi
 
-    // Construct next state only after all gradients have been evaluated.
-    state = new TinyState(
-      update_scalar(state.w0, grad_w0, &policy),
-      update_scalar(state.b0, grad_b0, &policy),
-      update_scalar(state.w1, grad_w1, &policy),
-      update_scalar(state.b1, grad_b1, &policy)
-    );
+    // Calculate all next scalar parameters before committing the new generation.
+    val float next_w0 = update_scalar(w0, grad_w0, &policy);
+    val float next_b0 = update_scalar(b0, grad_b0, &policy);
+    val float next_w1 = update_scalar(w1, grad_w1, &policy);
+    val float next_b1 = update_scalar(b1, grad_b1, &policy);
+    w0 = next_w0;
+    b0 = next_b0;
+    w1 = next_w1;
+    b1 = next_b1;
   done
-  val float ending_loss = squared_loss(&state, input, target);
+  val TinyState final_state = new TinyState(w0, b0, w1, b1);
+  val float ending_loss = squared_loss(&final_state, input, target);
   if !(ending_loss >= 0.0 && ending_loss < 0.00001 && ending_loss < starting_loss); do
     rt fail("integrated training did not converge");
   fi
   // Held-out sample: fixed scalar rule y=3*x, not an optimization sample.
-  val float heldout_prediction = predict(&state, 3.0);
+  val float heldout_prediction = predict(&final_state, 3.0);
   val float heldout_delta = heldout_prediction - 9.0;
   val float heldout_loss = heldout_delta * heldout_delta;
   if !(heldout_loss >= 0.0 && heldout_loss < 1.0); do
