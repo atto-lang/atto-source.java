@@ -1580,6 +1580,29 @@ public final class ActorRuntime implements AutoCloseable {
         /** Bind a producer actor by verified runtime ID; never accept a guest token. */
         public synchronized void grantProducer(int slot, ActorId producer) {
             requireSupervisor();
+            bindProducer(slot, producer);
+        }
+
+        private void requireStructuredParentCaller() {
+            ActorCell<?> caller = currentActor.get();
+            if (caller == null || caller != owner.parent || caller.stopped.get()
+                    || caller.finalized || owner.stopped.get() || owner.finalized) {
+                throw new SecurityException(
+                        "only the active structured parent may delegate queue producers");
+            }
+        }
+
+        private synchronized void grantFromParent(int slot, ActorId producer) {
+            requireStructuredParentCaller();
+            bindProducer(slot, producer);
+        }
+
+        private synchronized void revokeFromParent(int slot) {
+            requireStructuredParentCaller();
+            unbindProducer(slot);
+        }
+
+        private void bindProducer(int slot, ActorId producer) {
             if (slot < 0 || slot >= producerGrants.length) {
                 throw new IllegalArgumentException("invalid queue producer slot");
             }
@@ -1605,6 +1628,10 @@ public final class ActorRuntime implements AutoCloseable {
         /** Revoke grants at the owning mailbox's single linearization point. */
         public synchronized void revokeProducer(int slot) {
             requireSupervisor();
+            unbindProducer(slot);
+        }
+
+        private void unbindProducer(int slot) {
             if (slot < 0 || slot >= producerGrants.length) {
                 throw new IllegalArgumentException("invalid queue producer slot");
             }
@@ -1671,14 +1698,66 @@ public final class ActorRuntime implements AutoCloseable {
                 || operation == QueueOperation.CANCEL;
         if (producerCommand ? producerSlot < 0 || producerSlot > 1
                 : producerSlot != -1) return false;
-        if (actor.queueAuthority == null) {
-            actor.queueAuthority = new QueueCommandAuthority(actor);
-        }
         try {
-            return actor.queueAuthority.permits(operation, producerSlot);
+            return authorityForChild(actor).permits(operation, producerSlot);
         } catch (SecurityException denial) {
             return false;
         }
+    }
+
+    private QueueCommandAuthority authorityForChild(ActorCell<?> actor) {
+        if (actor.parent == null) {
+            throw new SecurityException("root actor has no queue supervisor");
+        }
+        synchronized (actor) {
+            if (actor.queueAuthority == null) {
+                actor.queueAuthority = new QueueCommandAuthority(actor);
+            }
+            return actor.queueAuthority;
+        }
+    }
+
+    private ActorCell<?> requireCurrentQueueParent(ActorRef<?> queue) {
+        requireCallerRuntimeAffinity("delegate queue producer");
+        Objects.requireNonNull(queue, "queue actor");
+        if (!queue.ownedBy(this)) {
+            throw new SecurityException("queue actor belongs to another runtime");
+        }
+        ActorCell<?> parent = currentActor.get();
+        ActorCell<?> child = actors.get(queue.id());
+        if (parent == null || parent.stopped.get() || parent.finalized
+                || child == null || child.ref != queue || child.parent != parent
+                || child.stopped.get() || child.finalized) {
+            throw new SecurityException(
+                    "queue delegation requires a live direct structured child");
+        }
+        return child;
+    }
+
+    /**
+     * Out-of-band delegation: the actual spawning parent authorizes a live
+     * producer ActorRef, not an ActorId or guest-supplied integer identity.
+     * Grant/revoke and SEND authorization linearize on the same authority
+     * monitor. Requires a real executing parent actor, never host main.
+     */
+    public void grantCurrentQueueProducer(
+            ActorRef<?> queue, int slot, ActorRef<?> producer) {
+        Objects.requireNonNull(producer, "producer actor");
+        ActorCell<?> child = requireCurrentQueueParent(queue);
+        if (!producer.ownedBy(this)) {
+            throw new SecurityException("producer actor belongs to another runtime");
+        }
+        ActorCell<?> grantee = actors.get(producer.id());
+        if (grantee == null || grantee.ref != producer
+                || grantee.stopped.get() || grantee.finalized) {
+            throw new SecurityException("queue producer must be a live actor reference");
+        }
+        authorityForChild(child).grantFromParent(slot, producer.id());
+    }
+
+    public void revokeCurrentQueueProducer(ActorRef<?> queue, int slot) {
+        ActorCell<?> child = requireCurrentQueueParent(queue);
+        authorityForChild(child).revokeFromParent(slot);
     }
 
     public interface ActorContext<M> {
@@ -6788,10 +6867,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     @Override public Optional<QueueCommandAuthority> queueCommandAuthority() {
                         if (parent == null) return Optional.empty();
-                        if (queueAuthority == null) {
-                            queueAuthority = new QueueCommandAuthority(ActorCell.this);
-                        }
-                        return Optional.of(queueAuthority);
+                        return Optional.of(authorityForChild(ActorCell.this));
                     }
                     @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
                         return Optional.ofNullable(codeImage);
