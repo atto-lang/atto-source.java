@@ -3519,7 +3519,38 @@ public final class OwnershipChecker {
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             if (state != null) type = state.type;
-        } else if (receiver instanceof Ast.NewExpr created) type = created.type();
+        } else if (receiver instanceof Ast.NewExpr created) {
+            type = created.type();
+        } else if (receiver instanceof Ast.MemberExpr member) {
+            Ast.TypeRef base = receiverType(member.receiver(), scope);
+            if (base != null) {
+                Ast.ClassDecl klass = findClass(base.name());
+                if (klass != null) {
+                    ResolvedField field = findFieldTarget(
+                            klass, base, member.member(), new LinkedHashSet<>());
+                    if (field != null) {
+                        type = substituteType(ownershipFieldType(field.field()),
+                                genericBindings(field.owner().genericParameters(),
+                                        field.ownerType().arguments()));
+                    }
+                }
+            }
+        } else if (receiver instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef base = receiverType(indexed.receiver(), scope);
+            Object key = computedIndexConstant(indexed.index(), scope);
+            if (base != null && key instanceof String fieldName) {
+                Ast.ClassDecl klass = findClass(base.name());
+                if (klass != null) {
+                    ResolvedField field = findFieldTarget(
+                            klass, base, fieldName, new LinkedHashSet<>());
+                    if (field != null) {
+                        type = substituteType(ownershipFieldType(field.field()),
+                                genericBindings(field.owner().genericParameters(),
+                                        field.ownerType().arguments()));
+                    }
+                }
+            }
+        }
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         if (isMutexGuardType(type)) type = type.arguments().getFirst();
