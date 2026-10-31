@@ -57,6 +57,7 @@ final class DbDurableWalAuthority {
             try {
                 opened = DbDurableWalFile.openHostOnly(
                         trustedDirectory, basename, ownerGeneration);
+                grant.notePhysicalOpen(opened);
                 io.register(opened);
                 grant.bindPhysicalFile(opened);
                 return new DbDurableWalAuthority(

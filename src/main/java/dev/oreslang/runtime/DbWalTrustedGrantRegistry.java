@@ -36,6 +36,7 @@ final class DbWalTrustedGrantRegistry {
         private final int generation;
         private Phase phase = Phase.ACTIVE;
         private DbDurableWalFile boundFile;
+        private DbDurableWalFile openingFile;
 
         private Grant(DbWalTrustedGrantRegistry issuer,
                 ActorRuntime.ActorId actorId, Shard shard, int generation) {
@@ -71,6 +72,10 @@ final class DbWalTrustedGrantRegistry {
 
         void beginDrain(ActorRuntime expectedRuntime) {
             issuer.beginDrainForCurrentActor(this, expectedRuntime);
+        }
+
+        void notePhysicalOpen(DbDurableWalFile file) {
+            issuer.notePhysicalOpen(this, file);
         }
 
         void bindPhysicalFile(DbDurableWalFile file) {
@@ -138,7 +143,8 @@ final class DbWalTrustedGrantRegistry {
     synchronized void retireProvenNeverStartedOpen(Grant grant) {
         Objects.requireNonNull(grant);
         if (grant.issuer != this || owners.get(grant.shard) != grant
-                || grant.phase != Phase.OPENING || grant.boundFile != null)
+                || grant.phase != Phase.OPENING || grant.boundFile != null
+                || grant.openingFile != null)
             throw new IllegalStateException("WAL open cancellation not proven");
         grant.phase = Phase.RETIRED;
         owners.remove(grant.shard);
@@ -150,7 +156,7 @@ final class DbWalTrustedGrantRegistry {
         Objects.requireNonNull(physicalFile);
         if (grant.issuer != this || owners.get(grant.shard) != grant
                 || grant.phase != Phase.OPENING || grant.boundFile != null
-                || !physicalFile.closed())
+                || grant.openingFile != physicalFile || !physicalFile.closed())
             throw new IllegalStateException(
                     "WAL failed open needs verified physical file close");
         grant.phase = Phase.RETIRED;
@@ -179,6 +185,22 @@ final class DbWalTrustedGrantRegistry {
     }
 
     /**
+     * Host worker records the EXACT returned physical object before it
+     * registers that object with AsyncNativeIo. This prevents a fabricated
+     * unrelated closed file from retiring an in-progress opening reservation.
+     * If an exception occurs before recording, the grant remains fenced.
+     */
+    synchronized void notePhysicalOpen(Grant grant, DbDurableWalFile file) {
+        Objects.requireNonNull(grant);
+        Objects.requireNonNull(file);
+        if (sealed || grant.issuer != this || owners.get(grant.shard) != grant
+                || grant.phase != Phase.OPENING || grant.openingFile != null
+                || grant.boundFile != null || file.closed())
+            throw new SecurityException("WAL opening file identity mismatch");
+        grant.openingFile = file;
+    }
+
+    /**
      * Bind the exact physical WAL object once. An open that finishes after
      * drain/revocation cannot publish a usable grant. Never bind by pathname
      * or a guest-supplied file descriptor.
@@ -188,7 +210,7 @@ final class DbWalTrustedGrantRegistry {
         Objects.requireNonNull(file);
         if (sealed || grant.issuer != this || owners.get(grant.shard) != grant
                 || grant.phase != Phase.OPENING || grant.boundFile != null
-                || file.closed())
+                || grant.openingFile != file || file.closed())
             throw new SecurityException("WAL grant already bound, stale or draining");
         grant.boundFile = file;
         grant.phase = Phase.BOUND;

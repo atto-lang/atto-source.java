@@ -58,6 +58,15 @@ final class DbWalTrustedGrantRegistryTest {
             // returned successfully can be retired. A fabricated/lost file
             // cannot be used as an authority release receipt.
             var physical = DbDurableWalFile.openHostOnly(root, "retry.wal", 2);
+            var unrelated = DbDurableWalFile.openHostOnly(root, "unrelated.wal", 2);
+            second.get().notePhysicalOpen(physical);
+            assertThrows(SecurityException.class,
+                    () -> second.get().notePhysicalOpen(unrelated),
+                    "a second physical open must not acquire this grant");
+            unrelated.close();
+            assertThrows(IllegalStateException.class,
+                    () -> second.get().failedOpenAfterVerifiedClose(unrelated),
+                    "an unrelated closed file cannot retire the real opening");
             assertThrows(IllegalStateException.class,
                     () -> second.get().failedOpenAfterVerifiedClose(physical));
             assertEquals(1, registry.activeShardCount());
@@ -162,6 +171,7 @@ final class DbWalTrustedGrantRegistryTest {
             assertNull(firstError.get());
             assertNotNull(firstGrant.get());
             var firstWal = DbDurableWalFile.openHostOnly(root, "first.wal", 7);
+            firstGrant.get().notePhysicalOpen(firstWal);
             firstGrant.get().bindPhysicalFile(firstWal);
             assertThrows(SecurityException.class,
                     () -> firstGrant.get().bindPhysicalFile(firstWal),
@@ -216,6 +226,7 @@ final class DbWalTrustedGrantRegistryTest {
             assertNull(secondError.get());
             assertNotNull(secondGrant.get());
             var secondWal = DbDurableWalFile.openHostOnly(root, "second.wal", 8);
+            secondGrant.get().notePhysicalOpen(secondWal);
             secondGrant.get().bindPhysicalFile(secondWal);
             assertEquals(8, secondGrant.get().generation());
             assertEquals(1, registry.activeShardCount());
