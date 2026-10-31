@@ -198,7 +198,7 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
-    void concurrentPhysicalAdmissionCannotRacePastFreeze() throws Exception {
+    void physicalSubmitDoesNotHoldCoordinatorLockButPinsOldRoute() throws Exception {
         try (var gate = new ActorUpgradeEpochGate(46, image('a'));
              var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
              var authority = newAuthority(gate, mailbox);
@@ -211,28 +211,56 @@ final class ActorRoutePublicationV1Test {
                 entered.countDown();
                 try {
                     if (!release.await(5, TimeUnit.SECONDS))
-                        throw new AssertionError("test submit blocked too long");
+                        throw new AssertionError("test transport submit stalled");
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new AssertionError(e);
                 }
             }));
             assertTrue(entered.await(5, TimeUnit.SECONDS));
-            var staging = pool.submit(() -> authority.stage(image('b')));
             try {
-                assertThrows(java.util.concurrent.TimeoutException.class,
-                        () -> staging.get(50, TimeUnit.MILLISECONDS),
-                        "stage cannot freeze or publish inside a physical send");
+                // A second thread can inspect CONTROL while the physical
+                // transport callback is parked. No external callback is run
+                // under the coordinator lock.
+                var observer = pool.submit(authority::current);
+                assertEquals("old-physical",
+                        observer.get(2, TimeUnit.SECONDS).physicalRoute());
+                // No freeze, publication or retirement while send ownership
+                // is ambiguous. It must be retried after the submit returns.
+                assertThrows(IllegalStateException.class,
+                        () -> authority.stage(image('b')));
+                assertThrows(IllegalStateException.class, authority::close);
+                assertEquals(1, mailbox.snapshot().outstandingMessages());
             } finally {
                 release.countDown();
             }
             assertTrue(send.get(5, TimeUnit.SECONDS));
-            try (var stage = staging.get(5, TimeUnit.SECONDS)) {
+            try (var stage = authority.stage(image('b'))) {
                 assertFalse(stage.quiescent());
                 authority.complete(1);
                 assertTrue(stage.publish(state(2), "replacement"));
                 assertEquals(2, authority.current().routeEpoch());
             }
+        }
+    }
+
+    @Test
+    void ambiguousPhysicalSubmitPoisonsDataWithoutRefundOrReplay() {
+        try (var gate = new ActorUpgradeEpochGate(51, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            authority.admit(new byte[] {9});
+            assertThrows(IllegalStateException.class,
+                    () -> authority.dispatchNext((route, msg) -> {
+                        throw new IllegalStateException("delivery acceptance unknown");
+                    }));
+            assertEquals(1, mailbox.snapshot().outstandingMessages());
+            assertEquals(1, mailbox.snapshot().retainedMessages());
+            assertThrows(IllegalStateException.class, authority::current);
+            assertThrows(IllegalStateException.class,
+                    () -> authority.stage(image('b')));
+            assertThrows(IllegalStateException.class,
+                    () -> authority.dispatchNext((route, msg) -> fail("replay")));
         }
     }
 
