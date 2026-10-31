@@ -353,10 +353,10 @@ On `Connection.close()`, the logical ledger is revoked before physical
 socket closure; retained in-flight loans remain counted until the owning
 worker releases them. Logical revocation and a zero loan count do **not**
 assert that the underlying `AsyncNativeIo` resource/selector or actor
-continuation physically retired. The ledger currently has **no lifecycle
-subscription** from `ActorRef.done()`; therefore automated actor-stop
-physical socket wakeup, guest message routing, and cancellable owner
-handoff are not yet supported.
+continuation physically retired. A trusted `bindActor(OresContext, ActorRef)`
+now subscribes to `ActorRef.done()` and schedules host-only socket retirement
+when that exact owner is finalized. This does not yet constitute a guest
+message-routing or physical tenant-isolation proof.
 
 The authored `WebSocketActorConnectionLeaseTest` suite exercises foreign
 tenant/actor/generation, old handles after transfer, outstanding-loan
@@ -401,9 +401,9 @@ The CONTROL protocol responses have their own bounded host authority.
 Active receipt cancellation now atomically revokes actor ownership
 and requests a socket close via the bounded native-I/O CONTROL pool.
 It never calls `Socket.close()` on the actor that requests
-cancellation. If CONTROL admission fails, the already-running NIO
-writer retains its finite deadline and closes in its own `finally`.
-No physical-loan success is synthesized by this path.
+cancellation. If CONTROL admission fails, a one-shot, per-connection bounded host virtual
+thread attempts physical closure; the already-running NIO writer also has
+a finite deadline. No physical-loan success is synthesized by this path.
 
 Actor transfer rejects any outstanding read/write owner loan, pending
 writer, non-OPEN session, queued USER message, or partially assembled
@@ -417,10 +417,67 @@ queued cancellation vs active writer credits, and fragmented USER state.
 
 **Not yet verified:** tests are authored but no exact-head JDK25/Graal
 Maven/JUnit steps have executed. The package-private host APIs do not
-implement guest-language lowering, automatic actor-stop subscriptions,
-tenant/isolate membership proof, or native guest execution. Logical
+implement guest-language lowering, full tenant/IsolateVM membership proof,
+a native guest delivery scheduler, or native guest execution. Logical
 revocation and ownership lease release still do not prove the global
 `AsyncNativeIo` actor arena join receipt or socket-fd isolation.
+
+## Authenticated actor lifecycle and scheduler-side delivery (2026-10-31)
+
+The trusted supervisor entrypoint now accepts
+`Connection.bindActor(OresContext context, ActorRef actor)` and
+`transferActor(context, oldHandle, currentRef, nextRef)`, rather than
+accepting a user-provided tenant UUID as production authority. It checks
+that the exact OresContext owns the same AsyncNativeIo and the exact
+**live actor incarnation** in its ActorRuntime. It derives tenant scope
+from `context.contextId()` and rechecks scoped NET permissions. The
+context-scoped `readForActorAsync`, `sendTextForActorAsync`,
+`sendBinaryForActorAsync`, and `pollAndEnqueueForActor` overloads use
+the same validation. Address/UUID-taking methods remain only
+package-private *host test seams* and must not be exposed to guests.
+
+`ActorRuntime.isAlive(ActorRef)` now requires the exact current cell
+reference and actor generation rather than an ActorId lookup alone.
+`ActorRuntime.currentActorAddress()` reads the actual executing
+actor-cell identity on its current mailbox-turn carrier. It is empty
+outside a real actor turn or after actor retirement.
+
+The trusted binding subscribes to `ActorRef.done()`. A late termination
+callback fences only the ActorAddress it observed at binding; a successful
+transfer changes the generation so an old done() callback cannot retire
+its successor. Once the current actor completes, the callback immediately
+revokes logical handle authority and arranges physical socket close on a
+bounded native-I/O CONTROL worker, not on the actor/future-notification
+carrier. If CONTROL admission is full/closed, the one-shot fallback starts
+at most one host virtual close worker per accepted connection (listener
+maximum 16). Context/worker/native resource receipts are still
+**separate** from logical revocation.
+
+`Connection.dequeueForActor` now produces an opaque, one-shot
+`ActorDeliveryTicket`. The ticket retains an owner-generation loan and
+one of at most 16 connection-local ticket credits until the scheduler
+invokes `deliverOnActor` from the *actual* authenticated actor turn, or
+closes the ticket on cancellation/dispatch rejection. Transfer is denied
+while any delivery ticket remains pending. The ticket revalidates current
+actor runtime, ActorAddress generation, live ActorRef, and the immutable
+connection handle immediately before invoking its guest handler. Guest
+code does **not** run under the WebSocket lifecycle or ledger monitors.
+The existing `pollAndEnqueueForActor` helper remains host-only; the
+actual guest scheduler must use the bounded ticket protocol and must
+close every discarded ticket. No claim is made that the actor-language
+compiler is already wired to this interface.
+
+Added focused host tests for late old-owner termination callbacks,
+actor-stop closure of a pending NIO read, physical socket shutdown
+following current-owner done(), ticket-vs-transfer fencing, and forged
+off-actor delivery rejection. **Authored, not executed:** runner admission
+and JDK25/Graal test results remain separate gates.
+
+`OresContext.contextId()` is a **context-level scope identifier**, not
+a proof that this host implements the full multi-tenant IsolateVM or
+physical heap isolation contract. Higher-level tenant and isolate
+membership authorization still needs exact host/guest integration
+and independent security verification.
 
 ## Canonical ledger physical-retirement consolidation (draft, NOT_EXECUTED)
 
