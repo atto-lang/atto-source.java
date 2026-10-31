@@ -397,6 +397,15 @@ final class PackageNamespaceIndexTest {
                         Map.of(dotted.toString(), sourceText), Map.of()));
         assertTrue(dotDenied.getMessage().contains("absolute and canonical"),
                 dotDenied.getMessage());
+
+        // Path.of() collapses repeated separators; verify the original map
+        // string, not only the parsed Path, so it cannot invent an authority.
+        String repeated = provider.getParent() + "//file.ores";
+        SecurityException repeatedDenied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.load(List.of(owner),
+                        Map.of(repeated, sourceText), Map.of()));
+        assertTrue(repeatedDenied.getMessage().contains("absolute and canonical"),
+                repeatedDenied.getMessage());
     }
 
     @Test
