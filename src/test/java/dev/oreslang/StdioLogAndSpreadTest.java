@@ -54,8 +54,8 @@ final class StdioLogAndSpreadTest {
         var denied = IsolatePolicy.strictFaas()
                 .withoutCapabilities(IsolatePolicy.Capability.STDOUT);
         for (String expression : java.util.List.of(
-                "stdio.stdout.log_async(\\\"secret\\\")",
-                "stdio.stdout.logList_async(arr[\\\"secret\\\"])",
+                "stdio.stdout.log_async(\"secret\")",
+                "stdio.stdout.logList_async(arr[\"secret\"])",
                 "stdio.flush_async_logs()")) {
             var program = TypeChecker.check(Parser.parse(
                     "pub routine main():void{" + expression + ";return;}"));
