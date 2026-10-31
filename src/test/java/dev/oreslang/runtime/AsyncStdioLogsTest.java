@@ -161,6 +161,30 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void terminalFailureInOneContextCannotPoisonAnotherContextWriter() throws Exception {
+        Writer failed = new Writer() {
+            @Override public void write(char[] chars, int offset, int length) throws IOException {
+                throw new IOException("isolated sink failure");
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        ByteArrayOutputStream healthyBytes = new ByteArrayOutputStream();
+        AsyncStdioLogs bad = new AsyncStdioLogs(new PrintWriter(failed, true));
+        try (AsyncStdioLogs healthy = new AsyncStdioLogs(new PrintWriter(
+                new OutputStreamWriter(healthyBytes, StandardCharsets.UTF_8), true))) {
+            OresFuture<Void> failedRecord = bad.logAsync("bad\n");
+            assertThrows(ExecutionException.class, () -> failedRecord.get(2, TimeUnit.SECONDS));
+            healthy.logAsync("healthy\n").get(2, TimeUnit.SECONDS);
+            assertEquals("healthy\n", healthyBytes.toString(StandardCharsets.UTF_8));
+            assertThrows(IllegalStateException.class, bad::close);
+            healthy.logAsync("still-healthy\n").get(2, TimeUnit.SECONDS);
+            assertEquals("healthy\nstill-healthy\n",
+                    healthyBytes.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
     void blockedSinkCannotAccumulateUnboundedFlushBarriers() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -230,6 +254,9 @@ final class AsyncStdioLogsTest {
         } finally {
             release.countDown();
         }
+        // A recovered sink must let the quarantined caller retry the drain,
+        // rather than leaving the worker join permanently marked timed out.
+        logs.close();
 
         java.util.concurrent.atomic.AtomicBoolean flushed = new java.util.concurrent.atomic.AtomicBoolean();
         PrintWriter healthy = new PrintWriter(new java.io.StringWriter()) {
