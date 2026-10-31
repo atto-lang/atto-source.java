@@ -7,6 +7,7 @@ on:
       - 'stdlib/bigint.ores'
       - 'stdlib/decimal.ores'
       - 'contracts/v1/numeric-error-abi.json'
+      - 'contracts/v1/native-error-slot-v1.h'
       - 'ci/verify-native-numeric-source.sh'
       - '.github/workflows/native-numeric-source-provenance.yml'
   workflow_dispatch:
