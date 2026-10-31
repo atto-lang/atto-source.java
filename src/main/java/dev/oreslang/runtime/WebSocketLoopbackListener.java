@@ -175,6 +175,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             WebSocketRawUpgrade.upgrade(
                                     accepted, endpoint, allowedOrigins, limits);
                         }
+                        if (accepted.getChannel() == null
+                                || accepted.getChannel().isBlocking()) {
+                            throw new IOException(
+                                    "WebSocket listener requires an upgraded nonblocking channel");
+                        }
                         Connection connection = new Connection(accepted);
                         synchronized (lifecycleLock) {
                             if (closed.get()) {
