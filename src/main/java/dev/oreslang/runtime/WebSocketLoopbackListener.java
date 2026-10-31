@@ -282,13 +282,74 @@ final class WebSocketLoopbackListener implements AutoCloseable {
          * verified by the eventual guest bridge before calling this method.
          */
         WebSocketActorConnectionLease.Handle bindActor(
-                UUID authenticatedTenant, ActorRuntime.ActorRef<?> actor) {
-            Objects.requireNonNull(actor, "actor ref");
-            if (ActorRuntime.inActorExecution()) {
-                throw new SecurityException("WebSocket bind belongs to supervisor");
-            }
-            return bindActorHost(authenticatedTenant,
+                OresContext context, ActorRuntime.ActorRef<?> actor) {
+            requireContextActor(context, actor, "websocket.bind-actor");
+            var handle = bindActorHost(context.contextId(),
                     actor.address(), actor::isAlive);
+            watchHostActorDone(actor.done(), actor.address());
+            return handle;
+        }
+
+        /**
+         * A UUID and an ActorAddress are descriptions, not credentials.
+         * The sole production authority is a live ActorRef proven to belong
+         * to this exact OresContext's actor runtime and native-I/O owner.
+         */
+        private void requireContextActor(OresContext context,
+                ActorRuntime.ActorRef<?> actor, String operation) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket actor bridge requires trusted host");
+            }
+            Objects.requireNonNull(context, "OresContext authority");
+            Objects.requireNonNull(actor, "actor ref capability");
+            if (context.nativeIo() != nativeIo
+                    || !context.actors().isAlive(actor)) {
+                throw new SecurityException("foreign context or retired actor WebSocket authority");
+            }
+            context.requirePermission(RuntimePermissions.Permission.NET, endpoint, operation);
+        }
+
+        /**
+         * The observer's callback can run on an actor/notification carrier.
+         * Never execute a physical socket close or guest turn there.
+         */
+        void watchHostActorDone(OresFuture<Void> done,
+                ActorRuntime.ActorAddress boundOwner) {
+            Objects.requireNonNull(done, "actor termination receipt");
+            Objects.requireNonNull(boundOwner, "bound actor address");
+            done.whenCompleteRuntime((unused, failure) -> onActorRetired(boundOwner));
+        }
+
+        private void onActorRetired(ActorRuntime.ActorAddress expectedOwner) {
+            boolean claimed;
+            synchronized (lifecycleLock) {
+                claimed = actorOwnership != null
+                        && actorOwnership.revokeIfOwner(expectedOwner);
+                if (claimed) abortRequested.set(true);
+            }
+            if (claimed) scheduleHostClose();
+        }
+
+        private void scheduleHostClose() {
+            // CONTROL is a bounded host-only pool; the completion callback
+            // neither blocks an actor carrier nor settles physical loans.
+            OresFuture<Void> dispatched = nativeIo.submitControl(
+                    "websocket.actor-retire", () -> {
+                        close();
+                        return null;
+                    });
+            if (dispatched.isCompletedExceptionally()) {
+                // A refused CONTROL slot cannot strand an idle accepted peer.
+                // At most maxConnections (<=16) connections can reach this
+                // one-shot fallback for a listener. It runs host cleanup only.
+                try {
+                    Thread.ofVirtual().name("ores-ws-retire-").start(this::close);
+                } catch (RuntimeException | Error allocationFailure) {
+                    // Keep logical authority sealed, with native-I/O owner
+                    // retaining the socket for its eventual context sweep.
+                    // No physical completion is asserted here.
+                }
+            }
         }
 
         /** Package-private host test seam; never callable from guest values. */
@@ -335,12 +396,15 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         }
 
         WebSocketActorConnectionLease.Handle transferActor(
-                WebSocketActorConnectionLease.Handle oldHandle,
-                UUID authenticatedTenant, ActorRuntime.ActorAddress currentOwner,
+                OresContext context, WebSocketActorConnectionLease.Handle oldHandle,
+                ActorRuntime.ActorRef<?> currentOwner,
                 ActorRuntime.ActorRef<?> nextOwner) {
-            Objects.requireNonNull(nextOwner, "next actor");
-            return transferActorHost(oldHandle, authenticatedTenant,
-                    currentOwner, nextOwner.address(), nextOwner::isAlive);
+            requireContextActor(context, currentOwner, "websocket.transfer-from");
+            requireContextActor(context, nextOwner, "websocket.transfer-to");
+            var transferred = transferActorHost(oldHandle, context.contextId(),
+                    currentOwner.address(), nextOwner.address(), nextOwner::isAlive);
+            watchHostActorDone(nextOwner.done(), nextOwner.address());
+            return transferred;
         }
 
         /** Trusted host seam; transfer requires no unretired physical loans. */
