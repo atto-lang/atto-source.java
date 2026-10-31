@@ -244,7 +244,9 @@ public final class IncrementalCompiler {
                                         : linkedProviderFunctions(id, namespaceGraph));
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
-                        checked, linked.classes(), analysis.shortInferredAliases());
+                        checked, linked.classes(), analysis.shortInferredAliases(),
+                        namespaceGraph == null ? Map.of()
+                                : linkedProviderFunctions(id, namespaceGraph));
             } catch (IllegalArgumentException invalid) {
                 throw new IllegalArgumentException(
                         "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
