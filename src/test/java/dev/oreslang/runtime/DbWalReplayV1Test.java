@@ -61,5 +61,13 @@ final class DbWalReplayV1Test {
             assertThrows(SecurityException.class,()->DbWalReplayV1.scan(file,7,5));
             assertEquals(2,DbWalReplayV1.scan(file,7,4).records());
         }
+        // Recovery is exposed only through a locked trusted file owner, not
+        // a user-created guest handle. The new owner has generation 5 but
+        // validates the previous generation-4 single-segment WAL.
+        try (var owner = DbDurableWalFile.openHostOnly(root, "wal.odb", 5)) {
+            assertEquals(2, owner.scanRecovery(7, 4).records());
+            assertThrows(SecurityException.class, () -> owner.scanRecovery(8, 4));
+            assertThrows(SecurityException.class, () -> owner.scanRecovery(7, 5));
+        }
     }
 }
