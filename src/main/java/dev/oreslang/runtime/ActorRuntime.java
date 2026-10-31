@@ -2381,11 +2381,17 @@ public final class ActorRuntime implements AutoCloseable {
             // the admitted ticket, forging a second physical-loan settlement.
             try {
                 cell.schedule();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                // Fatal host failures are not recoverable scheduler rejections.
+                // Do not disguise them as a successful admission result.
+                throw fatal;
             } catch (RuntimeException | Error dispatchFailure) {
                 try {
                     cell.fail(dispatchFailure);
                 } catch (RuntimeException | Error cleanupFailure) {
-                    dispatchFailure.addSuppressed(cleanupFailure);
+                    if (cleanupFailure != dispatchFailure) {
+                        dispatchFailure.addSuppressed(cleanupFailure);
+                    }
                 }
             }
             return true;
