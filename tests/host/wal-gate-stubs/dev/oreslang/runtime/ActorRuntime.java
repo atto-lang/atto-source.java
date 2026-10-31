@@ -4,6 +4,10 @@ final class ActorRuntime {
     enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
     record ActorId(String value) { }
     static final class ActorRef<T> {
+        private static final java.util.concurrent.atomic.AtomicLong nextSlot =
+                new java.util.concurrent.atomic.AtomicLong(1);
+        private final long storageSlot = nextSlot.getAndIncrement();
+        long storageActorOrdinal() { return storageSlot; }
         private final ActorId id;
         private final long gen;
         private volatile boolean alive=true;
@@ -35,6 +39,7 @@ final class ActorRuntime {
         }
         ActorRuntime runtime(){return runtime;}
         ActorRef<?> actor(){return actor;}
+        long storageActorOrdinal(){return actor.storageActorOrdinal();}
         boolean actorStillAlive(){return actor.isAlive();}
         boolean validOnCurrentTurn(){
             Turn current=turn.get();

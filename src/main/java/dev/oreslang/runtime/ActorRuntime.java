@@ -218,16 +218,20 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorRuntime runtime;
         private final ActorRef<?> actor;
         private final Object executionDomain;
+        private final long storageActorOrdinal;
 
         private StorageActorProof(ActorRuntime runtime, ActorRef<?> actor,
-                                  Object executionDomain) {
+                                  Object executionDomain, long storageActorOrdinal) {
             this.runtime = runtime;
             this.actor = actor;
             this.executionDomain = executionDomain;
+            if (storageActorOrdinal <= 0) throw new IllegalArgumentException("invalid actor storage slot");
+            this.storageActorOrdinal = storageActorOrdinal;
         }
 
         ActorRuntime runtime() { return runtime; }
         ActorRef<?> actor() { return actor; }
+        long storageActorOrdinal() { return storageActorOrdinal; }
 
         boolean actorStillAlive() {
             ActorCell<?> cell = runtime.actors.get(actor.id());
@@ -270,7 +274,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = current.runtime().currentActor.get();
         if (cell == null) throw new SecurityException("WAL proof missing physical ActorCell");
         StorageActorProof proof = new StorageActorProof(
-                current.runtime(), cell.ref, cell.executionDomain);
+                current.runtime(), cell.ref, cell.executionDomain, cell.storageActorOrdinal);
         if (!proof.validOnCurrentTurn()) {
             throw new SecurityException("WAL proof requires an admitted live physical actor turn");
         }
@@ -540,6 +544,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
+    /** Stable *runtime-local* WAL actor slot, never a persistent database identity. */
+    private final AtomicLong nextStorageActorOrdinal = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
@@ -7587,6 +7593,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
+        private final long storageActorOrdinal;
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
@@ -7724,6 +7732,10 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
                 ActorCell<?> parent) {
+            this.storageActorOrdinal = nextStorageActorOrdinal.getAndIncrement();
+            if (storageActorOrdinal <= 0) {
+                throw new IllegalStateException("runtime WAL actor slot sequence exhausted");
+            }
             this.ref = ref;
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
