@@ -370,6 +370,65 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             ):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_blocking_p0_incidents_reject_old_comment_edited_after_closure(self):
+        # updated_at alone cannot prove a reviewer posted a fresh disposition.
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T03:59:00Z",
+                            "2026-10-30T04:07:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "disposition predates current closure"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_comment_created_at_exact_closure(self):
+        # Second-resolution timestamps cannot establish strict after-closure.
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T04:00:00Z",
+                            "2026-10-30T04:02:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "disposition predates current closure"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_accept_fresh_comment_edited_after_closure(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T04:05:00Z",
+                            "2026-10-30T04:07:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            ORIGINAL_REQUIRE_RESOLVED()
+
     def test_blocking_p0_incidents_reject_reviewer_identity_drift(self):
         with (
             patch.object(pub, "gh_api", side_effect=self.incident_api()),
