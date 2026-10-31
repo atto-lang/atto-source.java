@@ -80,7 +80,7 @@ public final class OresVM implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     // Preserve irreversible scheduler/discard-notification failures across
     // a subsequent physical-carrier shutdown retry.
-    private RuntimeException shutdownFailure;
+    private Throwable shutdownFailure;
 
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -320,15 +320,15 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (closed.compareAndSet(false, true)) {
                 startupState = StartupState.CLOSED;
-                RuntimeException permanentFailure = null;
+                Throwable permanentFailure = null;
                 try {
                     rootScheduler.close();
-                } catch (RuntimeException schedulerFailure) {
+                } catch (RuntimeException | Error schedulerFailure) {
                     permanentFailure = schedulerFailure;
                 }
                 try {
                     shutdownPhysicalStops();
-                } catch (RuntimeException discardFailure) {
+                } catch (RuntimeException | Error discardFailure) {
                     if (permanentFailure == null) permanentFailure = discardFailure;
                     else if (permanentFailure != discardFailure) {
                         permanentFailure.addSuppressed(discardFailure);
