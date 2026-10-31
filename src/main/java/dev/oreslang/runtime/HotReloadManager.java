@@ -261,6 +261,33 @@ public final class HotReloadManager implements AutoCloseable {
                 ? selected : null;
     }
 
+    /**
+     * Immutable serving-route observation with a physical operation lease.
+     * Transport clients must hold this lease through the entire synchronous
+     * call, completion, or explicit ownership transfer. Neither this lease
+     * nor successful initialization implies actor/async Task quiescence.
+     */
+    public static final class ServingOperation implements AutoCloseable {
+        private final Generation generation;
+        private final Generation.OperationLease pin;
+        private ServingOperation(Generation generation, Generation.OperationLease pin) {
+            this.generation = generation;
+            this.pin = pin;
+        }
+        public Generation generation() { return generation; }
+        @Override public void close() { pin.close(); }
+    }
+
+    /** Select the committed route and pin it in one monitor transaction. */
+    public synchronized ServingOperation pinServing(String codeUnitId) {
+        java.util.Objects.requireNonNull(codeUnitId, "codeUnitId");
+        Generation selected = serving(codeUnitId);
+        if (selected == null) {
+            throw new IllegalStateException("no initialized committed serving generation");
+        }
+        return new ServingOperation(selected, selected.pinOperation());
+    }
+
     public synchronized Map<String, Generation> activeGenerations() {
         return Map.copyOf(activeByCodeUnit);
     }
