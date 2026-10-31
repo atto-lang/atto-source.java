@@ -804,6 +804,38 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void rootProviderSameBytesReplacementChangesPhysicalFileIdentity() throws Exception {
+        Path project = temp.resolve("root-source-physical-replacement");
+        billing(project);
+        Path entry = project.resolve("src/billing/charge.ores");
+        PackageNamespaceWorkspace.Workspace snapshot =
+                PackageNamespaceWorkspace.discover(entry);
+        Path member = project.resolve("src/billing/refund.ores").toRealPath();
+        Object expectedKey = snapshot.providerFileKeys().get(member);
+        org.junit.jupiter.api.Assumptions.assumeTrue(expectedKey != null,
+                "filesystem does not supply stable file keys");
+
+        Map<String, String> admitted = new java.util.LinkedHashMap<>();
+        for (Path file : snapshot.files()) {
+            admitted.put(file.toRealPath().toString().replace('\\', '/'), Files.readString(file));
+        }
+        PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted);
+
+        Path copy = member.resolveSibling("refund-identical-copy.ores");
+        Files.write(copy, Files.readAllBytes(member));
+        Object copyKey = Files.readAttributes(copy,
+                java.nio.file.attribute.BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey();
+        org.junit.jupiter.api.Assumptions.assumeTrue(!expectedKey.equals(copyKey),
+                "filesystem does not distinguish same-byte replacement files");
+        Files.move(copy, member, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        assertEquals(admitted.get(member.toString().replace('\\', '/')), Files.readString(member));
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted));
+        assertTrue(denied.getMessage().contains("namespace provider file identity changed during admission"));
+    }
+
+    @Test
     void rootProviderSameByteSymlinkSwapAfterDiscoveryIsRejected() throws Exception {
         Path project = temp.resolve("root-source-symlink-swap");
         billing(project);
