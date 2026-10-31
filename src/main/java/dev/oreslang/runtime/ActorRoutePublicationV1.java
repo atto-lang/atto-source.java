@@ -457,10 +457,18 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             // The legacy callback may have returned while its actor turn is
             // still running. Never discard its retained mailbox envelope or
             // retire a pinned Task image merely because submit() returned.
-            if (mailbox.snapshot().outstandingMessages() != 0
+            // A queued-but-never-dispatched message is still an admitted
+            // obligation. Do not let AutoCloseable terminalize this logical
+            // actor and silently discard its FIFO payload or retained credits.
+            // An authorized durable transfer/cancellation path needs its own
+            // explicit proof; ordinary close() is DRAIN-ONLY.
+            var mail = mailbox.snapshot();
+            if (mail.retainedMessages() != 0
+                    || mail.queuedMessages() != 0
+                    || mail.outstandingMessages() != 0
                     || active.taskAdmission().livePins() != 0)
                 throw new IllegalStateException(
-                        "cannot retire logical route with live mail or Task execution");
+                        "cannot retire logical route with admitted mail or Task execution");
             if (!poisoned && pending != null)
                 throw new IllegalStateException(
                         "rollback or commit staged route before ordinary shutdown");
