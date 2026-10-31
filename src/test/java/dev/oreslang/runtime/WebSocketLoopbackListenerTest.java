@@ -159,6 +159,35 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void listenerCloseDuringPartialNioFrameFailsReadAndRevokesUserState()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var owned = accept.get(3, TimeUnit.SECONDS);
+                var reading = owned.readAsync();
+                // Header and mask arrive but the advertised payload never
+                // completes. Listener retirement must break the parked
+                // selector rather than retain a pending USER delivery.
+                client.getOutputStream().write(new byte[] {
+                    (byte) 0x81, (byte) 0x85, 1, 2, 3, 4, (byte) ('h' ^ 1)
+                });
+                client.getOutputStream().flush();
+                listener.close();
+                assertThrows(ExecutionException.class,
+                        () -> reading.get(3, TimeUnit.SECONDS));
+                assertEquals(0, listener.activeConnectionCount());
+                assertTrue(owned.pollUserMessage().isEmpty());
+                assertThrows(RuntimeException.class, owned::readAsync);
+            }
+        }
+    }
+
+    @Test
     void parentCloseUnblocksPendingAcceptAndNativeIoCanRetire() throws Exception {
         int port = unusedPort();
         try (var io = new AsyncNativeIo(2);
