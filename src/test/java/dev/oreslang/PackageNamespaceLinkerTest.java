@@ -123,6 +123,26 @@ final class PackageNamespaceLinkerTest {
     }
 
     @Test
+    void publicNamespaceBooleanScalarsAreTypedButNonScalarAbiStillRejects() {
+        Ast.Program accepted = Parser.parse(
+                "namespace c;\npub fnc enabled(bool flag): bool { return flag; }\n"
+                + "pub fnc gate(int value): bool { return value eq 43; }\n");
+        var result = link(Map.of("foo/src/api/gates.ores", accepted),
+                Map.of("foo/src/api/gates.ores", "foo@1"), Map.of());
+        assertEquals(Set.of("enabled", "gate"),
+                result.namespace("foo@1", "c").exports().stream()
+                        .map(PackageNamespaceLinker.Export::name).collect(Collectors.toSet()));
+
+        Ast.Program denied = Parser.parse(
+                "namespace c;\npub fnc unsupported(string value): int { return 1; }\n");
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> link(Map.of("foo/src/api/gates.ores", denied),
+                        Map.of("foo/src/api/gates.ores", "foo@1"), Map.of()));
+        assertTrue(rejected.getMessage().contains("unsupported public namespace callable"),
+                rejected.getMessage());
+    }
+
+    @Test
     void pinnedScalarNamespaceRejectsCheckedEffectsAndMutableParameters() {
         for (String declaration : List.of(
                 "pub fnc dangerous(int n): int throws Error { return n; }",
