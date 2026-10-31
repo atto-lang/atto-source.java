@@ -274,6 +274,16 @@ final class ActorInitReservedAdmissionTest {
     }
 
     @Test
+    void aggregateStateFieldsCannotSlipThroughScalarInitAbi() {
+        String source = ACTOR.replace("let int phase;", "let Option<int> phase;");
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("scalar-only state ABI"),
+                failure.getMessage());
+    }
+
+    @Test
     void ordinaryClassInitMethodIsNotReserved() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class Ordinary as
