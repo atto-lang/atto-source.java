@@ -4009,6 +4009,12 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void requireCallerRuntimeAffinity(String operation) {
         requireNoForceCancellationHookReentry(operation);
+        NativeIoAuthority nativeIo = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (nativeIo != null) {
+            throw new SecurityException(
+                    "native I/O authority cannot " + operation
+                            + "; I/O workers do not inherit actor/runtime coordination authority");
+        }
         ActorRuntime caller = currentActorRuntime();
         if (caller != null && caller != this) {
             throw new SecurityException(
@@ -4040,6 +4046,11 @@ public final class ActorRuntime implements AutoCloseable {
     private void requireSupervisorContext(String operation) {
         requireNoForceCancellationHookReentry(operation);
         requireNotActorGroupMailman(operation);
+        if (CURRENT_NATIVE_IO_AUTHORITY.get() != null) {
+            throw new SecurityException(
+                    "native I/O authority cannot " + operation
+                            + "; worker execution is not host/supervisor authority");
+        }
         if (inActorExecution()) {
             throw new SecurityException(
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
@@ -4047,7 +4058,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireBlockingHostContext(String operation) {
-        if (inActorExecution()
+        if (CURRENT_NATIVE_IO_AUTHORITY.get() != null
+                || inActorExecution()
                 || inActorGroupMailmanExecution()
                 || OresScheduler.current() != null) {
             throw new SecurityException(
