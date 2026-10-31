@@ -429,6 +429,38 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void supervisorCloseRacingActorFinalizationDoesNotDoubleRetireSocket()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var runtime = new ActorRuntime();
+             var listener = listen(io, port, 1)) {
+            var actor = runtime.<String>spawnPrivate(
+                    () -> (message, context) -> { });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                var claim = connection.claimActor(runtime, actor);
+                var stop = java.util.concurrent.CompletableFuture.runAsync(actor::stop);
+                var close = java.util.concurrent.CompletableFuture.runAsync(listener::close);
+                java.util.concurrent.CompletableFuture.allOf(stop, close)
+                        .get(5, TimeUnit.SECONDS);
+                actor.done().get(5, TimeUnit.SECONDS);
+                assertTrue(claim.revoked());
+                assertEquals(0, listener.activeConnectionCount());
+                assertEquals(-1, client.getInputStream().read());
+                connection.close(); // The permit was already returned once.
+                listener.close();
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.claimActor(runtime, actor));
+            }
+        }
+    }
+
+    @Test
     void peerCloseFrameIsSerializedAndRetiresThePhysicalConnection() throws Exception {
         int port = unusedPort();
         try (var io = new AsyncNativeIo(4);
