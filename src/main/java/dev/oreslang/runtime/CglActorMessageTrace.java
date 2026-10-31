@@ -1,7 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -18,8 +20,22 @@ public final class CglActorMessageTrace {
                            boolean sealed) {
         /** An expected admitted handler count is required for coverage. */
         public boolean hasCompleteCapture(long expectedHandlers) {
-            return expectedHandlers > 0 && sealed && dropped == 0 && invalid == 0
-                    && samples.size() == expectedHandlers;
+            if (expectedHandlers <= 0 || !sealed || dropped != 0 || invalid != 0
+                    || samples.size() != expectedHandlers) {
+                return false;
+            }
+            // Offline only: a duplicate ticket must not mask a missing
+            // handler even when observed and expected counts agree.
+            HashSet<Map.Entry<UUID, Long>> identities = new HashSet<>();
+            for (Sample sample : samples) {
+                if (sample.actorId() == null || sample.messageSequence() < 0
+                        || sample.exitNanos() < sample.enterNanos()
+                        || !identities.add(Map.entry(sample.actorId(),
+                                                    sample.messageSequence()))) {
+                    return false;
+                }
+            }
+            return true;
         }
     }
 
