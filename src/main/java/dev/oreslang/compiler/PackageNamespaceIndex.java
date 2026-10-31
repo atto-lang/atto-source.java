@@ -9,6 +9,7 @@ import org.tomlj.TomlTable;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -102,6 +103,16 @@ public final class PackageNamespaceIndex {
             if (!Files.isDirectory(root)) {
                 throw new IllegalArgumentException("package project root is not a directory: " + root);
             }
+            // The index is also callable without PackageNamespaceWorkspace.
+            // Never let a nested manifest (including a dangling symlink
+            // marker) silently reassign ownership anywhere between the
+            // manifest directory and its explicit project.root.
+            for (Path cursor = root; !cursor.equals(manifestDir); cursor = cursor.getParent()) {
+                if (Files.exists(cursor.resolve(".ores.pkg.toml"), LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IllegalArgumentException(
+                            "package project root crosses nested manifest boundary: " + cursor);
+                }
+            }
             Object packageObject = toml.get("packages");
             if (!(packageObject instanceof TomlTable packageTable) || packageTable.isEmpty()) {
                 throw new IllegalArgumentException("manifest must declare [packages.<key>].files");
@@ -133,7 +144,7 @@ public final class PackageNamespaceIndex {
                     // of a child source into an ancestor package's file list.
                     for (Path cursor = sourcePath.getParent(); cursor != null && !cursor.equals(root);
                          cursor = cursor.getParent()) {
-                        if (Files.isRegularFile(cursor.resolve(".ores.pkg.toml"))) {
+                        if (Files.exists(cursor.resolve(".ores.pkg.toml"), LinkOption.NOFOLLOW_LINKS)) {
                             throw new IllegalArgumentException(
                                     "package member crosses nested manifest boundary: " + sourcePath);
                         }
