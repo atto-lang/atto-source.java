@@ -100,3 +100,39 @@ parent dirsync, filesystem power-loss or commit ACK. Exact-head full
 Java/JUnit integration and runtime permissions must pass on an executing
 runner before promotion; local state-machine models are not a substitute.
 Command: `mvn -Dtest=DbWalAsyncAdmissionTest,DbWalAuthorityLifecycleTest,DbDurableWalFileTest test`.
+
+## Stage 1.3: context-issued shard grant registry (host-only)
+
+`OresContext` now owns exactly one `DbWalTrustedGrantRegistry`, sealed before
+context shutdown joins. The trusted issuer (not a guest message) must first
+authenticate the logical tenant, shard, actor, and desired generation. It may
+then issue an opaque, private-constructor, non-serializable grant within the
+current ActorRuntime turn. The registry reserves the tenant/shard for one
+physical actor identity and generation. A draining grant remains reserved
+until physical file close and native resource-loan release; an older
+incarnation or another actor cannot claim the same shard during that window.
+An independently created registry cannot authorize `openForActor` because
+the authority checks the grant's issuing registry against the exact
+`OresContext.dbWalGrants()` instance.
+
+`DbDurableWalAuthority.openForActor` now REQUIRES an issuing-context grant.
+Its append path verifies current actor, grant liveness, and exact generation
+before scheduling physical I/O. Revocation seals the shard grant before
+CONTROL close; the grant is retired only after the file/physical-loan
+retirement path. No guest can construct or transport this host-internal Java
+class through any explicitly published DB guest API, because such an API
+does not exist yet. The storage file's WAL frame tenant/shard/sequence and
+operation digest are NOT validated against the grant in this stage, and
+authorization of the tenant-to-actor mapping remains a prerequisite trusted
+host responsibility.
+
+Added `DbWalTrustedGrantRegistryTest` to check foreign actor denial,
+a second registry's rejection, duplicate shard issuance, blocked
+replacement during DRAINING, generation replacement only after trusted
+retirement, stale old-grant denial and registry seal. This is
+**source-authored host test evidence**, not an executed test or a security
+proof. Executable exact-head command:
+`mvn -Dtest=DbWalTrustedGrantRegistryTest,DbWalAsyncAdmissionTest,DbWalAuthorityLifecycleTest,DbDurableWalFileTest test`.
+A real runner must then validate actor context lifecycle, full Maven/Graal,
+native guest lowering, and filesystem fault/crash injection. No DB durable
+commit ACK is implemented.
