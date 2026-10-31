@@ -25,6 +25,63 @@ import java.util.function.BiConsumer;
 final class ActorRoutePublicationV1<R> implements AutoCloseable {
     private static final int MAX_CHECKPOINT_BYTES = 1024 * 1024;
 
+    /**
+     * A trusted asynchronous physical dispatcher. Returning from submit()
+     * means handoff finished, NOT that the actor turn or callback finished.
+     * The receipt MUST be acknowledged only after actual physical completion.
+     */
+    @FunctionalInterface
+    interface TrackedSubmit<R> {
+        void submit(R physicalRoute, LogicalActorProxyMailboxV1.Envelope envelope,
+                    PhysicalCompletion completion);
+    }
+
+    /**
+     * Opaque CONTROL-owned completion receipt for one physical message. The
+     * route reservation is released only when BOTH transport submission has
+     * returned and this receipt has been acknowledged. It cannot be closed
+     * implicitly, because that could misclassify dropped/ambiguous work.
+     */
+    final class PhysicalCompletion {
+        private final long sequence;
+        private boolean submitReturned;
+        private boolean acknowledged;
+        private boolean released;
+
+        private PhysicalCompletion(long sequence) { this.sequence = sequence; }
+        long messageSequence() { return sequence; }
+
+        void acknowledge() {
+            synchronized (lock) {
+                requireOperational();
+                if (acknowledged)
+                    throw new IllegalStateException("duplicate physical completion receipt");
+                // The mailbox's authenticated host completion path is the
+                // capacity/sequence commit. On failure preserve the reservation.
+                mailbox.complete(sequence);
+                acknowledged = true;
+                releaseIfCompleted();
+            }
+        }
+
+        private void returned() {
+            synchronized (lock) {
+                submitReturned = true;
+                releaseIfCompleted();
+            }
+        }
+
+        private void releaseIfCompleted() {
+            if (!submitReturned || !acknowledged || released) return;
+            if (physicalSubmissions <= 0) {
+                poisoned = true;
+                throw new IllegalStateException("physical submission accounting underflow");
+            }
+            --physicalSubmissions;
+            released = true;
+        }
+    }
+
     static final class StateSnapshot {
         private final String schemaSha256;
         private final byte[] bytes;
@@ -180,7 +237,8 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     private Stage pending;
     // Reservation is acquired under the coordinator lock, but the external
     // transport callback executes OUTSIDE it. Stage/teardown is forbidden
-    // until every in-flight physical submit returns or throws.
+    // until every in-flight physical submit returns or throws. Tracked async
+    // submissions stay pinned through the authenticated physical completion.
     private int physicalSubmissions;
     private boolean poisoned;
     private boolean closed;
@@ -298,7 +356,49 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         }
     }
 
-    /** Only authenticated old-route completion receipts may invoke this. */
+    /**
+     * Capture one dispatched envelope and hold a physical reservation until
+     * its trustworthy completion receipt AND return from submit(). Unlike the
+     * legacy synchronous adapter, an async queue handoff cannot end this pin.
+     * A failed submit may already have accepted the message: quarantine DATA,
+     * preserve the outstanding envelope, and never blindly replay/refund.
+     */
+    boolean dispatchNextTracked(TrackedSubmit<R> submit) {
+        Objects.requireNonNull(submit, "trusted tracked physical submit");
+        final LogicalActorProxyMailboxV1.Envelope envelope;
+        final R physicalRoute;
+        final PhysicalCompletion completion;
+        synchronized (lock) {
+            requireOperational();
+            if (pending != null) return false;
+            if (physicalSubmissions == Integer.MAX_VALUE)
+                throw new IllegalStateException("physical submit reservation budget exhausted");
+            envelope = mailbox.pollDispatch();
+            if (envelope == null) return false;
+            try {
+                completion = new PhysicalCompletion(envelope.messageSequence());
+            } catch (RuntimeException | Error allocationFailure) {
+                poisoned = true;
+                throw allocationFailure; // Envelope already dispatched; never replay.
+            }
+            ++physicalSubmissions;
+            physicalRoute = active.physicalRoute();
+        }
+        try {
+            submit.submit(physicalRoute, envelope, completion);
+            completion.returned();
+            return true;
+        } catch (RuntimeException | Error unknownDelivery) {
+            synchronized (lock) {
+                poisoned = true;
+            }
+            throw new IllegalStateException(
+                    "ambiguous asynchronous submit; logical DATA quarantined",
+                    unknownDelivery);
+        }
+    }
+
+    /** Legacy host-only completion; async transport MUST use its receipt. */
     void complete(long messageSequence) {
         synchronized (lock) {
             requireOperational();
@@ -339,6 +439,16 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             if (physicalSubmissions != 0)
                 throw new IllegalStateException(
                         "cannot retire logical route while physical submit is in flight");
+            // The legacy callback may have returned while its actor turn is
+            // still running. Never discard its retained mailbox envelope or
+            // retire a pinned Task image merely because submit() returned.
+            if (mailbox.snapshot().outstandingMessages() != 0
+                    || active.taskAdmission().livePins() != 0)
+                throw new IllegalStateException(
+                        "cannot retire logical route with live mail or Task execution");
+            if (!poisoned && pending != null)
+                throw new IllegalStateException(
+                        "rollback or commit staged route before ordinary shutdown");
             closed = true;
             active.taskAdmission().close();
             mailbox.close();
