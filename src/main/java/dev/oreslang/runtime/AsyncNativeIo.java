@@ -12,6 +12,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Context-owned host I/O. Never invokes guest code or parks an actor carrier.
@@ -43,8 +44,21 @@ public final class AsyncNativeIo implements AutoCloseable {
      * physical ownership edge, not a logical equals/hashCode relationship.
      * A non-null lease means this handle is actor-owned.
      */
-    private final Map<AutoCloseable, ActorRuntime.ActorPhysicalLease> resources =
+    private static final class ResourceRegistration {
+        final long generation;
+        final ActorRuntime.ActorPhysicalLease actorLease;
+
+        ResourceRegistration(
+                long generation,
+                ActorRuntime.ActorPhysicalLease actorLease) {
+            this.generation = generation;
+            this.actorLease = actorLease;
+        }
+    }
+
+    private final Map<AutoCloseable, ResourceRegistration> resources =
             new IdentityHashMap<>();
+    private final AtomicLong nextResourceGeneration = new AtomicLong();
 
     /** Parent lease restored on an I/O worker so nested work can fork safely. */
     private final ThreadLocal<ActorRuntime.ActorPhysicalLease>
@@ -288,7 +302,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                 // A worker that was admitted before shutdown may create a
                 // handle after closed=true. Retain it for the post-join sweep;
                 // its forked actor lease prevents arena retirement.
-                resources.put(resource, actorLease);
+                long generation = nextResourceGeneration.incrementAndGet();
+                if (generation <= 0) {
+                    if (actorLease != null) actorLease.fail(
+                            new IllegalStateException(
+                                    "native resource generation space exhausted"));
+                    throw new IllegalStateException(
+                            "native resource generation space exhausted");
+                }
+                resources.put(
+                        resource,
+                        new ResourceRegistration(generation, actorLease));
                 rejectAfterTracking = closed;
             }
         }
@@ -311,23 +335,26 @@ public final class AsyncNativeIo implements AutoCloseable {
      * context-owned until close() performs the physical close itself.
      */
     void unregister(AutoCloseable resource) {
-        ActorRuntime.ActorPhysicalLease actorLease;
+        ResourceRegistration registration;
         synchronized (this) {
-            actorLease = resources.get(resource);
-            if (actorLease == null) {
-                // Host-owned registrations carry no actor lease and preserve
-                // the historical transfer semantics.
-                resources.remove(resource);
-                return;
-            }
-            if (!(resource instanceof java.net.Socket socket)
-                    || !socket.isClosed()) {
+            registration = resources.get(resource);
+            if (registration == null) return;
+            if (registration.actorLease != null
+                    && (!(resource instanceof java.net.Socket socket)
+                            || !socket.isClosed())) {
                 throw new SecurityException(
                         "actor-owned native handle must be physically closed before unregister");
             }
+            // Remove only this exact registration generation.
+            if (resources.get(resource) != registration) {
+                throw new IllegalStateException(
+                        "stale native resource registration cannot retire current generation");
+            }
             resources.remove(resource);
         }
-        actorLease.retire();
+        if (registration.actorLease != null) {
+            registration.actorLease.retire();
+        }
     }
 
     /**
@@ -406,23 +433,30 @@ public final class AsyncNativeIo implements AutoCloseable {
         }
 
         Throwable closeFailure = null;
-        List<Map.Entry<AutoCloseable, ActorRuntime.ActorPhysicalLease>> closing;
+        List<Map.Entry<AutoCloseable, ResourceRegistration>> closing =
+                new ArrayList<>();
         synchronized (this) {
-            closing = List.copyOf(resources.entrySet());
+            for (Map.Entry<AutoCloseable, ResourceRegistration> entry
+                    : resources.entrySet()) {
+                closing.add(new java.util.AbstractMap.SimpleImmutableEntry<>(
+                        entry.getKey(), entry.getValue()));
+            }
         }
 
         try {
-            for (Map.Entry<AutoCloseable, ActorRuntime.ActorPhysicalLease> entry
+            for (Map.Entry<AutoCloseable, ResourceRegistration> entry
                     : closing) {
                 try {
                     entry.getKey().close();
-                    ActorRuntime.ActorPhysicalLease retired = null;
+                    ResourceRegistration retired = null;
                     synchronized (this) {
                         if (resources.get(entry.getKey()) == entry.getValue()) {
                             retired = resources.remove(entry.getKey());
                         }
                     }
-                    if (retired != null) retired.retire();
+                    if (retired != null && retired.actorLease != null) {
+                        retired.actorLease.retire();
+                    }
                 } catch (Exception | Error failure) {
                     // Physical close failure is retryable ownership, not a
                     // successful retirement and not receipt corruption. Keep
