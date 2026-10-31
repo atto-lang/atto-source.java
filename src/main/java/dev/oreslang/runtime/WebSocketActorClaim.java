@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * Internal, host-issued connection claim for exactly one live actor incarnation.
@@ -53,8 +54,25 @@ final class WebSocketActorClaim {
         return revoked.get() || !runtime.isLiveIncarnation(owner);
     }
 
-    boolean revoke() {
+    /**
+     * Revocation and bounded USER enqueue synchronize on the same gate.
+     * If revoke wins, the queued work is never admitted. If admission wins,
+     * the accepted write is subject to physical socket retirement, not an
+     * invented completion receipt. Never do network I/O under this monitor.
+     */
+    synchronized boolean revoke() {
         return revoked.compareAndSet(false, true);
+    }
+
+    /**
+     * Linearizable owner-checked admission. The supplied operation must
+     * reserve ONLY a bounded outbound queue slot; it must not block, schedule
+     * work, or execute an arbitrary guest callback.
+     */
+    synchronized <T> T admitOwnerTurn(Supplier<T> enqueue) {
+        Objects.requireNonNull(enqueue, "bounded outbound admission");
+        requireOwnerTurn();
+        return enqueue.get();
     }
 
     /**
