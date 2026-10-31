@@ -368,6 +368,8 @@ class AsyncNativeIoTest {
                                 () -> rejected.get().get(3, TimeUnit.SECONDS)).getCause());
                 assertEquals(2, io.outstandingActorOperations(actor.id()),
                         "only physically admitted/queued work may retain private actor state");
+                assertEquals(1L, secondEntered.getCount(),
+                        "queued second native I/O must not start while first worker is blocked");
                 actor.cancel();
                 assertFalse(actor.done().isDone(),
                         "executor rejection must not prematurely reclaim actor memory");
