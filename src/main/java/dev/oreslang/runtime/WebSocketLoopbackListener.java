@@ -307,8 +307,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 }
                 var ledger = WebSocketActorConnectionLease.bindHost(
                         authenticatedTenant, owner, ownerAlive);
+                // Liveness can change during issuance. Do not permanently
+                // mark the connection bound if issuance itself rejects.
+                var issued = ledger.issue();
                 actorOwnership = ledger;
-                return ledger.issue();
+                return issued;
             }
         }
 
