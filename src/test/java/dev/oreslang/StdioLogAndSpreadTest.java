@@ -59,7 +59,7 @@ final class StdioLogAndSpreadTest {
 
     @Test
     void detachedAsyncJsonlRecordsDrainOnCurrentMainContextClose() throws Exception {
-        assertEquals("{\\"v\\":1}\\n{\\"v\\":2}\\n", run("""
+        assertEquals("{\"v\":1}\n{\"v\":2}\n", run("""
                 pub routine main(): void {
                   stdio.stdout.log_async("{\\\"v\\\":1}");
                   stdio.stdout.log_async("{\\\"v\\\":2}");
@@ -70,7 +70,7 @@ final class StdioLogAndSpreadTest {
 
     @Test
     void awaitedAsyncFlushIsAnOrderedBarrier() throws Exception {
-        assertEquals("first\\nlast\\n", run("""
+        assertEquals("first\nlast\n", run("""
                 pub async routine main(): void {
                   stdio.stdout.log_async("first");
                   await stdio.flush_async_logs();
@@ -82,7 +82,7 @@ final class StdioLogAndSpreadTest {
 
     @Test
     void asyncSpreadAndListRenderIdentically() throws Exception {
-        assertEquals("A1B\\nA1B\\n", run("""
+        assertEquals("A1B\nA1B\n", run("""
                 pub routine main(): void {
                   val parts = arr["A", 1, "B"];
                   stdio.stdout.log_async(...parts);
