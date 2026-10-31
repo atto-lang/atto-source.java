@@ -61,10 +61,13 @@ final class PhysicalRetirementReceipt {
          * Ordinary successful physical retirement. Repeated calls are safe.
          */
         @Override
-        public void close() {
-            if (retired.compareAndSet(false, true)) {
-                owner.retire(this, null);
-            }
+        public synchronized void close() {
+            if (retired.get()) return;
+            // Mark retired only after issuer accounting succeeds. An invariant
+            // failure must remain retryable/quarantined rather than silently
+            // consuming the lease token.
+            owner.retire(this, null);
+            retired.set(true);
         }
 
         /**
@@ -72,11 +75,11 @@ final class PhysicalRetirementReceipt {
          * no longer executing, but the issuer is permanently failed and can
          * never mint a reclamation receipt.
          */
-        void fail(Throwable failure) {
+        synchronized void fail(Throwable failure) {
             Objects.requireNonNull(failure, "retirement failure");
-            if (retired.compareAndSet(false, true)) {
-                owner.retire(this, failure);
-            }
+            if (retired.get()) return;
+            owner.retire(this, failure);
+            retired.set(true);
         }
     }
 
