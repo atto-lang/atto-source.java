@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * root continuations without lazily creating runtime infrastructure.</p>
  */
 public final class OresVM implements AutoCloseable {
+    // Only runtime-owned physical STOP work sets this marker. A STOP job
+    // cannot await the termination of the executor carrying that same job.
+    private static final ThreadLocal<OresVM> PHYSICAL_STOP_OWNER = new ThreadLocal<>();
     private static final int DEFAULT_CONTROL_PARALLELISM =
             Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
@@ -271,7 +274,16 @@ public final class OresVM implements AutoCloseable {
             throw new RejectedExecutionException(
                     "Oreslang VM physical STOP executor is not available");
         }
-        physicalStopExecutor.execute(new PhysicalStopJob(work, neverStarted));
+        physicalStopExecutor.execute(new PhysicalStopJob(() -> {
+            OresVM previous = PHYSICAL_STOP_OWNER.get();
+            PHYSICAL_STOP_OWNER.set(this);
+            try {
+                work.run();
+            } finally {
+                if (previous == null) PHYSICAL_STOP_OWNER.remove();
+                else PHYSICAL_STOP_OWNER.set(previous);
+            }
+        }, neverStarted));
     }
 
     /**
@@ -313,7 +325,8 @@ public final class OresVM implements AutoCloseable {
         // before irrevocably sealing the VM admission state.
         if (OresScheduler.current() != null
                 || ActorRuntime.inActorExecution()
-                || ActorRuntime.inActorGroupMailmanExecution()) {
+                || ActorRuntime.inActorGroupMailmanExecution()
+                || PHYSICAL_STOP_OWNER.get() == this) {
             throw new IllegalStateException(
                     "OresVM must be closed outside actor, Mailman and scheduler turns");
         }
