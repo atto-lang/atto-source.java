@@ -434,10 +434,11 @@ public final class LinkedProgramRunner {
             admitted.put(code.unitId(), code.oresSource());
         }
         PackageNamespaceWorkspace.verifyPinnedSnapshot(workspace, admitted);
-        PackageNamespaceIndex index = PackageNamespaceIndex.load(
-                workspace.manifests(), admitted, workspace.aliases());
-        // Recheck the root policy after the index reopens its manifest.
-        PackageNamespaceWorkspace.verifyRootManifestSnapshot(workspace);
+        PackageNamespaceIndex index = PackageNamespaceIndex.loadFromSnapshots(
+                workspace.manifestSnapshots(), admitted, workspace.aliases());
+        // The index never reopens manifest content. Revalidate the source
+        // filesystem after linking to fail closed on persistent substitution.
+        PackageNamespaceWorkspace.verifyPinnedSnapshot(workspace, admitted);
         // A manifest-listed provider can import only another member of its
         // own exact package, compiler-owned core/std, or an explicit verified
         // namespace dependency. Without this check a pinned provider could
