@@ -183,6 +183,15 @@ public final class OresScheduler implements AutoCloseable {
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Host-runtime physical ownership probe. A terminal Future alone is not
+     * evidence of quiescence: TaskRunner stays in this set until its physical
+     * turn exits (including a cancelled or failed executing turn).
+     * The owning actor also has to prove its carrier and continuation lanes
+     * are idle before releasing a code generation.
+     */
+    boolean hasLivePhysicalTasks() { return !tasks.isEmpty(); }
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
