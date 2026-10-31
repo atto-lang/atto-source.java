@@ -1347,15 +1347,6 @@ public final class OwnershipChecker {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
-                    if (consuming && fieldKind == ValueKind.MOVE_ONLY) {
-                        // Ordinary by-value extraction is also a move. A
-                        // class field cannot be extracted by return, argument
-                        // or initializer while the containing owner remains
-                        // live without a verified partial-move ledger.
-                        throw error("E_MOVE_UNPROVEN: cannot extract move-only class field '"
-                                + target.owner().name() + "." + member.member()
-                                + "' without field invalidation; transfer the enclosing owner");
-                    }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
                 if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
@@ -1372,12 +1363,6 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (consuming && elementKind != ValueKind.COPY
-                    && classOfReceiver(indexed.receiver(), scope) != null
-                    && !isRootedAtActorSelf(indexed.receiver(), scope)) {
-                throw error("E_MOVE_UNPROVEN: indexed extraction of a move-only class field "
-                        + "requires field invalidation; transfer the enclosing owner");
-            }
             if (consuming && elementKind != ValueKind.COPY
                     && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
@@ -2875,7 +2860,7 @@ public final class OwnershipChecker {
 
         String name = source == null ? "<unknown>" : source.debugName;
         throw error("cannot return borrow rooted in '" + name
-                + "'; returned borrows must originate from an incoming borrowed parameter/receiver so they cannot outlive their owner");
+                + "'; returned borrows must originate from an incoming borrowed parameter/receiver so it cannot outlive its owner");
     }
 
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
