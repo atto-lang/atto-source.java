@@ -564,6 +564,111 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void realActorMailboxDeliversTicketOnceOnAuthenticatedActorTurn()
+            throws Exception {
+        var arrived = new java.util.concurrent.CountDownLatch(1);
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        try (var actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = actors.spawnPrivateTrusted(
+                    ctx -> (message, turn) -> { });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(tenant,
+                            actor.address(), actor::isAlive);
+                    sendMaskedText(client, "mailbox");
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, actor.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertTrue(conn.dispatchHostActorMessage(
+                            handle, tenant, actors, actor, frame -> {
+                                assertTrue(ActorRuntime.inActorExecution());
+                                assertEquals(actor.address(),
+                                        ActorRuntime.currentActorAddress().orElseThrow());
+                                assertArrayEquals("mailbox".getBytes(StandardCharsets.UTF_8),
+                                        frame.payload());
+                                delivered.incrementAndGet();
+                                arrived.countDown();
+                            }));
+                    assertTrue(arrived.await(3, TimeUnit.SECONDS));
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                    while (conn.pendingActorTicketCount() != 0
+                            && System.nanoTime() < deadline) Thread.sleep(10);
+                    assertEquals(0, conn.pendingActorTicketCount(),
+                            "actor mailbox envelope must return ticket after delivery");
+                    assertEquals(1, delivered.get());
+                    assertFalse(conn.dispatchHostActorMessage(
+                            handle, tenant, actors, actor,
+                            frame -> fail("unexpected duplicate WebSocket USER delivery")));
+                    conn.close();
+                }
+            }
+            actor.cancel();
+        }
+    }
+
+    @Test
+    void actorStopDrainsQueuedWebSocketTicketWithoutGuestDelivery() throws Exception {
+        var handlerEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseHandler = new java.util.concurrent.CountDownLatch(1);
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        try (var actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = actors.spawnPrivateTrusted(
+                    ctx -> (message, turn) -> {
+                        handlerEntered.countDown();
+                        if (!releaseHandler.await(3, TimeUnit.SECONDS)) {
+                            throw new AssertionError("test actor handler remained blocked");
+                        }
+                    });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            actor.send("block");
+            assertTrue(handlerEntered.await(3, TimeUnit.SECONDS));
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(tenant,
+                            actor.address(), actor::isAlive);
+                    conn.watchHostActorDone(actor.done(), actor.address());
+                    sendMaskedText(client, "discard");
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, actor.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertTrue(conn.dispatchHostActorMessage(
+                            handle, tenant, actors, actor,
+                            frame -> delivered.incrementAndGet()));
+                    assertEquals(1, conn.pendingActorTicketCount());
+                    assertTrue(actor.cancel());
+                    releaseHandler.countDown();
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                    while (conn.pendingActorTicketCount() != 0
+                            && System.nanoTime() < deadline) Thread.sleep(10);
+                    assertEquals(0, conn.pendingActorTicketCount(),
+                            "STOP must reclaim ticket even if queued continuation never ran");
+                    assertEquals(0, delivered.get(),
+                            "stopped actor cannot receive stale USER message");
+                    assertThrows(SecurityException.class,
+                            () -> conn.acquireActorLease(handle, tenant, actor.address()));
+                } finally {
+                    releaseHandler.countDown();
+                }
+            }
+        }
+    }
+
+    @Test
     void actorReadDeliveryAndWriteRequireHandleAndDrainBeforeTransfer()
             throws Exception {
         int port = unusedPort();

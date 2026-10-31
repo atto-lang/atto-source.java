@@ -1459,9 +1459,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
+            return continuation(continuation, null);
+        }
+
+        private static MessageEnvelope continuation(
+                Runnable continuation, Runnable onRetire) {
             return new MessageEnvelope(
                     null,
-                    null,
+                    onRetire,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
                     -1L);
@@ -2329,6 +2334,52 @@ public final class ActorRuntime implements AutoCloseable {
             return true;
         } finally {
             if (!admitted) cell.releaseMailboxSlot(true);
+        }
+    }
+
+    /**
+     * Trusted-host mailbox bridge for one already-authorized external event.
+     * Unlike guest send(), the event is an internal Runnable, never a guest
+     * message graph or a guest-callable capability. Every accepted envelope
+     * owns one terminal cleanup callback, called after its actor turn or when
+     * STOP drains it before execution. Admission failure leaves cleanup with
+     * the caller, who must retire the event exactly once.
+     *
+     * No callbacks run under mailbox or actor lifecycle locks during
+     * admission; the actor dispatcher executes the turn on its own carrier.
+     */
+    boolean enqueueHostActorDelivery(ActorRef<?> target,
+            Runnable deliverOnTurn, Runnable releaseOnRetire) {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(deliverOnTurn, "actor delivery");
+        Objects.requireNonNull(releaseOnRetire, "delivery retirement");
+        if (inActorExecution() || inActorGroupMailmanExecution()) {
+            throw new SecurityException(
+                    "host mailbox delivery cannot originate in guest/CONTROL actor execution");
+        }
+        if (closed.get() || !target.ownedBy(this)) return false;
+        ActorCell<?> cell = actors.get(target.id());
+        if (cell == null || cell.ref != target || cell.stopped.get()) return false;
+        if (!cell.reserveContinuationSlot()) return false;
+        boolean admitted = false;
+        try {
+            synchronized (cell.lifecycleLock) {
+                if (closed.get() || cell.stopped.get() || cell.finalized
+                        || cell.ref != target || actors.get(target.id()) != cell) {
+                    return false;
+                }
+                if (!cell.continuationMailbox.tryWrite(
+                        MessageEnvelope.continuation(deliverOnTurn, releaseOnRetire))) {
+                    return false;
+                }
+                admitted = true;
+            }
+            cell.schedule();
+            return true;
+        } finally {
+            if (!admitted) cell.releaseMailboxSlot(true);
+            // Once admitted, STOP/drain or the actor's try-with-resources
+            // closes this envelope. Caller must NOT close on admitted=true.
         }
     }
 

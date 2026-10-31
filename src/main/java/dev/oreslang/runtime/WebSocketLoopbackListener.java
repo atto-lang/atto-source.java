@@ -317,6 +317,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
 
         private Connection(Socket socket) { this.socket = socket; }
 
+        /** Host diagnostics; outstanding tickets are still actor lease owners. */
+        int pendingActorTicketCount() {
+            synchronized (lifecycleLock) { return pendingActorTickets; }
+        }
+
         /**
          * Trusted host/supervisor publication only. ActorRef supplies full
          * runtime identity and incarnation; tenant provenance MUST have been
@@ -777,7 +782,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             private final WebSocketActorConnectionLease.Handle handle;
             private final UUID tenant;
             private final ActorRuntime.ActorAddress recipient;
-            private final OresContext context;
+            private final ActorRuntime runtime;
             private final ActorRuntime.ActorRef<?> actor;
             private final AtomicBoolean settled = new AtomicBoolean();
 
@@ -785,13 +790,13 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     WebSocketActorConnectionLease.Loan ownerLoan,
                     WebSocketActorConnectionLease.Handle handle, UUID tenant,
                     ActorRuntime.ActorAddress recipient,
-                    OresContext context, ActorRuntime.ActorRef<?> actor) {
+                    ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) {
                 this.message = message;
                 this.ownerLoan = ownerLoan;
                 this.handle = handle;
                 this.tenant = tenant;
                 this.recipient = recipient;
-                this.context = context;
+                this.runtime = runtime;
                 this.actor = actor;
             }
 
@@ -801,10 +806,10 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     throw new IllegalStateException("WebSocket delivery ticket already settled");
                 }
                 try {
-                    if (context == null || actor == null
-                            || ActorRuntime.currentActorRuntime() != context.actors()
+                    if (runtime == null || actor == null
+                            || ActorRuntime.currentActorRuntime() != runtime
                             || !recipient.equals(ActorRuntime.currentActorAddress().orElse(null))
-                            || !context.actors().isAlive(actor)) {
+                            || !runtime.isAlive(actor)) {
                         throw new SecurityException(
                                 "WebSocket delivery requires authenticated actor mailbox turn");
                     }
@@ -838,7 +843,24 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 OresContext context, ActorRuntime.ActorRef<?> actor) {
             requireContextActor(context, actor, "websocket.dequeue");
             return dequeueActorTicket(handle, context.contextId(),
-                    actor.address(), context, actor);
+                    actor.address(), context.actors(), actor);
+        }
+
+        /**
+         * Test-only runtime proof: unlike a caller-supplied ActorAddress, the
+         * real ActorRef must be live in the selected actor scheduler. Production
+         * uses the OresContext-derived bridge above.
+         */
+        ActorDeliveryTicket dequeueHostActorTicket(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) {
+            Objects.requireNonNull(runtime, "test actor runtime");
+            Objects.requireNonNull(actor, "test ActorRef");
+            if (!runtime.isAlive(actor)) {
+                throw new SecurityException("foreign or stopped test actor reference");
+            }
+            return dequeueActorTicket(
+                    handle, tenant, actor.address(), runtime, actor);
         }
 
         /** Test seam with no actor-turn authority: tickets cannot deliver. */
@@ -850,7 +872,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
 
         private ActorDeliveryTicket dequeueActorTicket(
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
-                ActorRuntime.ActorAddress caller, OresContext context,
+                ActorRuntime.ActorAddress caller, ActorRuntime runtime,
                 ActorRuntime.ActorRef<?> actor) {
             if (ActorRuntime.inActorExecution()) {
                 throw new SecurityException("WebSocket dequeue requires host scheduler");
@@ -869,12 +891,74 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         return null;
                     }
                     var ticket = new ActorDeliveryTicket(next.orElseThrow(),
-                            loan, handle, tenant, caller, context, actor);
+                            loan, handle, tenant, caller, runtime, actor);
                     pendingActorTickets++;
                     return ticket;
                 } catch (RuntimeException | Error failure) {
                     loan.close();
                     throw failure;
+                }
+            }
+        }
+
+        /**
+         * Trusted supervisor dispatch into the REAL actor continuation lane.
+         * The mailbox owns the ticket after admission. STOP/drain and normal
+         * execution both invoke its idempotent close() from the envelope.
+         * On refusal, this method returns the ticket itself; no guest handler
+         * can run from the submitting host I/O worker.
+         */
+        boolean dispatchNextActorMessage(
+                WebSocketActorConnectionLease.Handle handle,
+                OresContext context, ActorRuntime.ActorRef<?> actor,
+                java.util.function.Consumer<WebSocketFrameCodec.Message> handler) {
+            Objects.requireNonNull(handler, "actor message handler");
+            requireContextActor(context, actor, "websocket.dispatch");
+            return dispatchActorMessage(handle, context.contextId(),
+                    context.actors(), actor, handler);
+        }
+
+        /** Host-only real-actor fixture with the same mailbox admission logic. */
+        boolean dispatchHostActorMessage(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<?> actor,
+                java.util.function.Consumer<WebSocketFrameCodec.Message> handler) {
+            return dispatchActorMessage(handle, tenant, runtime, actor, handler);
+        }
+
+        private boolean dispatchActorMessage(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<?> actor,
+                java.util.function.Consumer<WebSocketFrameCodec.Message> handler) {
+            Objects.requireNonNull(runtime, "actor runtime");
+            Objects.requireNonNull(actor, "actor");
+            Objects.requireNonNull(handler, "mailbox delivery handler");
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket dispatch must originate on host scheduler");
+            }
+            if (!runtime.isAlive(actor)) {
+                throw new SecurityException("actor mailbox target is foreign or retired");
+            }
+            ActorDeliveryTicket ticket = dequeueActorTicket(handle, tenant,
+                    actor.address(), runtime, actor);
+            if (ticket == null) return false;
+            boolean admitted = false;
+            try {
+                admitted = runtime.enqueueHostActorDelivery(actor,
+                        () -> ticket.deliverOnActor(handler), ticket::close);
+                return admitted;
+            } finally {
+                if (!admitted) {
+                    // The message has already left the protocol's USER queue.
+                    // A refused actor mailbox cannot silently drop it and
+                    // continue accepting new wire frames: fail closed.
+                    ticket.close();
+                    if (abortRequested.compareAndSet(false, true)) {
+                        synchronized (lifecycleLock) {
+                            if (actorOwnership != null) actorOwnership.revoke();
+                        }
+                        scheduleHostClose();
+                    }
                 }
             }
         }
