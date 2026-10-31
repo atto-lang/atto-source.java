@@ -426,6 +426,16 @@ public final class AsyncNativeIo implements AutoCloseable {
                 currentOwnerActor()));
     }
 
+    /**
+     * Did registration transfer physical resource ownership to this context?
+     * A shutdown racing registration can retain the resource for the deferred
+     * post-join sweep, but a fully retired context rejects without taking it.
+     * Callers must close a rejected resource only when this is false.
+     */
+    synchronized boolean ownsResource(AutoCloseable resource) {
+        return resourceLoans.containsKey(Objects.requireNonNull(resource));
+    }
+
     synchronized void unregister(AutoCloseable resource) {
         ResourceLeaseState state = resourceLoans.get(resource);
         if (state == null || state.unregistered) return;
