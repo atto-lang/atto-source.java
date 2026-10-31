@@ -80,6 +80,39 @@ final class WebSocketActorClaimTest {
     }
 
     @Test
+    void revocationRejectsEveryLaterOwnerTurnAdmission() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<WebSocketActorClaim> claim = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger admitted =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            CountDownLatch first = new CountDownLatch(1);
+            CountDownLatch second = new CountDownLatch(1);
+            var owner = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                try {
+                    claim.get().admitOwnerTurn(admitted::incrementAndGet);
+                } catch (Throwable caught) {
+                    failure.set(caught);
+                } finally {
+                    if (message.equals("before")) first.countDown();
+                    else second.countDown();
+                }
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            claim.set(WebSocketActorClaim.issue(runtime, owner));
+            owner.send("before");
+            assertTrue(first.await(5, TimeUnit.SECONDS));
+            assertEquals(1, admitted.get());
+            assertTrue(claim.get().revoke());
+            owner.send("after");
+            assertTrue(second.await(5, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, failure.get());
+            assertEquals(1, admitted.get(),
+                    "no USER admission may execute after claim revocation");
+        }
+    }
+
+    @Test
     void actorCannotIssueItsOwnClaimWithoutSupervisor() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicReference<ActorRuntime.ActorRef<String>> ownerRef = new AtomicReference<>();
