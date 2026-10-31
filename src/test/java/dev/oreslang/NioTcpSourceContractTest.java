@@ -26,7 +26,6 @@ final class NioTcpSourceContractTest {
                   await closing;
 
                   stdio.stdout.write(count);
-                  stdio.stdout.write(bytes.size());
                   return;
                 }
                 """;
