@@ -29,6 +29,7 @@ final class DbWalTrustedGrantRegistryTest {
             var firstError = new AtomicReference<Throwable>();
             var secondError = new AtomicReference<Throwable>();
             var issued = new CountDownLatch(1);
+            var unauthorizedTenantDenied = new CountDownLatch(1);
             var foreignRejected = new CountDownLatch(1);
             var duplicateRejected = new CountDownLatch(1);
             var drainingConflictRejected = new CountDownLatch(1);
@@ -48,12 +49,20 @@ final class DbWalTrustedGrantRegistryTest {
                         assertThrows(SecurityException.class,
                                 () -> firstGrant.get().requireLive(runtime));
                         oldGenerationDenied.countDown();
+                    } else if (message.equals("unauthorized_tenant")) {
+                        assertThrows(SecurityException.class,
+                                () -> registry.issueForCurrentActor(12, 4, 9));
+                        assertThrows(SecurityException.class,
+                                () -> new DbWalTrustedGrantRegistry(runtime)
+                                        .issueForCurrentActor(11, 3, 9));
+                        unauthorizedTenantDenied.countDown();
                     }
                 } catch (Throwable failure) {
                     firstError.compareAndSet(null, failure);
                     issued.countDown();
                     drained.countDown();
                     oldGenerationDenied.countDown();
+                    unauthorizedTenantDenied.countDown();
                 }
             });
             var second = runtime.<String>spawnShared(() -> (message, context) -> {
@@ -105,10 +114,9 @@ final class DbWalTrustedGrantRegistryTest {
                     new DbWalTrustedGrantRegistry(runtime)),
                     "another registry cannot be mistaken for the issuing context");
             assertEquals(1, registry.activeShardCount());
-            assertThrows(SecurityException.class,
-                    () -> new DbWalTrustedGrantRegistry(runtime)
-                            .issueForCurrentActor(11, 3, 9),
-                    "unauthenticated issuance outside actor must fail"); 
+            first.send("unauthorized_tenant");
+            assertTrue(unauthorizedTenantDenied.await(3, TimeUnit.SECONDS));
+            assertNull(firstError.get(), "untrusted tenant issuance must fail within actor turn");
             assertThrows(SecurityException.class,
                     () -> firstGrant.get().requireLive(runtime),
                     "a host thread outside the actor turn is not the grant owner");
