@@ -4721,8 +4721,9 @@ public final class OresEvalRootNode extends RootNode {
                             ownedField.field().visibility(), ownedField.owner(),
                             env.accessClass(), "field", ownedField.field().name());
                 }
+                Object fieldValue;
                 synchronized (object.fields) {
-                    Object fieldValue = object.fields.get(member.member());
+                    fieldValue = object.fields.get(member.member());
                     if (fieldValue == UNINITIALIZED_FIELD) {
                         throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                 + member.member() + "' is read before constructor initialization");
@@ -4731,9 +4732,10 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException("field '" + object.klass.name() + "."
                                 + member.member() + "' was already moved");
                     }
-                    if (fieldValue instanceof Invokable invokable) {
-                        return object.owner.invokableInvocation(invokable, args);
-                    }
+                }
+                // Never invoke guest code while holding the field-map lock.
+                if (fieldValue instanceof Invokable invokable) {
+                    return object.owner.invokableInvocation(invokable, args);
                 }
             }
 
