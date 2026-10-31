@@ -73,6 +73,34 @@ module/field access are **not yet qualified**. Do not misrepresent this
 subset as complete namespace support or LLVM/.NET/Wasm parity. The runtime
 and type-checker fail closed for unsupported calls.
 
+## Immutable manifest-to-linker authority
+
+`PackageNamespaceWorkspace.discover()` now captures strict-UTF-8 root and
+pinned-dependency manifest text from bounded, no-follow file reads. The
+workspace seals those strings in an immutable map, preserving the original
+root-manifest SHA-256 and exact dependency manifest/source pins.
+
+`LinkedProgramRunner` passes the captured map to
+`PackageNamespaceIndex.loadFromSnapshots()`. The index derives package
+instance ownership, namespace members and symbol routes exclusively from
+those captured manifest texts rather than reopening a manifest to decide
+ownership. The old `load(List<Path>, ...)` convenience API remains for
+standalone compiler tests but does not carry the runtime's source-admission
+provenance.
+
+Filesystem and source-content revalidation runs before and after index
+construction. An edit, package reassignment or same-byte symlink replacement
+must fail closed at those guards; a transient replace-and-revert race or
+hostile concurrent filesystem mutation is **not** proven impossible by hash
+checks alone. True race-free file identity across the entire read/compile
+lifecycle remains a separate descriptor-ownership hardening goal.
+
+Regression coverage includes immutable root/dependency owner mappings after
+on-disk edits, a negative root-manifest symlink swap, root-only alias
+authorization, malformed UTF-8, and manifest-byte budget enforcement.
+These are **committed but not executed** until exact-head CI can allocate a
+runner and report real test steps.
+
 ## Required exact-head qualification
 
 Run `NamespaceRuntimeIntegrationTest`,
