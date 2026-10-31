@@ -124,6 +124,29 @@ authorization, malformed UTF-8, and manifest-byte budget enforcement.
 These are **committed but not executed** until exact-head CI can allocate a
 runner and report real test steps.
 
+## Raw path identity before canonicalization
+
+The standalone `PackageNamespaceIndex.load()` entry point and
+`loadFromSnapshots()` now inspect the caller-supplied **unnormalized**
+manifest path component by component before accepting any canonical path.
+This rejects intermediate symlinks that would disappear from a lexical
+`alias/../.ores.pkg.toml` spelling, even where the normalized path would
+have pointed to a valid manifest.
+
+The public `LinkedProgramRunner.validate()` and `runWithExitStatus()`
+paths likewise discover package ownership using the original submitted
+entry path *before* source closure collection. Both compilation and
+execution use the same discovered immutable workspace instead of
+reopening discovery after losing the caller's original path spelling.
+Regression tests exercise both entry points with a readable target behind
+a symlink followed by `..`, plus direct/snapshot index negative cases.
+
+These admission checks detect symlink substitution at the points inspected,
+not a hostile replace-and-restore race during compilation. Standalone
+source-free OpenJDK 21 filesystem fixtures executed locally for two
+negative aliases and two valid paths; that is **not** project JDK 25,
+JUnit, GraalVM, or native execution proof.
+
 ## Required exact-head qualification
 
 Run `NamespaceRuntimeIntegrationTest`,
