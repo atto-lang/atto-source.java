@@ -282,6 +282,14 @@ independent review is complete.
 
 ## Selector cancellation and actor-handle ownership gate (2026-10-31)
 
+The native accept/read `OresFuture` currently rejects observer
+`cancel()` because its `AsyncNativeIo` physical operation has not yet
+retired. A new loopback test checks that `cancel(true)` does not falsely
+settle an accepted read and that listener close is the explicit physical
+revocation path. This is **not** an implementation of cancellable native
+read/accept operations: true actor-facing cancellation still needs an owned
+host cancellation arbiter and post-join receipts.
+
 The NIO bridge now removes stale selected keys after a readiness poll so a
 zero-byte read/write does not spin on a selected key from the previous poll.
 It also rejects a pre-interrupted worker **before** a channel read/write,
