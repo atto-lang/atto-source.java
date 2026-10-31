@@ -266,4 +266,28 @@ final class CopyPolicyCompilerTest {
                 () -> OresCompiler.parseAndTypeCheck(source));
         assertTrue(ex.getMessage().contains("E_COPY_FORBIDDEN"), ex.getMessage());
     }
+
+    @Test
+    void dynamicIndexedAccessCannotSelectProtectedClassFieldForCopy() {
+        String source = HEADER + """
+                fnc bad(Vault vault, String key): int {
+                  return rt copy vault[key];
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("E_COPY_FORBIDDEN"), ex.getMessage());
+    }
+
+    @Test
+    void protectedFieldCannotBeCopiedThroughConstantIndexedAccess() {
+        String source = HEADER + """
+                fnc bad(Vault vault): int {
+                  return rt copy vault["token"];
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("E_COPY_FORBIDDEN"), ex.getMessage());
+    }
 }
