@@ -293,6 +293,7 @@ public final class AsyncNativeIo implements AutoCloseable {
 
         boolean rejectAfterTracking = false;
         boolean rejectWithoutTracking = false;
+        boolean generationExhausted = false;
         synchronized (this) {
             if (resources.containsKey(resource)) {
                 rejectWithoutTracking = true;
@@ -304,23 +305,23 @@ public final class AsyncNativeIo implements AutoCloseable {
                 // its forked actor lease prevents arena retirement.
                 long generation = nextResourceGeneration.incrementAndGet();
                 if (generation <= 0) {
-                    if (actorLease != null) actorLease.fail(
-                            new IllegalStateException(
-                                    "native resource generation space exhausted"));
-                    throw new IllegalStateException(
-                            "native resource generation space exhausted");
+                    rejectWithoutTracking = true;
+                    generationExhausted = true;
+                } else {
+                    resources.put(
+                            resource,
+                            new ResourceRegistration(generation, actorLease));
+                    rejectAfterTracking = closed;
                 }
-                resources.put(
-                        resource,
-                        new ResourceRegistration(generation, actorLease));
-                rejectAfterTracking = closed;
             }
         }
 
         if (rejectWithoutTracking) {
             if (actorLease != null) actorLease.retire();
             throw new IllegalStateException(
-                    "native resource registration raced duplicate/retired state");
+                    generationExhausted
+                            ? "native resource generation space exhausted"
+                            : "native resource registration raced duplicate/retired state");
         }
         if (rejectAfterTracking) {
             throw new IllegalStateException(
