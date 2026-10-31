@@ -140,6 +140,19 @@ final class EditorLexicalParserAdmissionTest {
     }
 
     @Test
+    void bmpUnicodeLetterIdentifiersDoNotSplitIntoReservedWordTokens() {
+        for (String name : List.of(
+                "éreturn", "returné", "中eq", "eq中",
+                "πpanic", "panicπ", "αgpu", "gpuα",
+                "éreturn_suffix", "return_中")) {
+            assertEquals(List.of(IDENT, EOF), types(name),
+                    "BMP Unicode letter identifier: " + name);
+            assertEquals(List.of(IDENT, RETURN, EOF), types(name + " return"),
+                    "a separate reserved word must still be recognized: " + name);
+        }
+    }
+
+    @Test
     void contextualIdentifierLexingDoesNotInventFutureKeywords() {
         for (String identifier : List.of("owned", "borrow", "pipe", "read", "write", "transform")) {
             // Compound forms are recognized only in parser context.
