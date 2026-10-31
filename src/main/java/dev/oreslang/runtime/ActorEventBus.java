@@ -157,6 +157,9 @@ public final class ActorEventBus implements AutoCloseable {
     private final Map<String, DoubleReductionState> doubleReductions = new ConcurrentHashMap<>();
     private final Object definitionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // A formerly single-topic subscription may now fan out into several
+    // publisher-scoped leases. Bound this new multiplicative allocation path.
+    private static final int MAX_SUBSCRIPTIONS_PER_OBSERVER_TOPIC = 64;
 
     ActorEventBus(ActorRuntime runtime, ActorRuntime.ActorGroup group) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -310,6 +313,17 @@ public final class ActorEventBus implements AutoCloseable {
                     continue;
                 }
 
+                // Existing leases are idempotent; only NEW scopes consume
+                // the observer's finite per-topic subscription budget.
+                int limit = Math.min(actorLimit, MAX_SUBSCRIPTIONS_PER_OBSERVER_TOPIC);
+                long owned = topic.subscriptions.keySet().stream()
+                        .filter(existingKey -> existingKey.subscriber().equals(subscriber))
+                        .count();
+                if (owned >= limit) {
+                    throw new IllegalStateException(
+                            "ActorGroup event subscription limit exceeded for observer "
+                                    + subscriber + ": " + limit);
+                }
                 Subscription<T> created =
                         new Subscription<>(topic, key, capacity);
                 Subscription<?> raced =
