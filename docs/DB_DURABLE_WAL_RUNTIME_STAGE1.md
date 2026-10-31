@@ -1,7 +1,7 @@
 # Native DB durable WAL: Java/GraalVM physical host substrate
 
-**Status:** host-only file primitive; no guest ABI, authenticated actor
-authority, async scheduler integration, commit ACK or database engine.
+**Status:** host-only file primitive and internal actor-affine async adapter; no guest ABI, authenticated tenant/shard registry, or
+commit ACK or database engine.
 
 `DbDurableWalFile` is package-private and intentionally not exported through
 Java interop. The runtime must separately authenticate actor/context/tenant,
@@ -30,6 +30,19 @@ Test: `mvn -Dtest=DbDurableWalFileTest test`. Host-only local isolated
 and symlink denial, but GitHub exact-head Maven/Graal/guest execution is
 **NOT_EXECUTED** until a real admitted runner executes test steps.
 No cross-organization mirror, merge or release was performed.
+
+The additional package-private `DbDurableWalAuthority` now checks the
+currently executing owning ActorRuntime and ActorId, requires scoped
+READ+WRITE permission on the trusted file path, schedules open/append+force
+via bounded context-owned `AsyncNativeIo`, and uses the existing physical
+resource loan registry around a detached copy of frame bytes. Revocation
+uses the CONTROL admission lane and seals concurrent operations. If queued
+work is discarded or its outcome is unknown, the gate fails closed until
+trusted recovery. Neither the host class nor its receipt is exported to
+Oreslang guest code. Tenant/shard authorization, capability registry
+generation validation, and durable ACK remain separately required. This
+adapter has NOT run against the complete exact-head Maven project; a
+local isolated compile using narrow API stubs only checks Java syntax.
 
 Next: trusted context-owned capability/handle registry with authenticated
 incarnation and storage authority; AsyncNativeIo submission/physical loans;
