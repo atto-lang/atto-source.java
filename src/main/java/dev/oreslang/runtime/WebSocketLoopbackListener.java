@@ -77,7 +77,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (closed.get()) return;
             for (Connection connection : activeConnections) {
                 WebSocketActorClaim claim = connection.actorClaim;
-                if (claim != null && claim.revoked()) {
+                if (connection.abortRequested.get()
+                        || (claim != null && claim.revoked())) {
                     if (candidates == null) candidates = new ArrayList<>(2);
                     candidates.add(connection);
                 }
@@ -334,16 +335,42 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         private final AtomicBoolean reading = new AtomicBoolean();
         private final AtomicBoolean writerActive = new AtomicBoolean();
         private final AtomicBoolean retired = new AtomicBoolean();
+        private final AtomicBoolean closureComplete = new AtomicBoolean();
+        private final AtomicBoolean abortRequested = new AtomicBoolean();
         // Set once by a host supervisor. No guest socket or actor-ref escape.
         private volatile WebSocketActorClaim actorClaim;
         private final WebSocketOutboundGate outbound =
                 new WebSocketOutboundGate(maxFrameBytes, 16,
-                        maxFrameBytes * 16, 4, this::close);
+                        maxFrameBytes * 16, 4, this::requestRetirement);
 
         private Connection(Socket socket) { this.socket = socket; }
 
-        /** Host-side retirement state; no raw Socket or OS handle escapes. */
-        boolean isRetired() { return retired.get(); }
+        /** Actor-safe, atomic logical retirement signal, no I/O locks. */
+        boolean isRetired() { return retired.get() || abortRequested.get(); }
+
+        /**
+         * Host-only gate for reusing an opaque handle slot. Socket.close()
+         * initiation is insufficient: both listener-permit cleanup and all
+         * native resource loans must have physically retired.
+         */
+        boolean isFullyRetired() {
+            if (ActorRuntime.inActorExecution() || ActorRuntime.isActorCarrierThread()) {
+                throw new SecurityException("physical retirement proof is host-only");
+            }
+            return closureComplete.get() && socket.isClosed()
+                    && !nativeIo.ownsResource(socket);
+        }
+
+        /**
+         * Active Future cancellation can occur on an actor carrier. Request
+         * abort atomically and let the shared host retirement lane perform
+         * physical close, never do kernel I/O inside a Future callback.
+         */
+        private void requestRetirement() {
+            abortRequested.set(true);
+            WebSocketActorClaim claim = actorClaim;
+            if (claim != null) claim.revoke();
+        }
 
         /**
          * One-time supervisor transfer from an accepted host connection to a
@@ -455,7 +482,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             // The claim gate and revoke share one monitor. No USER enqueue
             // can slip between checking this actor turn and revocation.
             java.util.function.Supplier<WebSocketOutboundGate.Write> enqueue = () -> {
-                if (retired.get() || protocol.state() != WebSocketSessionState.State.OPEN) {
+                if (retired.get() || abortRequested.get()
+                        || protocol.state() != WebSocketSessionState.State.OPEN) {
                     throw new RejectedExecutionException("WebSocket is closing or retired");
                 }
                 return outbound.enqueueUser(opcode, payload);
@@ -544,6 +572,10 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             activeConnections.remove(this);
                         }
                         connections.release();
+                        // No permit is released twice. Native-I/O ownership
+                        // may nevertheless remain until active loans exit;
+                        // isFullyRetired() checks both facts before reuse.
+                        closureComplete.set(true);
                     }
                 }
             }
