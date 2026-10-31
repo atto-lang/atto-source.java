@@ -10,6 +10,7 @@ on:
       - src/main/java/dev/oreslang/runtime/WebSocketOpeningRequest.java
       - src/main/java/dev/oreslang/runtime/WebSocketSessionState.java
       - src/main/java/dev/oreslang/runtime/WebSocketRawUpgrade.java
+      - src/main/java/dev/oreslang/runtime/WebSocketSocketDeadlineInput.java
       - src/main/java/dev/oreslang/runtime/WebSocketLoopbackListener.java
       - src/test/java/dev/oreslang/runtime/AsyncNativeIoTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketFrameCodecTest.java
