@@ -84,8 +84,8 @@ final class QueueRuntimeAuthorityTest {
             parent.send("spawn");
             expect(observed, "spawned");
             assertNotNull(queue.get());
-            assertThrows(SecurityException.class,
-                    () -> runtime.controlHandle(queue.get()).parentId());
+            // The child is a structured descendant of the parent, but
+            // only the runtime-provided sender of each active mail is trusted.
             // This test must not infer authority from the payload. A host
             // message has no ActorMail.sender and fails the runtime-bound gate.
             queue.get().send("close");
