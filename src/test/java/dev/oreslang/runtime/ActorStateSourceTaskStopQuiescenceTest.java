@@ -23,6 +23,17 @@ final class ActorStateSourceTaskStopQuiescenceTest {
     @Test
     void cancellationJoinsSourceCleanupAndStateLoanBeforePrivateArenaCloses()
             throws Exception {
+        assertCancellationWaitsForBothPhysicalOwners(true);
+    }
+
+    @Test
+    void cancellationRetainsArenaWhenSourceCleanupFinishesBeforeStateLoan()
+            throws Exception {
+        assertCancellationWaitsForBothPhysicalOwners(false);
+    }
+
+    private void assertCancellationWaitsForBothPhysicalOwners(boolean releaseLoanFirst)
+            throws Exception {
         CountDownLatch firstAwait = new CountDownLatch(1);
         CountDownLatch cleanupAwait = new CountDownLatch(1);
         CountDownLatch cleanupDone = new CountDownLatch(1);
@@ -105,13 +116,29 @@ final class ActorStateSourceTaskStopQuiescenceTest {
                 assertFalse(actor.done().isDone());
                 assertFalse(region.physicallyRetired());
 
-                // Free the state region while a separate source cleanup task
-                // remains suspended. Neither alone is a DONE/memory receipt.
-                loan.close();
-                assertTrue(region.physicallyRetired());
-                assertFalse(arena.closed(),
-                        "arena freed after state loan despite active cleanup SourceTask");
-                assertFalse(actor.done().isDone());
+                if (releaseLoanFirst) {
+                    // Physical state-loan retirement alone is not enough:
+                    // the source Task is still suspended in cancellation cleanup.
+                    loan.close();
+                    assertTrue(region.physicallyRetired());
+                    assertFalse(arena.closed(),
+                            "arena freed after state loan despite active cleanup SourceTask");
+                    assertFalse(actor.done().isDone());
+                } else {
+                    // Reverse release order: cleanup resumes while the
+                    // generation-fenced state loan still pins the actor region.
+                    cleanupIo.completeFromRuntime(null);
+                    assertTrue(cleanupDone.await(10, TimeUnit.SECONDS),
+                            "source cleanup did not resume before state loan release");
+                    assertFalse(region.physicallyRetired(),
+                            "state region retired with outstanding physical loan");
+                    assertFalse(arena.closed(),
+                            "arena freed after source cleanup despite active state loan");
+                    assertFalse(actor.done().isDone(),
+                            "actor DONE published while state loan was outstanding");
+                    loan.close();
+                    assertTrue(region.physicallyRetired());
+                }
             } finally {
                 loan.close();
                 cleanupIo.completeFromRuntime(null);
