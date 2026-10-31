@@ -54,6 +54,29 @@ This region does **not** provide concurrent read leases or general actor
 state access semantics. Synchronized scalar access is correct for the tested
 host API but is not a hard-real-time or non-parking guarantee.
 
+## Optional physical-turn integration
+
+`ActorPhysicalTurnGate.dispatchPinned(region, task, submit, reject)` is a
+package-internal, **opt-in** bridge, not yet wired into every actor, source
+Task, I/O completion or FFI adapter. It acquires a lifetime pin BEFORE
+submitting/queueing a turn. Rejected/closed/queued turns release exactly once;
+a started physical turn retains its pin until the Runnable returns through
+its synchronous TurnExecutor boundary. The separate per-ticket start claim
+serializes with `beginRetire()`: a queued task cannot enter guest execution
+if STOP won that admission race, even though it acquired a pin earlier.
+
+Adversarial path: an executor may start an asynchronous physical turn and THEN
+throw from its own submission callback. The submitting thread must **not**
+release the started turn's pin; the actual task completion owns release.
+The adapter records start separately from exactly-once completion and tests
+this race. A rejected but already queued runnable is inert on late replay.
+
+The bridge's host wrapper allocates Runnable/Pending/AtomicBoolean objects;
+zero per-mutation allocations apply to primitive region methods only, NOT
+per-dispatch scheduler cost. It does not establish cross-carrier guest
+execution provenance, hard-real-time nonparking scheduling, or authoritative
+source compiler borrow checks.
+
 ## Evidence/limits
 
 - Local JDK 21, exact Git-blob-equivalent `ReusableLongStateRegion.java`
