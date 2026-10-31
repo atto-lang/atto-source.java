@@ -250,11 +250,13 @@ public final class ActorEventBus implements AutoCloseable {
      * host/runtime substrate for ObservableActor, not its source-level grant
      * API. Group membership is required for both parties; source-level
      * observation grants must be checked by the eventual frontend adapter.
+     * This method is intentionally PACKAGE-PRIVATE until that nonforgeable
+     * grant boundary exists. A public ActorRef is not publisher authorization.
      *
      * Unlike a topic-wide subscription, an event from a different publisher
      * never consumes this subscription's quota or pending writes.
      */
-    public <T> Subscription<T> subscribePublisher(
+    <T> Subscription<T> subscribePublisher(
             String name, ActorRuntime.ActorRef<?> publisher) {
         Objects.requireNonNull(publisher, "publisher");
         requireOpen();
