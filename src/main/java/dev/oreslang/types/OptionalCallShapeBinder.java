@@ -117,7 +117,32 @@ public final class OptionalCallShapeBinder {
     }
 
     /**
-     * The primitive-literal-only first integration step. Never reorder
+     * Candidate parser admission for direct local named calls. The actual
+     * selected declaration and source-to-formal permutation are proven in
+     * lowerDirectScalarLiteralNamedCall, not by this shape predicate.
+     *
+     * Nonliteral arguments are admitted ONLY when the checked permutation is
+     * identity: this preserves the ordinary call's lexical evaluation order
+     * even for exceptions, mutation and nested calls. An effectful reordered
+     * call still fails closed until a temporary-based lowering is available.
+     */
+    public static boolean isDirectNamedCallCandidate(Ast.StagedCallExpr call) {
+        if (call == null || call.typeArgumentsPresent()
+                || !(call.callee() instanceof Ast.NameExpr)
+                || call.arguments().isEmpty()) return false;
+        boolean named = false;
+        for (Ast.CallArgument item : call.arguments()) {
+            if (item.omitted() || item.spread() || item.value() == null) return false;
+            if (item.label() != null) named = true;
+        }
+        return named;
+    }
+
+    /**
+     * Restricted source-level lowering: all primitive literal permutations
+     * remain supported. Effectful/nonliteral values are supported only if
+     * the selected target's formal order is identical to source order.
+     * Never reorder
      * effectful guest expressions: they require a source-order temporary
      * schedule, typed Option adaptation, and ownership checks.
      *
@@ -126,7 +151,7 @@ public final class OptionalCallShapeBinder {
      */
     public static Ast.CallExpr lowerDirectScalarLiteralNamedCall(
             Ast.StagedCallExpr call, Ast.FunctionDecl resolvedTarget) {
-        if (!isDirectScalarLiteralNamedCall(call)
+        if (!isDirectNamedCallCandidate(call)
                 || resolvedTarget == null
                 || !(call.callee() instanceof Ast.NameExpr targetName)
                 || !targetName.name().equals(resolvedTarget.name())
@@ -156,6 +181,17 @@ public final class OptionalCallShapeBinder {
                     "named scalar-literal call requires all formal slots supplied");
         }
         List<Ast.Expr> source = evaluatedExpressionsInSourceOrder(shapes, call.arguments(), plan);
+        boolean identicalSourceAndFormalOrder = true;
+        for (int formal = 0; formal < resolvedTarget.parameters().size(); formal++) {
+            if (plan.sourceIndex(formal) != formal) {
+                identicalSourceAndFormalOrder = false;
+                break;
+            }
+        }
+        if (!identicalSourceAndFormalOrder && !isDirectScalarLiteralNamedCall(call)) {
+            throw new IllegalArgumentException(
+                    "reordered nonliteral named arguments require lexical temporary lowering");
+        }
         List<Ast.Expr> ordered = new ArrayList<>(resolvedTarget.parameters().size());
         for (int formal = 0; formal < resolvedTarget.parameters().size(); formal++) {
             int index = plan.sourceIndex(formal);
@@ -163,13 +199,26 @@ public final class OptionalCallShapeBinder {
             Ast.Param declared = resolvedTarget.parameters().get(formal);
             Ast.TypeRef type = declared.type();
             Ast.Expr expression = source.get(index);
-            if (!(expression instanceof Ast.LiteralExpr literal)
-                    || !type.arguments().isEmpty() || type.inferArguments()
-                    || !literalMatchesDirectScalarFormal(literal.value(), type.name())) {
+            if (!type.arguments().isEmpty() || type.inferArguments()
+                    || !List.of("int", "float", "bool", "string").contains(type.name())) {
                 throw new IllegalArgumentException(
-                        "named literal requires an exact primitive scalar formal type: "
+                        "named call requires a proven primitive scalar formal type: "
                                 + declared.name());
             }
+            if (expression instanceof Ast.LiteralExpr literal) {
+                if (!literalMatchesDirectScalarFormal(literal.value(), type.name())) {
+                    throw new IllegalArgumentException(
+                            "named literal requires exact primitive scalar type: "
+                                    + declared.name());
+                }
+            } else if (!identicalSourceAndFormalOrder) {
+                throw new IllegalArgumentException(
+                        "nonliteral named argument cannot be reordered without temporaries");
+            }
+            // Source order equals formal order for every nonliteral. Static
+            // type/effect/ownership and the ordinary runtime invocation each
+            // reuse the same normal CallExpr pipeline; neither receives a
+            // forged argument type from this shape-only binder.
             ordered.add(expression);
         }
         return new Ast.CallExpr(call.callee(), List.copyOf(ordered));
@@ -429,8 +478,8 @@ public final class OptionalCallShapeBinder {
             for (Ast.TypeRef type : e.typeArguments()) requireNoOmittableTypeOutsideFormal(type, "call type argument");
             for (Ast.Expr arg : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(arg);
         } else if (expr instanceof Ast.StagedCallExpr e) {
-            if (!isDirectScalarLiteralNamedCall(e)) {
-                // Reject all unlowered optional, non-literal or dynamic calls
+            if (!isDirectNamedCallCandidate(e)) {
+                // Reject omissions, spreads and unchecked call targets
                 // before executing ANY initializer or guest side effect.
                 throw new IllegalArgumentException(
                         "staged named/optional calls are not yet enabled without checked Option<T> ABI lowering");
