@@ -251,6 +251,54 @@ final class EditorLexicalParserAdmissionTest {
     }
 
     @Test
+    void deterministicQuotedSymbolUnicodeFuzzMatchesRuntimeNormalization() {
+        java.util.Random rng = new java.util.Random(0x5A17C0DEL);
+        int[] scalars = { 'a', 'z', '_', '7', 0x00e9, 0x4e2d, 0x1f600, 'e', 0x0301 };
+        for (int caseNo = 0; caseNo < 384; caseNo++) {
+            StringBuilder name = new StringBuilder();
+            int length = 1 + rng.nextInt(32);
+            for (int j = 0; j < length; j++) {
+                name.appendCodePoint(scalars[rng.nextInt(scalars.length)]);
+            }
+            String decoded = name.toString();
+            String expected = dev.oreslang.runtime.OresSymbol.normalizeAndValidate(decoded);
+            List<Token> actual = lex("#\"" + decoded + "\"");
+            assertEquals(List.of(SYMBOL_LITERAL, EOF), actual.stream().map(Token::type).toList(),
+                    "quoted Symbol token types, generated case " + caseNo);
+            assertEquals(expected, actual.get(0).lexeme(), "generated case " + caseNo);
+        }
+    }
+
+    @Test
+    void deterministicOpaqueNestedCommentsNeverLeakReservedWordsOrSymbols() {
+        java.util.Random rng = new java.util.Random(0xC011AB1EL);
+        for (int caseNo = 0; caseNo < 256; caseNo++) {
+            int depth = 1 + rng.nextInt(256);
+            String body = "/*".repeat(depth) + " throw raise #ready \"return\" "
+                    + "*/".repeat(depth) + " return";
+            assertEquals(List.of(RETURN, EOF), types(body),
+                    "comment opacity, generated case " + caseNo);
+        }
+    }
+
+    @Test
+    void deterministicMalformedUtf16FuzzFailsInsideOpaqueLexicalRegions() {
+        java.util.Random rng = new java.util.Random(0xBADC0DEL);
+        String loneHigh = String.valueOf((char) 0xd800);
+        String loneLow = String.valueOf((char) 0xdc00);
+        String backtick = String.valueOf((char) 96);
+        String[] surrounds = { "", "/*", "//", "\"", "'", backtick, "#\"", "return " };
+        for (int caseNo = 0; caseNo < 384; caseNo++) {
+            String invalid = (rng.nextBoolean() ? loneHigh : loneLow);
+            String source = surrounds[rng.nextInt(surrounds.length)]
+                    + "a".repeat(rng.nextInt(24)) + invalid
+                    + "b".repeat(rng.nextInt(24)) + " return";
+            assertThrows(IllegalArgumentException.class, () -> lex(source),
+                    "malformed UTF-16 must fail globally, generated case " + caseNo);
+        }
+    }
+
+    @Test
     void executionDomainReservationFailsClosedAtParserAdmission() {
         for (String source : List.of("cpu { }", "gpu { }", "quantum task { }")) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
