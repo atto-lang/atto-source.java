@@ -250,6 +250,7 @@ Locally reproduced the **exact current production**
 JDK 21 `javac --release 21 -Xlint:all -Werror`.
 The exact committed regression independently compiled and executed:
 `EXACT_CURRENT_REGION_JDK21_PASS checks=130000 iterations=10000`.
+The same exact class and harness also passed JDK21 `java -Xint -ea` and `java -Xcomp -ea`, each repeating all 130,000 checks; this tests JVM interpreter and eagerly compiled execution modes, not GraalVM Native Image.
 Every iteration verifies reentrant STOP aborting the write, physical pin
 retention, foreign/stale tickets, denied read/pin after STOP, reclamation
 only after the final pin, and overflow transactional rollback.
