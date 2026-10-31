@@ -1635,6 +1635,44 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Narrow guest bridge: evaluate queue authority using ONLY the active
+     * runtime mailbox sender and structured parent. No guest-accessible grant,
+     * sender override, actor identity constructor or mutable capability leaks.
+     *
+     * <p>Opcode values match queue_protocol.Command kinds: 0 activate,
+     * 1 send, 2 cancel, 3 receive, 4 close, 5 terminal ACK, 6 retire.
+     * Invalid/unbound calls fail closed. The typechecker reserves this for
+     * self.queue_authorized(int,int) inside an actor only.</p>
+     */
+    public boolean isCurrentQueueCommandAuthorized(int opcode, int producerSlot) {
+        requireCallerRuntimeAffinity("authorize current queue command");
+        ActorCell<?> actor = currentActor.get();
+        if (actor == null || actor.parent == null || actor.stopped.get()
+                || actor.finalized || actor.activeMail == null) {
+            return false;
+        }
+        QueueOperation operation = switch (opcode) {
+            case 0 -> QueueOperation.ACTIVATE;
+            case 1 -> QueueOperation.SEND;
+            case 2 -> QueueOperation.CANCEL;
+            case 3 -> QueueOperation.RECEIVE;
+            case 4 -> QueueOperation.CLOSE;
+            case 5 -> QueueOperation.TERMINAL_ACK;
+            case 6 -> QueueOperation.RETIRE;
+            default -> null;
+        };
+        if (operation == null) return false;
+        if (actor.queueAuthority == null) {
+            actor.queueAuthority = new QueueCommandAuthority(actor);
+        }
+        try {
+            return actor.queueAuthority.permits(operation, producerSlot);
+        } catch (SecurityException denial) {
+            return false;
+        }
+    }
+
     public interface ActorContext<M> {
         ActorRef<M> self();
         ActorRuntime runtime();
