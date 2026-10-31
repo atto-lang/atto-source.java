@@ -18,6 +18,56 @@ import static org.junit.jupiter.api.Assertions.*;
               mode = ResourceAccessMode.READ_WRITE)
 final class CglActorMessageTraceIntegrationTest {
     @Test
+    void rejectedSourceOwnershipDoesNotProduceFalseHandlerTimingEvidence() throws Exception {
+        final String key = "ores.runtime.cgl.handlerTrace";
+        String previous = System.getProperty(key);
+        System.setProperty(key, "true");
+        try (var store = new SharedCodeImageStore();
+             var runtime = new ActorRuntime()) {
+            var trace = runtime.cglHandlerTrace().orElseThrow();
+            var image = store.publish("cgl-rejected-handler.ores",
+                    Parser.parse("pub routine main(): void { return; }"));
+            var owner = new java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorId>();
+            var handlerInvocations = new java.util.concurrent.atomic.AtomicInteger();
+            var executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() {
+                    return image;
+                }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context) {
+                    owner.set(context.self().id());
+                    return owner::get;
+                }
+                @Override public void receiveActor(String type,
+                        ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    handlerInvocations.incrementAndGet();
+                }
+            };
+            var source = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                    executor, "Worker");
+            source.ready().get(3, TimeUnit.SECONDS);
+            // Simulate stale-owned actor state AFTER successful initialization.
+            owner.set(ActorRuntime.ActorId.create());
+            source.send("rejected");
+            assertTrue(source.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(source.failure().isPresent());
+            assertEquals(0, handlerInvocations.get());
+            trace.sealAfterActorsStopped();
+            var snapshot = trace.snapshot();
+            assertTrue(snapshot.samples().isEmpty(),
+                    "rejected pre-call ownership check must never count as guest entry");
+            assertEquals(0, snapshot.invalid());
+            assertEquals(0, snapshot.dropped());
+            assertFalse(snapshot.hasCompleteCapture(1));
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
+
+    @Test
     void capturesBothAdmittedHandlerKindsWithoutPretendingToObserveTimers() throws Exception {
         final String key = "ores.runtime.cgl.handlerTrace";
         String previous = System.getProperty(key);
