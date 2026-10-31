@@ -26,6 +26,7 @@ final class DbWalTrustedGrantRegistryTest {
             var drainingConflictRejected = new CountDownLatch(1);
             var drained = new CountDownLatch(1);
             var reissued = new CountDownLatch(1);
+            var oldGenerationDenied = new CountDownLatch(1);
             var first = runtime.<String>spawnShared(() -> (message, context) -> {
                 try {
                     if (message.equals("issue")) {
@@ -34,11 +35,16 @@ final class DbWalTrustedGrantRegistryTest {
                     } else if (message.equals("drain")) {
                         firstGrant.get().beginDrain(runtime);
                         drained.countDown();
+                    } else if (message.equals("stale")) {
+                        assertThrows(SecurityException.class,
+                                () -> firstGrant.get().requireLive(runtime));
+                        oldGenerationDenied.countDown();
                     }
                 } catch (Throwable failure) {
                     firstError.compareAndSet(null, failure);
                     issued.countDown();
                     drained.countDown();
+                    oldGenerationDenied.countDown();
                 }
             });
             var second = runtime.<String>spawnShared(() -> (message, context) -> {
@@ -110,6 +116,9 @@ final class DbWalTrustedGrantRegistryTest {
             assertNotNull(secondGrant.get());
             assertEquals(8, secondGrant.get().generation());
             assertEquals(1, registry.activeShardCount());
+            first.send("stale");
+            assertTrue(oldGenerationDenied.await(3, TimeUnit.SECONDS));
+            assertNull(firstError.get());
             registry.seal();
             assertEquals(1, registry.activeShardCount(),
                     "sealing must retain a live generation until physical retirement");
