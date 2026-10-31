@@ -72,14 +72,19 @@ final class ActorNativeIoPhysicalRetirementTest {
                 assertFalse(block.closed());
 
                 actor.stop();
-                io.close();
 
+                IllegalStateException incomplete = assertThrows(
+                        IllegalStateException.class,
+                        io::close);
                 assertTrue(
+                        incomplete.getMessage().contains(
+                                "physical cleanup incomplete"));
+                assertFalse(
                         future.isDone(),
-                        "I/O context close should make the Future terminal");
+                        "join timeout must not manufacture terminal completion");
                 assertFalse(
                         actor.done().isDone(),
-                        "terminal I/O Future is not physical worker retirement");
+                        "join timeout is not physical worker retirement");
                 assertFalse(
                         actor.awaitTermination(100, TimeUnit.MILLISECONDS),
                         "actor finalized while native worker was still running");
@@ -90,9 +95,11 @@ final class ActorNativeIoPhysicalRetirementTest {
 
                 releaseWorker.countDown();
 
+                assertEquals(7, future.get(5, TimeUnit.SECONDS));
                 assertTrue(
                         actor.awaitTermination(5, TimeUnit.SECONDS),
                         "actor did not finalize after native worker exit");
+                io.close(); // retry the already-sealed physical join
                 assertTrue(block.closed());
                 assertTrue(actor.done().isDone());
                 assertEquals(0, runtime.actorCount());
@@ -183,6 +190,83 @@ final class ActorNativeIoPhysicalRetirementTest {
                 if (closer != null && closer.isAlive()) {
                     closer.join(5_000);
                 }
+                actor.stop();
+            }
+        }
+    }
+
+
+
+    @Test
+    void workerCreatedSocketInheritsActorLifetimeAndBareUnregisterCannotForgeClose()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.DispatcherConfig(2, 2, 8, 64));
+             AsyncNativeIo io = new AsyncNativeIo(1)) {
+            CountDownLatch workerRegistered = new CountDownLatch(1);
+            AtomicReference<java.net.Socket> socket = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> operation =
+                    new AtomicReference<>();
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> memory =
+                    new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    actorContext -> {
+                        ActorRuntime.PrivateMemoryBlock block =
+                                actorContext.privateMemory()
+                                        .orElseThrow()
+                                        .allocatePrivateBytes(32);
+                        block.writeInt(0, 313);
+                        memory.set(block);
+
+                        return (message, context) -> {
+                            OresFuture<Integer> future = io.submit(
+                                    "register-socket-on-worker",
+                                    () -> {
+                                        java.net.Socket handle =
+                                                new java.net.Socket();
+                                        io.register(handle);
+                                        socket.set(handle);
+                                        workerRegistered.countDown();
+                                        return 19;
+                                    });
+                            operation.set(future);
+                            context.runtime().ownCurrentActorFuture(future);
+                        };
+                    });
+
+            try {
+                actor.send("launch");
+                assertTrue(workerRegistered.await(5, TimeUnit.SECONDS));
+                assertEquals(19, operation.get().get(5, TimeUnit.SECONDS));
+
+                java.net.Socket handle = socket.get();
+                ActorRuntime.PrivateMemoryBlock block = memory.get();
+                assertNotNull(handle);
+                assertNotNull(block);
+                assertFalse(handle.isClosed());
+
+                actor.stop();
+
+                assertThrows(
+                        SecurityException.class,
+                        () -> io.unregister(handle),
+                        "bare unregister must not forge physical socket retirement");
+                assertFalse(actor.done().isDone());
+                assertFalse(block.closed());
+                assertEquals(1, runtime.actorCount());
+
+                handle.close();
+                io.unregister(handle);
+
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(block.closed());
+                assertTrue(actor.done().isDone());
+                assertEquals(0, runtime.actorCount());
+            } finally {
+                java.net.Socket handle = socket.get();
+                if (handle != null && !handle.isClosed()) handle.close();
                 actor.stop();
             }
         }
