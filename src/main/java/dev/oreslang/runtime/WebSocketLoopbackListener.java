@@ -265,11 +265,38 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         private final AtomicBoolean reading = new AtomicBoolean();
         private final AtomicBoolean writerActive = new AtomicBoolean();
         private final AtomicBoolean retired = new AtomicBoolean();
+        // Set once by a host supervisor. No guest socket or actor-ref escape.
+        private volatile WebSocketActorClaim actorClaim;
         private final WebSocketOutboundGate outbound =
                 new WebSocketOutboundGate(maxFrameBytes, 16,
                         maxFrameBytes * 16, 4, this::close);
 
         private Connection(Socket socket) { this.socket = socket; }
+
+        /**
+         * One-time supervisor transfer from an accepted host connection to a
+         * live actor incarnation. A second claim (including a rebind after
+         * actor termination) fails closed; the listener must close/reaccept.
+         */
+        WebSocketActorClaim claimActor(
+                ActorRuntime runtime, ActorRuntime.ActorRef<?> owner) {
+            if (ActorRuntime.inActorExecution() || ActorRuntime.isActorCarrierThread()) {
+                throw new SecurityException("WebSocket claim requires supervisor context");
+            }
+            synchronized (lifecycleLock) {
+                if (closed.get() || retired.get() || actorClaim != null) {
+                    throw new RejectedExecutionException(
+                            "WebSocket connection retired or already claimed");
+                }
+                WebSocketActorClaim issued = WebSocketActorClaim.issue(runtime, owner);
+                if (issued.revoked()) {
+                    throw new RejectedExecutionException(
+                            "WebSocket actor incarnation already stopped");
+                }
+                actorClaim = issued;
+                return issued;
+            }
+        }
 
         OresFuture<WebSocketSessionState.Action> readAsync() {
             if (ActorRuntime.inActorExecution()) {
@@ -342,8 +369,15 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         }
 
         private OresFuture<Void> sendUser(int opcode, byte[] payload) {
-            if (ActorRuntime.inActorExecution()) {
-                throw new SecurityException("WebSocket send belongs to host I/O");
+            WebSocketActorClaim claim = actorClaim;
+            if (claim == null) {
+                if (ActorRuntime.inActorExecution()) {
+                    throw new SecurityException("unclaimed WebSocket send is host I/O only");
+                }
+            } else {
+                // A claimed connection can only send during its owner's exact
+                // active actor turn; host and other actors lose USER authority.
+                claim.requireOwnerTurn();
             }
             requireNet.accept(endpoint, "websocket.send");
             if (retired.get() || protocol.state() != WebSocketSessionState.State.OPEN) {
@@ -416,6 +450,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
 
         @Override public void close() {
             if (!retired.compareAndSet(false, true)) return;
+            WebSocketActorClaim claim = actorClaim;
+            if (claim != null) claim.revoke();
             protocol.transportClosed();
             try { socket.close(); }
             catch (IOException failure) {
