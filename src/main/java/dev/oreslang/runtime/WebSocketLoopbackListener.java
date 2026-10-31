@@ -11,6 +11,11 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Optional;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
@@ -32,6 +37,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
     private final int maxFrameBytes;
     private final int maxMessageBytes;
     private final Semaphore connections;
+    // One deadline dispatcher per bounded listener. Socket.close() interrupts a
+    // blocked classic Socket output write; this is worker-bounded, NOT kernel NIO.
+    private final ScheduledExecutorService writeDeadlines =
+            Executors.newSingleThreadScheduledExecutor(
+                    Thread.ofVirtual().name("ores-ws-write-deadline-", 0).factory());
     private final AtomicBoolean accepting = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     // Accept publication and listener retirement share one lock. An accepted
@@ -239,6 +249,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
+        writeDeadlines.shutdownNow();
         // The tracked owner stays in AsyncNativeIo until every native
         // close callback actually returns. Failed closes must be retried or
         // quarantined by the physical context-retirement sweep.
@@ -252,7 +263,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         private final WebSocketSessionState protocol =
                 new WebSocketSessionState(16, maxMessageBytes);
         private final AtomicBoolean reading = new AtomicBoolean();
+        private final AtomicBoolean writerActive = new AtomicBoolean();
         private final AtomicBoolean retired = new AtomicBoolean();
+        private final WebSocketOutboundGate outbound =
+                new WebSocketOutboundGate(maxFrameBytes, 16,
+                        maxFrameBytes * 16, 4, this::close);
 
         private Connection(Socket socket) { this.socket = socket; }
 
@@ -284,10 +299,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                                     == WebSocketSessionState.ActionKind.SEND_PONG
                                     ? WebSocketFrameCodec.OPCODE_PONG
                                     : WebSocketFrameCodec.OPCODE_CLOSE;
-                            WebSocketFrameCodec.writeServerFrame(
-                                    socket.getOutputStream(), true, opcode,
-                                    action.payload(), maxFrameBytes);
-                            if (opcode == WebSocketFrameCodec.OPCODE_CLOSE) close();
+                            // Read workers never write directly. CONTROL has
+                            // separate bounded admission and precedes queued
+                            // USER frames in the single physical write lane.
+                            outbound.enqueueControl(opcode, action.payload());
+                            wakeWriter();
                         }
                         return action;
                     } catch (IOException | RuntimeException failure) {
@@ -303,6 +319,79 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             }
             if (future.isDone() && !workStarted.get()) reading.set(false);
             return future;
+        }
+
+        /** Host-only bounded send. No guest actor handle is exposed yet. */
+        OresFuture<Void> sendTextAsync(String text) {
+            return sendUser(WebSocketFrameCodec.OPCODE_TEXT,
+                    Objects.requireNonNull(text, "text").getBytes(StandardCharsets.UTF_8));
+        }
+
+        OresFuture<Void> sendBinaryAsync(byte[] payload) {
+            return sendUser(WebSocketFrameCodec.OPCODE_BINARY,
+                    Objects.requireNonNull(payload, "payload"));
+        }
+
+        private OresFuture<Void> sendUser(int opcode, byte[] payload) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket send belongs to host I/O");
+            }
+            requireNet.accept(endpoint, "websocket.send");
+            if (retired.get() || protocol.state() != WebSocketSessionState.State.OPEN) {
+                throw new RejectedExecutionException("WebSocket is closing or retired");
+            }
+            WebSocketOutboundGate.Write write = outbound.enqueueUser(opcode, payload);
+            wakeWriter();
+            return write.receipt();
+        }
+
+        private void wakeWriter() {
+            if (!writerActive.compareAndSet(false, true)) return;
+            // Only one writer worker may exist per physical connection.
+            // A rejected worker must close rather than retain unsent Futures.
+            OresFuture<Void> launched = nativeIo.submit("websocket.write", () -> {
+                drainWriter();
+                return null;
+            });
+            if (launched.isCompletedExceptionally()) close();
+        }
+
+        private void drainWriter() {
+            try {
+                while (!retired.get()) {
+                    WebSocketOutboundGate.Write write = outbound.poll();
+                    if (write == null) return;
+                    Throwable failure = null;
+                    ScheduledFuture<?> deadline = null;
+                    try (var loan = nativeIo.borrow(socket)) {
+                        // Classic Socket output is allowed only on a host I/O
+                        // worker. Absolute timeout closes its physical socket.
+                        // A future SocketChannel/NIO adapter is still required.
+                        deadline = writeDeadlines.schedule(this::close,
+                                limits.handshakeTimeoutMillis(), TimeUnit.MILLISECONDS);
+                        WebSocketFrameCodec.Frame frame = write.frame();
+                        WebSocketFrameCodec.writeServerFrame(
+                                socket.getOutputStream(), frame.fin(), frame.opcode(),
+                                frame.payloadUnsafe(), maxFrameBytes);
+                        if (retired.get()) {
+                            throw new IOException("WebSocket retired during outbound write");
+                        }
+                    } catch (IOException | RuntimeException failureCaught) {
+                        failure = failureCaught;
+                    } finally {
+                        if (deadline != null) deadline.cancel(false);
+                    }
+                    outbound.finish(write, failure);
+                    if (failure != null
+                            || write.frame().opcode() == WebSocketFrameCodec.OPCODE_CLOSE) {
+                        close();
+                        return;
+                    }
+                }
+            } finally {
+                writerActive.set(false);
+                if (!retired.get() && outbound.hasPending()) wakeWriter();
+            }
         }
 
         Optional<WebSocketFrameCodec.Message> pollUserMessage() {
@@ -321,7 +410,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             catch (IOException failure) {
                 throw new IllegalStateException("WebSocket peer close failed", failure);
             } finally {
-                nativeIo.unregister(socket);
+                try { outbound.retire(); }
+                finally { nativeIo.unregister(socket); }
                 synchronized (lifecycleLock) {
                     activeConnections.remove(this);
                 }
