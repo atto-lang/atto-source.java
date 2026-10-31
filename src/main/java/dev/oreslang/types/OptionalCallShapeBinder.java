@@ -244,7 +244,6 @@ public final class OptionalCallShapeBinder {
         }
         return expression instanceof Ast.CallExpr nested
                 && nested.callee() instanceof Ast.NameExpr
-                && nested.origin() == Ast.CallOrigin.DIRECT
                 && !nested.typeArgumentsPresent()
                 && nested.arguments().isEmpty();
     }
