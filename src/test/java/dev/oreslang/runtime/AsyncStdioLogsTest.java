@@ -28,6 +28,51 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void closedWriterRejectsNewRecordsAndFlushBarriers() throws Exception {
+        AsyncStdioLogs neverStarted = new AsyncStdioLogs(new PrintWriter(new java.io.StringWriter()));
+        neverStarted.close();
+        assertThrows(IllegalStateException.class, () -> neverStarted.logAsync("late\n"));
+        assertThrows(IllegalStateException.class, neverStarted::flushAsync);
+
+        AsyncStdioLogs drained = new AsyncStdioLogs(new PrintWriter(new java.io.StringWriter()));
+        drained.logAsync("accepted\n").get(2, TimeUnit.SECONDS);
+        drained.close();
+        assertThrows(IllegalStateException.class, () -> drained.logAsync("late\n"));
+        assertThrows(IllegalStateException.class, drained::flushAsync);
+        drained.close(); // repeat success remains idempotent
+    }
+
+    @Test
+    void expiredDrainDeadlineClosesFlushAdmissionBeforeSinkRecovers() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer blocked = new Writer() {
+            @Override public void write(char[] chars, int start, int length) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) throw new IOException("test sink timeout");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, true));
+        try {
+            logs.logAsync("record\n");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, logs::close);
+            assertThrows(IllegalStateException.class, logs::flushAsync);
+            assertThrows(IllegalStateException.class, () -> logs.logAsync("late\n"));
+        } finally {
+            release.countDown();
+        }
+        logs.close(); // explicit retry once the blocked sink is released
+    }
+
+    @Test
     void callerNeverWaitsForBlockedOutputSink() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch unblock = new CountDownLatch(1);
