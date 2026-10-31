@@ -124,6 +124,33 @@ access to JDK HTTP internals. The native WebSocket listener should be a separate
 bounded raw-socket transport sharing Oreslang's scoped NET permission and actor
 ownership contracts.
 
+## Implemented raw loopback upgrade bridge (host-only)
+
+`WebSocketRawUpgrade` now exercises the existing admission helpers on a
+real **already-accepted Java Socket**, without importing JDK HTTP internals.
+The bridge is deliberately package-private and cannot create a listener or
+grant an actor/guest handle. The future listener must first check scoped NET
+permission, own its accept socket through `AsyncNativeIo` physical loans,
+provide connection admission quotas, and run this bridge exclusively on a
+host I/O worker (never an actor/CONTROL carrier).
+
+The boundary requires a loopback **peer**, an exact canonical Host authority
+matching the bound listener, and an explicitly allowlisted nonempty Origin.
+It parses the request head with configured byte/count limits, enforces a
+**single absolute handshake deadline** (not just a reusable per-read timeout),
+and emits the canonical HTTP 101 response only after admission succeeds.
+Denied, malformed, slow, or interrupted upgrades close the accepted socket;
+successful upgrades leave a finite socket read timeout. No extensions or
+subprotocols are negotiated; the client cannot select them implicitly.
+This first loopback slice deliberately requires Origin even for nonbrowser
+clients. Authentication and a reviewed app-header view are *not* provided
+by this bridge, so it must not be treated as a public multi-tenant listener.
+
+`WebSocketRawUpgradeTest` adds real loopback socket/byte-stream tests for
+the RFC 6455 accept value, a subsequent masked text frame, Host and Origin
+denials, invalid Upgrade/body framing, deadline expiry, and misconfigured
+bounds. These are Java host integration tests, **not Oreslang guest execution**.
+
 ## Not yet implemented
 
 - Binding the validated upgrade to a dedicated native raw-socket listener.
