@@ -518,13 +518,17 @@ public final class OresContext implements AutoCloseable {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
-        // Admission is sealed without blocking on a possibly stuck PrintWriter.
-        // Actor/native-I/O physical joins remain mandatory before releasing heaps.
-        asyncStdio.sealAdmission();
+        // Do not seal stdout yet: actor stop hooks and physical native-I/O
+        // retirement can still emit final telemetry. The bounded record queue
+        // remains live until all producer shutdown phases have completed.
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
-            // A blocked async writer owns PrintWriter\'s monitor; do not re-enter
+            // Physical retirement is incomplete: reject new output without
+            // waiting for (or re-entering) the potentially blocked sink.
+            // Quarantine retains the context, native I/O, actors, and worker.
+            asyncStdio.sealAdmission();
+            // A blocked async writer owns PrintWriter's monitor; do not re-enter
             // that lock on an already-failed physical retirement path.
             throw new IllegalStateException(
                     "Oreslang context cleanup incomplete; physical state quarantined",
@@ -542,8 +546,11 @@ public final class OresContext implements AutoCloseable {
             if (failure == null) failure = asyncFailure;
             else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
         }
-        // Actor and async producers have stopped. Bounded drain may still time
-        // out if the host sink never makes progress; that is a quarantine gate.
+        // Both actor/native-I/O joins completed, and all auxiliary producers
+        // were asked to stop. Only now close stdout admission and drain the
+        // accepted records. The seal and timed join never acquire writer locks.
+        // On a stalled sink, preserve the context quarantine.
+        asyncStdio.sealAdmission();
         try {
             asyncStdio.close();
         } catch (RuntimeException stdioFailure) {
