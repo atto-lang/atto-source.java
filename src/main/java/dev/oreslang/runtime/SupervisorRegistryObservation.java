@@ -124,6 +124,23 @@ public final class SupervisorRegistryObservation implements AutoCloseable {
     }
 
     /**
+     * Preflight a CONTROL-dispatched request before reserving VM work.
+     * Authorization is checked again inside capture, after dispatch, so
+     * revoke/expiry/retirement races cannot bypass this preflight.
+     */
+    void authorizeControlObservation(Grant grant, Object session, String tenant,
+                                     long generation, int maxNodes, int maxDepth,
+                                     long budgetNanos) {
+        var registry = runtime.supervisorRegistryForObservation();
+        requireValid(grant, session, tenant, generation, registry);
+        if (maxNodes < 1 || maxNodes > MAX_NODES
+                || maxDepth < 0 || maxDepth > MAX_DEPTH
+                || budgetNanos <= 0 || budgetNanos > MAX_READ_NANOS) {
+            throw new IllegalArgumentException("invalid observation bounds");
+        }
+    }
+
+    /**
      * Snapshot a subtree from trusted host context; a guest actor, a foreign
      * runtime, or an ActorGroup Mailman cannot make this privileged read.
      *
