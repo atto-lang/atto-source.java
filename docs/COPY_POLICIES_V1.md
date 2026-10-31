@@ -106,13 +106,15 @@ A separate assignment `val a: NoCopy<T> = t` does **not** silently seal.
 independent move restriction applies. Do not treat `consuming=true` as
 proof that an operation is copying.
 
-For `@NoCopy` field projections, `rt take owner.field` is allowed
-**only after** the compiler can prove field-level invalidation,
-reinitialization, loan exclusion, and cleanup along every control-flow
-path. Until that ledger exists, emit `E_MOVE_UNPROVEN` (not
-`E_COPY_FORBIDDEN`). Immutable fields remain non-moveable under their
-existing rules. This is a deliberate fail-closed limitation, not a
-claim that moves and copies are semantically equivalent.
+For **any class field projection**, including `@NoCopy` and ordinary
+mutable fields, `rt take owner.field` is allowed **only after** the
+compiler can prove field-level invalidation, reinitialization, loan
+exclusion, and cleanup along every control-flow path. Until that
+ledger exists, emit `E_MOVE_UNPROVEN` (not `E_COPY_FORBIDDEN`).
+Immutable fields remain non-moveable under their existing rules.
+A member access wrapped in a cast also cannot bypass this rule.
+This is a deliberate fail-closed limitation, not a claim that moves
+and copies are semantically equivalent.
 
 Dynamic property selection over classes with protected fields must also
 fail closed when the compiler cannot prove the selected field is safe;
