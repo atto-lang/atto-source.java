@@ -2959,6 +2959,25 @@ public final class ActorRuntime implements AutoCloseable {
         return Map.copyOf(supervisors);
     }
 
+    /**
+     * Submit a host-owned observation turn through the existing VM-provided
+     * CONTROL dispatcher. Standalone runtimes without a configured dispatcher
+     * fail admission: observation must not create an independent thread pool
+     * or steal ordinary actor/mailbox resources.
+     *
+     * This is a host substrate, not a guest capability or evidence that
+     * full supervisor CONTROL snapshot fanout is implemented.
+     */
+    OresFuture<Void> dispatchSupervisorObservationControl(Runnable turn) {
+        requireSupervisorContext("dispatch supervisor observation CONTROL");
+        requireCallerRuntimeAffinity("dispatch supervisor observation CONTROL");
+        Objects.requireNonNull(turn, "turn");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        return Objects.requireNonNull(
+                controlDispatcher.execute(turn),
+                "configured CONTROL dispatcher returned null Future");
+    }
+
     /** The runtime's non-null fallback supervisor for legacy group creation. */
     public ActorSupervisor rootSupervisor() {
         requireSupervisorContext("inspect the root ActorSupervisor");
