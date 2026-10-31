@@ -89,11 +89,17 @@ standalone compiler tests but does not carry the runtime's source-admission
 provenance.
 
 Filesystem and source-content revalidation runs before and after index
-construction. An edit, package reassignment or same-byte symlink replacement
-must fail closed at those guards; a transient replace-and-revert race or
-hostile concurrent filesystem mutation is **not** proven impossible by hash
-checks alone. True race-free file identity across the entire read/compile
-lifecycle remains a separate descriptor-ownership hardening goal.
+construction. The verifier reconstructs manifest membership from the frozen
+root/dependency manifests and compares the current file bytes of **every**
+manifest-owned provider against the exact source text admitted to the compiler.
+This includes root package providers, not merely pinned dependency source
+digests. Changes to provider bytes, deleted or replaced providers, or
+same-byte source symlink swaps fail closed at the checked boundaries.
+
+A transient replace-and-revert race or hostile concurrent filesystem mutation
+is **not** proven impossible by these periodic hash checks. True race-free
+file identity throughout the read/compile lifecycle requires a separately
+reviewed descriptor-owned/immutable source transport.
 
 Regression coverage includes immutable root/dependency owner mappings after
 on-disk edits, a negative root-manifest symlink swap, root-only alias
