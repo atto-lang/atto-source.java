@@ -149,6 +149,53 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void flushBarrierSubscribersReceiveFifoNotifications() throws Exception {
+        CountDownLatch writerEntered = new CountDownLatch(1);
+        CountDownLatch releaseWriter = new CountDownLatch(1);
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                writerEntered.countDown();
+                try {
+                    if (!releaseWriter.await(10, TimeUnit.SECONDS)) {
+                        throw new IOException("test sink blocked too long");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow, true))) {
+            logs.logAsync("one pending record\n");
+            assertTrue(writerEntered.await(2, TimeUnit.SECONDS));
+            var notifications = java.util.Collections.synchronizedList(
+                    new java.util.ArrayList<Integer>());
+            var errors = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            try {
+                for (int index = 0; index < 64; index++) {
+                    final int registered = index;
+                    logs.flushAsync().whenCompleteRuntime((unused, failure) -> {
+                        if (failure != null) errors.compareAndSet(null, failure);
+                        notifications.add(registered);
+                    });
+                }
+            } finally {
+                releaseWriter.countDown();
+            }
+            // The worker joins before assertions, so registration order is
+            // observable without relying on sleep, polling or callback races.
+            logs.close();
+            assertNull(errors.get());
+            assertEquals(java.util.stream.IntStream.range(0, 64).boxed().toList(),
+                    notifications, "later flushes cannot notify before earlier flushes");
+        } finally {
+            releaseWriter.countDown();
+        }
+    }
+
+    @Test
     void shutdownProducersMayEmitBeforeAdmissionSeals() throws Exception {
         // Models the admission window during physical actor retirement.
         // This is NOT an actual actor-generation/native-I/O retirement proof.
