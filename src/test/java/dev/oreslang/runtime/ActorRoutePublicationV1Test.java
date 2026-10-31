@@ -479,6 +479,78 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void realSharedActorDrainRatherThanEnqueueAuthorizesTrackedRouteCutover()
+            throws Exception {
+        var releaseOldTurn = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(60, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var oldEntered = new CountDownLatch(1);
+            var newDelivered = new CountDownLatch(1);
+            var oldRoute = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {
+                        assertEquals(List.of(7), message);
+                        oldEntered.countDown();
+                        try {
+                            if (!releaseOldTurn.await(10, TimeUnit.SECONDS))
+                                throw new IllegalStateException("test old actor turn stalled");
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                    });
+            var newRoute = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {
+                        assertEquals(List.of(9), message);
+                        newDelivered.countDown();
+                    });
+            var decode = (java.util.function.Function<byte[], List<Integer>>) payload -> {
+                List<Integer> values = new ArrayList<>();
+                for (byte item : payload) values.add(Byte.toUnsignedInt(item));
+                return List.copyOf(values);
+            };
+            var physical = ActorRoutePublicationV1.actorRuntimeDrainSubmitter(decode);
+            try (var authority = new ActorRoutePublicationV1<>(
+                    gate, mailbox, state(7), oldRoute)) {
+                authority.admit(new byte[]{7});
+                assertTrue(authority.dispatchNextTracked(physical));
+                assertTrue(oldEntered.await(10, TimeUnit.SECONDS));
+                assertEquals(1, mailbox.snapshot().outstandingMessages());
+                assertThrows(IllegalStateException.class, () -> authority.stage(image('b')),
+                        "ActorRef.send acceptance must not authorize an upgrade");
+                assertThrows(IllegalStateException.class, authority::close);
+                releaseOldTurn.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (mailbox.snapshot().retainedMessages() != 0
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertEquals(0, mailbox.snapshot().retainedMessages(),
+                        "runtime drain must acknowledge only after old turn completes");
+                try (var stage = authority.stage(image('b'))) {
+                    authority.admit(new byte[]{9});
+                    assertTrue(stage.publish(state(9), newRoute));
+                }
+                assertSame(newRoute, authority.current().physicalRoute());
+                assertEquals(2L, authority.current().routeEpoch());
+                assertTrue(authority.dispatchNextTracked(physical));
+                assertTrue(newDelivered.await(10, TimeUnit.SECONDS));
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (mailbox.snapshot().retainedMessages() != 0
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertEquals(0, mailbox.snapshot().retainedMessages());
+                authority.close();
+                assertTrue(mailbox.snapshot().closed());
+            }
+        } finally {
+            releaseOldTurn.countDown();
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
