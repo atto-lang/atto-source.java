@@ -8,6 +8,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -119,4 +121,41 @@ final class OresSchedulerPhysicalRetirementTest {
                     "terminal notification drain did not finish after retirement");
         }
     }
+
+    @Test
+    void timedTerminalReadyPrecedesOrdinarySubscribersAndNotificationDrain()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Void> resumeGate = new OresFuture<>();
+            CopyOnWriteArrayList<String> order = new CopyOnWriteArrayList<>();
+
+            OresFuture<Integer> result = scheduler.startWithWallDeadline(
+                    resume -> resume.initial()
+                            ? OresScheduler.await(resumeGate)
+                            : OresScheduler.done(7),
+                    () -> { },
+                    TimeUnit.SECONDS.toNanos(5),
+                    new ActorRuntime.UntrustedActorQuotaExceededException(
+                            ActorRuntime.UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                            "unexpected test deadline"),
+                    terminal -> order.add("terminal-ready"),
+                    () -> order.add("notifications-drained"));
+
+            result.whenCompleteRuntime(
+                    (value, failure) -> order.add("subscriber"));
+
+            resumeGate.completeFromRuntime(null);
+
+            assertEquals(7, result.get(5, TimeUnit.SECONDS));
+            assertEquals(
+                    List.of(
+                            "terminal-ready",
+                            "subscriber",
+                            "notifications-drained"),
+                    order,
+                    "timed actor Task path must preserve TaskScope terminal ordering");
+        }
+    }
+
+
 }
