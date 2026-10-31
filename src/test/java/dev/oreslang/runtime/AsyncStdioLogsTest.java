@@ -96,6 +96,56 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void utf8LimitCountsEncodedBytesRatherThanUtf16Characters() throws Exception {
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(
+                new PrintWriter(new java.io.StringWriter(), true))) {
+            logs.logAsync("é".repeat(32_768)).get(2, TimeUnit.SECONDS);
+            assertThrows(IllegalArgumentException.class,
+                    () -> logs.logAsync("é".repeat(32_769)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> logs.logAsync("😀".repeat(16_385)));
+        }
+    }
+
+    @Test
+    void pendingByteBudgetIncludesTheBlockedInFlightRecord() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int offset, int length) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) throw new IOException("test sink timeout");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        String record = "x".repeat(65_536);
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow, true))) {
+            logs.logAsync(record);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            try {
+                for (int i = 1; i < 128; i++) logs.logAsync(record);
+                IllegalStateException full = assertThrows(IllegalStateException.class,
+                        () -> logs.logAsync(record));
+                assertTrue(full.getMessage().contains("pending byte budget"));
+                assertFalse(logs.flushAsync().isDone());
+            } finally {
+                release.countDown();
+            }
+            logs.flushAsync().get(5, TimeUnit.SECONDS);
+            // The quota is released on completed output, not on dequeue.
+            logs.logAsync(record).get(5, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void sinkFailuresPropagateIntoAwaitAndGracefulShutdown() throws Exception {
         Writer broken = new Writer() {
             @Override public void write(char[] cbuf, int off, int len) throws IOException {
