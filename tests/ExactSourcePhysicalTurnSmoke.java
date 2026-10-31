@@ -115,6 +115,18 @@ public final class ExactSourcePhysicalTurnSmoke {
         check(region.tryClose(), "replayed task left pending ownership");
         gate.close();
     }
+    private static void reentrantStopAbortsMutationWithoutStealingPin() {
+        var region = new ReusableLongStateRegion(1);
+        long scalar = region.insert(23);
+        long pin = region.pin();
+        expect(IllegalStateException.class, () -> region.update(
+            scalar, old -> { region.beginRetire(); return old + 1; }));
+        check(region.isRetiring(), "reentrant STOP was ignored");
+        check(region.activePins() == 1, "STOP incorrectly released a Task");
+        check(!region.tryClose(), "live physical pin was reclaimed");
+        region.releasePin(pin);
+        check(region.tryClose(), "final Task release failed to reclaim");
+    }
     private static void competingStartAndRetire() throws Exception {
         for (int iteration = 0; iteration < 2000; iteration++) {
             var gate = new ActorPhysicalTurnGate(1, 2);
@@ -143,6 +155,7 @@ public final class ExactSourcePhysicalTurnSmoke {
         queuedRejectionDoesNotReleaseRunning();
         staleAfterEnqueueAndThrow();
         acceptedReplayIsInert();
+        reentrantStopAbortsMutationWithoutStealingPin();
         competingStartAndRetire();
         System.out.printf("EXACT_SOURCE_JDK21_PASS assertions=%d racing_rounds=2000%n", assertions);
     }
