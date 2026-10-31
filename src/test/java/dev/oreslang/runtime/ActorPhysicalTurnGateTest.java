@@ -294,6 +294,47 @@ final class ActorPhysicalTurnGateTest {
     }
 
     @Test
+    void executorThrowsAfterPhysicalEntryCannotReleaseLivePin() throws Exception {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 2);
+        var region = new ReusableLongStateRegion(1);
+        region.insert(5);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (var worker = Executors.newSingleThreadExecutor()) {
+            assertThrows(RejectedExecutionException.class, () ->
+                    gate.dispatchPinned(region, () -> {
+                        entered.countDown();
+                        try {
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                    }, task -> {
+                        worker.execute(task);
+                        try {
+                            assertTrue(entered.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                        throw new RejectedExecutionException("submitter threw after entry");
+                    }, failure -> fail("already-running guest must not be rejected")));
+            assertEquals(1, region.activePins(),
+                    "submitter exception must not release physically active guest");
+            region.beginRetire();
+            assertFalse(region.tryClose());
+            release.countDown();
+            worker.submit(() -> {}).get(5, TimeUnit.SECONDS);
+            assertEquals(0, region.activePins());
+            assertTrue(region.tryClose());
+        } finally {
+            release.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
     void queuedPinnedTurnCannotEnterGuestAfterRegionStop() {
         ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
         var region = new ReusableLongStateRegion(1);
