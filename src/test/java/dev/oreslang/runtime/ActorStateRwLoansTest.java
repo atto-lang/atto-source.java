@@ -476,4 +476,36 @@ final class ActorStateRwLoansTest {
         assertTrue(loans.physicallyRetired());
         assertEquals(1, notifications.get());
     }
+
+    @Test
+    void reusedSchedulerSlotCannotHaveTwoLiveGenerations() {
+        try (var loans = new ActorStateRwLoans(4)) {
+            var oldGeneration = actor(8301, 231, 8);
+            var newGeneration = actor(8302, 231, 9);
+            var old = loans.acquireReadAsync(oldGeneration).join();
+            assertTrue(loans.acquireReadAsync(newGeneration).isCompletedExceptionally(),
+                    "slot reuse cannot overlap a physically live generation");
+            assertTrue(loans.acquireWriteAsync(newGeneration).isCompletedExceptionally());
+            old.close();
+            var current = loans.acquireReadAsync(newGeneration).join();
+            assertTrue(current.heldBy(newGeneration));
+            current.close();
+        }
+    }
+
+    @Test
+    void releasedLoanCannotAuthorizeOldSlotWhileReusedGenerationIsLive() {
+        try (var loans = new ActorStateRwLoans(4)) {
+            var oldGeneration = actor(8401, 241, 2);
+            var newGeneration = actor(8402, 241, 3);
+            var old = loans.acquireReadAsync(oldGeneration).join();
+            old.close();
+            assertTrue(old.readyToSuspend(oldGeneration));
+            var current = loans.acquireWriteAsync(newGeneration).join();
+            assertFalse(old.readyToSuspend(oldGeneration),
+                    "an old slot witness cannot certify suspension while reused slot is live");
+            current.close();
+            assertTrue(old.readyToSuspend(oldGeneration));
+        }
+    }
 }
