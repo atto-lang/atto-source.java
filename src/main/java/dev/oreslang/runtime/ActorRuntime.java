@@ -102,7 +102,96 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId,
             ActorKind kind,
             IsolatePolicy policy,
-            Object executionDomain) { }
+            Object executionDomain,
+            ActorPermissionScope permissionScope) { }
+
+    /**
+     * Runtime-minted permission identity carried to asynchronous native I/O.
+     * It conveys only resource authorization, never mailbox/state authority.
+     */
+    static final class NativeIoAuthority {
+        private final ActorRuntime runtime;
+        private final ActorId actorId;
+        private final IsolatePolicy coarsePolicy;
+        private final ActorPermissionScope scope;
+
+        private NativeIoAuthority(
+                ActorRuntime runtime,
+                ActorId actorId,
+                IsolatePolicy coarsePolicy,
+                ActorPermissionScope scope) {
+            this.runtime = runtime;
+            this.actorId = actorId;
+            this.coarsePolicy = coarsePolicy;
+            this.scope = scope;
+        }
+
+        ActorId actorId() { return actorId; }
+        ActorRuntime runtime() { return runtime; }
+
+        void requireActive(String operation) {
+            scope.requireActive(operation);
+        }
+
+        ActorPermissionScope.PhysicalLease acquirePhysicalLease(String operation) {
+            return scope.acquirePhysicalLease(operation);
+        }
+
+        void quarantinePhysicalDrain() {
+            scope.quarantinePhysicalDrain();
+        }
+
+        void requirePermission(
+                RuntimePermissions.Permission permission,
+                String resource,
+                String operation) {
+            coarsePolicy.require(permission.capability(), operation);
+            scope.require(permission, resource, operation);
+        }
+
+        void requireNetworkListen(String resource, String operation) {
+            coarsePolicy.require(IsolatePolicy.Capability.NETWORK, operation);
+            scope.requireNetworkListen(resource, operation);
+        }
+    }
+
+    private static final ThreadLocal<NativeIoAuthority>
+            CURRENT_NATIVE_IO_AUTHORITY = new ThreadLocal<>();
+
+    static NativeIoAuthority captureNativeIoAuthority() {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            return new NativeIoAuthority(
+                    turn.runtime(),
+                    turn.actorId(),
+                    turn.policy(),
+                    turn.permissionScope());
+        }
+        return CURRENT_NATIVE_IO_AUTHORITY.get();
+    }
+
+    static void enterNativeIoAuthority(NativeIoAuthority authority) {
+        if (authority == null) return;
+        if (CURRENT_ACTOR_EXECUTION.get() != null) {
+            throw new IllegalStateException(
+                    "native I/O authority cannot overwrite actor-turn authority");
+        }
+        NativeIoAuthority current = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (current != null && current != authority) {
+            throw new IllegalStateException(
+                    "nested native I/O authority mismatch");
+        }
+        CURRENT_NATIVE_IO_AUTHORITY.set(authority);
+    }
+
+    static void exitNativeIoAuthority(NativeIoAuthority authority) {
+        if (authority == null) return;
+        if (CURRENT_NATIVE_IO_AUTHORITY.get() != authority) {
+            throw new IllegalStateException(
+                    "native I/O authority retirement mismatch");
+        }
+        CURRENT_NATIVE_IO_AUTHORITY.remove();
+    }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -166,7 +255,56 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static Optional<ActorId> currentActorId() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
-        return current == null ? Optional.empty() : Optional.of(current.actorId());
+        if (current != null) return Optional.of(current.actorId());
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        return io == null ? Optional.empty() : Optional.of(io.actorId());
+    }
+
+    static void requireCurrentActorPermission(
+            RuntimePermissions.Permission permission,
+            String resource,
+            String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            turn.permissionScope().require(permission, resource, operation);
+        }
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.requirePermission(permission, resource, operation);
+    }
+
+    static void requireCurrentActorNetworkListen(
+            String resource,
+            String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            turn.permissionScope().requireNetworkListen(resource, operation);
+        }
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.requireNetworkListen(resource, operation);
+    }
+
+    static void requireCurrentActorAuthorityActive(String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) turn.permissionScope().requireActive(operation);
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.requireActive(operation);
+    }
+
+    static ActorPermissionScope.PhysicalLease capturePermissionPhysicalLease(
+            String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            return turn.permissionScope().acquirePhysicalLease(operation);
+        }
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        return io == null ? null : io.acquirePhysicalLease(operation);
+    }
+
+    static void quarantineCurrentPermissionDrain() {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) turn.permissionScope().quarantinePhysicalDrain();
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.quarantinePhysicalDrain();
     }
 
     /**
@@ -526,6 +664,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
+    private final RuntimePermissions permissionCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
@@ -590,12 +729,29 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        this(
+                policyCeiling,
+                dispatcherConfig,
+                turnExecutor,
+                controlDispatcher,
+                RuntimePermissions.fromCapabilities(
+                        Objects.requireNonNull(policyCeiling).capabilities()));
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            RuntimePermissions permissionCeiling) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
+        this.permissionCeiling = Objects.requireNonNull(
+                permissionCeiling, "permissionCeiling");
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
@@ -4402,6 +4558,26 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(
+                kind,
+                policy,
+                behaviorFactory,
+                trustedFactory,
+                codeImage,
+                codeExecutor,
+                codeActorType,
+                null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            ActorPermissionScope delegatedScope) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -4460,6 +4636,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<?> parent = currentActor.get();
+        if (delegatedScope != null && parent == null) {
+            throw new SecurityException(
+                    "permission delegation requires a current parent actor");
+        }
+        ActorPermissionScope actorPermissionScope = delegatedScope != null
+                ? delegatedScope
+                : parent == null
+                        ? ActorPermissionScope.root(permissionCeiling, () -> { })
+                        : parent.permissionScope;
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
@@ -4485,7 +4670,8 @@ public final class ActorRuntime implements AutoCloseable {
                         codeImage,
                         codeExecutor,
                         codeActorType,
-                        parent);
+                        parent,
+                        actorPermissionScope);
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
@@ -6939,6 +7125,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
+        private final ActorPermissionScope permissionScope;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
         /** Exact immutable source image whitelisted for this actor, if any. */
@@ -7044,12 +7231,15 @@ public final class ActorRuntime implements AutoCloseable {
                 SharedCodeImageStore.CodeImage codeImage,
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
-                ActorCell<?> parent) {
+                ActorCell<?> parent,
+                ActorPermissionScope permissionScope) {
             this.ref = ref;
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
             this.policy = policy;
+            this.permissionScope = Objects.requireNonNull(
+                    permissionScope, "permissionScope");
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
             this.codeImage = codeImage;
@@ -7696,7 +7886,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+                    ActorRuntime.this,
+                    ref.id(),
+                    kind,
+                    policy,
+                    executionDomain,
+                    permissionScope));
             boolean turnActive = false;
             try {
                 // Admission may throw on a single-writer lease violation.
