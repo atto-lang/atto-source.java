@@ -544,15 +544,17 @@ The existing actor-finalization callback already revokes only the exact
 currently bound actor generation (`revokeIfOwner`) and enqueues a host-only
 CONTROL close operation. A saturated CONTROL pool previously launched a
 **new virtual thread per failed retirement admission**. The fallback now
-uses one shared daemon host-sweep worker with a deduplicating set and
-FIFO admission queue, draining up to 32 already-owned connections per
-interval. There is no new connection, actor carrier, or cleanup thread per
-revoked connection. FIFO bounds overtaking among queued requests when the
-single worker makes progress; it does not cap the total number of listeners
-or guarantee fairness under a blocked OS close. Queue entries are removed
-after the connection-close attempt; the native-I/O resource ledger still
-owns pending physical loans. The fallback is **not** a hard-real-time
-retirement mechanism or a complete process-wide memory budget.
+uses one shared **fixed four-lane host worker pool** with a
+deduplicating set and FIFO admission queue. Each lane drains up to eight
+already-owned connections per scheduled pass. A blocked physical close
+therefore does not stall other available lanes; a complete four-lane
+stall can still block all retirement. There is no new connection,
+actor carrier, or cleanup thread per retired connection. FIFO orders
+dequeues, but concurrent workers do not guarantee close-completion order.
+Queue entries are removed after the connection-close attempt; the
+native-I/O resource ledger still owns any pending physical loans.
+This is **not** hard-real-time retirement or a complete process-wide
+listener/connection memory budget.
 
 The actor USER delivery handoff now distinguishes rejection of an
 unauthorized/foreign actor handle (which must not close a healthy socket)
@@ -581,6 +583,27 @@ passes reported success. The model is a synthetic contract probe, **not**
 compilation or execution of this private source tree, JDK25/GraalVM, the
 actual loopback JUnit cases, or Native Image. Never promote runtime
 claims from this model result alone.
+
+### Isolated byte-exact host retirement verification
+
+The exact `WebSocketHostRetirement.java` blob at Git SHA-1
+`dcfb3ecf63225aeb61375e2969dd3067ff08d642` was copied into a
+local isolated Java 21 workspace and the Git blob hash independently
+recomputed and matched. `javac` compiled that identical helper source
+(with a `ThreadDeath` deprecation warning). A separate Java 21 probe
+executed five rounds with 64 other closes surviving a blocked close,
+400 ordered FIFO closes in total, 5,000 duplicate notifications in
+total, and verified that no more than four physical close workers
+run concurrently. All five rounds passed. This proves the helper's
+standalone Java 21 behavior only, not its integration with the private
+actor runtime, JDK 25/GraalVM JUnit, or Native Image.
+
+The new `WebSocketHostRetirementTest` authors five actual JUnit
+checks of those same behaviors, including forgetting a redundant
+notification. The approved exact-SHA workflow includes this suite,
+but current source-org jobs have not executed any test steps.
+Unbounded listener count and fully blocked worker pool still require
+separate operational admission/budget controls.
 
 ## Not yet implemented
 
