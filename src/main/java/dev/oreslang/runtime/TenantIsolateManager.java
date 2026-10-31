@@ -231,11 +231,13 @@ public final class TenantIsolateManager implements AutoCloseable {
                 pending.add(tenant.handle);
             }
         }
-        RuntimeException first = null;
+        Throwable first = null;
         for (TenantHandle handle : pending) {
             try {
                 close_tenant(handle);
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | Error failure) {
+                // A failing tenant must never prevent shutdown requests to
+                // unrelated tenants. Failed contexts remain in the registry.
                 if (first == null) first = failure;
                 else if (first != failure) first.addSuppressed(failure);
             }
