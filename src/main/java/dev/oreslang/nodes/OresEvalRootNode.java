@@ -6543,10 +6543,45 @@ public final class OresEvalRootNode extends RootNode {
                         name.name(), named.arguments().size());
                 Ast.CallExpr lowered = OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(
                         named, resolved);
-                // Only primitive literals can be permuted. Nonliteral named
-                // arguments must stay in source/formal order, so this ordinary
-                // runtime call preserves lexical effects and cleanup.
-                return eval(lowered, env);
+                var plan = OptionalCallShapeBinder.directScalarBindingPlan(named, resolved);
+                if (!OptionalCallShapeBinder.isReorderedNamedCall(plan)
+                        || OptionalCallShapeBinder.isDirectScalarLiteralNamedCall(named)) {
+                    // Identity permutations preserve all expression effects;
+                    // primitive literals may be freely permuted.
+                    return eval(lowered, env);
+                }
+
+                // Do NOT execute the formal-ordered static-checking CallExpr.
+                // First prove that each potentially effectful source item is
+                // an unshadowed closed zero-argument invocation, and that
+                // actor lexical import constraints are satisfied. Every
+                // rejection must happen before evaluating any guest effect.
+                for (Ast.CallArgument item : named.arguments()) {
+                    if (item.value() instanceof Ast.CallExpr nested
+                            && nested.callee() instanceof Ast.NameExpr callee
+                            && env.lookup(callee.name()) != Env.MISSING) {
+                        throw new IllegalArgumentException(
+                                "reordered named call cannot invoke local callback '"
+                                        + callee.name() + "'");
+                    }
+                }
+                requireExplicitClassCallableImport(env, name.name());
+
+                // Materialize each argument exactly once in its ORIGINAL
+                // lexical order. The checked plan then assembles values, not
+                // expressions, into the ordinary declared-arity call ABI.
+                // An exception aborts evaluation: later source arguments
+                // cannot execute, and ordinary invocation cleanup is reused.
+                List<Object> sourceValues = new ArrayList<>(named.arguments().size());
+                for (Ast.CallArgument item : named.arguments()) {
+                    sourceValues.add(eval(item.value(), env));
+                }
+                List<Object> formalValues = new ArrayList<>(
+                        java.util.Collections.nCopies(resolved.parameters().size(), null));
+                for (int formal = 0; formal < resolved.parameters().size(); formal++) {
+                    formalValues.set(formal, sourceValues.get(plan.sourceIndex(formal)));
+                }
+                return invoke(functionInvocation(resolved, formalValues));
             }
             if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
                 throw new IllegalArgumentException(
