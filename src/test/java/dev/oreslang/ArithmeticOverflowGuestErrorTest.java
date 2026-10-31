@@ -36,6 +36,28 @@ final class ArithmeticOverflowGuestErrorTest {
     }
 
     @Test
+    void caughtOverflowIsAlsoBuiltinError() {
+        String guest = """
+                pub fnc main():int{
+                  try {
+                    return 9223372036854775807 + 1;
+                  } catch (err) {
+                    if err is type Error {
+                      return 42;
+                    } else {
+                      return 1;
+                    } fi
+                  } finally {
+                  }
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(OresLanguage.ID, guest).asLong());
+        }
+    }
+
+    @Test
     void trapCanConsumeOrdinaryOverflowWithoutSeeingHostArithmeticException() {
         String guest = """
                 pub fnc main():int{
