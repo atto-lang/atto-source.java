@@ -11365,6 +11365,9 @@ public final class OresEvalRootNode extends RootNode {
         private Object println(List<Object> args) {
             return emitConsole(context, args, "stdio.println", true);
         }
+        private Object printlnAsync(List<Object> args) {
+            return emitConsoleAsync(context, args, "stdio.println_async");
+        }
     }
     private static Object emitConsole(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
@@ -11382,6 +11385,19 @@ public final class OresEvalRootNode extends RootNode {
             dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
         }
         return null;
+    }
+    private static Object emitConsoleAsync(OresContext context, List<Object> args, String operation) {
+        context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
+        if (args.isEmpty() || args.size() > 32)
+            throw new IllegalArgumentException(operation + " requires 1 to 32 values");
+        StringBuilder text = new StringBuilder();
+        for (Object argument : args) text.append(CycleSafeDisplay.render(argument));
+        return context.asyncStdio().logAsync(text.append('\n').toString());
+    }
+    private static Object emitStdoutAsync(OresContext context, List<Object> args, String operation) {
+        context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
+        requireOne(args, operation);
+        return context.asyncStdio().logAsync(CycleSafeDisplay.render(args.getFirst()) + "\n");
     }
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
