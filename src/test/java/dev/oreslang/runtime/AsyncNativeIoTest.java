@@ -335,26 +335,34 @@ class AsyncNativeIoTest {
             CountDownLatch submissionsFinished = new CountDownLatch(1);
             var rejected = new java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>>();
             var actor = runtime.<String>spawnPrivateTrusted(factory -> (mail, turn) -> {
-                io.submit("physical-first", () -> {
-                    firstEntered.countDown();
-                    releaseFirst.await();
-                    return 1;
-                });
-                io.submit("queued-second", () -> {
-                    secondEntered.countDown();
-                    releaseSecond.await();
-                    return 2;
-                });
-                rejected.set(io.submit("reject-overflow", () -> {
-                    throw new AssertionError("rejected native work started");
-                }));
-                submissionsFinished.countDown();
+                if ("first".equals(mail.value())) {
+                    io.submit("physical-first", () -> {
+                        firstEntered.countDown();
+                        releaseFirst.await();
+                        return 1;
+                    });
+                } else if ("second".equals(mail.value())) {
+                    // This separate actor message is sent only AFTER the
+                    // physical first worker enters. The second operation is
+                    // deterministically queued and the third must reject.
+                    io.submit("queued-second", () -> {
+                        secondEntered.countDown();
+                        releaseSecond.await();
+                        return 2;
+                    });
+                    rejected.set(io.submit("reject-overflow", () -> {
+                        throw new AssertionError("rejected native work started");
+                    }));
+                    submissionsFinished.countDown();
+                }
             });
             try {
                 actor.ready().get(3, TimeUnit.SECONDS);
-                actor.send("start");
+                actor.send("first");
+                assertTrue(firstEntered.await(3, TimeUnit.SECONDS),
+                        "worker must own the physical first slot before overflow admission");
+                actor.send("second");
                 assertTrue(submissionsFinished.await(3, TimeUnit.SECONDS));
-                assertTrue(firstEntered.await(3, TimeUnit.SECONDS));
                 assertInstanceOf(RejectedExecutionException.class,
                         assertThrows(ExecutionException.class,
                                 () -> rejected.get().get(3, TimeUnit.SECONDS)).getCause());
