@@ -294,6 +294,31 @@ final class ActorPhysicalTurnGateTest {
     }
 
     @Test
+    void queuedPinnedTurnCannotEnterGuestAfterRegionStop() {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
+        var region = new ReusableLongStateRegion(1);
+        java.util.concurrent.atomic.AtomicReference<Runnable> delayed =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger enteredGuest = new AtomicInteger();
+        AtomicInteger rejected = new AtomicInteger();
+        gate.dispatchPinned(region, enteredGuest::incrementAndGet,
+                delayed::set, error -> {
+                    assertInstanceOf(RejectedExecutionException.class, error);
+                    rejected.incrementAndGet();
+                });
+        assertEquals(1, region.activePins());
+        assertNotNull(delayed.get());
+        region.beginRetire();
+        assertFalse(region.tryClose(), "queued Task retains a lifetime pin");
+        delayed.get().run(); // physical start linearizes AFTER region STOP
+        assertEquals(0, enteredGuest.get());
+        assertEquals(1, rejected.get());
+        assertEquals(0, region.activePins());
+        assertTrue(region.tryClose());
+        gate.close();
+    }
+
+    @Test
     void pinnedSubmissionRejectsAndInlineGuestFailureDoNotLeakOrDoubleRelease() {
         ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
         try (var region = new ReusableLongStateRegion(1)) {
