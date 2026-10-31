@@ -420,96 +420,32 @@ class PrivateCiV3Test(unittest.TestCase):
                     "trusted/ci", carrier, CAPACITY_RUN_ID, now=now
                 )
 
-    def test_reviewed_source_pr_head_binds_policy_codeowners_and_exact_review(self):
-        source_commit = "8" * 40
-        policy_bytes = b"trusted/ci 1323598177\n"
-        policy_digest = hashlib.sha256(policy_bytes).digest()
-        source_codeowners = (
-            "\n".join(
-                path + " @ORESoftware"
-                for path in v3.legacy.SECURITY_CODEOWNER_PATHS
-            ) + "\n"
-        ).encode()
+    def test_reviewed_source_pr_head_is_rejected_even_with_exact_review(self):
+        with patch.object(v3, "authorized_main_sha") as protected:
+            with self.assertRaisesRegex(v3.Denied, "requires protected main"):
+                v3.authorized_source_authority_sha(
+                    "trusted/ci", POLICY, 1323598177,
+                    1482, "8" * 40, "reviewed-pr-head",
+                )
+        protected.assert_not_called()
 
-        def remote(path, ref, max_bytes):
-            self.assertEqual(ref, source_commit)
-            if path == v3.legacy.POLICY_PATH:
-                return policy_bytes, v3.git_blob_sha(policy_bytes)
-            if path == v3.legacy.CODEOWNERS_PATH:
-                return source_codeowners, v3.git_blob_sha(source_codeowners)
-            raise AssertionError(path)
-
-        with (
-            patch.object(
-                v3, "verify_source_pr",
-                return_value=v3.SOURCE_REPOSITORY_ID,
-            ) as verified,
-            patch.object(v3, "remote_file_at_source_main", side_effect=remote),
-        ):
+    def test_protected_source_authority_uses_protected_main(self):
+        with patch.object(
+            v3, "authorized_main_sha", return_value=PROTECTED
+        ) as protected:
             self.assertEqual(
                 v3.authorized_source_authority_sha(
-                    "trusted/ci", policy_digest, 1323598177,
-                    1482, source_commit, "reviewed-pr-head",
+                    "trusted/ci", POLICY, 1323598177,
+                    1482, "8" * 40, "protected-main",
                 ),
-                source_commit,
+                PROTECTED,
             )
-        self.assertEqual(verified.call_count, 2)
-
-    def test_reviewed_source_pr_head_rejects_policy_or_review_drift(self):
-        source_commit = "8" * 40
-        policy_bytes = b"trusted/ci 1323598177\n"
-        policy_digest = hashlib.sha256(policy_bytes).digest()
-        source_codeowners = (
-            "\n".join(
-                path + " @ORESoftware"
-                for path in v3.legacy.SECURITY_CODEOWNER_PATHS
-            ) + "\n"
-        ).encode()
-
-        def good_remote(path, ref, max_bytes):
-            if path == v3.legacy.POLICY_PATH:
-                return policy_bytes, v3.git_blob_sha(policy_bytes)
-            if path == v3.legacy.CODEOWNERS_PATH:
-                return source_codeowners, v3.git_blob_sha(source_codeowners)
-            raise AssertionError(path)
-
-        with (
-            patch.object(
-                v3, "verify_source_pr",
-                side_effect=[
-                    v3.SOURCE_REPOSITORY_ID,
-                    v3.Denied("source PR security owner approval is stale or revoked"),
-                ],
-            ),
-            patch.object(v3, "remote_file_at_source_main", side_effect=good_remote),
-        ):
-            with self.assertRaisesRegex(v3.Denied, "stale or revoked"):
-                v3.authorized_source_authority_sha(
-                    "trusted/ci", policy_digest, 1323598177,
-                    1482, source_commit, "reviewed-pr-head",
-                )
-
-        def bad_policy(path, ref, max_bytes):
-            if path == v3.legacy.POLICY_PATH:
-                changed = policy_bytes + b"# changed\n"
-                return changed, v3.git_blob_sha(changed)
-            return source_codeowners, v3.git_blob_sha(source_codeowners)
-
-        with (
-            patch.object(
-                v3, "verify_source_pr",
-                return_value=v3.SOURCE_REPOSITORY_ID,
-            ),
-            patch.object(v3, "remote_file_at_source_main", side_effect=bad_policy),
-        ):
-            with self.assertRaisesRegex(v3.Denied, "policy diverges"):
-                v3.authorized_source_authority_sha(
-                    "trusted/ci", policy_digest, 1323598177,
-                    1482, source_commit, "reviewed-pr-head",
-                )
+        protected.assert_called_once_with(
+            "trusted/ci", POLICY, 1323598177
+        )
 
     def test_source_authority_mode_rejects_unknown_value(self):
-        with self.assertRaisesRegex(v3.Denied, "source authority mode invalid"):
+        with self.assertRaisesRegex(v3.Denied, "requires protected main"):
             v3.authorized_source_authority_sha(
                 "trusted/ci", POLICY, 42, 1482, "8" * 40, "unsafe",
             )
@@ -851,43 +787,42 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(got["workflow_blob_sha"], WORKFLOW)
         self.assertEqual(got["test_plan_blob_sha"], PLAN_BLOB)
         self.assertEqual(got["review_pr"], 17)
-        self.assertEqual(got["governance_mode"], "protected-main")
+        self.assertNotIn("governance_mode", got)
         with self.assertRaisesRegex(v3.Denied, "not authorized"):
             v3.parse_contract(
                 raw, "trusted/ci", 1483, "ci/test-plans/java-pr1482.json"
             )
 
-    def test_contract_reviewed_pr_head_requires_review_pr(self):
-        raw = {
-            "schema": 1,
-            "carriers": {
-                "trusted/ci": {
-                    "repository_id": 42,
-                    "base_sha": BASE,
-                    "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
-                    "workflow_blob_sha": WORKFLOW,
-                    "governance_mode": "reviewed-pr-head",
-                    "test_plans": {
-                        "ci/test-plans/java-pr1482.json": {
-                            "blob_sha": PLAN_BLOB,
-                            "allowed_prs": [1482],
-                        }
-                    },
-                }
-            },
-        }
-        with self.assertRaisesRegex(v3.Denied, "requires review PR"):
-            v3.parse_contract(
-                json.dumps(raw).encode(),
-                "trusted/ci", 1482, "ci/test-plans/java-pr1482.json",
-            )
-        raw["carriers"]["trusted/ci"]["review_pr"] = 17
-        got = v3.parse_contract(
-            json.dumps(raw).encode(),
-            "trusted/ci", 1482, "ci/test-plans/java-pr1482.json",
-        )
-        self.assertEqual(got["governance_mode"], "reviewed-pr-head")
-        self.assertEqual(got["review_pr"], 17)
+    def test_contract_rejects_reviewed_pr_head_governance(self):
+        for review_pr in (None, 17):
+            carrier = {
+                "repository_id": 42,
+                "base_sha": BASE,
+                "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+                "workflow_blob_sha": WORKFLOW,
+                "governance_mode": "reviewed-pr-head",
+                "test_plans": {
+                    "ci/test-plans/java-pr1482.json": {
+                        "blob_sha": PLAN_BLOB,
+                        "allowed_prs": [1482],
+                    }
+                },
+            }
+            if review_pr is not None:
+                carrier["review_pr"] = review_pr
+            raw = {
+                "schema": 1,
+                "carriers": {"trusted/ci": carrier},
+            }
+            with self.subTest(review_pr=review_pr):
+                with self.assertRaisesRegex(
+                    v3.Denied, "carrier contract fields are not exact"
+                ):
+                    v3.parse_contract(
+                        json.dumps(raw).encode(),
+                        "trusted/ci", 1482,
+                        "ci/test-plans/java-pr1482.json",
+                    )
 
     def test_contract_rejects_invalid_carrier_review_pr(self):
         raw = {
@@ -986,165 +921,28 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "carrier main is not protected"):
                 v3.checked_carrier_main("trusted/ci", carrier)
 
-    def test_reviewed_pr_head_carrier_accepts_only_exact_open_approved_head(self):
+    def test_reviewed_pr_head_carrier_is_rejected_before_api(self):
         carrier = contract()
         carrier.update({
             "review_pr": 17,
             "governance_mode": "reviewed-pr-head",
         })
-
-        def pr_doc(head=BASE, state="open", draft=False):
-            return {
-                "number": 17,
-                "state": state,
-                "draft": draft,
-                "user": {"id": 424242, "login": "carrier-author"},
-                "head": {
-                    "sha": head,
-                    "repo": {
-                        "full_name": "trusted/ci",
-                        "id": carrier["repository_id"],
-                    },
-                },
-                "base": {
-                    "ref": "main",
-                    "repo": {
-                        "full_name": "trusted/ci",
-                        "id": carrier["repository_id"],
-                    },
-                },
-            }
-
-        codeowners = {
-            "path": ".github/CODEOWNERS",
-            "type": "file",
-            "encoding": "base64",
-            "content": base64.b64encode(CARRIER_CODEOWNERS).decode(),
-            "sha": CARRIER_CODEOWNERS_BLOB,
-        }
-
-        def api(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/pulls/17":
-                return pr_doc()
-            if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
-                return codeowners
-            if "branches/main" in route:
-                raise AssertionError("reviewed-pr-head must not trust carrier main")
-            raise AssertionError(route)
-
-        approved = {
-            "id": 91,
-            "state": "APPROVED",
-            "commit_id": BASE,
-        }
-        with (
-            patch.object(v3.legacy, "gh_api", side_effect=api),
-            patch.object(v3, "latest_carrier_review", return_value=approved) as review,
-        ):
-            self.assertEqual(
-                v3.checked_carrier_main("trusted/ci", carrier), BASE
-            )
-        self.assertEqual(review.call_count, 2)
-
-        for label, bad_pr, bad_review, error in (
-            (
-                "moved head",
-                pr_doc(head="9" * 40),
-                approved,
-                "exact open same-repo",
-            ),
-            (
-                "closed PR",
-                pr_doc(state="closed"),
-                approved,
-                "exact open same-repo",
-            ),
-            (
-                "draft PR",
-                pr_doc(draft=True),
-                approved,
-                "exact open same-repo",
-            ),
-            (
-                "stale review",
-                pr_doc(),
-                dict(approved, commit_id="9" * 40),
-                "stale or revoked",
-            ),
-            (
-                "revoked review",
-                pr_doc(),
-                dict(approved, state="DISMISSED"),
-                "stale or revoked",
-            ),
-        ):
-            def bad_api(route, method="GET", payload=None, doc=bad_pr):
-                if route == "repos/trusted/ci/pulls/17":
-                    return doc
-                if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
-                    return codeowners
-                raise AssertionError(route)
-            with (
-                self.subTest(label=label),
-                patch.object(v3.legacy, "gh_api", side_effect=bad_api),
-                patch.object(v3, "latest_carrier_review", return_value=bad_review),
+        with patch.object(v3.legacy, "gh_api") as api:
+            with self.assertRaisesRegex(
+                v3.Denied, "carrier governance requires protected main"
             ):
-                with self.assertRaisesRegex(v3.Denied, error):
-                    v3.checked_carrier_main("trusted/ci", carrier)
-
-    def test_reviewed_pr_head_carrier_rechecks_head_and_review_after_codeowners(self):
-        carrier = contract()
-        carrier.update({
-            "review_pr": 17,
-            "governance_mode": "reviewed-pr-head",
-        })
-        reads = 0
-
-        def api(route, method="GET", payload=None):
-            nonlocal reads
-            if route == "repos/trusted/ci/pulls/17":
-                reads += 1
-                head = BASE if reads == 1 else "9" * 40
-                return {
-                    "number": 17,
-                    "state": "open",
-                    "draft": False,
-                    "user": {"id": 424242},
-                    "head": {
-                        "sha": head,
-                        "repo": {
-                            "full_name": "trusted/ci",
-                            "id": carrier["repository_id"],
-                        },
-                    },
-                    "base": {
-                        "ref": "main",
-                        "repo": {
-                            "full_name": "trusted/ci",
-                            "id": carrier["repository_id"],
-                        },
-                    },
-                }
-            if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
-                return {
-                    "path": ".github/CODEOWNERS",
-                    "type": "file",
-                    "encoding": "base64",
-                    "content": base64.b64encode(CARRIER_CODEOWNERS).decode(),
-                    "sha": CARRIER_CODEOWNERS_BLOB,
-                }
-            raise AssertionError(route)
-
-        with (
-            patch.object(v3.legacy, "gh_api", side_effect=api),
-            patch.object(
-                v3,
-                "latest_carrier_review",
-                return_value={"id": 91, "state": "APPROVED", "commit_id": BASE},
-            ),
-        ):
-            with self.assertRaisesRegex(v3.Denied, "exact open same-repo"):
                 v3.checked_carrier_main("trusted/ci", carrier)
+        api.assert_not_called()
+
+    def test_unknown_carrier_governance_is_rejected_before_api(self):
+        carrier = contract()
+        carrier["governance_mode"] = "unsafe"
+        with patch.object(v3.legacy, "gh_api") as api:
+            with self.assertRaisesRegex(
+                v3.Denied, "carrier governance requires protected main"
+            ):
+                v3.checked_carrier_main("trusted/ci", carrier)
+        api.assert_not_called()
 
     def test_protected_carrier_still_requires_codeowner_admin_and_no_bypass(self):
         carrier = contract()
