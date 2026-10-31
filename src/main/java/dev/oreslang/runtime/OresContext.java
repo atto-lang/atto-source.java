@@ -551,13 +551,22 @@ public final class OresContext implements AutoCloseable {
                     failure);
         }
 
+        // Drain only after physical actor/native-I/O and VM retirement.
+        // On a stuck sink, preserve quarantine and never reflush synchronously.
+        try {
+            asyncStdio.close();
+        } catch (RuntimeException logFailure) {
+            throw new IllegalStateException(
+                    "Oreslang logging drain incomplete; context quarantined", logFailure);
+        }
+
         synchronized (this) {
             linkedCodeUnits.clear();
             linkedImportResolutions.clear();
             sharedCodeImages.close();
         }
         garbageCollector.close();
-        output.flush();
+        flushOutputAfterAsyncDrain(output, true);
         QUARANTINED_CONTEXTS.remove(this);
     }
 }
