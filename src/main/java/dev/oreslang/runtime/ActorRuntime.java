@@ -1926,7 +1926,8 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED)
+            return cell.sourceScheduler().start(task, cell::completePhysicalDrainsIfIdle);
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -2006,7 +2007,11 @@ public final class ActorRuntime implements AutoCloseable {
                     // A completed Future is not proof that an untrusted
                     // physical carrier has exited the actor boundary.
                     physicalQuiescenceConfirmed.set(true);
-                    releaseTimedWhenSafe.run();
+                    try {
+                        releaseTimedWhenSafe.run();
+                    } finally {
+                        cell.completePhysicalDrainsIfIdle();
+                    }
                 }
             }
         };
@@ -2086,9 +2091,10 @@ public final class ActorRuntime implements AutoCloseable {
             return false;
         }
 
-        future.whenCompleteRuntime(
-                (ignored, failure) ->
-                        cell.pendingOperations.remove(future));
+        future.whenCompleteRuntime((ignored, failure) -> {
+            cell.pendingOperations.remove(future);
+            cell.completePhysicalDrainsIfIdle();
+        });
         return true;
     }
 
@@ -2351,6 +2357,17 @@ public final class ActorRuntime implements AutoCloseable {
          * No carrier thread blocks awaiting the barrier. */
         public OresFuture<Void> drain() {
             return ActorRuntime.this.drain(this);
+        }
+
+        /**
+         * Trusted host upgrade barrier, stronger than drain(): waits for
+         * all admitted messages and for physical actor carrier, source Task,
+         * and runtime-continuation ownership to be idle. This is NOT a fence
+         * against other references sending new messages: the supervisor must
+         * separately freeze that actor's DATA admission before publication.
+         */
+        public OresFuture<Void> physicalDrain() {
+            return ActorRuntime.this.physicalDrain(this);
         }
 
         /** Seal admission and finish previously admitted messages before stopping.
@@ -5273,6 +5290,22 @@ public final class ActorRuntime implements AutoCloseable {
         return cell.drainAcceptedMessages();
     }
 
+    /**
+     * Trusted host-only physical completion barrier. Does not imply native
+     * code image, FFI or actor-owned off-heap arena reclamation; callers must
+     * additionally fence new physical admissions before using this to upgrade.
+     */
+    public OresFuture<Void> physicalDrain(ActorRef<?> ref) {
+        requireCallerRuntimeAffinity("inspect physical actor drain");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this))
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return OresFuture.failed(terminated(ref));
+        return cell.drainAcceptedMessagesPhysically();
+    }
+
     /** Graceful stop seals new mail, drains prior admissions, then terminates.
      * Never blocks a carrier: done is resolved after physical finalization. */
     public OresFuture<Void> gracefulStop(ActorRef<?> ref) {
@@ -7052,6 +7085,10 @@ public final class ActorRuntime implements AutoCloseable {
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
+        // These observers require the physical TurnExecutor to exit and all
+        // actor-owned scheduler continuations/Tasks to quiesce. Separate from
+        // the historical processed-message drain watermark.
+        private final ArrayList<DrainWaiter> pendingPhysicalDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -7234,6 +7271,50 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingDrains.add(new DrainWaiter(target, result));
                 return result;
             }
+        }
+
+        private OresFuture<Void> drainAcceptedMessagesPhysically() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) return OresFuture.failed(terminated(ref));
+                if (currentActor.get() == this)
+                    return OresFuture.failed(new IllegalStateException(
+                            "actor cannot await its own physical execution exit"));
+                if (pendingPhysicalDrains.size() >= MAX_PENDING_DRAIN_WAITERS)
+                    return OresFuture.failed(new ActorResourceExhaustedException(ref.id()));
+                final long target = nextUserMessageSequence - 1L;
+                if (physicalDrainedThroughLocked(target))
+                    return OresFuture.completed(null);
+                var result = new OresFuture<Void>(() -> false, () -> { });
+                pendingPhysicalDrains.add(new DrainWaiter(target, result));
+                return result;
+            }
+        }
+
+        private boolean physicalDrainedThroughLocked(long target) {
+            return lastProcessedUserMessageSequence >= target
+                    && !carrierActive && activeTurns == 0
+                    && !scheduled.get() && !sourceReceiveSuspended
+                    && queuedMessages == 0 && queuedContinuations == 0
+                    && queuedUserMessages == 0
+                    && pendingOperations.isEmpty()
+                    && (sourceScheduler == null
+                            || !sourceScheduler.hasLivePhysicalTasks());
+        }
+
+        private void completePhysicalDrainsIfIdle() {
+            List<OresFuture<Void>> complete = new ArrayList<>();
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) return;
+                for (int i = pendingPhysicalDrains.size() - 1; i >= 0; i--) {
+                    DrainWaiter waiter = pendingPhysicalDrains.get(i);
+                    if (physicalDrainedThroughLocked(waiter.sequence())) {
+                        pendingPhysicalDrains.remove(i);
+                        complete.add(waiter.completion());
+                    }
+                }
+            }
+            // Never run Future callbacks under the physical carrier monitor.
+            for (var future : complete) future.completeFromRuntime(null);
         }
 
         private void markMessageProcessed(long sequence) {
@@ -7719,6 +7800,9 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 if (reschedule) schedule();
+                // Run only after the TurnExecutor returned and its carrier
+                // ownership was released; markMessageProcessed is too early.
+                completePhysicalDrainsIfIdle();
             }
         }
 
@@ -7984,8 +8068,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
-                failedDrainWaiters = List.copyOf(pendingDrains);
+                failedDrainWaiters = new ArrayList<>(pendingDrains);
+                failedDrainWaiters.addAll(pendingPhysicalDrains);
                 pendingDrains.clear();
+                pendingPhysicalDrains.clear();
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
