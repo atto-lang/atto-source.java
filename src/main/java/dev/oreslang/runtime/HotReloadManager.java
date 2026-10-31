@@ -177,8 +177,14 @@ public final class HotReloadManager implements AutoCloseable {
                 active.set(generation);
             }
             return generation;
-        } catch (RuntimeException failure) {
-            context.close(true);
+        } catch (RuntimeException | Error failure) {
+            // Context/source construction can fail with Error (including
+            // allocation failure). Preserve the root cause if cleanup fails.
+            try {
+                context.close(true);
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (failure != cleanupFailure) failure.addSuppressed(cleanupFailure);
+            }
             throw failure;
         }
     }
