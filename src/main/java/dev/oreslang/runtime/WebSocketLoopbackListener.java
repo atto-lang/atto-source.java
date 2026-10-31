@@ -279,6 +279,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
 
         private Connection(Socket socket) { this.socket = socket; }
 
+        /** Host diagnostics; outstanding tickets are still actor lease owners. */
+        int pendingActorTicketCount() {
+            synchronized (lifecycleLock) { return pendingActorTickets; }
+        }
+
         /**
          * Trusted host/supervisor publication only. ActorRef supplies full
          * runtime identity and incarnation; tenant provenance MUST have been
