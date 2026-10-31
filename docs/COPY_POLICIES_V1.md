@@ -98,23 +98,6 @@ A separate assignment `val a: NoCopy<T> = t` does **not** silently seal.
   is allowed only via an explicit audited projection contract that
   cannot reconstitute the protected ownership/identity.
 
-### Singleton definition and scope
-
-`define singleton S ... end` declares a compiler-anchored instance,
-not an instantiable class alias or merely a static method namespace.
-There is one identity **per declared isolation scope** (default:
-runtime/isolate; tenant-scoped in tenant runtime namespaces). It is not
-implicitly process-global across tenants.
-
-* Copy, move/take, independent `new`, clone, duplicate serialization,
-  and generic `T: Copy` admission must be compile-time errors.
-* Borrows are permitted; mutable access follows actor isolation and
-  exclusive-loan rules. A singleton is **not** automatically Send/Sync/Share.
-* `rt share` of singleton state requires explicit safe sharing-domain
-  admission; it shares identity, never creates a second singleton.
-* Module initialization is once per scope, with deterministic ordering
-  and incarnation fencing; hot reload and tenant reincarnation cannot
-  accidentally expose two live identities for the same scope.
 ### Copy versus move: fail-closed partial field ownership
 
 `rt copy` asks for a new owned value; `rt take` asks to transfer the
@@ -135,6 +118,23 @@ Dynamic property selection over classes with protected fields must also
 fail closed when the compiler cannot prove the selected field is safe;
 casts and projection wrappers cannot erase no-copy provenance.
 
+### Singleton definition and scope
+
+`define singleton S ... end` declares a compiler-anchored instance,
+not an instantiable class alias or merely a static method namespace.
+There is one identity **per declared isolation scope** (default:
+runtime/isolate; tenant-scoped in tenant runtime namespaces). It is not
+implicitly process-global across tenants.
+
+* Copy, move/take, independent `new`, clone, duplicate serialization,
+  and generic `T: Copy` admission must be compile-time errors.
+* Borrows are permitted; mutable access follows actor isolation and
+  exclusive-loan rules. A singleton is **not** automatically Send/Sync/Share.
+* `rt share` of singleton state requires explicit safe sharing-domain
+  admission; it shares identity, never creates a second singleton.
+* Module initialization is once per scope, with deterministic ordering
+  and incarnation fencing; hot reload and tenant reincarnation cannot
+  accidentally expose two live identities for the same scope.
 * A singleton transferred into another scope is not a move: the caller
   must pass a scoped capability/ActorRef with the appropriate authority.
 * Singleton names must have stable linker identity, including across
