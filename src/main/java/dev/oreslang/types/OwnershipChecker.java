@@ -37,6 +37,8 @@ public final class OwnershipChecker {
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    // Supplied only by the verified package-instance namespace graph.
+    private Map<String, Map<Integer, Ast.FunctionDecl>> linkedProviderFunctions = Map.of();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
@@ -103,10 +105,21 @@ public final class OwnershipChecker {
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<Ast.BindingStmt, String> validatedShortAliases) {
-        if (linkedClasses == null) {
-            throw new IllegalArgumentException("linked public classes cannot be null");
+        return checkWithImportedClasses(
+                program, linkedClasses, validatedShortAliases, Map.of());
+    }
+
+    public static Ast.Program checkWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            Map<String, Map<Integer, Ast.FunctionDecl>> providerFunctions) {
+        if (linkedClasses == null || providerFunctions == null
+                || (!providerFunctions.isEmpty() && program.namespace() == null)) {
+            throw new IllegalArgumentException(
+                    "linked ownership provider calls require verified namespace metadata");
         }
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+        checker.linkedProviderFunctions = Map.copyOf(providerFunctions);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
@@ -1628,6 +1641,23 @@ public final class OwnershipChecker {
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
+            }
+            Map<Integer, Ast.FunctionDecl> siblings = linkedProviderFunctions.get(name.name());
+            if (siblings != null) {
+                int arity = syntacticCallArgumentTypes(call.arguments(), scope).size();
+                Ast.FunctionDecl provider = siblings.get(arity);
+                if (provider == null)
+                    throw error("same-package namespace provider has no public callable '"
+                            + name.name() + "' at arity " + arity);
+                if (call.typeArgumentsPresent() || !call.typeArguments().isEmpty())
+                    throw error("same-package namespace provider calls do not accept generics");
+                CallSignature signature = specializeCall(
+                        provider.genericParameters(), provider.genericParameters(),
+                        provider.parameters(), provider.returnType(), call, scope,
+                        Map.of(), provider.genericSpecs());
+                checkArguments(call.arguments(), signature.parameters(), scope,
+                        "same-package namespace provider " + name.name());
+                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
             }
         }
 
