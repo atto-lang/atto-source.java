@@ -13,6 +13,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/PinnedNamespacePackageInventory.java'
       - 'src/test/java/dev/oreslang/PinnedNamespacePackageInventoryTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
       - 'src/test/java/dev/oreslang/PinnedNamespaceRuntimeTest.java'
       - 'src/test/java/dev/oreslang/PinnedNamespaceSharedCorpusTest.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
