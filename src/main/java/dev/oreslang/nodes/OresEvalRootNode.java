@@ -7245,6 +7245,15 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "rt mut share requires a runtime SharedMutex<T> handle");
                     }
+                    if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.PRIVATE) {
+                        throw new SecurityException("private actors cannot rt mut share");
+                    }
+                    context.isolatePolicy().require(
+                            IsolatePolicy.Capability.SHARED_MEMORY, "rt mut share");
+                    IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+                    if (actorPolicy != null) {
+                        actorPolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "rt mut share");
+                    }
                     yield value;
                 }
                 // Static ownership checking currently admits rt copy only for proven
