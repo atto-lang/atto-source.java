@@ -231,6 +231,84 @@ final class WebSocketOutboundGateTest {
     }
 
     @Test
+    void queuedActorWriteCancellationReleasesLeaseButActiveCancellationDoesNot() {
+        var tenant = java.util.UUID.randomUUID();
+        var actor = new ActorRuntime.ActorAddress(
+                java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+        var next = new ActorRuntime.ActorAddress(actor.runtimeId(),
+                ActorRuntime.ActorId.create(), 2, actor.kind(), actor.transport());
+        var ledger = WebSocketActorConnectionLease.bindHost(
+                tenant, actor, () -> true);
+        var handle = ledger.issue();
+        var aborts = new AtomicInteger();
+        var gate = new WebSocketOutboundGate(
+                125, 2, 250, 1, aborts::incrementAndGet);
+        var queuedLoan = ledger.acquire(handle, tenant, actor);
+        var queued = gate.enqueueUser(WebSocketFrameCodec.OPCODE_BINARY,
+                new byte[20], queuedLoan);
+        assertEquals(1, ledger.outstandingLoans());
+        assertThrows(RejectedExecutionException.class, () ->
+                ledger.transferHost(handle, tenant, actor, next, () -> true));
+        assertTrue(queued.receipt().cancel(false));
+        assertEquals(0, ledger.outstandingLoans());
+        assertEquals(0, aborts.get());
+
+        var activeLoan = ledger.acquire(handle, tenant, actor);
+        var active = gate.enqueueUser(
+                WebSocketFrameCodec.OPCODE_TEXT, new byte[12], activeLoan);
+        assertSame(active, gate.poll());
+        assertTrue(active.receipt().cancel(true));
+        assertEquals(1, aborts.get());
+        assertEquals(1, ledger.outstandingLoans(),
+                "receipt cancellation cannot release a physical write loan");
+        assertThrows(RejectedExecutionException.class, () ->
+                ledger.transferHost(handle, tenant, actor, next, () -> true));
+        gate.retire();
+        assertEquals(1, ledger.outstandingLoans());
+        gate.finish(active, new IOException("physical socket aborted"));
+        assertEquals(0, ledger.outstandingLoans());
+        assertEquals(0, gate.heldUserCount());
+        assertEquals(0, gate.heldUserBytes());
+    }
+
+    @Test
+    void closeSupersessionAndRetireReleaseQueuedActorLoansExactlyOnce() {
+        var tenant = java.util.UUID.randomUUID();
+        var actor = new ActorRuntime.ActorAddress(
+                java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+        var ledger = WebSocketActorConnectionLease.bindHost(
+                tenant, actor, () -> true);
+        var handle = ledger.issue();
+        var gate = new WebSocketOutboundGate(125, 2, 250, 1, () -> { });
+        var first = gate.enqueueUser(WebSocketFrameCodec.OPCODE_TEXT,
+                new byte[10], ledger.acquire(handle, tenant, actor));
+        var second = gate.enqueueUser(WebSocketFrameCodec.OPCODE_BINARY,
+                new byte[10], ledger.acquire(handle, tenant, actor));
+        assertEquals(2, ledger.outstandingLoans());
+        var close = gate.enqueueControl(WebSocketFrameCodec.OPCODE_CLOSE,
+                WebSocketSessionState.closePayload(1000, ""));
+        assertEquals(0, ledger.outstandingLoans());
+        assertTrue(first.receipt().isCompletedExceptionally());
+        assertTrue(second.receipt().isCompletedExceptionally());
+        assertSame(close, gate.poll());
+        gate.retire();
+        assertEquals(0, ledger.outstandingLoans());
+        gate.finish(close, new IOException("retired"));
+        assertEquals(0, gate.heldControlCount());
+
+        var another = new WebSocketOutboundGate(125, 2, 250, 1, () -> { });
+        var queued = another.enqueueUser(WebSocketFrameCodec.OPCODE_TEXT,
+                new byte[5], ledger.acquire(handle, tenant, actor));
+        another.retire();
+        assertTrue(queued.receipt().isCompletedExceptionally());
+        assertEquals(0, ledger.outstandingLoans());
+        another.retire();
+        assertEquals(0, ledger.outstandingLoans());
+    }
+
+    @Test
     void invalidControlAndOversizeOutboundFramesFailBeforeQueueAdmission() {
         var gate = new WebSocketOutboundGate(125, 1, 125, 1, () -> { });
         assertThrows(IllegalArgumentException.class, () ->
