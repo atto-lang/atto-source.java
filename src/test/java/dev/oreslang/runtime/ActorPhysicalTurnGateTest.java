@@ -335,6 +335,26 @@ final class ActorPhysicalTurnGateTest {
     }
 
     @Test
+    void acceptedPhysicalTurnReplayDoesNotReenterGuestOrDoubleReleasePermit() {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
+        var region = new ReusableLongStateRegion(1);
+        java.util.concurrent.atomic.AtomicReference<Runnable> accepted =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        gate.dispatchPinned(region, executions::incrementAndGet,
+                accepted::set, failure -> fail("accepted turn unexpectedly rejected"));
+        assertEquals(1, region.activePins());
+        accepted.get().run();
+        assertEquals(1, executions.get());
+        assertEquals(0, region.activePins());
+        accepted.get().run(); // duplicate executor invocation is inert
+        assertEquals(1, executions.get());
+        assertEquals(0, region.activePins());
+        assertTrue(region.tryClose());
+        gate.close();
+    }
+
+    @Test
     void queuedPinnedTurnCannotEnterGuestAfterRegionStop() {
         ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
         var region = new ReusableLongStateRegion(1);
