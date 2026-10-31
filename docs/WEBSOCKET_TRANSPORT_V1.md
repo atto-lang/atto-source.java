@@ -115,6 +115,25 @@ This state machine still owns no socket or actor. A future raw-socket transport
 must serialize returned CONTROL actions ahead of subsequent USER writes and
 must close/revoke the transport exactly once on terminal lifecycle events.
 
+## Host-only outbound queue foundation (not socket integration)
+
+`WebSocketOutboundQueue` now records bounded, validated outbound frame leases
+without exposing any socket or host state to Oreslang guest code. USER admission
+uses both count and cumulative-byte credits (including the active write lease);
+credits are returned only on successful/failed completion, not when dequeued.
+Queued CONTROL overtakes queued USER, while CLOSE evicts queued USER/CONTROL
+frames and remains admissible even after ordinary CONTROL capacity fills.
+Repeated or stale completion cannot release credits twice. Physical retirement
+revokes all leases and queued data idempotently.
+
+**Not yet executed or wired:** This state machine does not yet drive the raw
+listener's `Socket.getOutputStream()`. Java blocking output can hang on a slow
+peer, and neither CONTROL priority nor socket write deadlines are operational
+until one serialized transport writer consumes these leases. A pending active
+USER write cannot be preempted by the queue; an independent deadline/cancel
+owner must close the socket. No guest-level send API, source actor ownership,
+Graal Native Image execution, or cross-backend support is claimed.
+
 ## Native transport decision
 
 The existing Oreslang HTTP server is implemented on JDK `HttpServer`. That
