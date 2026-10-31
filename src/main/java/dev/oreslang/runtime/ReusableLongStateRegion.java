@@ -32,6 +32,7 @@ public final class ReusableLongStateRegion implements AutoCloseable {
     private final int[] freeSlots;
     private final int[] pinGenerations = new int[MAX_PINS];
     private final boolean[] activePinSlots = new boolean[MAX_PINS];
+    private final boolean[] startedPinSlots = new boolean[MAX_PINS];
     private int activePins;
     private int nextSlot;
     private int freeCount;
@@ -146,6 +147,7 @@ public final class ReusableLongStateRegion implements AutoCloseable {
         for (int slot = 0; slot < MAX_PINS; slot++) {
             if (!activePinSlots[slot] && pinGenerations[slot] < MAX_GENERATION) {
                 activePinSlots[slot] = true;
+                startedPinSlots[slot] = false;
                 ++activePins;
                 return PIN_TAG | ((long) domain << 40)
                         | ((long) pinGenerations[slot] << 16) | (long) slot;
@@ -155,11 +157,33 @@ public final class ReusableLongStateRegion implements AutoCloseable {
     }
 
     /**
+     * Linearize start of a pinned actor turn against beginRetire().
+     * A pin acquired before STOP may sit in a dispatcher queue, but MUST NOT
+     * execute guest work after STOP won this admission race. One ticket can
+     * start at most one physical turn. This is trusted host bookkeeping,
+     * not an authority to access the scalar state after retirement.
+     */
+    synchronized boolean claimPinnedTurn(long ticket) {
+        int slot = requirePin(ticket);
+        if (retiring || mutating || startedPinSlots[slot]) return false;
+        startedPinSlots[slot] = true;
+        return true;
+    }
+
+    /**
      * Release a completed pin even after admission has been retired.
      * Duplicate, foreign, stale and untyped tickets fail closed.
      * Cancellation requests alone must not call this method.
      */
     public synchronized void releasePin(long ticket) {
+        int slot = requirePin(ticket);
+        activePinSlots[slot] = false;
+        startedPinSlots[slot] = false;
+        ++pinGenerations[slot]; // saturated slot is never admitted again
+        --activePins;
+    }
+
+    private int requirePin(long ticket) {
         int ticketDomain = (int) ((ticket >>> 40) & 0x7F_FFFFL);
         int slot = (int) (ticket & 0xFFFFL);
         int generation = (int) ((ticket >>> 16) & 0xFF_FFFFL);
@@ -168,9 +192,7 @@ public final class ReusableLongStateRegion implements AutoCloseable {
                 || pinGenerations[slot] != generation) {
             throw new IllegalStateException("invalid, foreign or stale region lifetime pin");
         }
-        activePinSlots[slot] = false;
-        ++pinGenerations[slot]; // saturated slot is never admitted again
-        --activePins;
+        return slot;
     }
 
     public synchronized int activePins() { return activePins; }
@@ -193,6 +215,7 @@ public final class ReusableLongStateRegion implements AutoCloseable {
         Arrays.fill(live, false);
         Arrays.fill(freeSlots, 0);
         Arrays.fill(activePinSlots, false);
+        Arrays.fill(startedPinSlots, false);
         liveCount = 0;
         freeCount = 0;
         activePins = 0;
