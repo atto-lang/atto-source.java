@@ -1997,7 +1997,7 @@ class PrivateCiV3Test(unittest.TestCase):
                         "run_attempt": 1,
                         "started_at": "2026-10-20T00:00:00Z",
                     },
-                ),
+                ) as capacity_check,
                 patch.object(
                     v3.legacy,
                     "collect_source",
@@ -2039,6 +2039,11 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(checked_destination.call_count, 3)
         self.assertEqual(verify_source_pr.call_count, 3)
         self.assertEqual(authorize_write.call_count, 8)
+        self.assertEqual(capacity_check.call_count, 3)
+        self.assertEqual(capacity_check.call_args_list[0].kwargs["now"],
+                         dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc))
+        self.assertIsNone(capacity_check.call_args_list[1].kwargs["now"])
+        self.assertIsNone(capacity_check.call_args_list[2].kwargs["now"])
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
@@ -2133,6 +2138,106 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_publish_rejects_expired_capacity_before_payload_ref(self):
+        carrier = contract()
+        writes = []
+        capacity_receipt = {
+            "run_id": CAPACITY_RUN_ID,
+            "run_attempt": 1,
+            "started_at": "2026-10-20T00:00:00Z",
+        }
+
+        def api(route, method="GET", payload=None):
+            writes.append((method, route, payload))
+            if method == "POST" and route.endswith("/git/blobs"):
+                data = base64.b64decode(payload["content"], validate=True)
+                return {"sha": v3.git_blob_sha(data)}
+            if method == "POST" and route.endswith("/git/trees"):
+                return {
+                    "sha": SOURCE_TREE
+                    if payload.get("base_tree") is None else ROOT_TREE
+                }
+            if method == "POST" and route.endswith("/git/commits"):
+                return {"sha": COMMIT}
+            if method == "POST" and route.endswith("/git/refs"):
+                raise AssertionError("capacity must fail before any ref write")
+            raise AssertionError((method, route))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_fingerprint",
+                    return_value=POLICY,
+                ),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(
+                    v3, "authorized_source_authority_sha",
+                    return_value=PROTECTED,
+                ),
+                patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3, "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {
+                            "id": carrier["repository_id"],
+                            "private": True,
+                            "visibility": "private",
+                        },
+                        "3" * 40,
+                        PLAN,
+                    ),
+                ),
+                patch.object(
+                    v3, "verify_carrier_capacity",
+                    side_effect=[
+                        capacity_receipt,
+                        v3.Denied("carrier capacity run is stale"),
+                    ],
+                ) as capacity_check,
+                patch.object(
+                    v3.legacy, "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")],
+                ),
+                patch.object(
+                    v3.legacy, "verified_exact_source_tree",
+                    return_value=SOURCE_TREE,
+                ),
+                patch.object(v3, "authorize_write"),
+                patch.object(v3, "require_exact_ref") as exact_ref,
+                patch.object(v3, "delete_exact_ref") as delete_ref,
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+            ):
+                with self.assertRaisesRegex(v3.Denied, "capacity run is stale"):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                        capacity_run_id=CAPACITY_RUN_ID,
+                        now=dt.datetime(
+                            2026, 10, 20, tzinfo=dt.timezone.utc
+                        ),
+                    )
+
+        self.assertEqual(capacity_check.call_count, 2)
+        self.assertFalse(any(
+            method == "POST" and route.endswith("/git/refs")
+            for method, route, _payload in writes
+        ))
+        exact_ref.assert_not_called()
+        delete_ref.assert_not_called()
 
     def test_publish_rolls_back_payload_if_protection_changes_before_authorization(self):
         carrier = contract()
