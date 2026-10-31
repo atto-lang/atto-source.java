@@ -1532,6 +1532,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> owner;
         private final ActorId supervisor;
         private final ActorId[] producerGrants = new ActorId[2];
+        /** First mailbox sequence admitted AFTER each producer grant. */
+        private final long[] producerAdmissionFloor = new long[2];
         private long grantRevision;
 
         private QueueCommandAuthority(ActorCell<?> owner) {
@@ -1578,9 +1580,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /** Bind a producer actor by verified runtime ID; never accept a guest token. */
-        public synchronized void grantProducer(int slot, ActorId producer) {
-            requireSupervisor();
-            bindProducer(slot, producer);
+        public void grantProducer(int slot, ActorId producer) {
+            // Mail admission holds lifecycleLock when assigning sequence.
+            // Lock order is lifecycleLock then the authority monitor.
+            synchronized (owner.lifecycleLock) {
+                synchronized (this) {
+                    requireSupervisor();
+                    bindProducer(slot, producer, owner.nextUserMessageSequence);
+                }
+            }
         }
 
         private void requireStructuredParentCaller() {
@@ -1592,9 +1600,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private synchronized void grantFromParent(int slot, ActorId producer) {
+        private synchronized void grantFromParent(
+                int slot, ActorId producer, long admissionFloor) {
             requireStructuredParentCaller();
-            bindProducer(slot, producer);
+            bindProducer(slot, producer, admissionFloor);
         }
 
         private synchronized void revokeFromParent(int slot) {
@@ -1602,7 +1611,7 @@ public final class ActorRuntime implements AutoCloseable {
             unbindProducer(slot);
         }
 
-        private void bindProducer(int slot, ActorId producer) {
+        private void bindProducer(int slot, ActorId producer, long admissionFloor) {
             if (slot < 0 || slot >= producerGrants.length) {
                 throw new IllegalArgumentException("invalid queue producer slot");
             }
@@ -1622,6 +1631,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             long next = Math.addExact(grantRevision, 1L);
             producerGrants[slot] = producer;
+            producerAdmissionFloor[slot] = admissionFloor;
             grantRevision = next;
         }
 
@@ -1654,6 +1664,7 @@ public final class ActorRuntime implements AutoCloseable {
                 case SEND, CANCEL -> slot >= 0
                         && slot < producerGrants.length
                         && sender.equals(producerGrants[slot])
+                        && owner.activeMail.sequence() >= producerAdmissionFloor[slot]
                         && senderCell != null
                         && !senderCell.stopped.get()
                         && !senderCell.finalized;
@@ -1752,7 +1763,13 @@ public final class ActorRuntime implements AutoCloseable {
                 || grantee.stopped.get() || grantee.finalized) {
             throw new SecurityException("queue producer must be a live actor reference");
         }
-        authorityForChild(child).grantFromParent(slot, producer.id());
+        synchronized (child.lifecycleLock) {
+            if (child.stopped.get() || child.finalized) {
+                throw new SecurityException("queue actor retired during grant");
+            }
+            authorityForChild(child).grantFromParent(
+                    slot, producer.id(), child.nextUserMessageSequence);
+        }
     }
 
     public void revokeCurrentQueueProducer(ActorRef<?> queue, int slot) {
