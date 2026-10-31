@@ -5109,7 +5109,9 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 if (value instanceof OresObject object) {
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                    for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                    // Read a stable field-map snapshot: the owner may move or
+                    // reinitialize a mutable field on another task carrier.
+                    for (Map.Entry<String, Object> entry : object.fieldSnapshot().entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
                     return new OresObject(object.owner, object.klass, fields);
@@ -9581,7 +9583,7 @@ public final class OresEvalRootNode extends RootNode {
                         && containsLiveMutexGuard(future.getNow(null), seen);
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fieldSnapshot().values()) {
                     if (containsLiveMutexGuard(field, seen)) return true;
                 }
                 return false;
@@ -9646,7 +9648,7 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fieldSnapshot().values()) {
                     releaseMutexGuardsInValue(field, failed, seen);
                 }
                 return;
@@ -9754,7 +9756,15 @@ public final class OresEvalRootNode extends RootNode {
             this.klass = klass;
             this.fields = fields;
         }
-        @Override public Iterable<?> sharedStateChildren(){return fields.values();}
+        // All mutable field operations use this monitor. Copy keys/values
+        // under the lock, but traverse the snapshot outside it so a nested
+        // guest object or host callback cannot execute while locked.
+        private Map<String,Object> fieldSnapshot() {
+            synchronized (fields) {
+                return new LinkedHashMap<>(fields);
+            }
+        }
+        @Override public Iterable<?> sharedStateChildren(){return fieldSnapshot().values();}
         @Override public String toString() { return CycleSafeDisplay.render(this); }
     }
 
@@ -9815,13 +9825,19 @@ public final class OresEvalRootNode extends RootNode {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
-                        for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                        for (Map.Entry<String, Object> entry : object.fieldSnapshot().entrySet()) {
                             if (!first) write(", ");
                             first = false;
                             write(entry.getKey());
                             write("=");
-                            append(entry.getValue() == Evaluator.UNINITIALIZED_FIELD
-                                    ? "<uninitialized>" : entry.getValue(), depth + 1);
+                            Object fieldValue = entry.getValue();
+                            if (fieldValue == Evaluator.UNINITIALIZED_FIELD) {
+                                write("<uninitialized>");
+                            } else if (fieldValue == Evaluator.MOVED_FIELD) {
+                                write("<moved>");
+                            } else {
+                                append(fieldValue, depth + 1);
+                            }
                             if (output.length() >= MAX_CHARS) break;
                         }
                         write("}");
@@ -10012,7 +10028,7 @@ public final class OresEvalRootNode extends RootNode {
                 return runtimeSharedSafe(readonly.value(), seen);
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fieldSnapshot().values()) {
                     if (!runtimeSharedSafe(field, seen)) return false;
                 }
                 return true;

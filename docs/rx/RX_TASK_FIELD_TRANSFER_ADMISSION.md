@@ -104,3 +104,26 @@ Java compiler/JVM guest tests on that exact HEAD. It would not prove
 GraalVM Native Image, runtime sanitizer or multi-backend parity.
 The workflow has no cross-organization clone or private-source
 export. Zero recorded steps remain **NOT_EXECUTED**.
+
+
+## Mutable field snapshot consistency (2026-10-31)
+
+The same evaluator also contained unsynchronized iterations of an
+`OresObject`'s live mutable `fields` map during async argument
+detachment, live MutexGuard discovery/release, shared-state validation
+and display rendering. A concurrent `rt take`/mutable assignment
+could invalidate the iteration, produce a torn traversal or expose
+the internal `MOVED_FIELD` marker as Java object identity.
+
+The draft now adds `OresObject.fieldSnapshot()`, which creates a
+stable `LinkedHashMap` copy under the same monitor as class-field
+moves and writes. All five traversal paths and `sharedStateChildren`
+use the snapshot. The display prints `<moved>` rather than revealing
+an opaque sentinel. Recursive traversal and cleanup occur **after**
+the lock is released, avoiding user-code reentrancy under the monitor.
+
+This guarantees a consistent **shallow field-map snapshot**, not a
+deep transactional snapshot or proof of owner/lifetime safety for
+nested values. The Java compiler/runtime JUnit, actual multithreaded
+stress tests, and Graal native executions are still **NOT_EXECUTED**
+until source-side or independently authorized CI steps run.
