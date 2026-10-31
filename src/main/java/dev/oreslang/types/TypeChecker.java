@@ -1011,6 +1011,11 @@ public final class TypeChecker {
                     && !method.isStatic() && method.name().equals("handle_state")) {
                 throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
             }
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("queue_authorized")) {
+                throw new IllegalArgumentException(
+                        "queue_authorized is a sealed actor runtime intrinsic");
+            }
             if (method.annotations().stream().anyMatch(a -> a.name().equals("$critical$"))) {
                 throw new IllegalArgumentException("source critical method requires scheduler ticket and continuation lowering");
             }
