@@ -180,3 +180,32 @@ execute this smoke. Hosted run admission is still separately required.
 Neither the local smoke nor that workflow constitutes full GraalVM/Native
 Image, Maven/JUnit, complete actor scheduling or compiler guest parity.
 
+
+
+## Dual physical owner join regression — 2026-10-31
+
+`AsyncNativeIoTest.privateActorFinalizationRequiresBothPhysicalCarrierAndNativeIoRetirement`
+is a **production ActorRuntime integration regression**, distinct from the
+dependency-free `ExactSourcePhysicalTurnSmoke` and from a source-free model.
+It uses a real trusted private actor, the real `AsyncNativeIo` actor-id
+retirement gate, and a `TurnExecutor` that holds the physical carrier after
+guest work until a host release signal.
+
+The test covers both independent completion orders:
+1. Native I/O worker finishes and sends the exact final-loan callback
+   **before** the physical carrier exits.
+2. Physical carrier exits while the native worker is still running,
+   and the worker completes **afterward**.
+
+Actor DONE must stay unsettled after STOP until the second receipt in
+either order, then close the private memory slice and retire the actor.
+The test explicitly waits for the actual native loan retirement callback
+in the first order, rather than inferring completion from an unrelated worker
+or a Future's logical cancellation.
+
+**Status:** the integration JUnit test is checked in, not yet executed
+against the complete Java runtime. Exact-source standalone Java gate smoke
+passed separately on JDK21; it does not prove this combined path. Current
+source-org hosted Actions still report no runner and zero steps, including
+the new exact-head JDK21 workflow. Source-only checkout remains restricted to
+this repository; no private cross-org mirroring is authorized.
