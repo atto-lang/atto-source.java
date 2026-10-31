@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class StdioLogAndSpreadTest {
     @Test
     void detachedAsyncLogsDrainOnContextClose() throws Exception {
-        assertEquals("first|1\\nsecond|2\\n", run("""
+        assertEquals("first|1\nsecond|2\n", run("""
                 pub routine main(): void {
                   stdio.stdout.log_async("first", "|", 1);
                   stdio.stdout.log_async("second", "|", 2);
@@ -29,7 +29,7 @@ final class StdioLogAndSpreadTest {
 
     @Test
     void awaitedAsyncBarrierPreservesOutputOrder() throws Exception {
-        assertEquals("one\\ntwo\\n", run("""
+        assertEquals("one\ntwo\n", run("""
                 pub async routine main(): void {
                   stdio.stdout.log_async("one");
                   await stdio.flush_async_logs();
@@ -40,7 +40,7 @@ final class StdioLogAndSpreadTest {
 
     @Test
     void asyncLogSpreadAndListHaveIdenticalFormatting() throws Exception {
-        assertEquals("A1B\\nA1B\\n", run("""
+        assertEquals("A1B\nA1B\n", run("""
                 pub routine main(): void {
                   val parts = arr["A", 1, "B"];
                   stdio.stdout.log_async(...parts);
