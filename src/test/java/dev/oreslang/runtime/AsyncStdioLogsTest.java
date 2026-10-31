@@ -329,6 +329,25 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void finalHostFlushCannotHidePrintWriterIoFailure() {
+        Writer sink = new Writer() {
+            @Override public void write(char[] chars, int offset, int length) { }
+            @Override public void flush() throws IOException {
+                throw new IOException("final-host-flush-failed");
+            }
+            @Override public void close() { }
+        };
+        PrintWriter output = new PrintWriter(sink, true);
+        assertDoesNotThrow(() -> OresContext.flushOutputAfterAsyncDrain(output, false),
+                "a failed async drain must never reacquire the host writer");
+        IllegalStateException failed = assertThrows(IllegalStateException.class,
+                () -> OresContext.flushOutputAfterAsyncDrain(output, true));
+        assertTrue(failed.getMessage().contains("final stdout flush reported an error"),
+                "PrintWriter hides IOException unless checkError() is inspected");
+        assertTrue(output.checkError(), "the underlying PrintWriter error must remain visible");
+    }
+
+    @Test
     void timedOutDrainMustNotReenterBlockedWriterForFinalFlush() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
