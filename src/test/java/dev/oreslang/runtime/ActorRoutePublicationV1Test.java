@@ -246,9 +246,13 @@ final class ActorRoutePublicationV1Test {
 
     @Test
     void ambiguousPhysicalSubmitPoisonsDataWithoutRefundOrReplay() {
+        // The quarantined authority is intentionally NOT auto-closed: close()
+        // must reject its still outstanding physical message instead of
+        // silently voiding the ambiguous delivery. Test-owned gate/mailbox
+        // cleanup is separate from proving supervisor release authorization.
         try (var gate = new ActorUpgradeEpochGate(51, image('a'));
-             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
-             var authority = newAuthority(gate, mailbox)) {
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var authority = newAuthority(gate, mailbox);
             authority.admit(new byte[] {9});
             assertThrows(IllegalStateException.class,
                     () -> authority.dispatchNext((route, msg) -> {
@@ -261,6 +265,9 @@ final class ActorRoutePublicationV1Test {
                     () -> authority.stage(image('b')));
             assertThrows(IllegalStateException.class,
                     () -> authority.dispatchNext((route, msg) -> fail("replay")));
+            assertThrows(IllegalStateException.class, authority::close,
+                    "quarantined ambiguous mail cannot be dropped by normal shutdown");
+            assertEquals(1, mailbox.snapshot().retainedMessages());
         }
     }
 
