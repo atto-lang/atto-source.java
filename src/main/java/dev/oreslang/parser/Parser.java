@@ -580,7 +580,7 @@ public final class Parser {
             Ast.Visibility visibility,
             boolean isAbstract,
             boolean filePrivateScope,
-            List<Ast.Annotation> annotations) {
+            List<Ast.Annotation> classAnnotations) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -679,7 +679,7 @@ public final class Parser {
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
                 parents, interfaces, fields, constructor, methods,
-                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC), annotations);
+                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC), classAnnotations);
     }
 
     private Ast.ConstructorDecl parseConstructor(
