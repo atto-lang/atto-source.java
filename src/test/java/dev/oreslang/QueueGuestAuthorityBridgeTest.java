@@ -93,6 +93,45 @@ final class QueueGuestAuthorityBridgeTest {
         assertTrue(error.getMessage().contains("queue_authorized"), error.getMessage());
     }
 
+    @Test
+    void actorCannotShadowSealedQueueAuthorizationMethod() {
+        String source = """
+                define serial actor Worker as
+                  queue_authorized(int opcode, int producer_slot): bool {
+                    return true;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.send(self.queue_authorized(4, -1));
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains(
+                "queue_authorized is a sealed actor runtime intrinsic"),
+                error.getMessage());
+    }
+
+    @Test
+    void actorCannotShadowQueueAuthorizationThroughStaticMethod() {
+        String source = """
+                define serial actor Worker as
+                  static fnc queue_authorized(int opcode, int producer_slot): bool {
+                    return true;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains(
+                "queue_authorized is a sealed actor runtime intrinsic"),
+                error.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
