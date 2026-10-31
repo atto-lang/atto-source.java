@@ -16,10 +16,11 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Staged executable direct local named calls: exact-typed primitive literals
- * may be reordered; arbitrary expressions are admitted only if source and
- * formal parameter order match. Omission, Option<T>, defaults, effectful
- * permutation, constructors, generics and varargs remain disabled.
+ * Staged direct local named calls: scalar primitive literals can be freely
+ * permuted; closed zero-arg scalar calls may be reordered with lexical
+ * evaluation before formal-slot assembly. Other nonliteral argument
+ * permutations, omission, Option<T>, defaults, constructors, generic and
+ * variadic calls remain disabled.
  */
 final class DirectNamedLiteralCallExecutionTest {
 
@@ -144,13 +145,93 @@ final class DirectNamedLiteralCallExecutionTest {
     }
 
     @Test
-    void reorderedEffectfulNamedArgumentsRemainRejected() {
+    void reorderedClosedScalarCallsExecuteExactlyOnceInLexicalSourceOrder() throws Exception {
+        // The declared call ABI is (left, right), but the lexical order is
+        // second() then first(): side effects must be BA, while result is 43.
         String source = """
-                pub fnc first(): int { return 4; }
-                pub fnc second(): int { return 3; }
+                pub fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 4;
+                }
+                pub fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 3;
+                }
                 pub fnc combine(int left, int right): int { return left * 10 + right; }
                 pub routine main(): void {
-                    const int value = combine(right: second(), left: first());
+                    stdio.stdout.write(combine(right: second(), left: first()));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "named-reordered-lexical-effects.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("BA43", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void reorderedClosedScalarAndLiteralPreserveFullArityAndFormalSlots() throws Exception {
+        String source = """
+                pub fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 3;
+                }
+                pub fnc combine(int left, int right): int { return left * 10 + right; }
+                pub routine main(): void {
+                    stdio.stdout.write(combine(right: second(), left: 4));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "named-reordered-literal.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("B43", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void reorderedNamedCallsWithArgumentBearingNestedEffectsStayRejected() {
+        String source = """
+                pub fnc identity(int value): int { return value; }
+                pub fnc combine(int left, int right): int { return left * 10 + right; }
+                pub routine main(): void {
+                    const int result = combine(right: identity(3), left: 4);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void reorderedNamedCallsCannotInvokeShadowedLocalZeroArgumentCallbacks() {
+        String source = """
+                pub fnc first(): int { return 4; }
+                pub fnc combine(int left, int right): int { return left * 10 + right; }
+                pub routine main(): void {
+                    const int first = 9;
+                    const int result = combine(right: first(), left: 4);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void reorderedNamedCallsStillRejectIncorrectScalarReturnType() {
+        String source = """
+                pub fnc words(): string { return "not-int"; }
+                pub fnc combine(int left, int right): int { return left * 10 + right; }
+                pub routine main(): void {
+                    const int result = combine(right: words(), left: 4);
                     return;
                 }
                 """;
@@ -209,7 +290,7 @@ final class DirectNamedLiteralCallExecutionTest {
                                   Ast.CallArgument.named("left", left)));
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                 () -> OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(reordered, target));
-        assertTrue(rejected.getMessage().contains("lexical temporary lowering"));
+        assertTrue(rejected.getMessage().contains("closed scalar source-order lowering"));
     }
 
     @Test
