@@ -770,6 +770,121 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void stageFreezesDirectActorRefSendAndRollbackRestoresOldIngress()
+            throws Exception {
+        var delivered = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(65, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = new ActorRoutePublicationV1<>(
+                     gate, mailbox, state(7),
+                     runtime.<List<Integer>>spawnShared(() ->
+                             (message, context) -> delivered.countDown()))) {
+            var old = authority.current().physicalRoute();
+            try (var stage = authority.stage(image('b'))) {
+                assertThrows(ActorRuntime.ActorSealedException.class,
+                        () -> old.send(List.of(1)),
+                        "direct physical ActorRef send cannot bypass logical freeze");
+                assertEquals(1L, authority.current().routeEpoch());
+                assertEquals(0L, mailbox.snapshot().highestDispatchedSequence());
+            }
+            assertDoesNotThrow(() -> old.send(List.of(2)),
+                    "rollback must restore the old actor ingress authority");
+            assertTrue(delivered.await(10, TimeUnit.SECONDS));
+            assertEquals(1L, authority.current().routeEpoch());
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void publishedUpgradePermanentlyFencesDirectSendsToOldPhysicalActor()
+            throws Exception {
+        var deliveredNew = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(66, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> fail("stale V1 DATA execution"));
+            var candidate = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> deliveredNew.countDown());
+            try (var authority = new ActorRoutePublicationV1<>(
+                    gate, mailbox, state(7), old)) {
+                try (var stage = authority.stage(image('b'))) {
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                    while (!stage.quiescent() && System.nanoTime() < deadline)
+                        Thread.sleep(10);
+                    assertTrue(stage.quiescent(),
+                            "old physical actor must reach readiness and quiescence");
+                    assertTrue(stage.publish(state(9), candidate));
+                }
+                assertEquals(2L, authority.current().routeEpoch());
+                assertThrows(ActorRuntime.ActorSealedException.class,
+                        () -> old.send(List.of(1)),
+                        "published V2 must never reopen V1 direct ingress");
+                assertDoesNotThrow(() -> candidate.send(List.of(9)));
+                assertTrue(deliveredNew.await(10, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void sendPreparedBeforeFreezeCannotCommitAfterFinalAdmissionFence()
+            throws Exception {
+        var readingMessage = new CountDownLatch(1);
+        var allowPreparation = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(67, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var pool = Executors.newSingleThreadExecutor()) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> fail("racing stale DATA was delivered"));
+            var authority = new ActorRoutePublicationV1<>(gate, mailbox, state(7), old);
+            var delayed = new java.util.AbstractList<Integer>() {
+                private final java.util.concurrent.atomic.AtomicBoolean first =
+                        new java.util.concurrent.atomic.AtomicBoolean(true);
+                @Override public int size() {
+                    if (first.compareAndSet(true, false)) {
+                        readingMessage.countDown();
+                        try {
+                            if (!allowPreparation.await(10, TimeUnit.SECONDS))
+                                throw new IllegalStateException("delayed message preparation timed out");
+                        } catch (InterruptedException error) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(error);
+                        }
+                    }
+                    return 1;
+                }
+                @Override public Integer get(int index) {
+                    if (index != 0) throw new IndexOutOfBoundsException(index);
+                    return 1;
+                }
+            };
+            var sending = pool.submit(() -> old.send(delayed));
+            try {
+                assertTrue(readingMessage.await(10, TimeUnit.SECONDS),
+                        "send must enter source validation before freeze");
+                try (var stage = authority.stage(image('b'))) {
+                    allowPreparation.countDown();
+                    var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> sending.get(10, TimeUnit.SECONDS));
+                    assertInstanceOf(ActorRuntime.ActorSealedException.class,
+                            failure.getCause(),
+                            "final actor admission must recheck upgrade freeze");
+                    assertEquals(0L, mailbox.snapshot().highestDispatchedSequence());
+                    assertEquals(1L, authority.current().routeEpoch());
+                }
+            } finally {
+                allowPreparation.countDown();
+            }
+            // The failed send must not have leaked its actor mailbox credit.
+            assertDoesNotThrow(() -> old.send(List.of(2)));
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
