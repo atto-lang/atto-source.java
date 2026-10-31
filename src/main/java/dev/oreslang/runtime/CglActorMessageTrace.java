@@ -3,7 +3,6 @@ package dev.oreslang.runtime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -14,8 +13,9 @@ import java.util.UUID;
  */
 public final class CglActorMessageTrace {
     public static final int MAX_CAPACITY = 4096;
-    public record Sample(UUID actorId, long messageSequence, long enterNanos,
-                         long exitNanos, boolean sourceActor) { }
+    public record Sample(UUID actorId, long actorGeneration, long messageSequence,
+                         long enterNanos, long exitNanos, boolean sourceActor) { }
+    private record HandlerIdentity(UUID actorId, long generation, long sequence) { }
     public record Snapshot(List<Sample> samples, long dropped, long invalid,
                            boolean sealed) {
         /** An expected admitted handler count is required for coverage. */
@@ -26,12 +26,13 @@ public final class CglActorMessageTrace {
             }
             // Offline only: a duplicate ticket must not mask a missing
             // handler even when observed and expected counts agree.
-            HashSet<Map.Entry<UUID, Long>> identities = new HashSet<>();
+            HashSet<HandlerIdentity> identities = new HashSet<>();
             for (Sample sample : samples) {
-                if (sample.actorId() == null || sample.messageSequence() < 0
+                if (sample.actorId() == null || sample.actorGeneration() <= 0
+                        || sample.messageSequence() < 0
                         || sample.exitNanos() < sample.enterNanos()
-                        || !identities.add(Map.entry(sample.actorId(),
-                                                    sample.messageSequence()))) {
+                        || !identities.add(new HandlerIdentity(sample.actorId(),
+                                sample.actorGeneration(), sample.messageSequence()))) {
                     return false;
                 }
             }
@@ -40,6 +41,7 @@ public final class CglActorMessageTrace {
     }
 
     private final UUID[] actors;
+    private final long[] generations;
     private final long[] sequences;
     private final long[] starts;
     private final long[] finishes;
@@ -54,6 +56,7 @@ public final class CglActorMessageTrace {
             throw new IllegalArgumentException("invalid CGL trace capacity");
         }
         actors = new UUID[capacity];
+        generations = new long[capacity];
         sequences = new long[capacity];
         starts = new long[capacity];
         finishes = new long[capacity];
@@ -61,9 +64,9 @@ public final class CglActorMessageTrace {
     }
 
     /** Caller must pass timestamps measured around the actual handler invocation. */
-    public synchronized boolean record(UUID actor, long sequence, long enter,
-                                       long exit, boolean sourceActor) {
-        if (sealed || actor == null || sequence < 0 || exit < enter) {
+    public synchronized boolean record(UUID actor, long generation, long sequence,
+                                       long enter, long exit, boolean sourceActor) {
+        if (sealed || actor == null || generation <= 0 || sequence < 0 || exit < enter) {
             if (invalid != Long.MAX_VALUE) invalid++;
             return false;
         }
@@ -72,6 +75,7 @@ public final class CglActorMessageTrace {
             return false;
         }
         actors[size] = actor;
+        generations[size] = generation;
         sequences[size] = sequence;
         starts[size] = enter;
         finishes[size] = exit;
@@ -87,8 +91,8 @@ public final class CglActorMessageTrace {
     public synchronized Snapshot snapshot() {
         ArrayList<Sample> samples = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
-            samples.add(new Sample(actors[i], sequences[i], starts[i],
-                                   finishes[i], sourceActors[i]));
+            samples.add(new Sample(actors[i], generations[i], sequences[i],
+                                   starts[i], finishes[i], sourceActors[i]));
         }
         return new Snapshot(List.copyOf(samples), dropped, invalid, sealed);
     }
