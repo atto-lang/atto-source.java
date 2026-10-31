@@ -4130,6 +4130,129 @@ public final class ActorRuntime implements AutoCloseable {
                 behaviorFactory);
     }
 
+    /**
+     * Opaque one-shot authority to spawn a child with a narrower resource scope.
+     * The scope can only attenuate the issuing actor's permission chain.
+     */
+    public static final class PermissionDelegation {
+        private final ActorRuntime runtime;
+        private final ActorId parentId;
+        private final ActorPermissionScope scope;
+        private final AtomicBoolean consumed = new AtomicBoolean();
+
+        private PermissionDelegation(
+                ActorRuntime runtime,
+                ActorId parentId,
+                ActorPermissionScope scope) {
+            this.runtime = runtime;
+            this.parentId = parentId;
+            this.scope = scope;
+        }
+    }
+
+    public record PermissionDrainReceipt(long scopeSerial) { }
+
+    public PermissionDelegation delegatePermissions(
+            RuntimePermissions restrictions) {
+        requireCallerRuntimeAffinity("mint actor permission delegation");
+        requireNotActorGroupMailman("mint actor permission delegation");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null) {
+            throw new SecurityException(
+                    "only a currently executing actor may delegate permissions");
+        }
+
+        final PermissionDelegation delegation;
+        synchronized (parent.lifecycleLock) {
+            if (parent.stopped.get()
+                    || parent.finalized
+                    || parent.forceKillFenced) {
+                throw new SecurityException(
+                        "stopping actor cannot delegate permissions");
+            }
+            ActorPermissionScope scope = parent.permissionScope.attenuate(
+                    Objects.requireNonNull(restrictions, "restrictions"),
+                    parent::permissionScopeStateChanged);
+            delegation = new PermissionDelegation(
+                    this,
+                    parent.ref.id(),
+                    scope);
+            parent.issuedPermissionDelegations.add(delegation);
+        }
+        return delegation;
+    }
+
+    public Optional<PermissionDrainReceipt> tryPermissionDrainReceipt(
+            PermissionDelegation delegation) {
+        requireCallerRuntimeAffinity(
+                "inspect actor permission revocation drain");
+        requireNotActorGroupMailman(
+                "inspect actor permission revocation drain");
+        ActorCell<?> issuer = currentActor.get();
+        if (issuer == null
+                || delegation == null
+                || delegation.runtime != this
+                || !delegation.parentId.equals(issuer.ref.id())) {
+            throw new SecurityException(
+                    "only the issuing actor may inspect delegation drain");
+        }
+        return delegation.scope.tryDrainReceipt()
+                .map(receipt ->
+                        new PermissionDrainReceipt(receipt.scopeSerial()));
+    }
+
+    public boolean revokePermissions(PermissionDelegation delegation) {
+        requireCallerRuntimeAffinity(
+                "revoke actor permission delegation");
+        requireNotActorGroupMailman(
+                "revoke actor permission delegation");
+        ActorCell<?> issuer = currentActor.get();
+        if (issuer == null
+                || delegation == null
+                || delegation.runtime != this
+                || !delegation.parentId.equals(issuer.ref.id())) {
+            throw new SecurityException(
+                    "actor permission revocation requires its issuing actor");
+        }
+        return delegation.scope.revoke();
+    }
+
+    public <M> ActorHandle<M> spawnChild(
+            ActorKind kind,
+            IsolatePolicy policy,
+            PermissionDelegation delegation,
+            BehaviorFactory<M> behaviorFactory) {
+        requireCallerRuntimeAffinity("spawn delegated child actor");
+        requireNotActorGroupMailman("spawn delegated child actor");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null
+                || delegation == null
+                || delegation.runtime != this
+                || !delegation.parentId.equals(parent.ref.id())) {
+            throw new SecurityException(
+                    "actor permission delegation has a foreign issuer");
+        }
+        delegation.scope.requireActive(
+                "child permission delegation admission");
+        if (!delegation.consumed.compareAndSet(false, true)) {
+            throw new SecurityException(
+                    "actor permission delegation has already been consumed");
+        }
+        delegation.scope.requireActive(
+                "child permission delegation admission");
+
+        ActorRef<M> ref = spawnInternal(
+                kind,
+                policy,
+                behaviorFactory,
+                false,
+                null,
+                null,
+                null,
+                delegation.scope);
+        return new ActorHandle<>(ref, parent.ref.id());
+    }
+
     private IsolatePolicy defaultSpawnPolicy() {
         IsolatePolicy caller = currentActorPolicy();
         return caller == null ? policyCeiling : caller;
@@ -7139,6 +7262,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Delegated permission subtrees issued by this actor. */
+        private final Set<PermissionDelegation> issuedPermissionDelegations =
+                ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -7537,6 +7663,20 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void permissionScopeStateChanged() {
+            synchronized (lifecycleLock) {
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private boolean permissionDelegationsDrained() {
+            for (PermissionDelegation delegation : issuedPermissionDelegations) {
+                if (!delegation.scope.isDrained()) return false;
+            }
+            return true;
+        }
+
         private void finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
@@ -7546,6 +7686,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !physicalRetirement.hasValidReceipt()
+                    || !permissionDelegationsDrained()
                     || !children.isEmpty()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
@@ -8129,6 +8270,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<PermissionDelegation> permissionDelegations;
             List<DrainWaiter> failedDrainWaiters;
             synchronized (lifecycleLock) {
                 if (finalized) return;
@@ -8154,8 +8296,17 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                permissionDelegations =
+                        List.copyOf(issuedPermissionDelegations);
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // Revoke every delegation issued by this actor without waiting.
+            // Scope drain callbacks retry actor finalization only after all
+            // pre-existing physical I/O leases have actually retired.
+            for (PermissionDelegation delegation : permissionDelegations) {
+                delegation.scope.revoke();
             }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
