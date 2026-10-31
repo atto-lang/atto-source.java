@@ -95,6 +95,66 @@ final class DbWalAsyncAdmissionTest {
         }
     }
 
+    @Test void controlCloseRetirementWaitsForPhysicalCallbackDrain() throws Exception {
+        var io = new AsyncNativeIo(2);
+        var allowWorkToFinish = new CountDownLatch(1);
+        var terminalCallbackEntered = new CountDownLatch(1);
+        var allowTerminalCallbackExit = new CountDownLatch(1);
+        var physicallyRetired = new CountDownLatch(1);
+        var callbackExited = new java.util.concurrent.atomic.AtomicBoolean();
+        var retirementWasEarly = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            var result = io.submitControlWithRetirementHook("wal-close-test",
+                    () -> {
+                        assertTrue(allowWorkToFinish.await(3, TimeUnit.SECONDS));
+                        return 42;
+                    }, () -> {
+                        if (!callbackExited.get()) retirementWasEarly.set(true);
+                        physicallyRetired.countDown();
+                    });
+            result.whenCompleteRuntime((value, error) -> {
+                terminalCallbackEntered.countDown();
+                try {
+                    if (!allowTerminalCallbackExit.await(3, TimeUnit.SECONDS))
+                        throw new AssertionError("completion subscriber timed out");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+                callbackExited.set(true);
+            });
+            allowWorkToFinish.countDown();
+            assertTrue(terminalCallbackEntered.await(3, TimeUnit.SECONDS));
+            assertEquals(1L, physicallyRetired.getCount(),
+                    "logical Future settlement cannot imply physical retirement");
+            allowTerminalCallbackExit.countDown();
+            assertEquals(42, result.get(3, TimeUnit.SECONDS));
+            assertTrue(physicallyRetired.await(3, TimeUnit.SECONDS));
+            assertFalse(retirementWasEarly.get(),
+                    "resource release must follow the terminal callback drain");
+        } finally {
+            allowWorkToFinish.countDown();
+            allowTerminalCallbackExit.countDown();
+            io.close();
+        }
+    }
+
+    @Test void rejectedControlTaskCannotForgePhysicalRetirement() {
+        var io = new AsyncNativeIo(2);
+        try {
+            io.requestShutdown();
+            var count = new AtomicInteger();
+            var result = io.submitControlWithRetirementHook("wal-close-rejected",
+                    () -> { fail("must not execute"); return null; },
+                    count::incrementAndGet);
+            assertTrue(result.isDone());
+            assertEquals(0, count.get(),
+                    "no physical work entered; no close retirement proof exists");
+        } finally {
+            io.close();
+        }
+    }
+
     @Test void postShutdownRegisteredHandleBelongsToQuarantineUntilSweep() {
         var io = new AsyncNativeIo(2);
         var closed = new AtomicInteger();
