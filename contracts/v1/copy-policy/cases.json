@@ -111,6 +111,11 @@
       "id": "nocopy.field.cast_copy",
       "outcome": "reject",
       "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "field.take.unproven",
+      "outcome": "reject",
+      "code": "E_MOVE_UNPROVEN"
     }
   ]
 }
