@@ -60,13 +60,16 @@ final class WebSocketOutboundGate {
                 && opcode != WebSocketFrameCodec.OPCODE_BINARY) {
             throw new IllegalArgumentException("USER write must be text or binary");
         }
-        WebSocketFrameCodec.Frame frame =
-                new WebSocketFrameCodec.Frame(true, opcode, payload);
-        int size = frame.payloadUnsafe().length;
+        Objects.requireNonNull(payload, "WebSocket outbound payload");
+        int size = payload.length;
+        // Validate quotas on the caller-owned length BEFORE cloning into the
+        // immutable Frame. Oversized payloads must not amplify allocation.
         if (size > maxFrameBytes || heldUserCount >= userCapacity
                 || size > maxUserBytes - heldUserBytes) {
             throw new RejectedExecutionException("WebSocket outbound USER quota exhausted");
         }
+        WebSocketFrameCodec.Frame frame =
+                new WebSocketFrameCodec.Frame(true, opcode, payload);
         Write write = new Write(frame);
         user.addLast(write);
         heldUserCount++;
