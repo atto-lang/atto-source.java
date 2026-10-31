@@ -136,11 +136,13 @@ public final class PackageNamespaceLinker {
                             || fn.trapped() || fn.structural()
                             || !fn.effects().isEmpty()
                             || fn.returnType() == null
-                            || !fn.returnType().name().equals("int")
+                            || !(fn.returnType().name().equals("int")
+                                            || fn.returnType().name().equals("bool"))
                             || !fn.returnType().arguments().isEmpty()
                             || fn.parameters().stream().anyMatch(p ->
                                     p.mutable() || p.type() == null
-                                            || !p.type().name().equals("int")
+                                            || !(p.type().name().equals("int")
+                                                || p.type().name().equals("bool"))
                                             || !p.type().arguments().isEmpty())) {
                         throw new IllegalArgumentException(
                                 "unsupported public namespace callable '" + fn.name()
