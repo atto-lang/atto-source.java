@@ -267,10 +267,11 @@ public final class HotReloadManager implements AutoCloseable {
 
     /** Closed guest contexts must not remain in the manager's active registry. */
     private synchronized void onGenerationClosed(Generation generation) {
-        generations.remove(generation.id(), generation);
         boolean selected = activeByCodeUnit.get(generation.codeUnitId()) == generation
                 || active.get() == generation;
-        if (selected) requireRoutingEpochCapacity();
+        // Never mutate registry selection before checking the epoch fence.
+        if (selected && !closed) requireRoutingEpochCapacity();
+        generations.remove(generation.id(), generation);
         boolean removed = activeByCodeUnit.remove(generation.codeUnitId(), generation);
         removed |= active.compareAndSet(generation, null);
         if (removed && !closed) ++routingEpoch;
