@@ -35,6 +35,8 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
+    private final AsyncStdioLogs asyncStdio;
+    public AsyncStdioLogs asyncStdio() { return asyncStdio; }
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
@@ -107,6 +109,7 @@ public final class OresContext implements AutoCloseable {
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in(), StandardCharsets.UTF_8));
         this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
+        this.asyncStdio = new AsyncStdioLogs(output);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
