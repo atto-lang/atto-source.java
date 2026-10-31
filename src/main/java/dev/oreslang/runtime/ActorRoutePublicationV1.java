@@ -246,6 +246,18 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                     throw new IllegalArgumentException("replacement must be a new physical route");
                 if (!validatedState.schemaSha256().equals(image.stateSchemaSha256()))
                     throw new SecurityException("checkpoint schema mismatch");
+                // A bare or foreign physical ActorRef may not become the
+                // published V2 route. In particular, an unready candidate can
+                // later fail its factory and silently discard admitted mail.
+                if (prior.physicalRoute() instanceof ActorRuntime.ActorRef<?> old) {
+                    if (!(readyPhysicalRoute instanceof ActorRuntime.ActorRef<?> next))
+                        throw new IllegalArgumentException(
+                                "physical ActorRef upgrade requires an ActorRef successor");
+                    old.requireReadyUpgradeSuccessor(next);
+                } else if (readyPhysicalRoute instanceof ActorRuntime.ActorRef<?>) {
+                    throw new IllegalArgumentException(
+                            "host-only route cannot publish a physical ActorRef successor");
+                }
                 return preflight.withPreparedAuthority(() -> {
                 if (!physicalDrained.get()
                         || !preflight.quiescentSnapshot()) return false;
