@@ -13,7 +13,8 @@ import java.util.concurrent.RejectedExecutionException;
  * actor incarnation in WebSocketActorClaim; possession of a token alone
  * never grants another actor authority.</p>
  *
- * <p>Entries are retained until their physical connection has retired, so a
+ * <p>Entries are retained until socket closure, permit cleanup, and native
+ * resource loans have all retired, so a
  * closed actor cannot churn handles and bypass the fixed table capacity.
  * Reused slots advance a non-wrapping generation and cannot resurrect old
  * handles. One registry owns at most MAX_HANDLES simultaneous connections.
@@ -78,7 +79,7 @@ final class WebSocketConnectionHandles implements AutoCloseable {
         if (closed) throw new RejectedExecutionException("WebSocket handle table closed");
         int free = -1;
         for (int i = 0; i < entries.length; i++) {
-            if (entries[i] == null || entries[i].connection.isRetired()) {
+            if (entries[i] == null || entries[i].connection.isFullyRetired()) {
                 free = i;
                 break;
             }
