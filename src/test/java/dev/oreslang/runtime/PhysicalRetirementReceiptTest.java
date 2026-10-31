@@ -98,4 +98,36 @@ final class PhysicalRetirementReceiptTest {
         assertTrue(gate.hasValidReceipt());
         assertEquals(PhysicalRetirementReceipt.State.DRAINED, gate.state());
     }
+
+    @Test
+    void liveParentMayForkStructuredDescendantAfterSeal() {
+        PhysicalRetirementReceipt gate = new PhysicalRetirementReceipt(55);
+        PhysicalRetirementReceipt.Lease parent = gate.acquire("native-worker");
+
+        gate.seal();
+        assertNull(gate.receipt());
+        assertThrows(
+                RejectedExecutionException.class,
+                () -> gate.acquire("new-root-work"));
+
+        PhysicalRetirementReceipt.Lease child =
+                parent.fork("registered-socket");
+        assertEquals(2, gate.activeLeases());
+
+        parent.close();
+        assertNull(
+                gate.receipt(),
+                "parent retirement cannot outrun descendant physical ownership");
+
+        child.close();
+        assertNotNull(gate.receipt());
+        assertTrue(gate.hasValidReceipt());
+        assertEquals(PhysicalRetirementReceipt.State.DRAINED, gate.state());
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> parent.fork("late-child"));
+    }
+
+
 }
