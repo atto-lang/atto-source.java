@@ -103,7 +103,7 @@ java -cp /tmp/ores-namespace-init-classes \
   dev.oreslang.runtime.PinnedNamespaceInitializationPlanSelfTest
 ```
 
-Acceptance: `PINNED_NAMESPACE_INIT_SOURCE_ONLY_PASS checks=13` and a zero
+Acceptance: `PINNED_NAMESPACE_INIT_SOURCE_ONLY_PASS checks=14` and a zero
 exit status. These are real Java tests of the planner, **not GraalVM
 compilation or guest execution**. The focused namespace GitHub workflow
 executes this before Maven and separately requires the compiler-backed
