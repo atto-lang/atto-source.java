@@ -50,6 +50,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
     // through terminal notification drain, even if promotion/cancellation wins
     // a CAS after the waiter leaves pending. No removal path may omit this pin.
     private long terminalNotificationsInFlight;
+    // If a Future's cancellation revoker fails, the owner cannot treat
+    // terminal notification drain as proof that its actor arena was safely
+    // released. Quarantine physical retirement until an authorized runtime
+    // owner diagnoses the failed revocation. Never silently drop this error.
+    private Throwable retirementQuarantineCause;
     private final Runnable retirementWakeup;
     private boolean retirementWakeupDelivered;
 
@@ -75,12 +80,20 @@ public final class ActorStateRwLoans implements AutoCloseable {
         }
     }
 
+    /** Runtime-only diagnostic; a failed cancellation revoker blocks reclamation. */
+    Throwable retirementQuarantineCause() {
+        synchronized (monitor) {
+            return retirementQuarantineCause;
+        }
+    }
+
     private boolean physicallyRetiredLocked() {
         return closed && writer == null && readers.isEmpty()
                 && pending.isEmpty() && completions.isEmpty() && !publishing
                 && reserved.isEmpty() && reservedExecutions.isEmpty()
                 && reservedHandles.isEmpty() && reservedSlots.isEmpty()
-                && terminalNotificationsInFlight == 0;
+                && terminalNotificationsInFlight == 0
+                && retirementQuarantineCause == null;
     }
 
     private void maybeWakeRetirement() {
@@ -310,7 +323,14 @@ public final class ActorStateRwLoans implements AutoCloseable {
 
     private void trackNotificationDrain(OresFuture<?> future) {
         future.whenNotificationsDrainedRuntime(() -> {
+            // Future.cancellationHookFailureFromRuntime() is stable after the
+            // winning cancel hook and its terminal notification drain. Its
+            // failure is otherwise captured, not thrown to the caller.
+            Throwable revocationFailure = future.cancellationHookFailureFromRuntime();
             synchronized (monitor) {
+                if (revocationFailure != null && retirementQuarantineCause == null) {
+                    retirementQuarantineCause = revocationFailure;
+                }
                 if (terminalNotificationsInFlight <= 0) {
                     throw new IllegalStateException("state RW terminal notification ledger corrupted");
                 }
