@@ -15,6 +15,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
+import dev.oreslang.runtime.NumericErrorAbi;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
@@ -11574,7 +11575,7 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class ArithmeticOverflowError extends OresGuestError {
-        private static final int ABI_CODE = 65537;
+        private static final int ABI_CODE = NumericErrorAbi.ARITHMETIC_OVERFLOW;
         private ArithmeticOverflowError(String message) {
             super("ArithmeticOverflowError", ABI_CODE, message);
         }
