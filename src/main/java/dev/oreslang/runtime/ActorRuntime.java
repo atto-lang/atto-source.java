@@ -5533,8 +5533,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(address.actorId());
         return cell != null
                 && !cell.stopped.get()
-                && cell.ref.generation() == address.generation()
-                && cell.ref.kind() == address.kind();
+                && cell.ref.address().equals(address);
     }
 
     public boolean isAlive(ActorRef<?> ref) {
