@@ -37,6 +37,8 @@ final class QueueRuntimeAuthorityTest {
             ActorRuntime.ActorRef<String> parent = runtime.<String>spawnShared(
                     () -> (message, context) -> {
                         if (message.equals("spawn")) {
+                            assertTrue(context.queueCommandAuthority().isEmpty(),
+                                    "root actors have no structured supervisor grant");
                             ActorRuntime.ActorHandle<String> child =
                                     runtime.<String>spawnChildShared(startup -> {
                                         // Startup carries no current mail and must not
@@ -70,6 +72,11 @@ final class QueueRuntimeAuthorityTest {
                                                             authority.grantProducer(1, outsider.id());
                                                             observed.add("FAIL: forged grant");
                                                         }
+                                                        case "grant-invalid" -> {
+                                                            authority.grantProducer(1,
+                                                                    ActorRuntime.ActorId.create());
+                                                            observed.add("FAIL: stale or unknown producer granted");
+                                                        }
                                                         default -> observed.add("unknown");
                                                     }
                                                 } catch (SecurityException denial) {
@@ -82,6 +89,8 @@ final class QueueRuntimeAuthorityTest {
                             observed.add("spawned");
                         } else if (message.equals("grant")) {
                             handle.get().send("grant");
+                        } else if (message.equals("grant-invalid")) {
+                            handle.get().send("grant-invalid");
                         } else if (message.equals("revoke")) {
                             handle.get().send("revoke");
                         } else if (message.equals("close")) {
@@ -100,6 +109,8 @@ final class QueueRuntimeAuthorityTest {
             expect(observed, "denied");
 
             outsider.send("forge-grant");
+            expect(observed, "denied");
+            parent.send("grant-invalid");
             expect(observed, "denied");
             parent.send("grant");
             expect(observed, "granted");
