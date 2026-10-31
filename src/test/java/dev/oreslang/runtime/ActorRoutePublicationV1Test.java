@@ -279,6 +279,10 @@ final class ActorRoutePublicationV1Test {
             }));
             assertEquals(1, mailbox.snapshot().outstandingMessages());
             assertThrows(IllegalStateException.class,
+                    () -> authority.complete(1L),
+                    "bare sequence cannot forge a tracked physical completion");
+            assertEquals(1, mailbox.snapshot().retainedMessages());
+            assertThrows(IllegalStateException.class,
                     () -> authority.stage(image('b')),
                     "return from async transport submission is not physical completion");
             assertThrows(IllegalStateException.class, authority::close,
