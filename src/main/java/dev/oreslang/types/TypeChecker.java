@@ -48,7 +48,7 @@ public final class TypeChecker {
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
             "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
             "Channel", "Future", "Fnc", "Function",
-            "HttpClientResponse", "HttpClientBody");
+            "NioTcpConnection", "HttpClientResponse", "HttpClientBody");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
