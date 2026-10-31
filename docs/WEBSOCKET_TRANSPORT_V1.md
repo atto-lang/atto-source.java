@@ -133,10 +133,114 @@ access to JDK HTTP internals. The native WebSocket listener should be a separate
 bounded raw-socket transport sharing Oreslang's scoped NET permission and actor
 ownership contracts.
 
+## Implemented raw loopback upgrade bridge (host-only)
+
+`WebSocketRawUpgrade` now exercises the existing admission helpers on a
+real **already-accepted Java Socket**, without importing JDK HTTP internals.
+The bridge is deliberately package-private and cannot create a listener or
+grant an actor/guest handle. The future listener must first check scoped NET
+permission, own its accept socket through `AsyncNativeIo` physical loans,
+provide connection admission quotas, and run this bridge exclusively on a
+host I/O worker (never an actor/CONTROL carrier).
+
+The boundary requires a loopback **peer**, an exact canonical Host authority
+matching the bound listener, and an explicitly allowlisted nonempty Origin.
+It parses the request head with configured byte/count limits, enforces a
+**single absolute handshake deadline** (not just a reusable per-read timeout),
+and emits the canonical HTTP 101 response only after admission succeeds.
+Denied, malformed, slow, or interrupted upgrades close the accepted socket;
+successful upgrades leave a finite socket read timeout. No extensions or
+subprotocols are negotiated; the client cannot select them implicitly.
+This first loopback slice deliberately requires Origin even for nonbrowser
+clients. Authentication and a reviewed app-header view are *not* provided
+by this bridge, so it must not be treated as a public multi-tenant listener.
+
+`WebSocketRawUpgradeTest` adds real loopback socket/byte-stream tests for
+the RFC 6455 accept value, a subsequent masked text frame, Host and Origin
+denials, invalid Upgrade/body framing, deadline expiry, and misconfigured
+bounds. These are Java host integration tests, **not Oreslang guest execution**.
+
+## Bounded supervisor-only raw loopback listener slice
+
+`WebSocketLoopbackListener` now binds **127.0.0.1 only**, with a fixed
+nonzero port and mandatory scoped `RuntimePermissions.Permission.NET`
+authority. Only a supervisor/host carrier may create the listener or perform
+accept/read; it is intentionally package-private and exposes no guest
+WebSocket handle or JDK socket to Oreslang source code.
+
+The first host slice uses `AsyncNativeIo` for asynchronous accept and
+single-frame read work. Its registered `ServerSocket` and accepted `Socket`
+have physical I/O loans, registered-resource retirement and shutdown wakeups.
+The accepted socket is upgraded through `WebSocketRawUpgrade` before a host
+connection is returned. Each listener enforces a single outstanding accept,
+at most **16 active connections**, a backlog at most 128, frames and messages
+up to **64 KiB** each, and 16 queued USER messages per connection (thus
+at most 1 MiB of queued payload per connection and 16 MiB per listener from
+this queue in the worst configured case). The host connection supplies one
+outstanding async read and processes frame-level ping/close replies directly
+on an I/O worker. USER messages can be polled by host code, not guest actors.
+
+An accepted connection slot is released **only on physical connection close**
+(or on failed admission), never because its Future happened to settle.
+Synchronous task rejection resets single-flight state without releasing an
+owned connection. If registration races context shutdown, the registered
+socket stays under `AsyncNativeIo` retirement/quarantine rather than being
+force-closed ahead of the physical loan. This is a host foundation, not a
+replacement for explicit generation-fenced actor connection capability.
+
+The next patch needs exact-source Java/Graal native tests for the listener,
+including permit release and shutdown races. The existing
+`WebSocketRawUpgradeTest` provides real loopback 101/denial and masked
+frame tests, including silent/slow-drip head deadlines, but no Oreslang guest
+has run this new listener.
+
+## Native-I/O owner/retirement hardening: 2026-10-31
+
+The host-only `WebSocketLoopbackListener` now tracks every successfully
+published child connection in an identity-based set guarded by the same
+lifecycle lock as listener closure. A concurrent accepted-socket upgrade
+cannot publish a child after shutdown takes its retirement snapshot.
+Closing the listener explicitly closes all published children and clears
+their USER queues; duplicate child close does not return a second permit.
+The logical listener object is also registered in `AsyncNativeIo`, so
+context shutdown retires active children *after native workers have joined*
+rather than merely closing a raw `ServerSocket` and leaving USER state
+stranded in memory.
+
+`AsyncNativeIo.ownsResource` distinguishes rejected registrations that
+*were* retained for post-join cleanup from a fully retired context that
+never took ownership; callers must close the latter socket themselves.
+This closes an earlier leak for failed register-after-retirement.
+
+A shared `WebSocketSocketDeadlineInput` now applies an **absolute**
+deadline to both single-byte and bulk socket reads, including the entire
+masked-frame payload. A peer slowly supplying partial payload bytes cannot
+keep extending the socket's per-read idle timeout indefinitely. The current
+frame deadline uses the configured handshake timeout and should be split
+into independently configured read and write deadlines once the native
+actor API is integrated. The outbound HTTP 101 and CONTROL write paths
+still require bounded nonblocking write state for production use.
+
+`WebSocketLoopbackListenerTest` contains eight authored real-loopback,
+real-`AsyncNativeIo` integration scenarios: successful accepted frame,
+parent-close USER queue clearance, capacity exhaustion with healthy-peer
+progress, pending accept interrupted by close, native-I/O context sweep,
+slow-drip masked payload, post-retirement registration cleanup, and
+scoped-NET denial before bind. These tests are **authored, not verified as
+executed**. The package-private `bind` seam takes injected native-I/O
+and NET-authorization implementations for tests; the production entrypoint
+always supplies `OresContext.requirePermission(NET, ...)`.
+
+Even if host tests pass, they do not prove Oreslang guest execution,
+generation-fenced actor delivery, cancellation-aware Future retirement,
+globally bounded memory, nonblocking writes, or backend parity. Keep this
+branch draft until authorized exact-head CI records nonzero steps and
+independent review is complete.
+
 ## Not yet implemented
 
-- Binding the validated upgrade to a dedicated native raw-socket listener.
-- Native raw-socket listener ownership and scoped NET admission.
+- An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
+- End-to-end actor/generation-owned connection dispatch and retirement.
 - Source types such as `WebSocketServer`, `WebSocketConnection`, or actor
   dispatch/claim tokens.
 - Transport serialization that prioritizes returned CONTROL actions over USER
