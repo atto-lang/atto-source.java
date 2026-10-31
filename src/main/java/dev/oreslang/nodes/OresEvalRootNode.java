@@ -14,6 +14,7 @@ import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
+import dev.oreslang.runtime.VmNioTcpClient;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OutboundHttpRequest;
@@ -7850,12 +7851,56 @@ public final class OresEvalRootNode extends RootNode {
                     case "connect", "connect_blocking" -> (Invokable) args -> {
                         requireTwo(args, "network." + name);
                         String host = requireString(args.get(0), "host");
-                        if (!(args.get(1) instanceof Number port)) throw new IllegalArgumentException("port must be an integer");
+                        if (!(args.get(1) instanceof Number port) || !isIntegral(port))
+                            throw new IllegalArgumentException("port must be an integer");
                         List<Object> values = List.of(host, port.intValue());
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
                                 "network." + name, () -> network.connect(values));
                     };
+                    case "connect_async" -> (Invokable) network::connectAsync;
                     default -> throw new IllegalArgumentException("unknown network member " + name);
+                };
+            }
+            if (receiver instanceof VmNioTcpClient.Connection socket) {
+                return switch (name) {
+                    case "read_bytes_async" -> (Invokable) args -> {
+                        if (args.size() != 1
+                                || !(args.getFirst() instanceof Number maximum)
+                                || !isIntegral(maximum)) {
+                            throw new IllegalArgumentException(
+                                    "NioTcpConnection.read_bytes_async expects one integer maximum");
+                        }
+                        long bound = maximum.longValue();
+                        if (bound < 1 || bound > 65_536) {
+                            throw new IllegalArgumentException(
+                                    "NioTcpConnection.read_bytes_async maximum must be 1..65536");
+                        }
+                        return socket.readBytesAsync((int) bound);
+                    };
+                    case "write_bytes_async" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.getFirst() instanceof List<?> raw)) {
+                            throw new IllegalArgumentException(
+                                    "NioTcpConnection.write_bytes_async expects List<int>");
+                        }
+                        ArrayList<Long> bytes = new ArrayList<>(raw.size());
+                        for (Object value : raw) {
+                            if (!(value instanceof Number number)
+                                    || !isIntegral(number)
+                                    || number.longValue() < 0
+                                    || number.longValue() > 255) {
+                                throw new IllegalArgumentException(
+                                        "NioTcpConnection.write_bytes_async bytes must be integers in 0..255");
+                            }
+                            bytes.add(number.longValue());
+                        }
+                        return socket.writeBytesAsync(List.copyOf(bytes));
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpConnection.close_async");
+                        return socket.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown NioTcpConnection member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
@@ -9796,6 +9841,8 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
+            if (name.equals("NioTcpConnection"))
+                return value instanceof VmNioTcpClient.Connection;
             if (name.equals("HttpClientResponse"))
                 return value instanceof OutboundHttpRequest.Response;
             if (name.equals("HttpClientBody"))
@@ -9829,6 +9876,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
+            if (value instanceof VmNioTcpClient.Connection) return "NioTcpConnection";
             if (value instanceof OutboundHttpRequest.Response) return "HttpClientResponse";
             if (value instanceof OutboundHttpRequest.Body) return "HttpClientBody";
             if (value instanceof List<?>) return "List";
@@ -11319,10 +11367,23 @@ public final class OresEvalRootNode extends RootNode {
             requireTwo(args, "network.connect");
             String host = requireString(args.get(0), "network.connect host");
             Object portValue = args.get(1);
-            if (!(portValue instanceof Number number)) {
+            if (!(portValue instanceof Number number) || !isIntegral(number)) {
                 throw new IllegalArgumentException("network.connect port must be an integer");
             }
             return NativeIo.connect(context, host, number.intValue());
+        }
+
+        private Object connectAsync(List<Object> args) {
+            requireTwo(args, "network.connect_async");
+            String host =
+                    requireString(args.get(0), "network.connect_async host");
+            Object portValue = args.get(1);
+            if (!(portValue instanceof Number number) || !isIntegral(number)) {
+                throw new IllegalArgumentException(
+                        "network.connect_async port must be an integer");
+            }
+            return NativeIo.connectAsync(
+                    context, host, number.intValue());
         }
     }
 
