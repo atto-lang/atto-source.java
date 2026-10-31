@@ -6567,19 +6567,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 requireExplicitClassCallableImport(env, name.name());
 
-                // Materialize each argument exactly once in its ORIGINAL
-                // lexical order. The checked plan then assembles values, not
-                // expressions, into the ordinary declared-arity call ABI.
-                // An exception aborts evaluation: later source arguments
-                // cannot execute, and ordinary invocation cleanup is reused.
-                List<Object> sourceValues = new ArrayList<>(named.arguments().size());
-                for (Ast.CallArgument item : named.arguments()) {
-                    sourceValues.add(eval(item.value(), env));
-                }
+                // Evaluate each argument exactly once in ORIGINAL lexical
+                // order and write its result directly to the checked formal
+                // ABI slot. No second dense-source value buffer is allocated.
+                // If an expression fails, later arguments cannot execute;
+                // all payloads in this subset are primitive Copy values.
                 List<Object> formalValues = new ArrayList<>(
                         java.util.Collections.nCopies(resolved.parameters().size(), null));
-                for (int formal = 0; formal < resolved.parameters().size(); formal++) {
-                    formalValues.set(formal, sourceValues.get(plan.sourceIndex(formal)));
+                int lexicalSourceIndex = 0;
+                for (Ast.CallArgument item : named.arguments()) {
+                    int formal = plan.scalarFormalForSource(lexicalSourceIndex++);
+                    formalValues.set(formal, eval(item.value(), env));
                 }
                 return invoke(functionInvocation(resolved, formalValues));
             }
