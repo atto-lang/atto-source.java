@@ -1169,6 +1169,52 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void twoLogicalUpgradesCannotAdoptTheSamePhysicalV2Actor()
+            throws Exception {
+        var oldTwoDelivered = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime();
+             var firstGate = new ActorUpgradeEpochGate(74, image('a'));
+             var firstMailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var secondGate = new ActorUpgradeEpochGate(75, image('a'));
+             var secondMailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var oldOne = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            var oldTwo = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> oldTwoDelivered.countDown());
+            var successor = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            oldOne.ready().get(10, TimeUnit.SECONDS);
+            oldTwo.ready().get(10, TimeUnit.SECONDS);
+            successor.ready().get(10, TimeUnit.SECONDS);
+            try (var first = new ActorRoutePublicationV1<>(
+                         firstGate, firstMailbox, state(7), oldOne);
+                 var second = new ActorRoutePublicationV1<>(
+                         secondGate, secondMailbox, state(7), oldTwo)) {
+                try (var firstStage = first.stage(image('b'));
+                     var secondStage = second.stage(image('b'))) {
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                    while (!(firstStage.quiescent() && secondStage.quiescent())
+                            && System.nanoTime() < deadline) Thread.sleep(10);
+                    assertTrue(firstStage.quiescent());
+                    assertTrue(secondStage.quiescent());
+                    assertTrue(firstStage.publish(state(9), successor));
+                    assertThrows(IllegalStateException.class,
+                            () -> secondStage.publish(state(9), successor),
+                            "one physical actor cannot back two logical identities");
+                    assertSame(oldTwo, second.current().physicalRoute());
+                    assertEquals(1L, second.current().routeEpoch());
+                }
+                assertFalse(secondMailbox.snapshot().dispatchFrozen());
+                oldTwo.send(List.of(2));
+                assertTrue(oldTwoDelivered.await(10, TimeUnit.SECONDS));
+                assertThrows(ActorRuntime.ActorSealedException.class,
+                        () -> oldOne.send(List.of(1)));
+            }
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
