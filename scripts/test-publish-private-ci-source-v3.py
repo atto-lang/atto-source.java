@@ -757,10 +757,43 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(got["workflow_blob_sha"], WORKFLOW)
         self.assertEqual(got["test_plan_blob_sha"], PLAN_BLOB)
         self.assertEqual(got["review_pr"], 17)
+        self.assertEqual(got["governance_mode"], "protected-main")
         with self.assertRaisesRegex(v3.Denied, "not authorized"):
             v3.parse_contract(
                 raw, "trusted/ci", 1483, "ci/test-plans/java-pr1482.json"
             )
+
+    def test_contract_reviewed_pr_head_requires_review_pr(self):
+        raw = {
+            "schema": 1,
+            "carriers": {
+                "trusted/ci": {
+                    "repository_id": 42,
+                    "base_sha": BASE,
+                    "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+                    "workflow_blob_sha": WORKFLOW,
+                    "governance_mode": "reviewed-pr-head",
+                    "test_plans": {
+                        "ci/test-plans/java-pr1482.json": {
+                            "blob_sha": PLAN_BLOB,
+                            "allowed_prs": [1482],
+                        }
+                    },
+                }
+            },
+        }
+        with self.assertRaisesRegex(v3.Denied, "requires review PR"):
+            v3.parse_contract(
+                json.dumps(raw).encode(),
+                "trusted/ci", 1482, "ci/test-plans/java-pr1482.json",
+            )
+        raw["carriers"]["trusted/ci"]["review_pr"] = 17
+        got = v3.parse_contract(
+            json.dumps(raw).encode(),
+            "trusted/ci", 1482, "ci/test-plans/java-pr1482.json",
+        )
+        self.assertEqual(got["governance_mode"], "reviewed-pr-head")
+        self.assertEqual(got["review_pr"], 17)
 
     def test_contract_rejects_invalid_carrier_review_pr(self):
         raw = {
@@ -857,6 +890,166 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3, "gh_api_list", return_value=reviews),
         ):
             with self.assertRaisesRegex(v3.Denied, "carrier main is not protected"):
+                v3.checked_carrier_main("trusted/ci", carrier)
+
+    def test_reviewed_pr_head_carrier_accepts_only_exact_open_approved_head(self):
+        carrier = contract()
+        carrier.update({
+            "review_pr": 17,
+            "governance_mode": "reviewed-pr-head",
+        })
+
+        def pr_doc(head=BASE, state="open", draft=False):
+            return {
+                "number": 17,
+                "state": state,
+                "draft": draft,
+                "user": {"id": 424242, "login": "carrier-author"},
+                "head": {
+                    "sha": head,
+                    "repo": {
+                        "full_name": "trusted/ci",
+                        "id": carrier["repository_id"],
+                    },
+                },
+                "base": {
+                    "ref": "main",
+                    "repo": {
+                        "full_name": "trusted/ci",
+                        "id": carrier["repository_id"],
+                    },
+                },
+            }
+
+        codeowners = {
+            "path": ".github/CODEOWNERS",
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(CARRIER_CODEOWNERS).decode(),
+            "sha": CARRIER_CODEOWNERS_BLOB,
+        }
+
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/pulls/17":
+                return pr_doc()
+            if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
+                return codeowners
+            if "branches/main" in route:
+                raise AssertionError("reviewed-pr-head must not trust carrier main")
+            raise AssertionError(route)
+
+        approved = {
+            "id": 91,
+            "state": "APPROVED",
+            "commit_id": BASE,
+        }
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "latest_carrier_review", return_value=approved) as review,
+        ):
+            self.assertEqual(
+                v3.checked_carrier_main("trusted/ci", carrier), BASE
+            )
+        self.assertEqual(review.call_count, 2)
+
+        for label, bad_pr, bad_review, error in (
+            (
+                "moved head",
+                pr_doc(head="9" * 40),
+                approved,
+                "exact open same-repo",
+            ),
+            (
+                "closed PR",
+                pr_doc(state="closed"),
+                approved,
+                "exact open same-repo",
+            ),
+            (
+                "draft PR",
+                pr_doc(draft=True),
+                approved,
+                "exact open same-repo",
+            ),
+            (
+                "stale review",
+                pr_doc(),
+                dict(approved, commit_id="9" * 40),
+                "stale or revoked",
+            ),
+            (
+                "revoked review",
+                pr_doc(),
+                dict(approved, state="DISMISSED"),
+                "stale or revoked",
+            ),
+        ):
+            def bad_api(route, method="GET", payload=None, doc=bad_pr):
+                if route == "repos/trusted/ci/pulls/17":
+                    return doc
+                if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
+                    return codeowners
+                raise AssertionError(route)
+            with (
+                self.subTest(label=label),
+                patch.object(v3.legacy, "gh_api", side_effect=bad_api),
+                patch.object(v3, "latest_carrier_review", return_value=bad_review),
+            ):
+                with self.assertRaisesRegex(v3.Denied, error):
+                    v3.checked_carrier_main("trusted/ci", carrier)
+
+    def test_reviewed_pr_head_carrier_rechecks_head_and_review_after_codeowners(self):
+        carrier = contract()
+        carrier.update({
+            "review_pr": 17,
+            "governance_mode": "reviewed-pr-head",
+        })
+        reads = 0
+
+        def api(route, method="GET", payload=None):
+            nonlocal reads
+            if route == "repos/trusted/ci/pulls/17":
+                reads += 1
+                head = BASE if reads == 1 else "9" * 40
+                return {
+                    "number": 17,
+                    "state": "open",
+                    "draft": False,
+                    "user": {"id": 424242},
+                    "head": {
+                        "sha": head,
+                        "repo": {
+                            "full_name": "trusted/ci",
+                            "id": carrier["repository_id"],
+                        },
+                    },
+                    "base": {
+                        "ref": "main",
+                        "repo": {
+                            "full_name": "trusted/ci",
+                            "id": carrier["repository_id"],
+                        },
+                    },
+                }
+            if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
+                return {
+                    "path": ".github/CODEOWNERS",
+                    "type": "file",
+                    "encoding": "base64",
+                    "content": base64.b64encode(CARRIER_CODEOWNERS).decode(),
+                    "sha": CARRIER_CODEOWNERS_BLOB,
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3,
+                "latest_carrier_review",
+                return_value={"id": 91, "state": "APPROVED", "commit_id": BASE},
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "exact open same-repo"):
                 v3.checked_carrier_main("trusted/ci", carrier)
 
     def test_protected_carrier_still_requires_codeowner_admin_and_no_bypass(self):
