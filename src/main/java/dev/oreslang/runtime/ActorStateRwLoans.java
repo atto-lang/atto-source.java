@@ -275,6 +275,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
+        // The last completion may retire during close() while publishing is
+        // still true. No other caller is guaranteed to issue a wakeup once
+        // the publisher clears that flag, so perform the final retirement
+        // check here even when completion callbacks failed.
+        maybeWakeRetirement();
         if (firstFailure != null) {
             if (firstFailure instanceof Error fatal) throw fatal;
             if (firstFailure instanceof RuntimeException failure) throw failure;
