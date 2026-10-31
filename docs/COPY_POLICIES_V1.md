@@ -112,7 +112,12 @@ compiler can prove field-level invalidation, reinitialization, loan
 exclusion, and cleanup along every control-flow path. Until that
 ledger exists, emit `E_MOVE_UNPROVEN` (not `E_COPY_FORBIDDEN`).
 Immutable fields remain non-moveable under their existing rules.
-A member access wrapped in a cast also cannot bypass this rule.
+A member access wrapped in a cast, ternary, or value-match arm
+also cannot bypass this rule. Ordinary owned extraction of a **move-only**
+class field by return, argument, or initializer is equally unsafe until
+a field invalidation ledger exists. Copyable class fields may still be
+read/copied unless independently annotated `@NoCopy`. Scoped
+`rt borrow` is not an owned extraction and remains legal.
 This is a deliberate fail-closed limitation, not a claim that moves
 and copies are semantically equivalent.
 
