@@ -18,10 +18,6 @@ import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -32,44 +28,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 final class WebSocketLoopbackListener implements AutoCloseable {
     /**
-     * Emergency host-only cleanup lane for native CONTROL rejection.
-     * One daemon worker for all listeners; at most one queue entry per
-     * existing physical Connection. No thread or task per connection.
-     * This queue is only a fallback: ordinary shutdown uses AsyncNativeIo.
+     * A shared, fixed four-lane host pool isolates stalled closes. Its
+     * notification API does not execute socket I/O on an actor carrier.
      */
-    private static final Set<Connection> DEFERRED_HOST_CLOSES =
-            ConcurrentHashMap.newKeySet();
-    /** FIFO fairness: at most one pending entry per already-owned socket. */
-    private static final ConcurrentLinkedQueue<Connection> DEFERRED_HOST_QUEUE =
-            new ConcurrentLinkedQueue<>();
-    private static final ScheduledThreadPoolExecutor HOST_RETIREMENT =
-            new ScheduledThreadPoolExecutor(1, task -> {
-                Thread carrier = new Thread(task, "ores-websocket-host-retirement");
-                carrier.setDaemon(true);
-                return carrier;
-            });
+    private static final WebSocketHostRetirement HOST_RETIREMENT =
+            WebSocketHostRetirement.shared();
 
-    static {
-        HOST_RETIREMENT.setRemoveOnCancelPolicy(true);
-        HOST_RETIREMENT.scheduleWithFixedDelay(() -> {
-            // Process up to 32 retired connections per pass. Each entry
-            // references an already-owned socket, so there is no new
-            // socket/worker admission on the fallback path.
-            for (int visited = 0; visited < 32; visited++) {
-                Connection connection = DEFERRED_HOST_QUEUE.poll();
-                if (connection == null) break;
-                if (!DEFERRED_HOST_CLOSES.contains(connection)) continue;
-                try {
-                    connection.close();
-                } catch (RuntimeException | Error failure) {
-                    // Socket-close errors are accounted by Connection.close;
-                    // AsyncNativeIo retains responsibility for physical loans.
-                } finally {
-                    DEFERRED_HOST_CLOSES.remove(connection);
-                }
-            }
-        }, 25, 25, TimeUnit.MILLISECONDS);
-    }
     private final AsyncNativeIo nativeIo;
     private final BiConsumer<String, String> requireNet;
     private final ServerSocket server;
@@ -395,9 +359,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 // The single host sweeper owns this pending close; duplicate
                 // notifications collapse to one identity entry. Context
                 // shutdown separately retains and sweeps physical loans.
-                if (!retired.get() && DEFERRED_HOST_CLOSES.add(this)) {
-                    DEFERRED_HOST_QUEUE.offer(this);
-                }
+                if (!retired.get()) HOST_RETIREMENT.request(this);
             }
         }
 
@@ -1061,7 +1023,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             activeConnections.remove(this);
                         }
                         connections.release();
-                        DEFERRED_HOST_CLOSES.remove(this);
+                        HOST_RETIREMENT.forget(this);
                     }
                 }
             }
