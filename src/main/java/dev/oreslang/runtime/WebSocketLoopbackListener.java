@@ -118,8 +118,10 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         throw new RejectedExecutionException("WebSocket connection admission is full");
                     }
                     admitted = true;
+                    boolean registrationAttempted = false;
                     boolean registered = false;
                     try {
+                        registrationAttempted = true;
                         context.nativeIo().register(accepted);
                         registered = true;
                         try (var loan = context.nativeIo().borrow(accepted)) {
@@ -130,9 +132,15 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         handedOff = true;
                         return connection;
                     } catch (Exception failure) {
-                        // Never publish a socket that did not finish admission.
-                        try { accepted.close(); }
-                        catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+                        // On late registration after context shutdown,
+                        // AsyncNativeIo owns this new socket for the post-join
+                        // sweep. The listening loan guarantees shutdown has
+                        // not already completed that sweep. Do not close it
+                        // early and forge a physical retirement receipt.
+                        if (!registrationAttempted || registered) {
+                            try { accepted.close(); }
+                            catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+                        }
                         if (registered) context.nativeIo().unregister(accepted);
                         throw failure;
                     }
