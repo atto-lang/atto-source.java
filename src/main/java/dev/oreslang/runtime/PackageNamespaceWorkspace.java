@@ -132,12 +132,12 @@ final class PackageNamespaceWorkspace {
                         || !".ores.pkg.toml".equals(candidate.getFileName().toString())) {
                     throw new IllegalArgumentException("namespace dependency manifest must be relative .ores.pkg.toml");
                 }
-                Path dependencyManifest = manifest.getParent().resolve(candidate).normalize();
-                // Hash pins authenticate bytes, not filesystem authority.
-                // Reject an alias through a symlinked directory or manifest:
-                // otherwise a mutable symlink could retarget the package
-                // between path validation, digest checking and source admission.
+                Path dependencyManifest = manifest.getParent().resolve(candidate);
+                // Inspect the caller-provided relative path BEFORE lexical
+                // normalization can erase a symlink/../ component. Hash pins
+                // authenticate bytes, not filesystem authority.
                 requireNoSymlinkComponents(dependencyManifest);
+                dependencyManifest = dependencyManifest.normalize();
                 if (!Files.isRegularFile(dependencyManifest)) {
                     throw new IllegalArgumentException("namespace dependency manifest not found: " + alias);
                 }
