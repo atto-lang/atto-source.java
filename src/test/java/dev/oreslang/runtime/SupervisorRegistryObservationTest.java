@@ -6,6 +6,9 @@ import org.junit.jupiter.api.Timeout;
 import java.time.Instant;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -155,13 +158,14 @@ final class SupervisorRegistryObservationTest {
         try (var runtime = new ActorRuntime();
              var bridge = new SupervisorRegistryObservation(runtime)) {
             Object session = new Object();
-            var grant = grant(bridge, session, runtime.rootSupervisor());
+            var root = runtime.rootSupervisor();
+            var grant = grant(bridge, session, root);
             CountDownLatch tried = new CountDownLatch(1);
             AtomicReference<Throwable> unexpected = new AtomicReference<>();
             var actor = runtime.spawnPrivateTrusted(factory ->
                     (message, context) -> {
                         try {
-                            bridge.issueGrant(session, TENANT, runtime.rootSupervisor(), 100_000);
+                            bridge.issueGrant(session, TENANT, root, 100_000);
                             unexpected.set(new AssertionError("actor minted a grant"));
                         } catch (SecurityException expected) {
                             // Host-only substrate.
@@ -205,6 +209,46 @@ final class SupervisorRegistryObservationTest {
     }
 
     @Test
+    void concurrentRegistryGrowthIsFlaggedInsteadOfClaimedGloballyAtomic() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch atObservation = new CountDownLatch(1);
+        CountDownLatch proceed = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime();
+             var bridge = new SupervisorRegistryObservation(runtime, () -> {
+                 int call = calls.incrementAndGet();
+                 // The fourth clock read happens after the snapshot captured
+                 // the registry, between scanning root and child.
+                 if (call == 4) {
+                     atObservation.countDown();
+                     try {
+                         if (!proceed.await(5, TimeUnit.SECONDS))
+                             throw new AssertionError("concurrent observation never resumed");
+                     } catch (InterruptedException e) {
+                         Thread.currentThread().interrupt();
+                         throw new AssertionError(e);
+                     }
+                 }
+                 return call;
+             }, () -> FIXED);
+             var executor = Executors.newSingleThreadExecutor()) {
+            var root = runtime.rootSupervisor();
+            runtime.createChildSupervisor(root);
+            Object session = new Object();
+            var grant = bridge.issueGrant(session, TENANT, root, 10_000);
+            Future<SupervisorRegistryObservation.Snapshot> captured =
+                    executor.submit(() -> bridge.capture(grant, session, TENANT,
+                            1, 32, 16, 1_000));
+            assertTrue(atObservation.await(5, TimeUnit.SECONDS));
+            runtime.createChildSupervisor(root);
+            proceed.countDown();
+            var result = captured.get(5, TimeUnit.SECONDS);
+            assertEquals("partial", result.status());
+            assertTrue(result.warnings().contains(
+                    "REGISTRY_CHANGED_DURING_OBSERVATION"));
+        }
+    }
+
+    @Test
     void observationDoesNotReadGuestActorPayloadOrReportHealthyActors() throws Exception {
         try (var runtime = new ActorRuntime();
              var bridge = new SupervisorRegistryObservation(runtime)) {
@@ -215,6 +259,7 @@ final class SupervisorRegistryObservationTest {
                     IsolatePolicy.developer(),
                     factory -> (message, context) -> { });
             ref.getReady().get(5, TimeUnit.SECONDS);
+            ref.send("password-in-mailbox");
             Object session = new Object();
             var captured = capture(bridge, grant(bridge, session, supervisor), session);
             assertEquals("partial", captured.status());
