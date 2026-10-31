@@ -102,4 +102,91 @@ final class ActorNativeIoPhysicalRetirementTest {
             }
         }
     }
+
+    @Test
+    void registeredNativeHandlePinsArenaUntilPhysicalCloseCompletes()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.DispatcherConfig(2, 2, 8, 64));
+             AsyncNativeIo io = new AsyncNativeIo(1)) {
+            CountDownLatch registered = new CountDownLatch(1);
+            CountDownLatch closeEntered = new CountDownLatch(1);
+            CountDownLatch releaseClose = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> memory =
+                    new AtomicReference<>();
+
+            AutoCloseable resource = () -> {
+                closeEntered.countDown();
+                releaseClose.await();
+            };
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    actorContext -> {
+                        ActorRuntime.PrivateMemoryBlock block =
+                                actorContext.privateMemory()
+                                        .orElseThrow()
+                                        .allocatePrivateBytes(32);
+                        block.writeInt(0, 211);
+                        memory.set(block);
+
+                        return (message, context) -> {
+                            io.register(resource);
+                            registered.countDown();
+                        };
+                    });
+
+            Thread closer = null;
+            try {
+                actor.send("register");
+                assertTrue(registered.await(5, TimeUnit.SECONDS));
+
+                ActorRuntime.PrivateMemoryBlock block = memory.get();
+                assertNotNull(block);
+                assertFalse(block.closed());
+
+                actor.stop();
+
+                closer = Thread.ofVirtual()
+                        .name("native-registration-close-test")
+                        .start(io::close);
+                assertTrue(
+                        closeEntered.await(5, TimeUnit.SECONDS),
+                        "registered native handle was not physically closed");
+
+                closer.join(100);
+                assertTrue(
+                        closer.isAlive(),
+                        "I/O close returned before registered handle closed");
+                assertFalse(
+                        actor.done().isDone(),
+                        "registered native handle must withhold actor DONE");
+                assertFalse(
+                        actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                        "actor finalized while native handle close was blocked");
+                assertFalse(
+                        block.closed(),
+                        "actor arena closed before registered handle physical close");
+
+                releaseClose.countDown();
+                closer.join(5_000);
+                assertFalse(closer.isAlive(), "I/O close did not finish");
+
+                assertTrue(
+                        actor.awaitTermination(5, TimeUnit.SECONDS),
+                        "actor did not finalize after registered handle closed");
+                assertTrue(block.closed());
+                assertTrue(actor.done().isDone());
+                assertEquals(0, runtime.actorCount());
+            } finally {
+                releaseClose.countDown();
+                if (closer != null && closer.isAlive()) {
+                    closer.join(5_000);
+                }
+                actor.stop();
+            }
+        }
+    }
+
+
 }
