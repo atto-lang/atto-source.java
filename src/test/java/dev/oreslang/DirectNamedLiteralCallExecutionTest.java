@@ -248,6 +248,13 @@ final class DirectNamedLiteralCallExecutionTest {
         assertEquals(2, plan.sourceIndex(0));
         assertEquals(0, plan.sourceIndex(1));
         assertEquals(1, plan.sourceIndex(2));
+        // Inverse map is used at runtime while lexical expressions are being
+        // evaluated: b->formal1, c->formal2, a->formal0.
+        assertEquals(1, plan.scalarFormalForSource(0));
+        assertEquals(2, plan.scalarFormalForSource(1));
+        assertEquals(0, plan.scalarFormalForSource(2));
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.scalarFormalForSource(3));
         assertTrue(OptionalCallShapeBinder.isReorderedNamedCall(plan));
     }
 
