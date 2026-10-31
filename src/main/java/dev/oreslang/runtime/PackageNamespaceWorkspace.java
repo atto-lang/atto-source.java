@@ -293,6 +293,13 @@ final class PackageNamespaceWorkspace {
                     throw new IllegalArgumentException("invalid namespace provider filename");
                 }
                 Path relative = Path.of(item);
+                // A manifest is a signed source inventory, not a path search.
+                // Refuse syntactically aliased spellings (./, //, trailing .)
+                // before canonicalization can erase the caller's bytes.
+                if (!relative.normalize().toString().replace('\\', '/').equals(item)) {
+                    throw new IllegalArgumentException(
+                            "noncanonical namespace provider filename");
+                }
                 if (relative.isAbsolute() || containsParent(relative)) {
                     throw new IllegalArgumentException("namespace package member path traversal");
                 }
