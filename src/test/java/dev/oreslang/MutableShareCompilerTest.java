@@ -57,7 +57,7 @@ final class MutableShareCompilerTest {
     }
 
     @Test
-    void admitsOwnedBuiltinSharedMutexHandleWithoutDuplicatingProtectedObject() {
+    void admitsOwnedBuiltinSharedMutexHandleWithoutDuplicatingProtectedObject() throws Exception {
         String program = COUNTER + """
                 pub routine main(): void {
                   val mutex = SharedMutex.new(new Counter());
