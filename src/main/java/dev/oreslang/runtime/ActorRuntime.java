@@ -7300,7 +7300,8 @@ public final class ActorRuntime implements AutoCloseable {
                 mailboxEmpty = queuedMessages == 0 && queuedContinuations == 0
                         && queuedUserMessages == 0;
             }
-            return lastProcessedUserMessageSequence >= target
+            return ref.readyFuture.isDone()
+                    && lastProcessedUserMessageSequence >= target
                     && !carrierActive && activeTurns == 0
                     && !scheduled.get() && !sourceReceiveSuspended
                     && mailboxEmpty
