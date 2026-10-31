@@ -233,6 +233,92 @@ final class HotReloadCurrentMainTransactionTest {
     }
 
     @Test
+    void scopedOperationPinFencesConcurrentRetirement() throws Exception {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var current = manager.loadAndStart("busy-guest.ores", GOOD);
+            var pin = current.pinOperation();
+            var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+            try {
+                var result = pool.submit(() -> assertThrows(
+                        IllegalStateException.class, () -> manager.retire(current.id())));
+                result.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                assertSame(current, manager.serving("busy-guest.ores"));
+                assertFalse(current.closed());
+                assertEquals(1, manager.liveGenerations());
+            } finally {
+                pool.shutdownNow();
+                pin.close();
+                pin.close(); // idempotent, never decrements another lease
+            }
+            manager.retire(current.id());
+            assertTrue(current.closed());
+            assertNull(manager.serving("busy-guest.ores"));
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
+    void managerShutdownPreflightsAllGenerationsBeforeDetachingAny() {
+        var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE);
+        try {
+            var first = manager.loadAndStart("first.ores", GOOD);
+            var second = manager.loadAndStart("second.ores", GOOD);
+            var pin = first.pinOperation();
+            try {
+                assertThrows(IllegalStateException.class, manager::close);
+                assertSame(first, manager.serving("first.ores"));
+                assertSame(second, manager.serving("second.ores"));
+                assertEquals(2, manager.liveGenerations());
+                assertFalse(first.closed());
+                assertFalse(second.closed());
+            } finally {
+                pin.close();
+            }
+            manager.close();
+            assertTrue(first.closed());
+            assertTrue(second.closed());
+            assertEquals(0, manager.liveGenerations());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void uninitializedAndRetiredGenerationsCannotClaimPhysicalOperationPins() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var stage = manager.load("staged.ores", GOOD);
+            assertThrows(IllegalStateException.class, stage::pinOperation);
+            stage.start();
+            assertTrue(stage.initialized());
+            try (var pin = stage.pinOperation()) {
+                assertThrows(IllegalStateException.class,
+                        () -> manager.retire(stage.id()));
+            }
+            manager.retire(stage.id());
+            assertThrows(IllegalStateException.class, stage::pinOperation);
+        }
+    }
+
+    @Test
+    void directGenerationCloseCannotBypassScopedOperationLease() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var current = manager.loadAndStart("operation.ores", GOOD);
+            var pin = current.pinOperation();
+            try {
+                assertThrows(IllegalStateException.class, current::close);
+                assertFalse(current.closed());
+                assertSame(current, manager.serving("operation.ores"));
+            } finally {
+                pin.close();
+            }
+            current.close();
+            assertTrue(current.closed());
+            assertNull(manager.serving("operation.ores"));
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
     void unverifiedDeclaredDependenciesAreRejectedEvenWithValidSource() {
         var compiled = compiledGood();
         var forged = counterfeit(compiled, GOOD, sha256(GOOD), Set.of("other.ores"));
