@@ -117,6 +117,15 @@ public final class ReusableLongStateRegion implements AutoCloseable {
         mutating = true;
         try {
             long next = operation.applyAsLong(values[slot]);
+            // Callbacks can reenter synchronized methods on the same JVM
+            // carrier. If a callback initiated STOP via beginRetire() or
+            // tryClose(), never commit a mutation after that monotonic fence.
+            // Keep the original value untouched; the finalizer may zero it
+            // only after all physical pins have retired.
+            if (retiring || closed) {
+                throw new IllegalStateException(
+                        "region retired before mutation could commit");
+            }
             values[slot] = next;
         } finally {
             mutating = false;
