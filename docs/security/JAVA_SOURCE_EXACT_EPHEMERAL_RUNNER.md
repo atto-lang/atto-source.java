@@ -18,3 +18,9 @@ The preflight binds supplied PR+commit to the GitHub API's **open same-repositor
 If no matching runner exists, the job can queue and is **NOT_EXECUTED**, not a passing build. Job success is valid only with nonempty completed test steps and exact-source logs. No automatic PR trigger is used because executing untrusted PR code on a persistent self-hosted runner would be unsafe.
 
 A passing job verifies only the listed Java JUnit and optionally native-image operations. It does not prove cancellation/quiescence safety outside test coverage, native hard-RT deadlines, or parity with LLVM, .NET, WASM and Forge.
+
+## Important: dispatch evidence is not a required PR-head status
+
+GitHub associates a manually dispatched workflow run with the selected **main** workflow ref; checking out a different immutable PR SHA inside the job does **not** automatically attach this job's status check to that PR commit. Keep required status checks on a genuinely PR-head-triggered workflow once private GitHub Actions admission is restored, or obtain independent source-SHA receipt verification and explicit security signoff. Never auto-merge the actor PR solely because this manual job passed.
+
+The source SHA, Git root tree, exact executed test step names and job/runner identity must be matched out of band before claiming backend execution. A missing runner, skipped job, incomplete job or zero-step failure is **NOT_EXECUTED**.
