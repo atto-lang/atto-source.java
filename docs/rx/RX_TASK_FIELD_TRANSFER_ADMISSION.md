@@ -86,3 +86,21 @@ necessary executable gate is a source-side runner that can execute
 `mvn -B -ntp -P '!native-thread-unix' -Dtest=RxTaskFieldTransferAdmissionTest test`
 at the exact tested head; keep test admission `NOT_EXECUTED`
 until real JUnit steps and output are retrieved.
+
+## Focused source-side execution gate (added 2026-10-31)
+
+`.github/workflows/rx-task-field-admission.yml` is an exact-source-
+head read-only workflow for this stacked Java draft PR. It uses the
+repository's existing pinned checkout and GraalVM 25.3 actions, keeps
+contents read-only and disables checkout credential persistence.
+For PR events, the checkout is `github.event.pull_request.head.sha`,
+not a potentially misleading synthetic merge ref. It prints the
+checked commit and Git tree and fails if they differ from the requested
+head. The Maven step requires an actual surefire report proving exactly
+**8 tests run, 0 failed, 0 errors, 0 skipped**.
+
+A successfully scheduled workflow would prove only those eight
+Java compiler/JVM guest tests on that exact HEAD. It would not prove
+GraalVM Native Image, runtime sanitizer or multi-backend parity.
+The workflow has no cross-organization clone or private-source
+export. Zero recorded steps remain **NOT_EXECUTED**.
