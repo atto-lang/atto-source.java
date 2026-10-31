@@ -3,6 +3,9 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
+import org.graalvm.polyglot.Source;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -33,6 +36,28 @@ final class QueueParentGrantTypingTest {
                 """;
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
                 "syntactic validity is distinct from runtime direct-parent authorization");
+    }
+
+    @Test
+    void hostMainCannotIssueAQueueProducerGrant() throws Exception {
+        String program = ACTORS + """
+                pub routine main(): void {
+                  val queue = spawn Queue();
+                  val producer = spawn Producer();
+                  queue.grant_producer(0, producer);
+                  return;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> context.eval(Source.newBuilder(
+                            OresLanguage.ID, program, "queue-parent-grant-denied.ores")
+                            .mimeType(OresLanguage.MIME_TYPE).buildLiteral()));
+            assertTrue(failure.getMessage().contains(
+                    "queue delegation requires a live direct structured child"),
+                    failure.getMessage());
+        }
     }
 
     @Test
