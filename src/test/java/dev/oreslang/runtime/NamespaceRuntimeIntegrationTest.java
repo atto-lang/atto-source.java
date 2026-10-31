@@ -869,6 +869,95 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void rootManifestSameByteRegularFileSwapFailsClosed() throws Exception {
+        Path project = temp.resolve("root-manifest-same-bytes-inode");
+        Path main = source(project, "src/main.ores", "app",
+                "pub fnc main(): void { return; }");
+        Path manifest = project.resolve(".ores.pkg.toml");
+        Files.writeString(manifest, """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.app]
+                files = ["src/main.ores"]
+                """);
+        PackageNamespaceWorkspace.Workspace admitted = PackageNamespaceWorkspace.discover(main);
+        PackageNamespaceWorkspace.verifyRootManifestSnapshot(admitted);
+        Object oldKey = admitted.manifestFileKeys().get(manifest.toRealPath());
+        org.junit.jupiter.api.Assumptions.assumeTrue(oldKey != null,
+                "filesystem does not supply stable manifest file keys");
+
+        Path replacement = project.resolve("identical-root-replacement.toml");
+        Files.write(replacement, Files.readAllBytes(manifest));
+        Object replacementKey = Files.readAttributes(replacement,
+                java.nio.file.attribute.BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey();
+        org.junit.jupiter.api.Assumptions.assumeTrue(!oldKey.equals(replacementKey),
+                "filesystem does not distinguish different physical files");
+        Files.move(replacement, manifest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        assertEquals(admitted.manifestSnapshots().get(manifest.toRealPath()), Files.readString(manifest));
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyRootManifestSnapshot(admitted));
+        assertTrue(denied.getMessage().contains("namespace manifest file identity changed during admission"),
+                denied.getMessage());
+    }
+
+    @Test
+    void pinnedDependencyManifestSameByteRegularFileSwapFailsClosed() throws Exception {
+        Path provider = temp.resolve("same-byte-dependency-provider");
+        Path dependencyManifest = billing(provider);
+        List<Path> providers = List.of(
+                provider.resolve("src/billing/charge.ores"),
+                provider.resolve("src/billing/refund.ores"),
+                provider.resolve("src/billing/balance.ores"),
+                provider.resolve("src/billing/invoice.ores"));
+        Path client = temp.resolve("same-byte-dependency-client");
+        Path main = source(client, "src/main.ores", "app",
+                "import namespace billing as payments from \"checkout\";\n"
+                + "pub fnc main(): void { return; }");
+        Files.writeString(client.resolve(".ores.pkg.toml"), """
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.client]
+                files = ["src/main.ores"]
+                [namespace_dependencies.checkout]
+                manifest = "../same-byte-dependency-provider/.ores.pkg.toml"
+                package = "checkout"
+                manifest_sha256 = "%s"
+                sources_sha256 = "%s"
+                """.formatted(
+                PackageNamespaceWorkspace.sha256(Files.readAllBytes(dependencyManifest)),
+                PackageNamespaceWorkspace.sourceDigest(dependencyManifest, providers)));
+
+        PackageNamespaceWorkspace.Workspace snapshot = PackageNamespaceWorkspace.discover(main);
+        Map<String, String> admitted = new java.util.LinkedHashMap<>();
+        for (Path file : snapshot.files()) {
+            admitted.put(file.toRealPath().toString().replace('\\', '/'), Files.readString(file));
+        }
+        PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted);
+        Object oldKey = snapshot.manifestFileKeys().get(dependencyManifest.toRealPath());
+        org.junit.jupiter.api.Assumptions.assumeTrue(oldKey != null,
+                "filesystem does not supply stable manifest file keys");
+
+        Path replacement = provider.resolve("identical-dependency-replacement.toml");
+        Files.write(replacement, Files.readAllBytes(dependencyManifest));
+        Object replacementKey = Files.readAttributes(replacement,
+                java.nio.file.attribute.BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey();
+        org.junit.jupiter.api.Assumptions.assumeTrue(!oldKey.equals(replacementKey),
+                "filesystem does not distinguish different physical files");
+        Files.move(replacement, dependencyManifest,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        assertEquals(snapshot.manifestSnapshots().get(dependencyManifest.toRealPath()),
+                Files.readString(dependencyManifest));
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted));
+        assertTrue(denied.getMessage().contains("namespace manifest file identity changed during admission"),
+                denied.getMessage());
+    }
+
+    @Test
     void rootManifestSymlinkSwapWithIdenticalBytesStillFailsClosed() throws Exception {
         Path project = temp.resolve("root-manifest-symlink-swap");
         Path main = source(project, "src/main.ores", "app",
