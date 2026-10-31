@@ -171,24 +171,32 @@ define module datalog as
   }
 
   fnc match_atom(borrow Atom pattern, borrow Atom fact,
-                 borrow unify.Substitution env): Result<unify.Match, String> {
+                 borrow unify.Substitution env, int max_work):
+      Result<unify.MatchWork, String> {
     if pattern.relation != fact.relation ||
        pattern.values.length() != fact.values.length(); then
-      return Ok(new unify.Match(false, env));
+      return Ok(new unify.MatchWork(new unify.Match(false, env), max_work));
     fi
     let mut unify.Substitution bindings = env;
+    let mut int remaining = max_work;
     for (let i = 0; i < pattern.values.length(); i++) {
       val left_cell = pattern.values.get(i);
       val right_cell = fact.values.get(i);
-      val step = unify.unify(rt borrow left_cell,
-                             rt borrow right_cell,
-                             rt borrow bindings, 64, 512);
-      if step.is_err(); then return Err("Datalog unification failed"); fi
-      val m = step.unwrap();
-      if !m.matched; then return Ok(new unify.Match(false, env)); fi
-      bindings = m.bindings;
+      val step = unify.unify_bounded(rt borrow left_cell,
+                                     rt borrow right_cell,
+                                     rt borrow bindings, 64, 512,
+                                     remaining);
+      if step.is_err(); then
+        return Err("Datalog unification work or depth exceeded");
+      fi
+      val evaluated = step.unwrap();
+      remaining = evaluated.remaining;
+      if !evaluated.outcome.matched; then
+        return Ok(new unify.MatchWork(new unify.Match(false, env), remaining));
+      fi
+      bindings = evaluated.outcome.bindings;
     }
-    return Ok(new unify.Match(true, bindings));
+    return Ok(new unify.MatchWork(new unify.Match(true, bindings), remaining));
   }
 
   fnc instantiate(borrow Atom head, borrow unify.Substitution env):
@@ -241,9 +249,11 @@ define module datalog as
       if fuel <= 0; then return Err("Datalog join work budget exceeded"); fi
       fuel = fuel - 1;
       val candidate = match_atom(rt borrow pattern, rt borrow fact,
-                                   rt borrow env);
+                                   rt borrow env, fuel);
       if candidate.is_err(); then return Err("Datalog matching error"); fi
-      val match_result = candidate.unwrap();
+      val evaluated = candidate.unwrap();
+      fuel = evaluated.remaining;
+      val match_result = evaluated.outcome;
       if match_result.matched; then
         let mut Array<Atom> more = new Array<Atom>();
         for (const witness of witnesses) { more.add(witness); }

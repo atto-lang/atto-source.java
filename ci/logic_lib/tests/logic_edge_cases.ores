@@ -67,6 +67,83 @@ define module logic_edge_cases as
     return true;
   }
 
+  fnc unification_work_edges(): bool {
+    val env = unify.empty();
+    val first = term.variable(50, 4);
+    val second = term.variable(51, 4);
+    val third = term.variable(52, 4);
+    val leaf = term.application("leaf", new Array<term.Term>());
+
+    // A wide term must consume shared fuel across all siblings, not
+    // reset a per-recursion limit on every child.
+    let mut Array<term.Term> values = new Array<term.Term>();
+    for (let i = 0; i < 12; i++) {
+      values.add(term.integer(i));
+    }
+    val wide = term.application("wide", values);
+    val starved = unify.unify_bounded(rt borrow wide, rt borrow wide,
+                                      rt borrow env, 64, 16, 5);
+    if !starved.is_err(); then return false; fi
+    val sufficient = unify.unify_bounded(rt borrow wide, rt borrow wide,
+                                         rt borrow env, 64, 16, 500);
+    if sufficient.is_err(); then return false; fi
+    val full = sufficient.unwrap();
+    if !full.outcome.matched || full.remaining >= 500; then
+      return false;
+    fi
+
+    // Variable aliasing must charge for each binding scan and dereference.
+    val bind_ab = unify.unify_bounded(rt borrow first, rt borrow second,
+                                      rt borrow env, 64, 16, 500);
+    if bind_ab.is_err(); then return false; fi
+    val first_link = bind_ab.unwrap();
+    if !first_link.outcome.matched; then return false; fi
+    val bind_bc = unify.unify_bounded(rt borrow second, rt borrow third,
+                                      rt borrow first_link.outcome.bindings,
+                                      64, 16, 500);
+    if bind_bc.is_err(); then return false; fi
+    val second_link = bind_bc.unwrap();
+    if !second_link.outcome.matched; then return false; fi
+    val bind_c = unify.unify_bounded(rt borrow third, rt borrow leaf,
+                                     rt borrow second_link.outcome.bindings,
+                                     64, 16, 500);
+    if bind_c.is_err(); then return false; fi
+    val completed = bind_c.unwrap();
+    if !completed.outcome.matched; then return false; fi
+    val underfunded = unify.unify_bounded(rt borrow first, rt borrow leaf,
+                                           rt borrow completed.outcome.bindings,
+                                           64, 16, 2);
+    if !underfunded.is_err(); then return false; fi
+    val funded = unify.unify_bounded(rt borrow first, rt borrow leaf,
+                                     rt borrow completed.outcome.bindings,
+                                     64, 16, 500);
+    if funded.is_err(); then return false; fi
+    if !funded.unwrap().outcome.matched; then return false; fi
+
+    // A late occurs-check witness must consume work for the preceding
+    // sibling terms. Exhaustion must never be interpreted as no cycle.
+    let mut Array<term.Term> late_children = new Array<term.Term>();
+    for (let i = 0; i < 12; i++) {
+      late_children.add(term.integer(i));
+    }
+    late_children.add(first);
+    val late_occurrence = term.application("wide", late_children);
+    val low_occurs = unify.unify_bounded(rt borrow first,
+                                         rt borrow late_occurrence,
+                                         rt borrow env, 64, 16, 8);
+    if !low_occurs.is_err(); then return false; fi
+    val full_occurs = unify.unify_bounded(rt borrow first,
+                                          rt borrow late_occurrence,
+                                          rt borrow env, 64, 16, 500);
+    if full_occurs.is_err(); then return false; fi
+    if full_occurs.unwrap().outcome.matched; then return false; fi
+
+    val zero = unify.unify_bounded(rt borrow first, rt borrow second,
+                                    rt borrow env, 64, 16, 0);
+    if !zero.is_err(); then return false; fi
+    return true;
+  }
+
   fnc datalog_edges(): bool {
     let mut Array<datalog.Schema> schemas = new Array<datalog.Schema>();
     let no_columns = new Array<int>();
@@ -125,6 +202,44 @@ define module logic_edge_cases as
     return true;
   }
 
+  fnc datalog_shared_fuel_edges(): bool {
+    // One join candidate and a single typed comparison. Charging only the
+    // outer join would incorrectly make this tiny work budget sufficient.
+    let mut Array<datalog.Schema> schemas = new Array<datalog.Schema>();
+    let mut Array<int> one_int = new Array<int>();
+    one_int.add(2);
+    schemas.add(new datalog.Schema("source", one_int));
+    schemas.add(new datalog.Schema("derived", one_int));
+
+    let mut Array<term.Term> seed_columns = new Array<term.Term>();
+    seed_columns.add(term.integer(42));
+    let mut Array<datalog.Atom> seed = new Array<datalog.Atom>();
+    seed.add(new datalog.Atom("source", seed_columns));
+
+    let v = term.variable(7, 2);
+    let mut Array<term.Term> vars = new Array<term.Term>();
+    vars.add(v);
+    let mut Array<datalog.Atom> body = new Array<datalog.Atom>();
+    body.add(new datalog.Atom("source", vars));
+    let mut Array<datalog.Rule> rules = new Array<datalog.Rule>();
+    rules.add(new datalog.Rule(new datalog.Atom("derived", vars), body));
+
+    val insufficient = datalog.evaluate(rt borrow schemas, rt borrow seed,
+                                         rt borrow rules, 2, 2);
+    if !insufficient.is_err(); then return false; fi
+
+    val full = datalog.evaluate(rt borrow schemas, rt borrow seed,
+                                rt borrow rules, 2, 256);
+    if full.is_err(); then return false; fi
+    val known = full.unwrap();
+    if known.facts.length() != 2; then return false; fi
+    let mut Array<term.Term> target_columns = new Array<term.Term>();
+    target_columns.add(term.integer(42));
+    val target = new datalog.Atom("derived", target_columns);
+    if !known.contains(rt borrow target); then return false; fi
+    return true;
+  }
+
   fnc relational_edges(): bool {
     val branches = new Array<relate.Branch>();
     val empty_result = relate.run(rt borrow branches, 4, 4);
@@ -154,7 +269,9 @@ define module logic_edge_cases as
 
   pub fnc run(): bool {
     if !unification_edges(); then return false; fi
+    if !unification_work_edges(); then return false; fi
     if !datalog_edges(); then return false; fi
+    if !datalog_shared_fuel_edges(); then return false; fi
     if !relational_edges(); then return false; fi
     if !induction_edges(); then return false; fi
     return true;

@@ -1,5 +1,6 @@
-// Pure, immutable substitution-based first-order unification.
-// Failed matches are ordinary values; malformed/budget-exceeded work is Err.
+// Pure Oreslang first-order unification with explicit total fuel accounting.
+// Every recursive visit, variable-binding scan, and substitution copy consumes
+// shared work fuel. Exhaustion is Err, never 'unmatched' or a partial proof.
 import module term from "./term";
 
 define module unify as
@@ -28,107 +29,213 @@ define module unify as
     }
   end
 
+  // Work result is useful to callers such as Datalog that must carry
+  // one fuel budget through joins and across compound arguments.
+  pub define class MatchWork as
+    pub val Match outcome;
+    pub val int remaining;
+    pub constructor(Match outcome, int remaining) {
+      self.outcome = outcome;
+      self.remaining = remaining;
+    }
+  end
+
+  define class Resolved as
+    val term.Term value;
+    val int remaining;
+    constructor(term.Term value, int remaining) {
+      self.value = value;
+      self.remaining = remaining;
+    }
+  end
+
+  define class Occurrence as
+    val bool found;
+    val int remaining;
+    constructor(bool found, int remaining) {
+      self.found = found;
+      self.remaining = remaining;
+    }
+  end
+
   pub fnc empty(): Substitution {
     return new Substitution(new Array<Binding>());
   }
 
-  pub fnc resolve(borrow term.Term value, borrow Substitution env,
-                  int depth): Result<term.Term, String> {
+  fnc resolve_fuel(borrow term.Term value, borrow Substitution env,
+                   int depth, int fuel): Result<Resolved, String> {
     if depth <= 0; then return Err("substitution depth exceeded"); fi
-    if value.kind != 0; then return Ok(value); fi
+    if fuel <= 0; then return Err("unification work budget exceeded"); fi
+    let mut int remaining = fuel - 1;
+    if value.kind != 0; then return Ok(new Resolved(value, remaining)); fi
+    if value.variable_id < 0 || value.type_id <= 0; then
+      return Err("invalid logic variable");
+    fi
     for (const binding of env.entries) {
+      if remaining <= 0; then
+        return Err("unification work budget exceeded");
+      fi
+      remaining = remaining - 1;
       if binding.variable_id == value.variable_id; then
-        return resolve(rt borrow binding.value, rt borrow env, depth - 1);
+        if binding.value.type_id != value.type_id; then
+          return Err("ill-typed substitution");
+        fi
+        return resolve_fuel(rt borrow binding.value, rt borrow env,
+                            depth - 1, remaining);
       fi
     }
-    return Ok(value);
+    return Ok(new Resolved(value, remaining));
   }
 
-  fnc occurs(int id, borrow term.Term value, borrow Substitution env,
-             int depth): Result<bool, String> {
+  // Compatibility API: explicit alias-depth limit, fixed ample work cap.
+  pub fnc resolve(borrow term.Term value, borrow Substitution env,
+                  int depth): Result<term.Term, String> {
+    val step = resolve_fuel(rt borrow value, rt borrow env, depth, 65536);
+    if step.is_err(); then return Err("substitution resolution failed"); fi
+    return Ok(step.unwrap().value);
+  }
+
+  fnc occurs_fuel(int variable_id, borrow term.Term value,
+                  borrow Substitution env, int depth,
+                  int fuel): Result<Occurrence, String> {
     if depth <= 0; then return Err("occurs check depth exceeded"); fi
-    val deref = resolve(rt borrow value, rt borrow env, depth);
-    if deref.is_err(); then return Err("occurs check resolution exceeded"); fi
-    val item = deref.unwrap();
-    if item.kind == 0; then return Ok(item.variable_id == id); fi
-    for (const arg of item.arguments) {
-      val nested = occurs(id, rt borrow arg, rt borrow env, depth - 1);
-      if nested.is_err(); then return Err("occurs check depth exceeded"); fi
-      if nested.unwrap(); then return Ok(true); fi
+    val resolved = resolve_fuel(rt borrow value, rt borrow env, depth, fuel);
+    if resolved.is_err(); then return Err("occurs check resolution failed"); fi
+    val r = resolved.unwrap();
+    val item = r.value;
+    let mut int remaining = r.remaining;
+    if item.kind == 0; then
+      return Ok(new Occurrence(item.variable_id == variable_id, remaining));
+    fi
+    for (const child of item.arguments) {
+      val nested = occurs_fuel(variable_id, rt borrow child, rt borrow env,
+                               depth - 1, remaining);
+      if nested.is_err(); then return Err("occurs check work or depth exceeded"); fi
+      val result = nested.unwrap();
+      remaining = result.remaining;
+      if result.found; then return Ok(new Occurrence(true, remaining)); fi
     }
-    return Ok(false);
+    return Ok(new Occurrence(false, remaining));
   }
 
-  fnc extend(borrow term.Term variable, borrow term.Term value,
-             borrow Substitution env, int depth,
-             int max_bindings): Result<Match, String> {
-    if variable.type_id != value.type_id && value.kind != 0; then
-      return Ok(new Match(false, env));
-    fi
-    if value.kind == 0 && variable.type_id != value.type_id; then
-      return Ok(new Match(false, env));
-    fi
+  fnc extend_fuel(borrow term.Term variable, borrow term.Term value,
+                  borrow Substitution env, int depth, int max_bindings,
+                  int fuel): Result<MatchWork, String> {
     if variable.kind != 0 || variable.variable_id < 0; then
       return Err("invalid logic variable");
+    fi
+    if variable.type_id != value.type_id; then
+      return Ok(new MatchWork(new Match(false, env), fuel));
     fi
     if env.entries.length() >= max_bindings; then
       return Err("binding budget exceeded");
     fi
-    val cyclic = occurs(variable.variable_id, rt borrow value,
-                        rt borrow env, depth);
-    if cyclic.is_err(); then return Err("occurs check failed"); fi
-    if cyclic.unwrap(); then return Ok(new Match(false, env)); fi
-    let mut Array<Binding> copy = new Array<Binding>();
-    for (const binding of env.entries) { copy.add(binding); }
-    copy.add(new Binding(variable.variable_id, value));
-    return Ok(new Match(true, new Substitution(copy)));
+    val cyclic = occurs_fuel(variable.variable_id, rt borrow value,
+                             rt borrow env, depth, fuel);
+    if cyclic.is_err(); then return Err("occurs check failed or over budget"); fi
+    val result = cyclic.unwrap();
+    if result.found; then
+      return Ok(new MatchWork(new Match(false, env), result.remaining));
+    fi
+    let mut int remaining = result.remaining;
+    let mut Array<Binding> entries = new Array<Binding>();
+    for (const binding of env.entries) {
+      if remaining <= 0; then return Err("unification work budget exceeded"); fi
+      remaining = remaining - 1;
+      entries.add(binding);
+    }
+    if remaining <= 0; then return Err("unification work budget exceeded"); fi
+    remaining = remaining - 1;
+    entries.add(new Binding(variable.variable_id, value));
+    return Ok(new MatchWork(new Match(true, new Substitution(entries)),
+                            remaining));
   }
 
-  pub fnc unify(borrow term.Term left, borrow term.Term right,
-                borrow Substitution env, int depth,
-                int max_bindings): Result<Match, String> {
-    if depth <= 0 || max_bindings <= 0; then
-      return Err("unification budget exceeded");
-    fi
-    val ar = resolve(rt borrow left, rt borrow env, depth);
-    val br = resolve(rt borrow right, rt borrow env, depth);
-    if ar.is_err() || br.is_err(); then return Err("resolution budget exceeded"); fi
-    val a = ar.unwrap();
-    val b = br.unwrap();
+  fnc unify_fuel(borrow term.Term left, borrow term.Term right,
+                 borrow Substitution env, int depth, int max_bindings,
+                 int fuel): Result<MatchWork, String> {
+    if depth <= 0; then return Err("unification depth exceeded"); fi
+    if fuel <= 0; then return Err("unification work budget exceeded"); fi
+    val ar = resolve_fuel(rt borrow left, rt borrow env, depth, fuel - 1);
+    if ar.is_err(); then return Err("left resolution work or depth exceeded"); fi
+    val left_resolved = ar.unwrap();
+    val br = resolve_fuel(rt borrow right, rt borrow env, depth,
+                          left_resolved.remaining);
+    if br.is_err(); then return Err("right resolution work or depth exceeded"); fi
+    val right_resolved = br.unwrap();
+    val a = left_resolved.value;
+    val b = right_resolved.value;
+    let int remaining = right_resolved.remaining;
     if a.kind == 0 && b.kind == 0 && a.variable_id == b.variable_id; then
-      if a.type_id != b.type_id; then return Ok(new Match(false, env)); fi
-      return Ok(new Match(true, env));
+      return Ok(new MatchWork(new Match(a.type_id == b.type_id, env),
+                              remaining));
     fi
     if a.kind == 0; then
-      return extend(rt borrow a, rt borrow b, rt borrow env,
-                    depth - 1, max_bindings);
+      return extend_fuel(rt borrow a, rt borrow b, rt borrow env,
+                         depth - 1, max_bindings, remaining);
     fi
     if b.kind == 0; then
-      return extend(rt borrow b, rt borrow a, rt borrow env,
-                    depth - 1, max_bindings);
+      return extend_fuel(rt borrow b, rt borrow a, rt borrow env,
+                         depth - 1, max_bindings, remaining);
     fi
     if a.kind != b.kind || a.type_id != b.type_id; then
-      return Ok(new Match(false, env));
+      return Ok(new MatchWork(new Match(false, env), remaining));
     fi
-    if a.kind == 1; then return Ok(new Match(a.text == b.text, env)); fi
-    if a.kind == 2; then return Ok(new Match(a.number == b.number, env)); fi
-    if a.kind == 3; then return Ok(new Match(a.truth == b.truth, env)); fi
+    if a.kind == 1; then
+      return Ok(new MatchWork(new Match(a.text == b.text, env), remaining));
+    fi
+    if a.kind == 2; then
+      return Ok(new MatchWork(new Match(a.number == b.number, env), remaining));
+    fi
+    if a.kind == 3; then
+      return Ok(new MatchWork(new Match(a.truth == b.truth, env), remaining));
+    fi
     if a.kind != 4 || a.text != b.text ||
        a.arguments.length() != b.arguments.length(); then
-      return Ok(new Match(false, env));
+      return Ok(new MatchWork(new Match(false, env), remaining));
     fi
     let mut Substitution next = env;
     for (let i = 0; i < a.arguments.length(); i++) {
-      val left_child = a.arguments.get(i);
-      val right_child = b.arguments.get(i);
-      val step = unify(rt borrow left_child,
-                       rt borrow right_child, rt borrow next,
-                       depth - 1, max_bindings);
-      if step.is_err(); then return Err("compound unification failed"); fi
-      val matched = step.unwrap();
-      if !matched.matched; then return Ok(new Match(false, env)); fi
-      next = matched.bindings;
+      val lchild = a.arguments.get(i);
+      val rchild = b.arguments.get(i);
+      val nested = unify_fuel(rt borrow lchild, rt borrow rchild,
+                              rt borrow next, depth - 1,
+                              max_bindings, remaining);
+      if nested.is_err(); then
+        return Err("compound unification work or depth exceeded");
+      fi
+      val step = nested.unwrap();
+      remaining = step.remaining;
+      if !step.outcome.matched; then
+        return Ok(new MatchWork(new Match(false, env), remaining));
+      fi
+      next = step.outcome.bindings;
     }
-    return Ok(new Match(true, next));
+    return Ok(new MatchWork(new Match(true, next), remaining));
+  }
+
+  pub fnc unify_bounded(borrow term.Term left, borrow term.Term right,
+                        borrow Substitution env, int depth,
+                        int max_bindings, int max_work):
+      Result<MatchWork, String> {
+    if depth <= 0 || depth > 1024 ||
+       max_bindings <= 0 || max_bindings > 4096 ||
+       max_work <= 0 || max_work > 1000000 ||
+       env.entries.length() > max_bindings; then
+      return Err("invalid unification resource limits");
+    fi
+    return unify_fuel(rt borrow left, rt borrow right, rt borrow env,
+                      depth, max_bindings, max_work);
+  }
+
+  // Backward-compatible function: a conservative explicit work cap prevents
+  // width-based blowups even for callers using the original signature.
+  pub fnc unify(borrow term.Term left, borrow term.Term right,
+                borrow Substitution env, int depth,
+                int max_bindings): Result<Match, String> {
+    val step = unify_bounded(rt borrow left, rt borrow right, rt borrow env,
+                             depth, max_bindings, 65536);
+    if step.is_err(); then return Err("unification failed or over budget"); fi
+    return Ok(step.unwrap().outcome);
   }
 end
