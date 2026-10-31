@@ -69,19 +69,25 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         String endpoint = "127.0.0.1:" + port;
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "websocket.listen");
         var listener = new ServerSocket();
+        boolean registrationAttempted = false;
         try {
             listener.setReuseAddress(false);
             listener.bind(new InetSocketAddress(
                     InetAddress.getByName("127.0.0.1"), port), backlog);
+            registrationAttempted = true;
             context.nativeIo().register(listener);
             return new WebSocketLoopbackListener(context, listener,
                     endpoint, origins, limits, maxConnections,
                     maxFrameBytes, maxMessageBytes);
         } catch (Exception failure) {
-            // Context-close races are governed by AsyncNativeIo.register():
-            // if it retained a late resource, the final sweep still owns it.
-            try { listener.close(); }
-            catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+            // Once registration is attempted, AsyncNativeIo may have retained
+            // the socket after a concurrent shutdown. Do not physically close
+            // such a resource ahead of its owning context's post-join sweep.
+            // A bind failure before registration still leaves us responsible.
+            if (!registrationAttempted) {
+                try { listener.close(); }
+                catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+            }
             if (failure instanceof IOException io) throw io;
             if (failure instanceof RuntimeException runtime) throw runtime;
             throw new IOException("WebSocket listener registration failed", failure);
@@ -98,9 +104,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         if (closed.get() || !accepting.compareAndSet(false, true)) {
             throw new RejectedExecutionException("WebSocket listener unavailable or accept outstanding");
         }
+        AtomicBoolean workStarted = new AtomicBoolean();
         OresFuture<Connection> future;
         try {
             future = context.nativeIo().submit("websocket.accept", () -> {
+                workStarted.set(true);
                 boolean handedOff = false;
                 boolean admitted = false;
                 try (var listening = context.nativeIo().borrow(server)) {
@@ -118,8 +126,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             WebSocketRawUpgrade.upgrade(
                                     accepted, endpoint, allowedOrigins, limits);
                         }
+                        Connection connection = new Connection(accepted);
                         handedOff = true;
-                        return new Connection(accepted);
+                        return connection;
                     } catch (Exception failure) {
                         // Never publish a socket that did not finish admission.
                         try { accepted.close(); }
@@ -136,9 +145,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             accepting.set(false);
             throw failure;
         }
-        if (future.isDone()) {
-            // Rejected before start, or already physically admitted and reset
-            // by its worker. Never modify a connection permit here.
+        if (future.isDone() && !workStarted.get()) {
+            // Synchronous queue rejection started no worker. A worker-completed
+            // Future may still have terminal callbacks; do not reset early.
             accepting.set(false);
         }
         return future;
@@ -173,9 +182,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (retired.get() || !reading.compareAndSet(false, true)) {
                 throw new RejectedExecutionException("WebSocket read closed or already outstanding");
             }
+            AtomicBoolean workStarted = new AtomicBoolean();
             OresFuture<WebSocketSessionState.Action> future;
             try {
                 future = context.nativeIo().submit("websocket.read", () -> {
+                    workStarted.set(true);
                     try (var loan = context.nativeIo().borrow(socket)) {
                         var frame = WebSocketFrameCodec.readClientFrame(
                                 socket.getInputStream(), maxFrameBytes);
@@ -203,11 +214,14 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 reading.set(false);
                 throw failure;
             }
-            if (future.isDone()) reading.set(false);
+            if (future.isDone() && !workStarted.get()) reading.set(false);
             return future;
         }
 
         Optional<WebSocketFrameCodec.Message> pollUserMessage() {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket raw poll belongs to host I/O");
+            }
             if (retired.get()) return Optional.empty();
             return protocol.pollUserMessage();
         }
