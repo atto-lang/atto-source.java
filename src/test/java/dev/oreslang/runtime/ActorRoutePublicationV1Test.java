@@ -598,6 +598,117 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void hostMailboxDrainCannotReleasePhysicalTurnExecutorBeforeItExits()
+            throws Exception {
+        var handled = new CountDownLatch(1);
+        var pastGuest = new CountDownLatch(1);
+        var releaseCarrier = new CountDownLatch(1);
+        var parked = new java.util.concurrent.atomic.AtomicBoolean();
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            if (handled.getCount() == 0 && parked.compareAndSet(false, true)) {
+                pastGuest.countDown();
+                try {
+                    if (!releaseCarrier.await(10, TimeUnit.SECONDS))
+                        throw new IllegalStateException("test carrier-exit release timed out");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(failure);
+                }
+            }
+        };
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 16, 16);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(), config, executor);
+             var gate = new ActorUpgradeEpochGate(62, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (msg, context) -> {
+                        assertEquals(List.of(3), msg);
+                        handled.countDown();
+                    });
+            var authority = new ActorRoutePublicationV1<>(gate, mailbox, state(7), old);
+            var converter = ActorRoutePublicationV1.actorRuntimeDrainSubmitter(
+                    (java.util.function.Function<byte[], List<Integer>>) bytes ->
+                            List.of(Byte.toUnsignedInt(bytes[0])));
+            try {
+                authority.admit(new byte[]{3});
+                assertTrue(authority.dispatchNextTracked(converter));
+                assertTrue(pastGuest.await(10, TimeUnit.SECONDS));
+                // Historical drain() observes the guest message's logical
+                // watermark before the enclosing physical TurnExecutor exits.
+                assertTrue(old.drain().isDone());
+                assertFalse(old.physicalDrain().isDone());
+                assertEquals(1, mailbox.snapshot().retainedMessages(),
+                        "logical completion alone cannot credit physical receipt");
+                assertThrows(IllegalStateException.class,
+                        () -> authority.stage(image('b')));
+                releaseCarrier.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (mailbox.snapshot().retainedMessages() != 0
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertEquals(0, mailbox.snapshot().retainedMessages());
+                try (var staged = authority.stage(image('b'))) {
+                    assertTrue(staged.publish(state(9), "replacement"));
+                }
+            } finally {
+                releaseCarrier.countDown();
+            }
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void suspendedSourceTaskKeepsV1PinnedAfterItsMailboxMessageIsProcessed()
+            throws Exception {
+        var taskStarted = new CountDownLatch(1);
+        var releaseTask = new OresFuture<Void>();
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(63, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (msg, context) -> {
+                        assertEquals(List.of(4), msg);
+                        context.runtime().<Void>startActorTask(resume -> {
+                            if (resume.initial()) {
+                                taskStarted.countDown();
+                                return OresScheduler.<Void>await(releaseTask);
+                            }
+                            return OresScheduler.done(null);
+                        });
+                    });
+            var authority = new ActorRoutePublicationV1<>(gate, mailbox, state(7), old);
+            var converter = ActorRoutePublicationV1.actorRuntimeDrainSubmitter(
+                    (java.util.function.Function<byte[], List<Integer>>) bytes ->
+                            List.of(Byte.toUnsignedInt(bytes[0])));
+            try {
+                authority.admit(new byte[]{4});
+                assertTrue(authority.dispatchNextTracked(converter));
+                assertTrue(taskStarted.await(10, TimeUnit.SECONDS));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (!old.drain().isDone() && System.nanoTime() < deadline)
+                    Thread.sleep(10);
+                assertTrue(old.drain().isDone(),
+                        "mailbox turn has finished while its child Task awaits");
+                assertFalse(old.physicalDrain().isDone());
+                assertEquals(1, mailbox.snapshot().retainedMessages());
+                assertThrows(IllegalStateException.class, () -> authority.stage(image('b')));
+                releaseTask.completeFromRuntime(null);
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (mailbox.snapshot().retainedMessages() != 0
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertEquals(0, mailbox.snapshot().retainedMessages(),
+                        "only physical child Task quiescence may release old route");
+                try (var staged = authority.stage(image('b'))) {
+                    assertTrue(staged.publish(state(9), "replacement"));
+                }
+            } finally {
+                releaseTask.completeFromRuntime(null);
+            }
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
