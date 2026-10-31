@@ -5538,9 +5538,14 @@ public final class ActorRuntime implements AutoCloseable {
     boolean isLiveIncarnation(ActorRef<?> ref) {
         if (ref == null || !ref.ownedBy(this)) return false;
         ActorCell<?> cell = actors.get(ref.id());
+        // DO NOT take cell.lifecycleLock here. Actor finalization settles
+        // done() callbacks while holding that lock, and a WebSocket claim's
+        // short admission monitor may be held by a concurrent sender.
+        // stopped is an atomic, irrevocable gate set before finalization.
+        // Inspecting finalized() here would invert the lock order and deadlock.
         return cell != null && cell.ref == ref
                 && cell.ref.generation() == ref.generation()
-                && !cell.stopped.get() && !cell.finalized();
+                && !cell.stopped.get();
     }
 
     public void stop(ActorRef<?> ref) {
