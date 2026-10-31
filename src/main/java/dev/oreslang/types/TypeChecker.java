@@ -8201,6 +8201,10 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
+            // Init is not a callable slot and its return marker 'state' is
+            // not an ordinary named type. Keep it out of every class shape.
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init")) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
                     callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
