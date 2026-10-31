@@ -1575,7 +1575,18 @@ public final class OwnershipChecker {
         }
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
-            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            boolean async = isBuiltinStdoutCall(call, "log_async", scope)
+                    || isBuiltinStdoutCall(call, "logList_async", scope)
+                    || isBuiltinStdoutCall(call, "println_async", scope)
+                    || (call.callee() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr namespace
+                        && namespace.name().equals("stdio")
+                        && member.member().equals("println_async")
+                        && scope.lookup("stdio") == null);
+            return async
+                    ? new ValueInfo(new Ast.TypeRef("Future", List.of(Ast.TypeRef.simple("void")), false),
+                                    ValueKind.MOVE_ONLY, null)
+                    : new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
@@ -1984,12 +1995,20 @@ public final class OwnershipChecker {
         if (!(call.callee() instanceof Ast.MemberExpr member)) return false;
         if (member.receiver() instanceof Ast.NameExpr namespace
                 && namespace.name().equals("stdio") && scope.lookup("stdio") == null) {
-            return member.member().equals("print") || member.member().equals("println");
+            return member.member().equals("print") || member.member().equals("print_blocking")
+                    || member.member().equals("println") || member.member().equals("println_blocking")
+                    || member.member().equals("println_async");
         }
         return isBuiltinStdoutCall(call, "write", scope)
+                || isBuiltinStdoutCall(call, "write_blocking", scope)
                 || isBuiltinStdoutCall(call, "println", scope)
+                || isBuiltinStdoutCall(call, "println_blocking", scope)
+                || isBuiltinStdoutCall(call, "println_async", scope)
                 || isBuiltinStdoutCall(call, "log", scope)
-                || isBuiltinStdoutCall(call, "logList", scope);
+                || isBuiltinStdoutCall(call, "log_blocking", scope)
+                || isBuiltinStdoutCall(call, "log_async", scope)
+                || isBuiltinStdoutCall(call, "logList", scope)
+                || isBuiltinStdoutCall(call, "logList_async", scope);
     }
 
     private void checkFormattingArguments(List<Ast.Expr> arguments, Scope scope) {
