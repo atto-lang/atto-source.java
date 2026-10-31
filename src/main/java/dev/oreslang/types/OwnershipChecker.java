@@ -2003,12 +2003,17 @@ public final class OwnershipChecker {
         if (!(call.callee() instanceof Ast.MemberExpr member)) return false;
         if (member.receiver() instanceof Ast.NameExpr namespace
                 && namespace.name().equals("stdio") && scope.lookup("stdio") == null) {
-            return member.member().equals("print") || member.member().equals("println");
+            return member.member().equals("print")
+                    || member.member().equals("println")
+                    || member.member().equals("println_async");
         }
         return isBuiltinStdoutCall(call, "write", scope)
                 || isBuiltinStdoutCall(call, "println", scope)
+                || isBuiltinStdoutCall(call, "println_async", scope)
                 || isBuiltinStdoutCall(call, "log", scope)
-                || isBuiltinStdoutCall(call, "logList", scope);
+                || isBuiltinStdoutCall(call, "log_async", scope)
+                || isBuiltinStdoutCall(call, "logList", scope)
+                || isBuiltinStdoutCall(call, "logList_async", scope);
     }
 
     private void checkFormattingArguments(List<Ast.Expr> arguments, Scope scope) {
