@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * resolver may block. A future resolver service can add bounded asynchronous
  * DNS without weakening this contract.</p>
  */
-final class VmNioTcpClient implements AutoCloseable {
+public final class VmNioTcpClient implements AutoCloseable {
     private static final int MAX_IO_BYTES = 65_536;
     private static final int MAX_CONNECT_TIMEOUTS = 1_024;
 
@@ -95,28 +95,33 @@ final class VmNioTcpClient implements AutoCloseable {
                     "TCP connect deadline capacity exhausted");
         }
 
-        SocketChannel channel = SocketChannel.open();
-        boolean success = false;
+        SocketChannel channel = null;
+        VmNioTcpClient client = null;
         try {
+            channel = SocketChannel.open();
             channel.configureBlocking(false);
-            VmNioTcpClient client = new VmNioTcpClient(
+            client = new VmNioTcpClient(
                     readiness,
                     channel,
                     host + ":" + port,
                     onTerminated);
             client.armDeadline(timeoutMillis);
             client.beginConnect(new InetSocketAddress(address, port));
-            success = true;
             return client;
-        } finally {
-            if (!success) {
+        } catch (IOException | RuntimeException | Error failure) {
+            if (client != null) {
+                client.abortConstruction();
+            } else {
                 DeadlineTimer.ADMISSION.release();
-                try {
-                    channel.close();
-                } catch (IOException ignored) {
-                    // The original admission failure remains authoritative.
+                if (channel != null) {
+                    try {
+                        channel.close();
+                    } catch (IOException closeFailure) {
+                        failure.addSuppressed(closeFailure);
+                    }
                 }
             }
+            throw failure;
         }
     }
 
@@ -197,6 +202,14 @@ final class VmNioTcpClient implements AutoCloseable {
             throw new IllegalArgumentException(
                     "invalid numeric IPv4 address", impossible);
         }
+    }
+
+    private void abortConstruction() {
+        cancelConnectWatch();
+        closeChannel();
+        cancelDeadlineAndReleaseAdmission();
+        connected.cancel(false);
+        reportTerminated();
     }
 
     private void armDeadline(int timeoutMillis) {
@@ -378,14 +391,14 @@ final class VmNioTcpClient implements AutoCloseable {
         }
     }
 
-    final class Connection implements AutoCloseable {
+    public final class Connection implements AutoCloseable {
         private final Object connectionGate = new Object();
         private final Set<OresFuture<?>> outstanding = new HashSet<>();
         private final OresFuture<Void> closedFuture = new OresFuture<>();
         private boolean terminated;
         private int activeOperations;
 
-        String endpoint() {
+        public String endpoint() {
             return endpoint;
         }
 
@@ -444,7 +457,7 @@ final class VmNioTcpClient implements AutoCloseable {
             return future;
         }
 
-        OresFuture<List<Long>> readBytesAsync(int maximum) {
+        public OresFuture<List<Long>> readBytesAsync(int maximum) {
             if (maximum < 1 || maximum > MAX_IO_BYTES) {
                 return OresFuture.failed(new IllegalArgumentException(
                         "invalid TCP read bound"));
@@ -509,7 +522,7 @@ final class VmNioTcpClient implements AutoCloseable {
             });
         }
 
-        OresFuture<Integer> writeBytesAsync(List<Long> bytes) {
+        public OresFuture<Integer> writeBytesAsync(List<Long> bytes) {
             Objects.requireNonNull(bytes, "bytes");
             if (bytes.size() > MAX_IO_BYTES) {
                 return OresFuture.failed(new IllegalArgumentException(
@@ -588,7 +601,7 @@ final class VmNioTcpClient implements AutoCloseable {
             if (watch != null) watch.cancel(false);
         }
 
-        OresFuture<Void> closeAsync() {
+        public OresFuture<Void> closeAsync() {
             close();
             return closedFuture;
         }
