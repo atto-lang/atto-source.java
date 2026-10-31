@@ -3827,6 +3827,10 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                if (member.member().equals("println_async"))
+                    return new Function(List.of(Unknown.INSTANCE), new Named("Future", List.of(Primitive.VOID)));
+                if (member.member().equals("flush_async_logs"))
+                    return new Function(List.of(), new Named("Future", List.of(Primitive.VOID)));
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
@@ -4005,7 +4009,10 @@ public final class TypeChecker {
                 if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 }
-                if (member.member().equals("log")) {
+                if (member.member().equals("println_async") || member.member().equals("logList_async")) {
+                    return new Function(List.of(Unknown.INSTANCE), new Named("Future", List.of(Primitive.VOID)));
+                }
+                if (member.member().equals("log") || member.member().equals("log_async")) {
                     throw new IllegalArgumentException(
                             "variadic stdio.stdout.log is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
                 }
