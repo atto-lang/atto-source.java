@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
+import org.graalvm.polyglot.PolyglotException;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.HotReloadManager;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -19,13 +21,21 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class HotReloadCurrentMainTransactionTest {
     private static final String GOOD = "pub routine main(): void { return; }";
+    // This must PASS the trusted compiler's syntax/type/ownership/capability
+    // checks but fail INSIDE guest execution. A dynamic selector prevents
+    // static constant-index rejection and mirrors the separately authored
+    // DynamicPropertyAccessRuntimeFailureTest runtime-boundary oracle.
     private static final String BAD_AT_START = """
+            fnc selector(): int { return 4; }
             pub routine main(): void {
-              val values = arr[1];
-              val value = values[99];
+              const pair = tuple(1, 2);
+              const int index = selector();
+              const int value = pair[index];
               return;
             }
             """;
+    private static final String RUNTIME_BOUNDS_DIAGNOSTIC =
+            "array/list/tuple index 4 outside length 2";
     private static final ExecutionProfile PROFILE = ExecutionProfile.serverJit();
 
     private static String sha256(String source) {
@@ -55,8 +65,13 @@ final class HotReloadCurrentMainTransactionTest {
     void failedStartupPreservesExactPreviouslyServingGeneration() {
         try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
             var previous = manager.loadAndStart("worker.ores", GOOD);
-            assertThrows(RuntimeException.class,
+            assertDoesNotThrow(() -> OresCompiler.validateForIsolate(
+                    BAD_AT_START, IsolatePolicy.developer()),
+                    "fixture must pass compiler and policy admission before guest evaluation");
+            PolyglotException failure = assertThrows(PolyglotException.class,
                     () -> manager.reloadAndStart("worker.ores", BAD_AT_START));
+            assertTrue(failure.getMessage().contains(RUNTIME_BOUNDS_DIAGNOSTIC),
+                    () -> "expected dynamic guest index failure, got: " + failure);
             assertSame(previous, manager.active("worker.ores"));
             assertSame(previous, manager.serving("worker.ores"));
             assertTrue(previous.initialized());
@@ -89,11 +104,41 @@ final class HotReloadCurrentMainTransactionTest {
     void failedOtherUnitNeverRedirectsGlobalLastServingRoute() {
         try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
             var previous = manager.loadAndStart("stable.ores", GOOD);
-            assertThrows(RuntimeException.class,
+            assertDoesNotThrow(() -> OresCompiler.validateForIsolate(
+                    BAD_AT_START, IsolatePolicy.developer()));
+            PolyglotException failure = assertThrows(PolyglotException.class,
                     () -> manager.loadAndStart("broken.ores", BAD_AT_START));
+            assertTrue(failure.getMessage().contains(RUNTIME_BOUNDS_DIAGNOSTIC),
+                    () -> "expected guest execution failure, got: " + failure);
             assertSame(previous, manager.active());
             assertNull(manager.active("broken.ores"));
             assertEquals(1, manager.liveGenerations());
+        }
+    }
+
+    @Test
+    void admittedCandidateOnlyFailsDuringItsRealGuestEntrypoint() {
+        assertDoesNotThrow(() -> OresCompiler.validateForIsolate(
+                BAD_AT_START, IsolatePolicy.developer()),
+                "the deliberately failing guest must not be a type-check failure");
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var candidate = assertDoesNotThrow(() ->
+                    manager.load("runtime-failure.ores", BAD_AT_START));
+            assertFalse(candidate.started());
+            assertFalse(candidate.initialized());
+            assertEquals(1, manager.liveGenerations(),
+                    "source admission actually registered a generation");
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    candidate::start);
+            assertTrue(failure.getMessage().contains(RUNTIME_BOUNDS_DIAGNOSTIC),
+                    () -> "wrong guest-runtime failure: " + failure);
+            assertTrue(candidate.started(), "failed evaluation was attempted");
+            assertFalse(candidate.initialized(), "runtime exception must not publish readiness");
+            assertTrue(candidate.closed(), "failed guest start must retire its context");
+            assertEquals(0, manager.liveGenerations(),
+                    "failing guest must not retain manager generation quota");
+            assertNull(manager.active("runtime-failure.ores"));
+            assertNull(manager.serving("runtime-failure.ores"));
         }
     }
 
