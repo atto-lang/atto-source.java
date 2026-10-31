@@ -133,9 +133,8 @@
       "code": "E_MOVE_UNPROVEN"
     },
     {
-      "id": "field.implicit.move",
-      "outcome": "reject",
-      "code": "E_MOVE_UNPROVEN"
+      "id": "field.ordinary.alias",
+      "outcome": "accept"
     },
     {
       "id": "field.move-only.borrow",
