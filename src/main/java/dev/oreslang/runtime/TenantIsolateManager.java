@@ -117,11 +117,15 @@ public final class TenantIsolateManager implements AutoCloseable {
                     + "do not silently share a trusted JVM context");
         }
         // PR #2278's admission is deliberately fail-closed on protected modes.
-        ActorHeapAdmission.requireSupportedTenantIsolationMode("trusted-inprocess");
+        ActorHeapAdmission.requireSupportedTenantIsolationMode(
+                System.getProperty("ores.runtime.tenant.isolation", "trusted-inprocess"));
         BoundedOutput output = new BoundedOutput(maxOutputBytes);
+        BoundedOutput errors = new BoundedOutput(maxOutputBytes);
         // OresContext/OresVM are constructed through the actual guest language
         // context, not a mock actor graph or detached host-only ActorRuntime.
-        Context context = policy.restrictedContextBuilder().out(output).build();
+        // Bound BOTH output streams: stderr is not an unlimited tenant bypass.
+        Context context = policy.restrictedContextBuilder()
+                .out(output).err(errors).build();
         TenantHandle handle = new TenantHandle(this, tenantId);
         tenants.put(tenantId, new Tenant(handle, context, output));
         return handle;
