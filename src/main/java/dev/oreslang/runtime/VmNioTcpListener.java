@@ -216,6 +216,11 @@ public final class VmNioTcpListener implements AutoCloseable {
             pendingAccept = exported;
         }
 
+        // Cancellation may win before the selector reports anything. Clear
+        // the logical accept lease on every terminal path, independently of
+        // the underlying readiness watch's eventual callback.
+        exported.whenCompleteRuntime((value, failure) ->
+                clearPendingAccept(exported));
         armAccept(exported, watchRef);
         return exported;
     }
