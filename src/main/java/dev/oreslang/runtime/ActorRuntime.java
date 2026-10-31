@@ -2374,7 +2374,20 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 admitted = true;
             }
-            cell.schedule();
+            // Admission transferred ticket ownership to the actual mailbox.
+            // If a dispatcher refuses the scheduled carrier, ActorCell.fail
+            // initiates STOP and drains its queued envelopes. Never propagate
+            // that scheduling failure to a caller which would then also close
+            // the admitted ticket, forging a second physical-loan settlement.
+            try {
+                cell.schedule();
+            } catch (RuntimeException | Error dispatchFailure) {
+                try {
+                    cell.fail(dispatchFailure);
+                } catch (RuntimeException | Error cleanupFailure) {
+                    dispatchFailure.addSuppressed(cleanupFailure);
+                }
+            }
             return true;
         } finally {
             if (!admitted) cell.releaseMailboxSlot(true);
