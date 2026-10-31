@@ -1744,9 +1744,27 @@ public final class ActorRuntime implements AutoCloseable {
     /** Invoked once the child has physically left its actor guest turn. */
     public <T> OresFuture<T> startActorTask(
             OresScheduler.Task<T> task, Runnable retireAfterPhysicalDone) {
+        return startActorTask(
+                task,
+                retireAfterPhysicalDone,
+                ignored -> { });
+    }
+
+    /**
+     * Structured actor Task admission. onTerminalReady runs after terminal
+     * authority is irrevocable but before ordinary Future subscribers, so a
+     * lexical TaskScope can revoke and account children without subscriber
+     * ordering races. Physical reclamation still waits for
+     * retireAfterPhysicalDone and the actor retirement receipt.
+     */
+    public <T> OresFuture<T> startActorTask(
+            OresScheduler.Task<T> task,
+            Runnable retireAfterPhysicalDone,
+            java.util.function.Consumer<OresFuture<T>> onTerminalReady) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(
                 retireAfterPhysicalDone, "physical Task retirement");
+        Objects.requireNonNull(onTerminalReady, "terminal-ready hook");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
@@ -1780,7 +1798,8 @@ public final class ActorRuntime implements AutoCloseable {
                                     sourceTaskLease, retirementFailure);
                             throw retirementFailure;
                         }
-                    });
+                    },
+                    onTerminalReady);
             // startActorTask is actor-owned by definition. Make the ownership
             // registration intrinsic so direct runtime callers cannot orphan a
             // suspended Task and deadlock shutdown behind its lifetime lease.
@@ -1893,10 +1912,12 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             future = cell.sourceScheduler().startWithWallDeadline(
                     wrapUntrustedTaskForQuota(task, quota),
-                    retireOnce, quota.remainingWallNanos(),
+                    retireOnce,
+                    quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
+                    onTerminalReady,
                     notificationsDrained);
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
