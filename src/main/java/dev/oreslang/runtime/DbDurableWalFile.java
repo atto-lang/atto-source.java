@@ -59,14 +59,18 @@ final class DbDurableWalFile implements AutoCloseable {
     }
 
     /** Host-internal only: caller must establish trusted directory authority. */
-    static DbDurableWalFile openHostOnly(Path privateDirectory, String basename,
-                                        int generation) throws IOException {
+    static void requireValidOpenArguments(String basename, int generation) {
         if (generation < 1 || basename == null || basename.isEmpty()
                 || basename.length() > 100 || basename.equals(".") || basename.equals("..")
                 || basename.indexOf('/') >= 0 || basename.indexOf('\\') >= 0
                 || basename.indexOf('\0') >= 0) {
             throw new IllegalArgumentException("invalid WAL owner generation or basename");
         }
+    }
+
+    static DbDurableWalFile openHostOnly(Path privateDirectory, String basename,
+                                        int generation) throws IOException {
+        requireValidOpenArguments(basename, generation);
         Path root = privateDirectory.toAbsolutePath().normalize();
         Path physical = root.toRealPath();
         if (!physical.equals(root.toRealPath(LinkOption.NOFOLLOW_LINKS))

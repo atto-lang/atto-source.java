@@ -41,6 +41,10 @@ final class DbDurableWalAuthority {
         if (!grant.issuedBy(context.dbWalGrants()))
             throw new SecurityException("WAL grant was not issued by owning context");
         int ownerGeneration = grant.generation();
+        // Invalid basenames cannot consume an OPENING reservation. Host OS
+        // failures after the physical worker starts remain conservatively
+        // fenced unless closure of its exact returned file is proven.
+        DbDurableWalFile.requireValidOpenArguments(basename, ownerGeneration);
         // Caller is a trusted host service. Never derive this directory from
         // guest DATA. Source guest cannot instantiate DbDurableWalAuthority.
         Path filePath = trustedDirectory.resolve(Objects.requireNonNull(basename));
