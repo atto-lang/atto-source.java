@@ -328,7 +328,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
-                "SelectPlan", "DynamicSelectPlan", "PlannedResult",
+                "SelectPlan", "DynamicSelectPlan",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "HttpClientResponse", "HttpClientBody",
@@ -3223,17 +3223,6 @@ public final class TypeChecker {
                     }
                     Type keyType = dynamic.arguments().getFirst();
                     String method = planMethod.member();
-                    if (method.equals("try_select_keyed")
-                            || method.equals("select_keyed_async")) {
-                        if (!call.arguments().isEmpty()) {
-                            throw new IllegalArgumentException(
-                                    "DynamicSelectPlan." + method + " expects no arguments");
-                        }
-                        Type planned = new Named("PlannedResult", List.of(keyType));
-                        Type option = new Named("Option", List.of(planned));
-                        return method.equals("try_select_keyed")
-                                ? option : new Named("Future", List.of(option));
-                    }
                     if (method.equals("put")) {
                         if (call.arguments().size() != 2) {
                             throw new IllegalArgumentException("DynamicSelectPlan.put expects key and SelectCase");
@@ -4091,19 +4080,6 @@ public final class TypeChecker {
                     case "value" -> Unknown.INSTANCE;
                     default -> throw new IllegalArgumentException(
                             "unknown SelectResult member '" + member.member() + "'");
-                };
-            }
-
-            if (selectedReceiver instanceof Named planned
-                    && planned.name().equals("PlannedResult")
-                    && planned.arguments().size() == 1) {
-                return switch (member.member()) {
-                    case "version", "index" -> Primitive.INT;
-                    case "key" -> planned.arguments().getFirst();
-                    case "operation" -> Primitive.STRING;
-                    case "value" -> Unknown.INSTANCE;
-                    default -> throw new IllegalArgumentException(
-                            "unknown PlannedResult member '" + member.member() + "'");
                 };
             }
 
@@ -5995,7 +5971,6 @@ public final class TypeChecker {
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("SelectPlan") || named.name().equals("DynamicSelectPlan")
-                || named.name().equals("PlannedResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
@@ -6117,7 +6092,7 @@ public final class TypeChecker {
                 "Mutex", "MutexGuard", "SharedMutex",
                 "Future", "Iterator", "AsyncIterator", "ActorStream", "StreamOperator",
                 "Channel", "SelectCase", "SelectSet", "SelectResult",
-                "SelectPlan", "DynamicSelectPlan", "PlannedResult")
+                "SelectPlan", "DynamicSelectPlan")
                 .contains(named.name())) {
             return false;
         }
@@ -9777,16 +9752,6 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("SelectPlan is not generic");
                 }
                 yield new Named("SelectPlan", List.of());
-            }
-            case "PlannedResult" -> {
-                if (ref.inferArguments() || ref.arguments().size() != 1) {
-                    throw new IllegalArgumentException("PlannedResult<K> requires exactly one key type");
-                }
-                Type key = resolve(ref.arguments().getFirst(), generics, self);
-                if (key != Primitive.INT && key != Primitive.STRING) {
-                    throw new IllegalArgumentException("PlannedResult requires int or string key type");
-                }
-                yield new Named("PlannedResult", List.of(key));
             }
             case "DynamicSelectPlan" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
