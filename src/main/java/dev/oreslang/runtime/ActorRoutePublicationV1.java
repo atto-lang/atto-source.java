@@ -216,12 +216,15 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         private void observePhysicalDrain() {
             if (physicalDrain == null) return; // host-only non-ActorRef route
             physicalDrain.whenCompleteRuntime((ignored, failure) -> {
-                synchronized (lock) {
-                    if (failure != null) {
-                        poisoned = true; // old actor may have died; no rollback
-                    } else {
-                        physicalDrained.set(true);
-                    }
+                // Runtime Future notifications can execute under the old
+                // actor's lifecycle monitor. Acquiring the coordinator lock
+                // here would invert stage(): coordinator -> actor lifecycle.
+                // Both flags are independently publication-safe atomics/
+                // volatiles; commit checks them under its own monitor.
+                if (failure != null) {
+                    poisoned = true; // old actor may have died; no rollback
+                } else {
+                    physicalDrained.set(true);
                 }
             });
         }
