@@ -227,6 +227,29 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void directIndexRejectsNoncanonicalManifestMemberAliases() throws IOException {
+        Path project = temporary.resolve("direct-index-path-aliases");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, project, "src/billing/charge.ores", "billing",
+                "pub fnc charge(): int { return 5; }");
+        Path manifest = manifest(project, "checkout", List.of("src/billing/charge.ores"));
+        var admitted = PackageNamespaceIndex.load(List.of(manifest), sources, Map.of());
+        assertEquals(1, admitted.resolve(id(project.resolve("src/billing/charge.ores")),
+                "+/", "billing").providerUnitIds().size());
+        for (String alias : List.of(
+                "./src/billing/charge.ores",
+                "src//billing/charge.ores",
+                "src/billing/./charge.ores",
+                "src/billing/../billing/charge.ores")) {
+            manifest(project, "checkout", List.of(alias));
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> PackageNamespaceIndex.load(List.of(manifest), sources, Map.of()), alias);
+            assertTrue(denied.getMessage().contains("noncanonical namespace provider filename"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
     void nestedPackageManifestBlocksAncestorMemberOwnership() throws IOException {
         Map<String, String> sources = new LinkedHashMap<>();
         Path root = temporary.resolve("checkout");
