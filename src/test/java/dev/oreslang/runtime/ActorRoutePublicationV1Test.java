@@ -984,6 +984,112 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void candidateStopBeforePublicationRejectsV2AndRollsBackV1Ingress()
+            throws Exception {
+        var oldReceived = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(70, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> oldReceived.countDown());
+            var candidate = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> fail("terminated V2 executed"));
+            old.ready().get(10, TimeUnit.SECONDS);
+            candidate.ready().get(10, TimeUnit.SECONDS);
+            try (var authority = new ActorRoutePublicationV1<>(
+                    gate, mailbox, state(7), old)) {
+                try (var stage = authority.stage(image('b'))) {
+                    assertTrue(stage.quiescent());
+                    candidate.stop();
+                    assertThrows(IllegalStateException.class,
+                            () -> stage.publish(state(9), candidate),
+                            "candidate STOP must win over publication when already admitted");
+                    assertSame(old, authority.current().physicalRoute());
+                    assertEquals(1L, authority.current().routeEpoch());
+                }
+                assertFalse(mailbox.snapshot().dispatchFrozen());
+                assertDoesNotThrow(() -> old.send(List.of(7)));
+                assertTrue(oldReceived.await(10, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void publishedCandidateStopPoisonsRouteWithoutReopeningOldIngress()
+            throws Exception {
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(71, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> fail("retired old actor received DATA"));
+            var candidate = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            old.ready().get(10, TimeUnit.SECONDS);
+            candidate.ready().get(10, TimeUnit.SECONDS);
+            try (var authority = new ActorRoutePublicationV1<>(
+                    gate, mailbox, state(7), old)) {
+                try (var stage = authority.stage(image('b'))) {
+                    assertTrue(stage.quiescent());
+                    assertTrue(stage.publish(state(9), candidate));
+                }
+                assertSame(candidate, authority.current().physicalRoute());
+                candidate.stop();
+                candidate.done().get(10, TimeUnit.SECONDS);
+                assertThrows(IllegalStateException.class, authority::current,
+                        "post-publication physical death must quarantine logical DATA");
+                assertThrows(ActorRuntime.ActorSealedException.class,
+                        () -> old.send(List.of(1)),
+                        "failed V2 must never silently resurrect old actor ingress");
+                assertThrows(IllegalStateException.class,
+                        () -> authority.admit(new byte[]{9}));
+            }
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void publishedCandidateCancellationPoisonsRouteAndDeniesReplay()
+            throws Exception {
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(72, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> fail("old actor received stale DATA"));
+            var candidate = runtime.<List<Integer>>spawnShared(() ->
+                    (message, context) -> {});
+            old.ready().get(10, TimeUnit.SECONDS);
+            candidate.ready().get(10, TimeUnit.SECONDS);
+            try (var authority = new ActorRoutePublicationV1<>(
+                    gate, mailbox, state(7), old)) {
+                try (var stage = authority.stage(image('b'))) {
+                    assertTrue(stage.publish(state(9), candidate));
+                }
+                assertTrue(candidate.cancel());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                boolean quarantined = false;
+                while (System.nanoTime() < deadline) {
+                    try {
+                        authority.current();
+                    } catch (IllegalStateException expected) {
+                        quarantined = true;
+                        break;
+                    }
+                    Thread.sleep(10);
+                }
+                assertTrue(quarantined,
+                        "candidate cancellation must revoke logical serving authority");
+                assertThrows(ActorRuntime.ActorSealedException.class,
+                        () -> old.send(List.of(1)));
+                assertThrows(IllegalStateException.class,
+                        () -> authority.dispatchNext((route, envelope) ->
+                                fail("quarantined route replayed DATA")));
+            }
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
