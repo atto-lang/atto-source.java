@@ -18,6 +18,7 @@ import java.util.concurrent.Semaphore;
 public final class AsyncStdioLogs implements AutoCloseable {
     private static final int MAX_RECORD_BYTES = 65_536;
     private static final int QUEUE_CAPACITY = 1_024;
+    private static final int MAX_PENDING_BARRIERS = 1_024;
     private static final long CLOSE_TIMEOUT_MILLIS = 5_000;
 
     private record Record(long sequence, String text, OresFuture<Void> completion) { }
@@ -77,6 +78,9 @@ public final class AsyncStdioLogs implements AutoCloseable {
         synchronized (lock) {
             if (failure != null) return OresFuture.failed(failure);
             if (submitted == completed) return OresFuture.completed(null);
+            if (barriers.size() >= MAX_PENDING_BARRIERS) {
+                throw new IllegalStateException("async stdio flush barriers exhausted");
+            }
             OresFuture<Void> barrier = new OresFuture<>(() -> false, () -> { });
             barriers.add(new Barrier(submitted, barrier));
             return barrier;
