@@ -21,15 +21,18 @@ final class ActorPhysicalTurnGate {
         final Runnable task;
         final Consumer<Runnable> submit;
         final Consumer<Throwable> reject;
+        final java.util.concurrent.atomic.AtomicBoolean physicalStart;
         // Zero-cost-per-turn state: pending=0, running=1, rejected=2.
         // Synchronization on the existing Pending object linearizes guest
         // entry versus a submitter which enqueued work but then threw.
         private int claim;
 
-        Pending(Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject) {
+        Pending(Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject,
+                java.util.concurrent.atomic.AtomicBoolean physicalStart) {
             this.task = task;
             this.submit = submit;
             this.reject = reject;
+            this.physicalStart = physicalStart;
         }
     }
 
@@ -53,9 +56,15 @@ final class ActorPhysicalTurnGate {
     synchronized int queued() { return pending.size(); }
 
     void dispatch(Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject) {
+        dispatchInternal(task, submit, reject, null);
+    }
+
+    private void dispatchInternal(Runnable task, Consumer<Runnable> submit,
+                                  Consumer<Throwable> reject,
+                                  java.util.concurrent.atomic.AtomicBoolean physicalStart) {
         Pending item = new Pending(
                 Objects.requireNonNull(task), Objects.requireNonNull(submit),
-                Objects.requireNonNull(reject));
+                Objects.requireNonNull(reject), physicalStart);
         synchronized (this) {
             if (closed) throw new RejectedExecutionException("actor turn gate closed");
             if (admitted >= maximum) {
@@ -100,8 +109,7 @@ final class ActorPhysicalTurnGate {
             if (released.compareAndSet(false, true)) region.releasePin(ticket);
         };
         try {
-            dispatch(() -> {
-                started.set(true);
+            dispatchInternal(() -> {
                 try {
                     if (!region.claimPinnedTurn(ticket)) {
                         reject.accept(new RejectedExecutionException(
@@ -118,7 +126,7 @@ final class ActorPhysicalTurnGate {
                 } finally {
                     complete.run();
                 }
-            });
+            }, started);
         } catch (RuntimeException | Error failure) {
             // An executor may START a runnable and only then throw from
             // submission. If the physical turn owns the pin, its finally
@@ -152,6 +160,12 @@ final class ActorPhysicalTurnGate {
                         synchronized (ActorPhysicalTurnGate.this) {
                             cancelledOnClose = closed;
                             accepted.claim = cancelledOnClose ? 2 : 1;
+                            // Publish physical-claim ownership BEFORE exposing
+                            // the claim to the submitter's error path. Setting
+                            // this inside the same critical section closes the
+                            // claim-before-task-wrapper scheduling window.
+                            if (!cancelledOnClose && accepted.physicalStart != null)
+                                accepted.physicalStart.set(true);
                         }
                     }
                     if (cancelledOnClose) {
