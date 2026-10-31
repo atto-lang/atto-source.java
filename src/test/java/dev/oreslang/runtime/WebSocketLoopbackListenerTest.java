@@ -395,6 +395,40 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void failingActorClosesClaimedIdlePeerWithoutGuestCleanup() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var runtime = new ActorRuntime();
+             var listener = listen(io, port, 1)) {
+            var actor = runtime.<String>spawnPrivate(
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("actor failed");
+                    });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                var claim = connection.claimActor(runtime, actor);
+                actor.send("fail");
+                assertThrows(ExecutionException.class,
+                        () -> actor.done().get(5, TimeUnit.SECONDS));
+                assertTrue(claim.revoked());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.activeConnectionCount() != 0
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertEquals(0, listener.activeConnectionCount());
+                assertEquals(-1, client.getInputStream().read());
+                assertThrows(SecurityException.class,
+                        () -> connection.sendBinaryAsync(new byte[] {1}));
+            }
+        }
+    }
+
+    @Test
     void peerCloseFrameIsSerializedAndRetiresThePhysicalConnection() throws Exception {
         int port = unusedPort();
         try (var io = new AsyncNativeIo(4);
