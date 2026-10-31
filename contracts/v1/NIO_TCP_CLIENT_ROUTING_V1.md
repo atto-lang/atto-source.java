@@ -8,10 +8,21 @@ This contract defines the first outbound TCP path that is valid when
 `NativeIo.connectAsync(...)` always uses the owning VM's
 `NioReadinessGroup` through `VmNioTcpClient`.
 
-The legacy `NativeIo.connect(...)` path owns `java.net.Socket` and can
-block. It remains available only in `legacy-compat` mode. In `nio-only`
-mode it fails before permission lookup, socket allocation, DNS, executor
-admission or user work.
+The source surface exposes:
+
+- `network.connect_async(host, port) -> Future<NioTcpConnection>`;
+- `NioTcpConnection.read_bytes_async(maximum) -> Future<List<int>>`;
+- `NioTcpConnection.write_bytes_async(bytes) -> Future<int>`;
+- `NioTcpConnection.close_async() -> Future<void>`.
+
+`NioTcpConnection` is a distinct affine runtime handle from the legacy
+`TcpConnection`; the compiler does not conflate blocking and selector-backed
+capabilities.
+
+The legacy `NativeIo.connect(...)` / source `network.connect` path owns
+`java.net.Socket` or worker-backed compatibility state and can block. It
+remains available only in `legacy-compat` mode. In `nio-only` mode it fails
+before socket work is admitted.
 
 The generic `AsyncNativeIo` virtual-thread worker path is likewise rejected
 before admission in strict mode. JDK `HttpServer` and synchronous
