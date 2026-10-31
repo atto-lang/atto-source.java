@@ -2178,7 +2178,7 @@ public final class TypeChecker {
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.StagedCallExpr named
-                && OptionalCallShapeBinder.isDirectScalarLiteralNamedCall(named)) {
+                && OptionalCallShapeBinder.isDirectNamedCallCandidate(named)) {
             Ast.NameExpr name = (Ast.NameExpr) named.callee();
             if (env.lookup(name.name()) != null) {
                 throw new IllegalArgumentException(
