@@ -308,6 +308,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         private final AtomicBoolean abortRequested = new AtomicBoolean();
         // Guarded by lifecycleLock. Never published directly to guest source.
         private WebSocketActorConnectionLease actorOwnership;
+        // Max 16 explicit tickets. Each keeps its owner loan until actor-turn
+        // delivery or scheduler cancellation; no unbounded queued handoffs.
+        private int pendingActorTickets;
         private final WebSocketOutboundGate outbound =
                 new WebSocketOutboundGate(maxFrameBytes, 16,
                         maxFrameBytes * 16, 4, this::requestActiveWriteAbort);
@@ -454,7 +457,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     throw new SecurityException("WebSocket actor connection retired");
                 }
                 if (abortRequested.get() || reading.get() || writerActive.get()
-                        || outbound.hasPending()
+                        || pendingActorTickets != 0 || outbound.hasPending()
                         || protocol.state() != WebSocketSessionState.State.OPEN
                         || protocol.hasPendingUserState()) {
                     throw new RejectedExecutionException(
@@ -760,6 +763,120 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             // active outbound cancellation. A saturated CONTROL pool falls
             // back to bounded host cleanup, never an actor-carrier close.
             scheduleHostClose();
+        }
+
+        /**
+         * One bounded runtime-owned delivery obligation. The scheduler must
+         * close it on task cancellation or dispatch rejection. Delivery itself
+         * must happen on the authenticated actor's actual mailbox turn.
+         * Neither a host worker nor the guest may invent a caller address.
+         */
+        final class ActorDeliveryTicket implements AutoCloseable {
+            private final WebSocketFrameCodec.Message message;
+            private final WebSocketActorConnectionLease.Loan ownerLoan;
+            private final WebSocketActorConnectionLease.Handle handle;
+            private final UUID tenant;
+            private final ActorRuntime.ActorAddress recipient;
+            private final OresContext context;
+            private final ActorRuntime.ActorRef<?> actor;
+            private final AtomicBoolean settled = new AtomicBoolean();
+
+            private ActorDeliveryTicket(WebSocketFrameCodec.Message message,
+                    WebSocketActorConnectionLease.Loan ownerLoan,
+                    WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                    ActorRuntime.ActorAddress recipient,
+                    OresContext context, ActorRuntime.ActorRef<?> actor) {
+                this.message = message;
+                this.ownerLoan = ownerLoan;
+                this.handle = handle;
+                this.tenant = tenant;
+                this.recipient = recipient;
+                this.context = context;
+                this.actor = actor;
+            }
+
+            boolean deliverOnActor(java.util.function.Consumer<WebSocketFrameCodec.Message> handler) {
+                Objects.requireNonNull(handler, "actor mailbox handler");
+                if (!settled.compareAndSet(false, true)) {
+                    throw new IllegalStateException("WebSocket delivery ticket already settled");
+                }
+                try {
+                    if (context == null || actor == null
+                            || ActorRuntime.currentActorRuntime() != context.actors()
+                            || !recipient.equals(ActorRuntime.currentActorAddress().orElse(null))
+                            || !context.actors().isAlive(actor)) {
+                        throw new SecurityException(
+                                "WebSocket delivery requires authenticated actor mailbox turn");
+                    }
+                    if (!ownerLoan.mayDeliver(handle, tenant, recipient)) return false;
+                    // Guest execution is outside every ledger/lifecycle lock.
+                    // Actor turn ownership and STOP fences belong to ActorRuntime.
+                    handler.accept(message);
+                    return true;
+                } finally {
+                    release();
+                }
+            }
+
+            @Override public void close() {
+                if (settled.compareAndSet(false, true)) release();
+            }
+
+            private void release() {
+                ownerLoan.close();
+                synchronized (lifecycleLock) {
+                    if (pendingActorTickets <= 0) {
+                        throw new IllegalStateException("WebSocket ticket accounting underflow");
+                    }
+                    pendingActorTickets--;
+                }
+            }
+        }
+
+        ActorDeliveryTicket dequeueForActor(
+                WebSocketActorConnectionLease.Handle handle,
+                OresContext context, ActorRuntime.ActorRef<?> actor) {
+            requireContextActor(context, actor, "websocket.dequeue");
+            return dequeueActorTicket(handle, context.contextId(),
+                    actor.address(), context, actor);
+        }
+
+        /** Test seam with no actor-turn authority: tickets cannot deliver. */
+        ActorDeliveryTicket dequeueHostActorTicket(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime.ActorAddress address) {
+            return dequeueActorTicket(handle, tenant, address, null, null);
+        }
+
+        private ActorDeliveryTicket dequeueActorTicket(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime.ActorAddress caller, OresContext context,
+                ActorRuntime.ActorRef<?> actor) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("WebSocket dequeue requires host scheduler");
+            }
+            requireNet.accept(endpoint, "websocket.poll");
+            synchronized (lifecycleLock) {
+                if (retired.get() || closed.get() || pendingActorTickets >= 16) {
+                    throw new RejectedExecutionException(
+                            "WebSocket delivery tickets closed or quota exhausted");
+                }
+                var loan = acquireActorLease(handle, tenant, caller);
+                try {
+                    var next = protocol.pollUserMessage();
+                    if (next.isEmpty()) {
+                        loan.close();
+                        return null;
+                    }
+                    var ticket = new ActorDeliveryTicket(next.orElseThrow(),
+                            loan, handle, tenant, caller, context, actor);
+                    pendingActorTickets++;
+                    return ticket;
+                } catch (RuntimeException | Error failure) {
+                    loan.close();
+                    throw failure;
+                }
+            }
         }
 
         Optional<WebSocketFrameCodec.Message> pollUserMessage() {
