@@ -6431,6 +6431,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
+                || value instanceof ActorRuntime.PermissionDelegation
                 || value instanceof ActorRuntime.ContinuationTarget
                 || value instanceof ChannelRuntime.Channel<?>) {
             throw new SecurityException(
