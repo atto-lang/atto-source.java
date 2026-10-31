@@ -77,6 +77,70 @@ final class StdioLogAndSpreadTest {
     }
 
     @Test
+    void blockedAsyncSinkCannotHangWholeContextClose() throws Exception {
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.io.OutputStream blocked = new java.io.OutputStream() {
+            @Override public void write(int value) throws java.io.IOException {
+                write(new byte[] { (byte) value }, 0, 1);
+            }
+
+            @Override public void write(byte[] bytes, int offset, int length)
+                    throws java.io.IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new java.io.IOException("blocked stdio test sink timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.IOException(interrupted);
+                }
+            }
+        };
+        Source source = Source.newBuilder(OresLanguage.ID,
+                "pub routine main(): void { stdio.stdout.log_async(\\\"blocked\\\"); }",
+                "stdio-blocked-context-close.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(blocked)
+                .build();
+        java.util.concurrent.CompletableFuture<RuntimeException> closeAttempt = null;
+        try {
+            context.eval(source);
+            assertTrue(entered.await(3, java.util.concurrent.TimeUnit.SECONDS),
+                    "async drain never reached blocked host stdout");
+            closeAttempt = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    context.close();
+                    return null;
+                } catch (RuntimeException failure) {
+                    return failure;
+                }
+            });
+            RuntimeException failure = closeAttempt.get(12, java.util.concurrent.TimeUnit.SECONDS);
+            assertNotNull(failure, "a blocked sink must fail close explicitly, not report success");
+            assertTrue(hasCauseMessage(failure, "logging drain incomplete")
+                            || hasCauseMessage(failure, "shutdown deadline"),
+                    "close must fail at the async drain, not at an unrelated stage: " + failure);
+        } finally {
+            // If close incorrectly reacquires the writer monitor, this releases
+            // its blocked worker so even a failing test does not hang CI.
+            release.countDown();
+            if (closeAttempt != null) closeAttempt.get(6, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    private static boolean hasCauseMessage(Throwable failure, String phrase) {
+        for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+            if (String.valueOf(cursor.getMessage()).contains(phrase)) return true;
+        }
+        return false;
+    }
+
+    @Test
     void consoleCanObserveTheSameOwnerTwiceAndUseItAfterward() throws Exception {
         String output = run("""
                 define class ConsolePayload as pub val int value = 42; end
