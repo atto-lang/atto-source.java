@@ -231,6 +231,36 @@ final class ActorInitReservedAdmissionTest {
     }
 
     @Test
+    void bareSpawnCannotExposeProvisionalActorInitReference() {
+        String source = ACTOR + """
+                pub async routine main(): void {
+                  val worker = spawn Worker(seed: 7);
+                  await worker.get_ready();
+                  worker.send("go");
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        IllegalArgumentException rejection = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(rejection.getMessage().contains("await spawn"),
+                rejection.getMessage());
+    }
+
+    @Test
+    void awaitAnotherExpressionCannotAuthorizeNestedProvisionalSpawn() {
+        String source = ACTOR + """
+                pub async routine main(): void {
+                  val worker = await Some(spawn Worker(seed: 7));
+                  return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
     void ordinaryClassInitMethodIsNotReserved() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class Ordinary as
