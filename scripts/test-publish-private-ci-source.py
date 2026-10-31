@@ -111,7 +111,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def incident_comments_api(
             self, reviewer_id=None, reviewer_login=None,
             missing=None, body_overrides=None, full_page=None,
-            timestamp_overrides=None, later_bodies=None):
+            timestamp_overrides=None, later_bodies=None,
+            close_actor_id=None, close_actor_login=None,
+            missing_close=None, full_event_page=None,
+            close_time_overrides=None):
         reviewer_id = (
             pub.INCIDENT_DISPOSITION_REVIEWER_ID
             if reviewer_id is None else reviewer_id
@@ -127,15 +130,52 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {} if timestamp_overrides is None else dict(timestamp_overrides)
         )
         later_bodies = {} if later_bodies is None else dict(later_bodies)
+        close_actor_id = (
+            pub.INCIDENT_DISPOSITION_REVIEWER_ID
+            if close_actor_id is None else close_actor_id
+        )
+        close_actor_login = (
+            pub.INCIDENT_DISPOSITION_REVIEWER
+            if close_actor_login is None else close_actor_login
+        )
+        missing_close = set() if missing_close is None else set(missing_close)
+        full_event_page = (
+            set() if full_event_page is None else set(full_event_page)
+        )
+        close_time_overrides = (
+            {} if close_time_overrides is None else dict(close_time_overrides)
+        )
 
         def api(route):
             prefix = (
                 "repos/" + pub.BLOCKING_INCIDENT_REPO + "/issues/"
             )
-            suffix = "/comments?per_page=100"
-            if not route.startswith(prefix) or not route.endswith(suffix):
+            comments_suffix = "/comments?per_page=100"
+            events_suffix = "/events?per_page=100"
+            if route.startswith(prefix) and route.endswith(events_suffix):
+                number = int(route[len(prefix):-len(events_suffix)])
+                if number in missing_close:
+                    return []
+                event = {
+                    "id": number * 1000 + 500,
+                    "event": "closed",
+                    "actor": {
+                        "id": close_actor_id,
+                        "login": close_actor_login,
+                    },
+                    "created_at": close_time_overrides.get(
+                        number, "2026-10-30T04:00:00Z"
+                    ),
+                }
+                if number in full_event_page:
+                    return [
+                        dict(event, id=number * 1000 + 500 + index)
+                        for index in range(100)
+                    ]
+                return [event]
+            if not route.startswith(prefix) or not route.endswith(comments_suffix):
                 raise AssertionError(route)
-            number = int(route[len(prefix):-len(suffix)])
+            number = int(route[len(prefix):-len(comments_suffix)])
             if number in missing:
                 return []
             marker = (
@@ -396,6 +436,59 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 pub.Denied, "comments exceed single-page audit bound"
             ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_require_independent_close_actor(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    close_actor_id=pub.INCIDENT_DISPOSITION_REVIEWER_ID + 1
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "not closed by"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_missing_current_close_event(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(missing_close={22}),
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "close event"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_edited_latest_disposition(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T04:05:00Z",
+                            "2026-10-30T04:06:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "was edited"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_fail_closed_on_full_event_page(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(full_event_page={22}),
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "closure events exceed"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
     def test_quarantined_repository_id_rejected_even_after_slug_rename(self):
