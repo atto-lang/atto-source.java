@@ -439,7 +439,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             wakeWriter();
                         }
                         if (retired.get()
-                                || (ownerLoan != null && !ownerLoan.enqueueIfCurrent(() -> { }))) {
+                                || (ownerLoan != null && !ownerLoan.remainsAuthorized())) {
                             throw new IOException("WebSocket owner retired before read publication");
                         }
                         return action;
