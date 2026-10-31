@@ -1707,9 +1707,10 @@ public final class TypeChecker {
                                         + "' requires a scalar ABI until ActorRef transfer is proven");
                     params.add(param.name());
                 }
-                if (!klass.parents().isEmpty()) {
+                if (!klass.parents().isEmpty() || !klass.interfaces().isEmpty()) {
                     throw new IllegalArgumentException(
-                            "actor init inheritance requires a linked complete-state ABI");
+                            "actor init inheritance and interface inheritance require "
+                                    + "a linked complete-state ABI");
                 }
                 java.util.Map<String, Ast.FieldDecl> stateFields = new java.util.LinkedHashMap<>();
                 for (Ast.FieldDecl field : klass.fields()) {
@@ -2947,6 +2948,16 @@ public final class TypeChecker {
                         if (param == null)
                             throw new IllegalArgumentException(
                                     "actor spawn has duplicate or unknown init label '" + named.label() + "'");
+                        // This first implementation has no general source-task
+                        // continuation lowering for spawn argument expressions.
+                        // Requiring a plain local value or literal also denies
+                        // side effects while validating the entire named call.
+                        if (!(named.value() instanceof Ast.NameExpr)
+                                && !(named.value() instanceof Ast.LiteralExpr)) {
+                            throw new IllegalArgumentException(
+                                    "actor init spawn arguments must be local values "
+                                            + "or scalar literals until effect-safe lowering exists");
+                        }
                         Type actual = typeOf(named.value(), env, generics, self);
                         Type expected = resolveParam(param, generics, self);
                         requireReadonlyCapabilityPreserved(actual, expected,
