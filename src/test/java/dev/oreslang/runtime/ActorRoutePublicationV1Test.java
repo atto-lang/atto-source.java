@@ -834,12 +834,19 @@ final class ActorRoutePublicationV1Test {
             throws Exception {
         var readingMessage = new CountDownLatch(1);
         var allowPreparation = new CountDownLatch(1);
+        var legitimateDelivered = new CountDownLatch(1);
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
         try (var runtime = new ActorRuntime();
              var gate = new ActorUpgradeEpochGate(67, image('a'));
              var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
              var pool = Executors.newSingleThreadExecutor()) {
             var old = runtime.<List<Integer>>spawnShared(() ->
-                    (message, context) -> fail("racing stale DATA was delivered"));
+                    (message, context) -> {
+                        assertEquals(List.of(2), message,
+                                "no stale uncommitted V1 message may execute");
+                        delivered.incrementAndGet();
+                        legitimateDelivered.countDown();
+                    });
             var authority = new ActorRoutePublicationV1<>(gate, mailbox, state(7), old);
             var delayed = new java.util.AbstractList<Integer>() {
                 private final java.util.concurrent.atomic.AtomicBoolean first =
@@ -881,6 +888,9 @@ final class ActorRoutePublicationV1Test {
             }
             // The failed send must not have leaked its actor mailbox credit.
             assertDoesNotThrow(() -> old.send(List.of(2)));
+            assertTrue(legitimateDelivered.await(10, TimeUnit.SECONDS));
+            assertEquals(1, delivered.get(),
+                    "only the post-rollback V1 admission may execute");
         }
     }
 
