@@ -96,6 +96,13 @@ This includes root package providers, not merely pinned dependency source
 digests. Changes to provider bytes, deleted or replaced providers, or
 same-byte source symlink swaps fail closed at the checked boundaries.
 
+When the filesystem supplies a stable `BasicFileAttributes.fileKey()`, the
+workspace also records physical provider file identity at discovery and
+rechecks it during source verification. This rejects regular-file replacement
+with an **identical-byte** copy, not just content tampering and symlink swaps.
+On filesystems without a file key the byte/policy checks still apply, but the
+same-byte physical identity guarantee is unavailable.
+
 A transient replace-and-revert race or hostile concurrent filesystem mutation
 is **not** proven impossible by these periodic hash checks. True race-free
 file identity throughout the read/compile lifecycle requires a separately
