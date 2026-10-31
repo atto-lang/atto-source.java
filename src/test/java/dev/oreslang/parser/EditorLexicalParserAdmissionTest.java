@@ -22,6 +22,21 @@ final class EditorLexicalParserAdmissionTest {
         return lex(text).stream().map(Token::type).toList();
     }
 
+    /**
+     * Exact corpus PRNG shared with the web highlighter's deterministic tests:
+     * 32-bit LCG overflow, unsigned modulus (not java.util.Random).
+     */
+    private static final class SeededCorpus {
+        private int state;
+
+        SeededCorpus(int seed) { this.state = seed; }
+
+        int nextIndex(int bound) {
+            state = state * 1_664_525 + 1_013_904_223;
+            return Integer.remainderUnsigned(state, bound);
+        }
+    }
+
     private static String routineWith(String statements) {
         return "pub routine main(): void { " + statements + " return; }";
     }
@@ -252,18 +267,18 @@ final class EditorLexicalParserAdmissionTest {
 
     @Test
     void deterministicQuotedSymbolUnicodeFuzzMatchesRuntimeNormalization() {
-        java.util.Random rng = new java.util.Random(0x5A17C0DEL);
+        SeededCorpus rng = new SeededCorpus(0x5A17C0DE);
         int[] scalars = { 'a', 'z', '_', '7', 0x00e9, 0x4e2d, 0x1f600, 'e', 0x0301 };
         for (int caseNo = 0; caseNo < 384; caseNo++) {
             StringBuilder name = new StringBuilder();
-            int length = 1 + rng.nextInt(32);
+            int length = 1 + rng.nextIndex(32);
             for (int j = 0; j < length; j++) {
-                name.appendCodePoint(scalars[rng.nextInt(scalars.length)]);
+                name.appendCodePoint(scalars[rng.nextIndex(scalars.length)]);
             }
             String decoded = name.toString();
             String expected = dev.oreslang.runtime.OresSymbol.normalizeAndValidate(decoded);
-            List<Token> actual = lex("#\"" + decoded + "\"");
-            assertEquals(List.of(SYMBOL_LITERAL, EOF), actual.stream().map(Token::type).toList(),
+            List<Token> actual = lex("#\"" + decoded + "\" return");
+            assertEquals(List.of(SYMBOL_LITERAL, RETURN, EOF), actual.stream().map(Token::type).toList(),
                     "quoted Symbol token types, generated case " + caseNo);
             assertEquals(expected, actual.get(0).lexeme(), "generated case " + caseNo);
         }
@@ -271,9 +286,9 @@ final class EditorLexicalParserAdmissionTest {
 
     @Test
     void deterministicOpaqueNestedCommentsNeverLeakReservedWordsOrSymbols() {
-        java.util.Random rng = new java.util.Random(0xC011AB1EL);
+        SeededCorpus rng = new SeededCorpus(0xC011AB1E);
         for (int caseNo = 0; caseNo < 256; caseNo++) {
-            int depth = 1 + rng.nextInt(256);
+            int depth = 1 + rng.nextIndex(256);
             String body = "/*".repeat(depth) + " throw raise #ready \"return\" "
                     + "*/".repeat(depth) + " return";
             assertEquals(List.of(RETURN, EOF), types(body),
@@ -283,16 +298,16 @@ final class EditorLexicalParserAdmissionTest {
 
     @Test
     void deterministicMalformedUtf16FuzzFailsInsideOpaqueLexicalRegions() {
-        java.util.Random rng = new java.util.Random(0xBADC0DEL);
+        SeededCorpus rng = new SeededCorpus(0x0BADC0DE);
         String loneHigh = String.valueOf((char) 0xd800);
         String loneLow = String.valueOf((char) 0xdc00);
         String backtick = String.valueOf((char) 96);
         String[] surrounds = { "", "/*", "//", "\"", "'", backtick, "#\"", "return " };
         for (int caseNo = 0; caseNo < 384; caseNo++) {
-            String invalid = (rng.nextBoolean() ? loneHigh : loneLow);
-            String source = surrounds[rng.nextInt(surrounds.length)]
-                    + "a".repeat(rng.nextInt(24)) + invalid
-                    + "b".repeat(rng.nextInt(24)) + " return";
+            String invalid = (rng.nextIndex(2) == 0 ? loneHigh : loneLow);
+            String source = surrounds[rng.nextIndex(surrounds.length)]
+                    + "a".repeat(rng.nextIndex(24)) + invalid
+                    + "b".repeat(rng.nextIndex(24)) + " return";
             assertThrows(IllegalArgumentException.class, () -> lex(source),
                     "malformed UTF-16 must fail globally, generated case " + caseNo);
         }
