@@ -143,4 +143,33 @@ final class PinnedNamespaceSharedCorpusTest {
         assertThrows(IllegalArgumentException.class, () -> execute(corpus, "foo@1"));
     }
 
+    @Test
+    void noncanonicalSourceAndOwnerIdsRejectBeforeGuestExecution() {
+        String backslash = Character.toString((char) 92);
+        for (String invalid : new String[] {
+                "../outside.ores", "foo/../source.ores", "foo/./source.ores",
+                "foo//source.ores", "/absolute.ores", "foo/", "C:/escape.ores",
+                "foo" + backslash + "other.ores"
+        }) {
+            Corpus sourceCase = sourceCorpus();
+            String old = "foo/src/compute/math.ores";
+            String guest = sourceCase.sources().remove(old);
+            sourceCase.owners().remove(old);
+            sourceCase.sources().put(invalid, guest);
+            sourceCase.owners().put(invalid, "foo@1");
+            var badSource = assertThrows(IllegalArgumentException.class,
+                    () -> execute(sourceCase, "foo@1"), invalid);
+            assertTrue(badSource.getMessage().contains(
+                    "noncanonical pinned namespace source identity"), invalid);
+
+            Corpus ownerCase = sourceCorpus();
+            ownerCase.owners().remove(old);
+            ownerCase.owners().put(invalid, "foo@1");
+            var badOwner = assertThrows(IllegalArgumentException.class,
+                    () -> execute(ownerCase, "foo@1"), invalid);
+            assertTrue(badOwner.getMessage().contains(
+                    "noncanonical pinned namespace source identity"), invalid);
+        }
+    }
+
 }
