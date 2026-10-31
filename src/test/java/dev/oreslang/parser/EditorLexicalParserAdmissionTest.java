@@ -26,6 +26,38 @@ final class EditorLexicalParserAdmissionTest {
         return "pub routine main(): void { " + statements + " return; }";
     }
 
+    // Generated from the EXACT lexical contract v1 manifest Git blob:
+    // e9dbf3b6fad5562b7ca6df631ab3c45f478480ba
+    // This is a lexer-only inventory; parsing and lowering are separate gates.
+    private static final List<String> PINNED_RESERVED_WORDS = List.of(
+"yield"
+    );
+
+    @Test
+    void everyPinnedReservedWordHasAnActualNonIdentifierLexerToken() {
+        assertEquals(93, PINNED_RESERVED_WORDS.size());
+        assertEquals(93, new java.util.HashSet<>(PINNED_RESERVED_WORDS).size());
+        assertEquals(PINNED_RESERVED_WORDS.stream().sorted().toList(), PINNED_RESERVED_WORDS);
+        for (String word : PINNED_RESERVED_WORDS) {
+            List<Token> tokens = lex(word);
+            assertEquals(2, tokens.size(), word);
+            assertNotEquals(IDENT, tokens.get(0).type(), word);
+            assertEquals(word, tokens.get(0).lexeme(), word);
+            assertEquals(EOF, tokens.get(1).type(), word);
+        }
+        // Synonymous spellings are deliberately not distinct token types.
+        assertEquals(ELSEIF, lex("elif").get(0).type());
+        assertEquals(ELSEIF, lex("elseif").get(0).type());
+    }
+
+    @Test
+    void contextualIdentifierLexingDoesNotInventFutureKeywords() {
+        for (String identifier : List.of("owned", "borrow", "pipe", "read", "write", "transform")) {
+            // Compound forms are recognized only in parser context.
+            assertEquals(List.of(IDENT, EOF), types(identifier), identifier);
+        }
+    }
+
     @Test
     void reservedComparisonsAreNotBindingIdentifiers() {
         assertEquals(List.of(EQ, NEQ, IS, EOF), types("eq neq is"));
