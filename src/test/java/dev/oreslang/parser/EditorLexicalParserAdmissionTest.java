@@ -83,7 +83,12 @@ final class EditorLexicalParserAdmissionTest {
         for (String word : PINNED_RESERVED_WORDS) {
             List<Token> tokens = lex(word);
             assertEquals(2, tokens.size(), word);
-            assertNotEquals(IDENT, tokens.get(0).type(), word);
+            // Every reserved spelling has one exact Token.Type; a wrong
+            // non-IDENT mapping must fail this conformance gate too.
+            Token.Type expected = Token.Type.valueOf(
+                    (word.equals("elif") ? "elseif" : word)
+                            .toUpperCase(java.util.Locale.ROOT));
+            assertEquals(expected, tokens.get(0).type(), word);
             assertEquals(word, tokens.get(0).lexeme(), word);
             assertEquals(EOF, tokens.get(1).type(), word);
         }
