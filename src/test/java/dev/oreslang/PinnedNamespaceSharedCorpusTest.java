@@ -173,6 +173,25 @@ final class PinnedNamespaceSharedCorpusTest {
     }
 
     @Test
+    void booleanNamespaceParametersAndReturnsKeepCheckedGuestSemantics() {
+        Corpus valid = sourceCorpus();
+        valid.sources().put("foo/src/api/routes.ores",
+                "namespace c;\npub fnc route_ok(bool enabled): bool { return enabled; }\n");
+        valid.sources().put("foo/src/api/handlers.ores",
+                "namespace c;\npub fnc handler_ok(bool enabled): bool { return route_ok(enabled); }\n");
+        valid.sources().put("foo/src/api/responses.ores",
+                "namespace c;\npub fnc response_delta(): int { return handler_ok(true) ? 0 : 1; }\n");
+        assertEquals(43, execute(valid, "foo@1"));
+
+        Corpus wrongArgument = sourceCorpus();
+        wrongArgument.sources().put("foo/src/api/routes.ores",
+                "namespace c;\npub fnc route_ok(bool enabled): bool { return enabled; }\n");
+        // The unchanged handler still passes an int to a bool parameter.
+        assertThrows(IllegalArgumentException.class,
+                () -> execute(wrongArgument, "foo@1"));
+    }
+
+    @Test
     void allTenProviderFilesContributeToActualGuestResult53() {
         Corpus corpus = sourceCorpus();
         corpus.sources().put(ENTRY,
