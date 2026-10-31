@@ -255,9 +255,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static Optional<ActorId> currentActorId() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
-        if (current != null) return Optional.of(current.actorId());
-        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
-        return io == null ? Optional.empty() : Optional.of(io.actorId());
+        return current == null
+                ? Optional.empty()
+                : Optional.of(current.actorId());
     }
 
     static void requireCurrentActorPermission(
