@@ -71,6 +71,54 @@ final class ActorPhysicalTurnGate {
         launch(item);
     }
 
+    /**
+     * Bridge for a region-backed actor turn. A lifetime pin is acquired
+     * BEFORE the physical dispatch is enqueued, so STOP cannot reclaim the
+     * region while a queued or executing turn still owns the ticket.
+     *
+     * A rejected/closed submission releases its pin exactly once; an admitted
+     * task releases it only after its synchronous Runnable has physically
+     * returned (including its TurnExecutor boundary). A cancellation signal
+     * alone never releases the running task's pin.
+     *
+     * This is an opt-in host bridge, not yet enabled for every ActorCell or
+     * independently scheduled source Task. Reuse of the pinned region by an
+     * arbitrary guest callback still needs compiler ownership validation.
+     */
+    void dispatchPinned(ReusableLongStateRegion region, Runnable task,
+                        Consumer<Runnable> submit, Consumer<Throwable> reject) {
+        Objects.requireNonNull(region, "region");
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(submit, "submit");
+        Objects.requireNonNull(reject, "reject");
+        long ticket = region.pin();
+        java.util.concurrent.atomic.AtomicBoolean released =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable complete = () -> {
+            if (released.compareAndSet(false, true)) region.releasePin(ticket);
+        };
+        try {
+            dispatch(() -> {
+                try {
+                    task.run();
+                } finally {
+                    complete.run();
+                }
+            }, submit, failure -> {
+                try {
+                    reject.accept(failure);
+                } finally {
+                    complete.run();
+                }
+            });
+        } catch (RuntimeException | Error failure) {
+            // Includes immediate gate closure, backlog rejection, and an
+            // inline task that already finished. Never double-release.
+            complete.run();
+            throw failure;
+        }
+    }
+
     private void launch(Pending first) {
         // Executor admission callbacks must ENQUEUE, never run a guest turn
         // synchronously. Iterative failure draining prevents recursive
