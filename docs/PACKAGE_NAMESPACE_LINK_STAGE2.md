@@ -141,11 +141,20 @@ reopening discovery after losing the caller's original path spelling.
 Regression tests exercise both entry points with a readable target behind
 a symlink followed by `..`, plus direct/snapshot index negative cases.
 
+Direct and snapshot index calls also enforce **exact admitted source-map
+keys**: each entry must be an absolute, unaliased file path with canonical
+textual spelling. The index rejects leaf and intermediate symlinks, embedded
+`.`/`..` segments, relative keys and repeated separators *before* assigning
+package ownership. A direct caller cannot launder a mutable source alias by
+calling `toRealPath()` in the index. This is an API admission rule, not a
+claim of atomic filesystem snapshotting.
+
 These admission checks detect symlink substitution at the points inspected,
-not a hostile replace-and-restore race during compilation. Standalone
-source-free OpenJDK 21 filesystem fixtures executed locally for two
-negative aliases and two valid paths; that is **not** project JDK 25,
-JUnit, GraalVM, or native execution proof.
+not a hostile replace-and-restore race during compilation. A focused local
+OpenJDK 21 reproduction of the source-key helper passed 9/9 cases (two
+canonical allows; seven negative path forms). The Java/GraalVM compiler,
+project JUnit suite and native guest execution remain **NOT_EXECUTED** until
+the private GitHub Actions runner-admission failure is resolved.
 
 ## Required exact-head qualification
 
