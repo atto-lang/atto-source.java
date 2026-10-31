@@ -50,6 +50,11 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests package
           mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Execute byte-identical common-source v1 scalar through real JVM guest
+        run: |
+          python3 tests/test_native_guest_parity_v1_java.py \
+            --repo-root "$PWD" \
+            --java-probe "$PWD/contracts/v1/java_probe.py"
       - name: Validate Java compiler admission
         run: python3 contracts/v1/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --report target/conformance-graal.json
       - name: Real Java compiler AI smoke (source acceptance, rejection, native guest exit)
@@ -60,6 +65,8 @@ jobs:
             --java-probe "$(realpath contracts/v1/java_probe.py)" \
             --source-sha "${{ github.sha }}" \
             --report target/ai-conformance-graal.json
+      - name: Execute reviewed portable source i64 subset through real Graal guest
+        run: python3 scripts/java_source_i64_smoke.py --report target/java-source-i64-subset.json
       - name: Validate Java borrow and semantic diagnostic cases
         run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "${{ github.sha }}" --report target/semantics-graal.json
       - name: Verify real shared actor mailbox trace against the contract
@@ -74,5 +81,6 @@ jobs:
             target/conformance-graal.json
             target/semantics-graal.json
             target/ai-conformance-graal.json
+            target/java-source-i64-subset.json
             target/actor-trace-graal.json
           if-no-files-found: ignore

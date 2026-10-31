@@ -71,6 +71,111 @@ final class GeneratorRuntimeTest {
         });
     }
     @Test
+    void producerSubmissionRejectionIsStickyAndNeverRunsGuestBody() {
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(3), () -> {
+            java.util.concurrent.atomic.AtomicInteger guestEffects =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AsyncRuntime runtime = new AsyncRuntime();
+            var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                guestEffects.incrementAndGet();
+                emitter.emit(1);
+            });
+            runtime.close(); // Submission is rejected synchronously.
+            try (generator) {
+                for (int i = 0; i < 3; i++) {
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            generator::nextStep);
+                }
+                assertEquals(0, guestEffects.get());
+            }
+        });
+    }
+
+    @Test
+    void asyncPullOnClosedSchedulerReturnsFailedOresFuture() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> emitter.emit(1));
+        runtime.close();
+        try (generator) {
+            OresFuture<GeneratorRuntime.Step<Integer>> pull = generator.nextStep();
+            assertEquals(OresFuture.class, pull.getClass());
+            java.util.concurrent.ExecutionException rejected = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> pull.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                    rejected.getCause());
+        }
+    }
+
+    @Test
+    void terminalPullRemainsCompletedAfterSchedulerShutdown() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        try (var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> emitter.emit(42))) {
+            assertEquals(42, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+            runtime.close();
+            for (int i = 0; i < 3; i++) {
+                OresFuture<GeneratorRuntime.Step<Integer>> terminal = generator.nextStep();
+                assertEquals(OresFuture.class, terminal.getClass());
+                assertTrue(terminal.get(2, TimeUnit.SECONDS).done());
+            }
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void asyncPullDuringPendingProducerExitReturnsPromptly() throws Exception {
+        CountDownLatch leaving = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        var producerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try { turn.run(); }
+            finally {
+                // Pull tasks use the same context adapter. Only hold the
+                // producer's physical exit, never the first pull's completion.
+                if (Thread.currentThread() == producerThread.get()) {
+                    leaving.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try { allowExit.await(); break; }
+                        catch (InterruptedException expected) { interrupted = true; }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+            }
+        });
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            producerThread.set(Thread.currentThread());
+            emitter.emit(7);
+        });
+        try {
+            assertEquals(7, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            java.util.concurrent.FutureTask<Void> closing = new java.util.concurrent.FutureTask<>(
+                    () -> { generator.close(); return null; });
+            Thread closer = Thread.ofVirtual().start(closing);
+            try {
+                assertTrue(leaving.await(2, TimeUnit.SECONDS));
+                var pull = assertTimeoutPreemptively(java.time.Duration.ofMillis(500),
+                        generator::nextStep);
+                assertEquals(OresFuture.class, pull.getClass());
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> pull.get(80, TimeUnit.MILLISECONDS));
+            } finally {
+                allowExit.countDown();
+            }
+            closing.get(2, TimeUnit.SECONDS);
+            closer.join();
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            // Release before closing even if the first pull/assertion fails.
+            allowExit.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
+
+    @Test
     void asyncPullsUseOresFutureIncludingTerminalPulls() throws Exception {
         try (AsyncRuntime runtime = new AsyncRuntime();
              var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {

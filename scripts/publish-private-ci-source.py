@@ -8,6 +8,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import stat
 from pathlib import Path
@@ -24,6 +25,7 @@ MAX_BYTES = 40 * 1024 * 1024
 MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
+MAX_GH_API_RESPONSE_CHARS = 24 * 1024 * 1024
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
@@ -33,9 +35,28 @@ BLOCKING_INCIDENT_IDS = {
     22: 5832921751,
     77: 5904679716,
     127: 5935338521,
+    171: 6042555082,  # recovery/runtime source-bearing private carrier; pending classification
+    172: 6042602777,  # LLVM exact-tree carrier; independent placement review outstanding
+    198: 6070465058,  # ClaimGraph exact Java CI-script placement; independent classification required
+    200: 6071264936,  # ClaimGraph private Java governance-blob retention; disposition required
 }
-BLOCKING_INCIDENTS = (22, 77, 127)
-QUARANTINED_DESTINATIONS = ("zed-pkg-test/java-app",)
+BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200)
+QUARANTINED_DESTINATIONS = (
+    "zed-pkg-test/java-app",
+    "scintilla-run-test/gleam-runner-conformance",
+    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+    "agent-pontifex-test/agent-pontifex-e2e-tests",
+    "led-dynamo/leddy-e2e",
+    "ClaimGraph-test/claimgraph-e2e",
+)
+QUARANTINED_DESTINATION_IDS = (
+    1323575966,  # zed-pkg-test/java-app (#22)
+    1323598260,  # scintilla-run-test/gleam-runner-conformance (#77)
+    1412142815,  # ores-dummy-org-oreslang-stack/... (#127)
+    1370782550,  # agent-pontifex-test/agent-pontifex-e2e-tests (#171)
+    1324139596,  # led-dynamo/leddy-e2e (#172)
+    1350751074,  # ClaimGraph-test/claimgraph-e2e (#198/#200)
+)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
@@ -70,14 +91,96 @@ def safe_descriptor_flags_available():
     )
 
 
+def trusted_github_cli():
+    """Resolve GitHub API access only through the root-controlled OS binary."""
+    target = "/usr/bin/gh"
+    for directory in ("/", "/usr", "/usr/bin"):
+        try:
+            info = os.lstat(directory)
+        except OSError as exc:
+            raise Denied("trusted GitHub CLI directory is unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o022):
+            raise Denied("trusted GitHub CLI directory is not root-controlled")
+    try:
+        info = os.lstat(target)
+    except OSError as exc:
+        raise Denied("trusted GitHub CLI is unavailable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & 0o6022 or not info.st_mode & 0o111):
+        raise Denied("trusted GitHub CLI executable is not root-controlled")
+    return target
+
+
+def github_api_environment():
+    """Use exactly one explicit token and no ambient transport/config state."""
+    provided = [
+        name for name in ("GH_TOKEN", "GITHUB_TOKEN")
+        if os.environ.get(name)
+    ]
+    if len(provided) != 1:
+        raise Denied("exactly one explicit GitHub API token is required")
+    return {
+        provided[0]: os.environ[provided[0]],
+        "GH_HOST": "github.com",
+        "GH_PROMPT_DISABLED": "1",
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/nonexistent",
+        "XDG_CONFIG_HOME": "/nonexistent",
+        "LC_ALL": "C.UTF-8",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+    }
+
+
+def strict_json_loads(text, label="invalid GitHub API JSON response"):
+    """Reject duplicate keys and non-finite JSON numbers in security metadata."""
+    if not isinstance(text, str):
+        raise Denied(label)
+
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Denied(label + " contains duplicate fields")
+            result[key] = value
+        return result
+
+    def reject_constant(_value):
+        raise Denied(label + " contains nonfinite JSON constant")
+
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise Denied(label + " contains nonfinite JSON number")
+        return number
+
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=unique_fields,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except (json.JSONDecodeError, RecursionError, OverflowError, ValueError) as exc:
+        if isinstance(exc, Denied):
+            raise
+        raise Denied(label) from exc
+
+
+def canonical_security_lines(contents, label):
+    """Accept only printable ASCII records separated by LF."""
+    if (not isinstance(contents, bytes)
+            or any(byte != 10 and not 32 <= byte <= 126 for byte in contents)):
+        raise Denied(label + " contains noncanonical ASCII LF bytes")
+    return contents.decode("ascii").split("\n")
+
+
 def require_security_codeowners(contents):
     """Require terminal exact rules owned by an explicit Oreslang team."""
     if not isinstance(contents, bytes) or not contents or len(contents) > 16 * 1024:
         raise Denied("protected CODEOWNERS is missing or oversized")
-    try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied("protected CODEOWNERS is not UTF-8") from exc
+    lines = canonical_security_lines(contents, "protected CODEOWNERS")
     rules = [line.strip() for line in lines
              if line.strip() and not line.lstrip().startswith("#")]
     if len(rules) < len(SECURITY_CODEOWNER_PATHS):
@@ -85,10 +188,9 @@ def require_security_codeowners(contents):
     tail = rules[-len(SECURITY_CODEOWNER_PATHS):]
     for expected_path, rule in zip(SECURITY_CODEOWNER_PATHS, tail):
         fields = rule.split()
-        if (len(fields) < 2 or fields[0] != expected_path
-                or SECURITY_CODEOWNER not in fields[1:]):
+        if fields != [expected_path, SECURITY_CODEOWNER]:
             raise Denied(
-                "protected CODEOWNERS must end with exact export rules owned by the independent security owner"
+                "protected CODEOWNERS must end with terminal exact export rules solely owned by the independent security owner"
             )
 
 
@@ -99,23 +201,32 @@ def valid_sha(value):
 
 
 def gh_api(route, method="GET", payload=None):
-    argv = ["gh", "api", "--method", method, route,
+    """Authenticated GitHub API through a trusted executable and sealed environment."""
+    argv = [trusted_github_cli(), "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
     try:
-        p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
-                           capture_output=True, text=True, env=env, timeout=45, check=False)
+        p = subprocess.run(
+            argv,
+            input=json.dumps(payload) if payload is not None else None,
+            capture_output=True,
+            text=True,
+            env=github_api_environment(),
+            timeout=45,
+            check=False,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("authenticated GitHub API request unavailable") from exc
+    if (not isinstance(p.stdout, str)
+            or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS
+            or not isinstance(p.stderr, str)
+            or len(p.stderr) > MAX_GH_API_RESPONSE_CHARS):
+        raise Denied("authenticated GitHub API response exceeds size limit")
     if p.returncode != 0:
-        # Never echo stderr: a client can include private file bytes in errors.
+        # Never echo stderr: a client can include private file bytes or credentials.
         raise Denied("authenticated GitHub API request failed")
-    try:
-        data = json.loads(p.stdout)
-    except json.JSONDecodeError as exc:
-        raise Denied("invalid GitHub API JSON response") from exc
+    data = strict_json_loads(p.stdout)
     if not isinstance(data, dict):
         raise Denied("unexpected GitHub response shape")
     return data
@@ -126,13 +237,22 @@ def checked_repo(repository, expected_repository_id=None):
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
-            or result.get("private") is not True):
-        raise Denied("destination identity or private visibility changed")
+            or result.get("private") is not True
+            or result.get("archived") is not False
+            or result.get("disabled") is not False
+            or result.get("fork") is not False
+            or result.get("default_branch") != "main"):
+        raise Denied("destination identity/state or private visibility changed")
+    repository_id = result.get("id")
+    if type(repository_id) is not int or isinstance(repository_id, bool) or repository_id <= 0:
+        raise Denied("destination numeric repository ID is invalid")
+    if repository_id in QUARANTINED_DESTINATION_IDS:
+        raise Denied("destination repository ID is quarantined by private-source incident policy")
     if expected_repository_id is not None:
         if (type(expected_repository_id) is not int
+                or isinstance(expected_repository_id, bool)
                 or expected_repository_id <= 0
-                or type(result.get("id")) is not int
-                or result["id"] != expected_repository_id):
+                or repository_id != expected_repository_id):
             raise Denied("destination numeric repository ID differs from reviewed approval")
     return result
 
@@ -172,30 +292,23 @@ def require_resolved_blocking_incidents():
 
 
 def require_preflight(repository, root):
+    """Authorize without executing code from the candidate checkout.
+
+    The Bash destination checker remains a human/CI diagnostic, but a
+    privileged publisher must not execute checkout-controlled shell before
+    protected-origin authorization. Read the reviewed policy as data through
+    descriptor-safe Python and bind the destination's immutable repository ID.
+    """
     if repository.casefold() in {item.casefold() for item in QUARANTINED_DESTINATIONS}:
         raise Denied("destination is quarantined by private-source incident policy")
     require_resolved_blocking_incidents()
-    guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
-    try:
-        p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("destination policy check unavailable") from exc
-    if p.returncode != 0:
-        raise Denied("destination not approved by checked-in private policy")
     _, approved_repository_id = checked_policy_approval(root, repository)
     checked_repo(repository, approved_repository_id)
-
 
 def _parse_policy_approval(contents, repository, label):
     if not isinstance(contents, bytes):
         raise Denied(label + " has invalid contents")
-    try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied(label + " cannot be decoded") from exc
+    lines = canonical_security_lines(contents, label)
     approved_id = None
     seen = set()
     for line in lines:
@@ -205,12 +318,15 @@ def _parse_policy_approval(contents, repository, label):
         if match is None:
             raise Denied(label + " requires exact owner/repo numeric-id pairs")
         slug, numeric_id = match.groups()
+        candidate_id = int(numeric_id)
+        if candidate_id in QUARANTINED_DESTINATION_IDS:
+            raise Denied("destination repository ID is quarantined by private-source incident policy")
         key = slug.casefold()
         if key in seen:
             raise Denied(label + " contains duplicate repository identities")
         seen.add(key)
         if key == repository.casefold():
-            approved_id = int(numeric_id)
+            approved_id = candidate_id
     if approved_id is None:
         raise Denied("destination approval was revoked or absent")
     return approved_id
@@ -257,30 +373,8 @@ def checked_policy_fingerprint(root, repository):
     """Compatibility wrapper returning the reviewed policy fingerprint."""
     return checked_policy_approval(root, repository)[0]
 
-def verify_protected_origin(repository, expected_policy_digest, expected_repository_id=None):
-    """Fail closed unless local policy matches CODEOWNER-controlled protected main.
-
-    An unreviewed test checkout can add its own allowlist line; consulting
-    only the local file is not authorization. Always pin the remote policy
-    lookup to the HEAD commit of the official protected origin/main. A
-    GitHub "protected: false" branch is explicitly insufficient even when
-    CODEOWNERS exists (without branch protection, its review is optional).
-    """
-    origin = gh_api(f"repos/{SOURCE_REPO}")
-    if (origin.get("full_name") != SOURCE_REPO
-            or origin.get("id") != SOURCE_REPOSITORY_ID
-            or origin.get("private") is not True):
-        raise Denied("cannot attest identity and privacy of source origin")
-    branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
-    if (branch.get("name") != SOURCE_PROTECTED_BRANCH
-            or branch.get("protected") is not True):
-        raise Denied("source main is not protected; CODEOWNER approval is unenforced")
-    # A "protected" branch might enforce only status checks, without
-    # mandatory CODEOWNER approval, or allow administrators to bypass review.
-    # Require the actual classic branch-protection settings to be readable.
-    # On plans/credentials where GitHub denies this API, fail closed.
-    protection = gh_api(
-        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
+def _require_strict_source_protection(protection):
+    """Validate the security-relevant classic branch-protection contract."""
     reviews = protection.get("required_pull_request_reviews")
     checks = protection.get("required_status_checks")
     administrators = protection.get("enforce_admins")
@@ -319,6 +413,51 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
                        or bypasses.get(category)
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
+    named_contract = tuple(sorted(
+        (item["context"], json.dumps(item.get("app_id"), sort_keys=True,
+                                     separators=(",", ":")))
+        for item in named_checks
+    ))
+    return (
+        reviews["require_code_owner_reviews"],
+        reviews["dismiss_stale_reviews"],
+        reviews["required_approving_review_count"],
+        checks["strict"],
+        tuple(sorted(contexts)),
+        named_contract,
+        administrators["enabled"],
+        force_pushes["enabled"],
+        deletions["enabled"],
+    )
+
+
+def verify_protected_origin(repository, expected_policy_digest, expected_repository_id=None):
+    """Fail closed unless local policy matches CODEOWNER-controlled protected main.
+
+    An unreviewed test checkout can add its own allowlist line; consulting
+    only the local file is not authorization. Always pin the remote policy
+    lookup to the HEAD commit of the official protected origin/main. A
+    GitHub "protected: false" branch is explicitly insufficient even when
+    CODEOWNERS exists (without branch protection, its review is optional).
+    The branch head and security-relevant protection contract are re-read
+    before success so movement or weakening during attestation fails closed.
+    """
+    origin = gh_api(f"repos/{SOURCE_REPO}")
+    if (origin.get("full_name") != SOURCE_REPO
+            or origin.get("id") != SOURCE_REPOSITORY_ID
+            or origin.get("private") is not True):
+        raise Denied("cannot attest identity and privacy of source origin")
+    branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
+    if (branch.get("name") != SOURCE_PROTECTED_BRANCH
+            or branch.get("protected") is not True):
+        raise Denied("source main is not protected; CODEOWNER approval is unenforced")
+    # A "protected" branch might enforce only status checks, without
+    # mandatory CODEOWNER approval, or allow administrators to bypass review.
+    # Require the actual classic branch-protection settings to be readable.
+    # On plans/credentials where GitHub denies this API, fail closed.
+    protection = gh_api(
+        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
+    protection_contract = _require_strict_source_protection(protection)
     commit_sha = valid_sha(branch.get("commit", {}).get("sha"))
     policy = gh_api(f"repos/{SOURCE_REPO}/contents/{POLICY_PATH}?ref={commit_sha}")
     if (policy.get("path") != POLICY_PATH or policy.get("type") != "file"
@@ -362,6 +501,19 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
     except (ValueError, base64.binascii.Error) as exc:
         raise Denied("protected CODEOWNERS has invalid base64") from exc
     require_security_codeowners(codeowners_contents)
+
+    # Close the attestation-internal TOCTOU window: main or its enforcement
+    # may change while the pinned policy/CODEOWNERS objects are being read.
+    final_branch = gh_api(
+        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
+    if (final_branch.get("name") != SOURCE_PROTECTED_BRANCH
+            or final_branch.get("protected") is not True
+            or valid_sha(final_branch.get("commit", {}).get("sha")) != commit_sha):
+        raise Denied("source main changed during protected-origin attestation")
+    final_protection = gh_api(
+        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
+    if _require_strict_source_protection(final_protection) != protection_contract:
+        raise Denied("source main protection changed during protected-origin attestation")
     return commit_sha
 
 
@@ -552,13 +704,16 @@ def publish(repository, source, branch, trusted_root, source_commit):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
-        # Incident closure is mutable: a P0 can reopen after preflight.
-        # Guard every blob/tree/commit/ref write, not only the first one.
+        # Every authorization input is mutable after preflight. Re-attest the
+        # complete protected source authority before each source-bearing write.
         require_resolved_blocking_incidents()
         if checked_policy_approval(trusted_root, repository) != (
                 approved_policy, approved_repository_id):
             raise Denied("private CI destination approval policy changed during transfer")
         checked_repo(repository, approved_repository_id)
+        verify_protected_origin(
+            repository, approved_policy, approved_repository_id
+        )
 
     elements = []
     for rel, data, mode in files:
@@ -597,11 +752,6 @@ def publish(repository, source, branch, trusted_root, source_commit):
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
-    # Re-verify protected origin at the publication boundary, after any
-    # uploaded blobs but before attaching them to an executable CI branch.
-    verify_protected_origin(
-        repository, approved_policy, approved_repository_id
-    )
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
@@ -612,24 +762,17 @@ def publish(repository, source, branch, trusted_root, source_commit):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("repository", help="approved private owner/repo")
-    p.add_argument("--source-dir", required=True, type=Path)
-    p.add_argument("--branch", required=True)
-    p.add_argument("--source-commit", required=True,
-                   help="exact source-origin 40-hex Git commit to prove")
-    args = p.parse_args(argv)
-    # Policy and code are taken from the same trusted checkout as this script.
-    root = Path(__file__).resolve().parent.parent
-    try:
-        commit, count = publish(
-            args.repository, args.source_dir, args.branch, root, args.source_commit)
-    except Denied as exc:
-        print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
-        return 1
-    print(f"PRIVATE_CI_SNAPSHOT_CREATED: files={count} commit={commit}")
-    return 0
-
+    # Direct legacy publication is intentionally disabled. V3 is the only
+    # supported transfer entrypoint; keeping this module importable preserves
+    # shared verifier helpers and offline adversarial tests without exposing a
+    # second operational publisher path.
+    del argv
+    print(
+        "PRIVATE_CI_DESTINATION_REJECTED: legacy private-source publisher "
+        "is disabled; use run-in-private-ci-destination.sh (V3)",
+        file=sys.stderr,
+    )
+    return 1
 
 if __name__ == "__main__":
     sys.exit(main())

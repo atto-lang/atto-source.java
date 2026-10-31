@@ -2,11 +2,25 @@
 
 Oreslang is a statically typed GraalVM/Truffle language with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
 
-This repository contains the Java/Truffle reference implementation.
+This repository contains the Java/Truffle reference implementation. The LLVM version is in oreslang-source.llvm and WASM version is in oreslang-source.wasm etc etc.
+
+Do not use python for anything, use Rust instead of python to support the language.
+
+
+Notes on the compiler and runtime:
+
+- Strive for min gc or zero gc where possible. Having separate heaps/arenas per actor helps reduce gc overhead. Our borrow checking should reduce need for gc to zero.
+- Borrow checking uses reserved keywords `rt copy, rt share, rt take, rt borrow`
+- We want full AOT for GraalVM with Native Images so we can get single binary executable files.
+- Strive for hard real time not just soft-real time by minimizing JIT (or having JIT switched off for certain paths) and moving towards full AOT.
+- Use data-oriented design and data oriented programming - be mindful of using AoS, SoA, AoSoA and SoAoS where possible.
+- Use 32 bit pointers instead of 64 bit pointers for allocation/heaps. Having separate heaps per actor helps with this. The 32 bit pointers should be implemented so that it stays 32 bit even on Arm-64 machines, etc etc.
+- OresLang must be built around excellent tree-shaking so we can get final binary executables as small as possible and reduce startup overhead etc.
 
 The language is intentionally opinionated:
 
-- static nominal typing by default, with explicit structural compatibility at selected call boundaries;
+- optional semi-colons, but in some places are necessary for compiler to insert;
+- static nominal typing by default, with explicit structural compatibility at selected call boundaries using reserved "structural" keyword;
 - private functions by default (`fnc`), with `pub` for exported functions;
 - class methods omit `fnc` and have an implicit `self` receiver;
 - class construction uses a single explicit `constructor(...)` declaration (never a Java-style class-name constructor); top-level classes/constructors are file-private, while module classes/constructors are private by default and may be `pub`;
@@ -26,8 +40,7 @@ The language is intentionally opinionated:
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; instance/actor methods are direct-call-only, and callbacks use explicit lambdas instead of implicit bound-method values;
 - multiple named modules may appear in one source file;
-- explicit `return` statements;
-- generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, and `try/catch/finally` are language-level features.
+- explicit `return` statements unless same-line lambda or void return type;
 
 The first implementation is developed on a feature branch and will land with an executable Truffle skeleton, grammar/specification, examples, tests, and CI.
 

@@ -78,7 +78,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
@@ -168,6 +168,16 @@ public final class Lexer {
         }
     }
 
+    private void template() {
+        int tokenLine = line;
+        int end = TemplateLiterals.closingBacktick(source, current);
+        String contents = source.substring(start + 1, end);
+        while (current <= end) {
+            if (advance() == '\n') newline();
+        }
+        tokens.add(new Token(TEMPLATE_LITERAL, contents, tokenLine, startColumn));
+    }
+
     private void string(char quote) {
         StringBuilder value = new StringBuilder();
         while (!isAtEnd() && peek() != quote) {
@@ -184,7 +194,22 @@ public final class Lexer {
         }
         if (isAtEnd()) throw error("unterminated string");
         advance();
+        validateDecodedUnicode(value, "string");
         tokens.add(new Token(STRING, value.toString(), line, startColumn));
+    }
+
+    private void validateDecodedUnicode(CharSequence value, String kind) {
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw error(kind + " contains unpaired Unicode surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw error(kind + " contains unpaired Unicode surrogate");
+            }
+        }
     }
 
     private char unicodeEscape() {

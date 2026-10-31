@@ -513,4 +513,97 @@ public class TaskScopeTest {
         }
     }
 
+
+    @Test void retainsFirstFailedChildOutcomeAfterPhysicalJoin() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                throw new IllegalStateException("structured-child-boom");
+            });
+            scope.seal();
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+
+            TaskHandle.TaskOutcome<Integer> childOutcome =
+                    child.getDone().get(3, TimeUnit.SECONDS);
+            var failed = assertInstanceOf(TaskHandle.Failed.class, childOutcome);
+            assertEquals("structured-child-boom", failed.failure().getMessage());
+
+            var retained = assertInstanceOf(
+                    TaskHandle.Failed.class,
+                    scope.firstNonSuccessOutcome());
+            assertSame(failed.failure(), retained.failure(),
+                    "scope must retain the exact child failure, not synthesize a replacement");
+        }
+    }
+
+    @Test void retainsCancelledChildOnlyAfterPhysicalExit() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                entered.countDown();
+                awaitUninterruptibly(release);
+                OresScheduler.cancellationCheckpoint();
+                return OresScheduler.done(5);
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(child.cancel("structured-test-cancel"));
+            assertNull(scope.firstNonSuccessOutcome(),
+                    "Future cancellation request is not physical child retirement");
+            scope.seal();
+            assertFalse(scope.getDone().isDone());
+
+            release.countDown();
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            var retained = assertInstanceOf(
+                    TaskHandle.Cancelled.class,
+                    scope.firstNonSuccessOutcome());
+            assertEquals("structured-test-cancel", retained.reason());
+        }
+    }
+
+    @Test void racingNonSuccessChildrenRetainExactlyOneStableOutcome() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int i = 0; i < 128; i++) {
+                final int round = i;
+                TaskScope scope = scheduler.newTaskScope();
+                CountDownLatch entered = new CountDownLatch(2);
+                CountDownLatch release = new CountDownLatch(1);
+
+                TaskHandle<Integer> failing = scope.startTask(resume -> {
+                    entered.countDown();
+                    awaitUninterruptibly(release);
+                    throw new IllegalStateException("failure-" + round);
+                });
+                TaskHandle<Integer> cancelled = scope.startTask(resume -> {
+                    entered.countDown();
+                    awaitUninterruptibly(release);
+                    OresScheduler.cancellationCheckpoint();
+                    return OresScheduler.done(1);
+                });
+
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertTrue(cancelled.cancel("cancel-" + round));
+                scope.seal();
+                release.countDown();
+                assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+                assertInstanceOf(TaskHandle.Failed.class,
+                        failing.getDone().get(3, TimeUnit.SECONDS));
+                assertInstanceOf(TaskHandle.Cancelled.class,
+                        cancelled.getDone().get(3, TimeUnit.SECONDS));
+
+                TaskHandle.TaskOutcome<?> first = scope.firstNonSuccessOutcome();
+                assertNotNull(first);
+                assertTrue(first instanceof TaskHandle.Failed<?>
+                                || first instanceof TaskHandle.Cancelled<?>,
+                        "scope retained an impossible terminal outcome");
+                assertSame(first, scope.firstNonSuccessOutcome(),
+                        "first non-success must remain stable after all children retire");
+            }
+        }
+    }
+
 }

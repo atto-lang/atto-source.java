@@ -29,7 +29,7 @@ chmod +x "$work/gh" "$script_dir"/*.sh
 export PATH="$work:$PATH" MOCK_EXEC_LOG="$work/executed"
 expect_ok() {
   "$script_dir/check-private-ci-destination.sh" "$1" > "$work/out" 2>&1 || { cat "$work/out" >&2; exit 1; }
-  grep -q 'PRIVATE_CI_DESTINATION_APPROVED' "$work/out"
+  grep -q 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY' "$work/out"
 }
 expect_fail() {
   if "$script_dir/check-private-ci-destination.sh" "$@" > "$work/out" 2>&1; then echo 'Unsafe approval' >&2; exit 1; fi
@@ -54,6 +54,33 @@ printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
 expect_fail trusted/ci
+printf 'trusted/ci 246810\n' > "$policy"
+expect_ok trusted/ci
+printf 'trusted/ci 246810\r\n' > "$policy"
+expect_fail trusted/ci
+printf 'trusted/ci 246810\n' > "$policy"
+expect_ok trusted/ci
+for quarantined_id in 1323575966 1323598260 1412142815 1370782550 1324139596 1350751074; do
+  printf 'trusted/ci %s\n' "$quarantined_id" > "$policy"
+  export MOCK_REPOSITORY_ID="$quarantined_id"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+done
+unset MOCK_REPOSITORY_ID
+
+for quarantined_slug in \
+  zed-pkg-test/java-app \
+  scintilla-run-test/gleam-runner-conformance \
+  ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra \
+  agent-pontifex-test/agent-pontifex-e2e-tests \
+  led-dynamo/leddy-e2e \
+  ClaimGraph-test/claimgraph-e2e \
+  CLAIMGRAPH-TEST/CLAIMGRAPH-E2E; do
+  printf '%s 246810\n' "$quarantined_slug" > "$policy"
+  expect_fail "$quarantined_slug"
+  expect_wrapper_reject "$quarantined_slug"
+done
+
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
 for visibility in public internal null; do

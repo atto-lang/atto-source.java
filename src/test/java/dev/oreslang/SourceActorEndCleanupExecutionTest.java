@@ -53,6 +53,64 @@ final class SourceActorEndCleanupExecutionTest {
 
 
     @Test
+    void sourceTearDownRunsBetweenReceiveAndExplicitFinalCleanup() throws Exception {
+        String program = """
+                define actor Worker as
+                  @Implements
+                  tear_down(): void {
+                    self.send("tear_down|");
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    self.send("receive|");
+                    self.endWithCleanup(|| -> {
+                      self.send("final");
+                    });
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("go");
+                  for await const output of worker.outputs {
+                    stdio.stdout.write(output.value);
+                  }
+                  await worker.get_done();
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "receive|tear_down|final",
+                run(program, "source-actor-tear-down.ores"));
+    }
+
+    @Test
+    void sourceTearDownCannotBeInvokedLikeAnOrdinaryMethod() throws Exception {
+        String program = """
+                define actor Worker as
+                  tear_down(): void { return; }
+                  receive(ActorMail<String> mail): void {
+                    self.tear_down();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("go");
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        assertThrows(Exception.class,
+                () -> run(program, "source-actor-tear-down-not-callable.ores"));
+    }
+
+    @Test
     void untrustedActorAlsoFinishesCurrentTurnBeforeFinalCleanup() throws Exception {
         String program = """
                 define untrusted actor Worker as

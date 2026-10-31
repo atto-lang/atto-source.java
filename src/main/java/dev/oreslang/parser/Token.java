@@ -7,6 +7,7 @@ public record Token(Type type, String lexeme, int line, int column) {
         FLOAT,
         IMAG,
         STRING,
+        TEMPLATE_LITERAL,
         SYMBOL_LITERAL,
 
         DEFINE, CLASS, MODULE, CONTRACT, CONFORMS, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
@@ -25,3 +26,4 @@ public record Token(Type type, String lexeme, int line, int column) {
         EOF
     }
 }
+

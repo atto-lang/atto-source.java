@@ -16,6 +16,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
+import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -23,10 +24,12 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
+import dev.oreslang.runtime.Utf8StringAbi;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -52,6 +55,8 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    /** Ownership epoch captured when this executable root is created. */
+    private final long taskAdmissionEpoch;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
@@ -60,8 +65,10 @@ public final class OresEvalRootNode extends RootNode {
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
         super(language);
-        this.program = program;
+        this.program = Objects.requireNonNull(program, "checked Oreslang program");
         this.codeUnitId = codeUnitId;
+        this.taskAdmissionEpoch =
+                Ast.CheckedTaskCaptures.requireProgramEpoch(program);
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -118,7 +125,14 @@ public final class OresEvalRootNode extends RootNode {
         if (current != null) return current;
         synchronized (this) {
             current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
+            if (current == null) {
+                evaluator = current =
+                        new Evaluator(
+                                program,
+                                context,
+                                codeUnitId,
+                                taskAdmissionEpoch);
+            }
             return current;
         }
     }
@@ -132,6 +146,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final long taskAdmissionEpoch;
+        private final AtomicLong nextTaskLaunchId = new AtomicLong();
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -212,10 +228,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
 
-        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
+        private Evaluator(
+                Ast.Program program,
+                OresContext context,
+                String codeUnitId,
+                long taskAdmissionEpoch) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.taskAdmissionEpoch = taskAdmissionEpoch;
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -659,6 +680,32 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        @Override
+        public void tearDownActor(
+                String actorTypeName,
+                ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            if (!(rawState instanceof SourceActorState state)
+                    || !state.ownerActorId().equals(actorContext.self().id())
+                    || !state.actorTypeName().equals(actorTypeName)) {
+                throw new SecurityException(
+                        "source actor tear_down does not match actor-owned state");
+            }
+            Ast.MethodDecl teardown = findMethod(
+                    state.object().klass,
+                    CallableSelector.instance("tear_down", 0));
+            if (teardown == null) return;
+            if (teardown.async() || teardown.suspends()
+                    || methodContainsPotentialSuspension(teardown)) {
+                throw new IllegalStateException(
+                        "actor tear_down cannot suspend until scheduler-owned teardown awaits are supported");
+            }
+            // Deliberately bypass ordinary method lookup/call: actor tear_down
+            // is not callable by guest source and can only enter from the
+            // runtime's once-only lifecycle turn.
+            executeActorLifecycleMethod(state.object(), teardown, "tear_down");
+        }
+
         /**
          * Runtime admission guard independent of source type-checker entry
          * points. No actor with unsupported parallel state access may start.
@@ -696,31 +743,29 @@ public final class OresEvalRootNode extends RootNode {
             return klass;
         }
 
-        private void executeActorStartup(
-                OresObject object,
-                Ast.MethodDecl startup) {
-            Env env =
-                    new Env(
-                            null,
-                            false,
-                            declaringClass(startup),
-                            object);
+        private void executeActorStartup(OresObject object, Ast.MethodDecl startup) {
+            executeActorLifecycleMethod(object, startup, "on_start");
+        }
+
+        private void executeActorLifecycleMethod(
+                OresObject object, Ast.MethodDecl method, String hook) {
+            Env env = new Env(null, false, declaringClass(method), object);
             env.define("self", object, Ast.BindingKind.VAL);
-            bindCallableArguments(env, startup.parameters(), List.of(), "actor on_start");
+            bindCallableArguments(env, method.parameters(), List.of(), "actor " + hook);
             try {
-                executeBlock(startup.body(), env);
+                executeBlock(method.body(), env);
             } catch (ReturnSignal signal) {
                 if (signal.value != null) {
                     throw new IllegalStateException(
-                            "actor on_start cannot return a value");
+                            "actor " + hook + " cannot return a value");
                 }
             } catch (TailCallSignal signal) {
                 throw new IllegalStateException(
-                        "actor on_start cannot tail-call across the startup initialization boundary",
+                        "actor " + hook + " cannot tail-call across a lifecycle boundary",
                         signal);
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException(
-                        "loop control cannot cross actor on_start",
+                        "loop control cannot cross actor " + hook,
                         signal);
             }
         }
@@ -1115,7 +1160,22 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        @FunctionalInterface
+        private interface SourceCleanupAction {
+            void unwind(SourceTask task, SourceFlowCont continuation);
+        }
+
+        /** Lexically registered, once-disarmed source cleanup capability. */
+        private static final class SourceCleanupFrame {
+            private final SourceCleanupAction action;
+            private boolean disarmed;
+
+            private SourceCleanupFrame(SourceCleanupAction action) {
+                this.action = Objects.requireNonNull(action, "action");
+            }
+        }
+
+        private final class SourceTask implements OresScheduler.CleanupAwareTask<Object> {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -1129,10 +1189,23 @@ public final class OresEvalRootNode extends RootNode {
             private final Ast.MethodDecl method;
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
+            private final boolean blockAllowsValueReturn;
             private final List<?> arguments;
+            private final TaskLaunchAuthority taskLaunchAuthority;
             private Env initialBlockEnv;
+            /** Independent Task launch authority is one-shot even if a scheduler mis-dispatches it. */
+            private boolean taskLaunchConsumed;
 
             private SourceValueCont awaitingContinuation;
+            // Heap-owned cancellation unwind state survives suspension and
+            // never exposes the internal cancellation marker to catch/trap.
+            private final ArrayDeque<SourceCleanupFrame> activeCleanup =
+                    new ArrayDeque<>();
+            private boolean cancellationUnwinding;
+            private boolean drainingCancellationCleanup;
+            private boolean cancellationCleanupNeedsAdvance;
+            private java.util.concurrent.CancellationException cancellationCause;
+            private Throwable fatalCleanupFailure;
             private OresScheduler.Step<Object> nextStep;
 
             private SourceTask(
@@ -1142,7 +1215,9 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
+                this.blockAllowsValueReturn = false;
                 this.arguments = List.copyOf(arguments);
+                this.taskLaunchAuthority = null;
             }
 
             private SourceTask(
@@ -1153,16 +1228,24 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = Objects.requireNonNull(method, "method");
                 this.receiver = receiver;
                 this.blockBody = null;
+                this.blockAllowsValueReturn = false;
                 this.arguments = List.copyOf(arguments);
+                this.taskLaunchAuthority = null;
             }
 
-            private SourceTask(List<Ast.Stmt> blockBody) {
+            private SourceTask(
+                    List<Ast.Stmt> blockBody,
+                    boolean blockAllowsValueReturn,
+                    TaskLaunchAuthority taskLaunchAuthority) {
                 this.function = null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
+                this.blockAllowsValueReturn = blockAllowsValueReturn;
                 this.arguments = List.of();
+                this.taskLaunchAuthority = Objects.requireNonNull(
+                        taskLaunchAuthority, "source Task launch authority");
             }
 
             @Override
@@ -1179,13 +1262,26 @@ public final class OresEvalRootNode extends RootNode {
                     initialBlockEnv = null;
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
-                    if (function != null && function.trapped()
-                            && isTrappableFailure(failure)) {
+                    if (!cancellationUnwinding && function != null
+                            && function.trapped() && isTrappableFailure(failure)) {
                         return OresScheduler.done(new OptionValue(false, null));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
                             resume.initial() ? "source task" : "resumed source task");
+                }
+            }
+
+            private void validateTaskLaunchAuthority() {
+                if (taskLaunchAuthority == null
+                        || taskLaunchAuthority.ownershipCheckEpoch()
+                                != taskAdmissionEpoch
+                        || taskLaunchAuthority.launchId() <= 0
+                        || taskLaunchAuthority.parentScopeEpoch() <= 0
+                        || taskLaunchAuthority.domain()
+                                != Ast.ExecutionDomain.CPU) {
+                    throw new IllegalStateException(
+                            "source Task resumed with stale or invalid launch authority");
                 }
             }
 
@@ -1195,9 +1291,22 @@ public final class OresEvalRootNode extends RootNode {
                 cooperationQuantum.beginDispatch();
                 nextStep = null;
 
+                // Revalidate immutable launch identity on every physical child
+                // dispatch. This is deliberately independent of scheduler trust:
+                // a malformed/replayed Resume must never turn a stale source
+                // Task into executable authority.
+                if (blockBody != null) {
+                    validateTaskLaunchAuthority();
+                }
+
                 if (resume.initial()) {
                     Env params;
                     if (blockBody != null) {
+                        if (taskLaunchConsumed) {
+                            throw new IllegalStateException(
+                                    "source Task launch authority was replayed");
+                        }
+                        taskLaunchConsumed = true;
                         params = initialBlockEnv != null
                                 ? initialBlockEnv
                                 : new Env(null);
@@ -1246,6 +1355,19 @@ public final class OresEvalRootNode extends RootNode {
                             body,
                             params,
                             this::finishSourceFlow);
+                } else if (!cancellationUnwinding
+                        && resume.failure() instanceof java.util.concurrent.CancellationException
+                        && OresScheduler.cancellationCleanupTurn()) {
+                    // Only the scheduler's authenticated cleanup dispatch
+                    // may switch a source Task into terminal unwind. Do not
+                    // forward this into an expression/guest catch callback.
+                    cancellationUnwinding = true;
+                    cancellationCause =
+                            (java.util.concurrent.CancellationException) resume.failure();
+                    awaitingContinuation = null;
+                    pendingLoopContinuation = null;
+                    pendingLoopGuardEnv = null;
+                    unwindCancelledSource();
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
@@ -1271,6 +1393,92 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler.Step<Object> result = nextStep;
                 nextStep = null;
                 return result;
+            }
+
+            private SourceCleanupFrame registerSourceCleanup(SourceCleanupAction action) {
+                SourceCleanupFrame frame = new SourceCleanupFrame(action);
+                activeCleanup.addLast(frame);
+                return frame;
+            }
+
+            private void disarmSourceCleanup(SourceCleanupFrame frame) {
+                if (frame.disarmed) return;
+                frame.disarmed = true;
+                // A frame completed on the owning Task turn. Removing it by
+                // identity allows ordinary nested finally to unwind itself
+                // without accidentally removing its parent's frame.
+                if (!activeCleanup.removeLastOccurrence(frame)) {
+                    if (!cancellationUnwinding) {
+                        throw new IllegalStateException("source cleanup frame lost");
+                    }
+                }
+            }
+
+            private void noteCancelledCleanupFailure(Throwable failed) {
+                if (failed == cancellationCause) return;
+                if (fatalCleanupFailure == null && (failed instanceof Error
+                        || failed instanceof dev.oreslang.runtime.UntrappableTaskFailure
+                        || failed instanceof java.util.concurrent.RejectedExecutionException)) {
+                    fatalCleanupFailure = failed;
+                }
+                if (cancellationCause != null
+                        && cancellationCause.getSuppressed().length < 64) {
+                    cancellationCause.addSuppressed(failed);
+                }
+            }
+
+            private void unwindCancelledSource() {
+                if (drainingCancellationCleanup) {
+                    // An immediately settled defer may complete synchronously.
+                    // Retain its advance request rather than recursively
+                    // consuming the next heap frame on the same Java stack.
+                    cancellationCleanupNeedsAdvance = true;
+                    return;
+                }
+                drainingCancellationCleanup = true;
+                try {
+                    do {
+                        cancellationCleanupNeedsAdvance = false;
+                        while (!activeCleanup.isEmpty()
+                                && activeCleanup.peekLast().disarmed) {
+                            activeCleanup.removeLast();
+                        }
+                        SourceCleanupFrame frame = activeCleanup.pollLast();
+                        if (frame == null) {
+                            // The scheduler publishes cancellation only after
+                            // this entire cleanup turn physically unwinds.
+                            if (fatalCleanupFailure instanceof Error fatal) throw fatal;
+                            if (fatalCleanupFailure instanceof RuntimeException fatal)
+                                throw fatal;
+                            done(null);
+                            return;
+                        }
+                        frame.disarmed = true;
+                        boolean[] delivered = { false };
+                        try {
+                            frame.action.unwind(this, (t, flow) -> {
+                                if (delivered[0]) {
+                                    throw new IllegalStateException(
+                                            "source cleanup frame delivered twice");
+                                }
+                                delivered[0] = true;
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && flow.failure() != cancellationCause) {
+                                    noteCancelledCleanupFailure(flow.failure());
+                                }
+                                t.unwindCancelledSource();
+                            });
+                        } catch (RuntimeException | Error failed) {
+                            if (delivered[0]) throw failed;
+                            noteCancelledCleanupFailure(failed);
+                            cancellationCleanupNeedsAdvance = true;
+                        }
+                        // A suspended deferred Future owns the continuation
+                        // until its next scheduler dispatch; no busy waiting.
+                    } while (cancellationCleanupNeedsAdvance && nextStep == null);
+                } finally {
+                    drainingCancellationCleanup = false;
+                }
             }
 
             private void scheduleLoopContinuation(
@@ -1358,11 +1566,11 @@ public final class OresEvalRootNode extends RootNode {
                     switch (flow.kind()) {
                         case NORMAL -> done(null);
                         case RETURN -> {
-                            if (flow.value() != null) {
+                            if (!blockAllowsValueReturn && flow.value() != null) {
                                 throw new IllegalStateException(
                                         "detached source continuation cannot return a value");
                             }
-                            done(null);
+                            done(flow.value());
                         }
                         case THROW -> throw sourceFailure(flow.failure());
                         case BREAK, CONTINUE ->
@@ -1409,6 +1617,31 @@ public final class OresEvalRootNode extends RootNode {
             return new RuntimeException(unwrapped);
         }
 
+        private record TaskLaunchAuthority(
+                long launchId,
+                long ownershipCheckEpoch,
+                long parentScopeEpoch,
+                Ast.ExecutionDomain domain) {
+            private TaskLaunchAuthority {
+                if (launchId <= 0
+                        || ownershipCheckEpoch <= 0
+                        || parentScopeEpoch <= 0) {
+                    throw new IllegalArgumentException(
+                            "Task launch authority identities must be positive");
+                }
+                Objects.requireNonNull(domain, "Task launch execution domain");
+            }
+        }
+
+        private long allocateTaskLaunchId() {
+            long launchId = nextTaskLaunchId.incrementAndGet();
+            if (launchId <= 0) {
+                throw new IllegalStateException(
+                        "source Task launch identity space exhausted");
+            }
+            return launchId;
+        }
+
         private OresFuture<Object> startSourceFunctionTask(
                 Ast.FunctionDecl function,
                 List<?> arguments) {
@@ -1427,17 +1660,89 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OresFuture<Object> startSourceBlockTask(
-                List<Ast.Stmt> body,
+                Ast.TaskExpr taskExpr,
                 Env env) {
-            SourceTask task = new SourceTask(body);
-            if (!ActorRuntime.inActorExecution()) {
+            if (ActorRuntime.inActorExecution()) {
+                // The type checker also rejects this today. Keep a runtime gate
+                // for host-entered/untyped execution so actor self/state cannot
+                // silently cross into an independently scheduled task.
                 throw new IllegalStateException(
-                        "detached source block task requires actor execution");
+                        "task blocks cannot capture actor state until explicit actor-task capture authority is lowered");
             }
-            task.initialBlockEnv = env.snapshot();
-            OresFuture<Object> future = context.actors().startActorTask(task);
-            context.actors().ownCurrentActorFuture(future);
-            return future;
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "cannot launch task while holding a live MutexGuard");
+            }
+
+            // Execution authority comes from the exact TaskExpr admitted by
+            // OwnershipChecker after the whole program passed. Re-parsed or
+            // optimizer-cloned nodes have no admission and fail closed.
+            Ast.TaskCaptureAdmission admission =
+                    Ast.CheckedTaskCaptures.require(
+                            program,
+                            taskExpr,
+                            taskAdmissionEpoch);
+            Map<String, Ast.TaskCaptureTransfer> admitted =
+                    admission.captureTransfers();
+            Set<String> syntactic =
+                    dev.oreslang.ast.TaskCaptureNames.referencedIn(
+                            taskExpr.body());
+            if (!syntactic.containsAll(admitted.keySet())) {
+                throw new IllegalStateException(
+                        "checked Task capture admission is inconsistent with its AST body");
+            }
+            // Admission is allowed to omit global/module names, but it may
+            // never omit a lexical parent binding referenced by the Task.
+            // This is a runtime backstop against compiler/runtime capture-set
+            // drift: every free name that resolves to the parent environment
+            // must carry an explicit COPY/MOVE admission.
+            for (String freeName : syntactic) {
+                if (!admitted.containsKey(freeName)
+                        && env.lookupSlot(freeName) != null) {
+                    throw new IllegalStateException(
+                            "checked Task capture admission omitted lexical parent binding '"
+                                    + freeName + "'");
+                }
+            }
+            if (admission.domain() != taskExpr.domain()) {
+                throw new IllegalStateException(
+                        "checked Task capture admission execution domain does not match TaskExpr");
+            }
+
+            TaskLaunchAuthority launchAuthority =
+                    new TaskLaunchAuthority(
+                            allocateTaskLaunchId(),
+                            admission.checkEpoch(),
+                            env.scopeEpoch(),
+                            admission.domain());
+            SourceTask task =
+                    new SourceTask(
+                            taskExpr.body(),
+                            true,
+                            launchAuthority);
+            Env.DetachedTaskSnapshot transfer =
+                    env.detachedTaskSnapshot(
+                            admitted,
+                            launchAuthority.parentScopeEpoch());
+            task.initialBlockEnv = transfer.environment();
+            OresScheduler current = OresScheduler.current();
+            OresScheduler scheduler =
+                    current != null ? current : context.vm().rootScheduler();
+            try {
+                TaskScope structuredScope = env.structuredTaskScope();
+                OresFuture<Object> future = structuredScope != null
+                        ? structuredScope.startTask(task).result()
+                        : scheduler.start(task);
+                transfer.commit();
+                return future;
+            } catch (RuntimeException | Error failure) {
+                // OresScheduler.start only throws before successful admission;
+                // post-admission enqueue failures settle the returned Future.
+                // Restore parent MOVE slots only for this pre-admission path.
+                task.initialBlockEnv = null;
+                transfer.rollback();
+                throw failure;
+            }
         }
 
         private OresFuture<Object> startSourceMethodTask(
@@ -1624,6 +1929,10 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.BlockStmt block) {
                 return block.body().stream().anyMatch(
                         nested -> statementContainsPotentialSuspension(nested, seen));
+            }
+            if (stmt instanceof Ast.TaskScopeStmt) {
+                // Scope exit always waits for physical child quiescence.
+                return true;
             }
             if (stmt instanceof Ast.IfStmt conditional) {
                 return conditional.branches().stream().anyMatch(
@@ -1872,9 +2181,16 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            // runStatements owns terminal finalization for this block.
-            // A second finishBlock would release the same environment twice.
-            runStatements(task, statements, env, defers, 0, continuation);
+            SourceCleanupFrame cleanup = task.registerSourceCleanup(
+                    (owner, finished) -> runOneDefer(
+                            owner, env, defers,
+                            SourceFlow.throwing(owner.cancellationCause), finished));
+            // runStatements owns normal terminal finalization. Its wrapper
+            // disarms the heap-owned cancellation frame exactly once.
+            runStatements(task, statements, env, defers, 0, (owner, flow) -> {
+                owner.disarmSourceCleanup(cleanup);
+                continuation.accept(owner, flow);
+            });
         }
 
         /**
@@ -1890,6 +2206,8 @@ public final class OresEvalRootNode extends RootNode {
                     || stmt instanceof Ast.ForOfDestructureStmt) return true;
             if (stmt instanceof Ast.BlockStmt block)
                 return block.body().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.TaskScopeStmt scope)
+                return scope.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.IfStmt conditional)
                 return conditional.branches().stream().anyMatch(
                         branch -> branch.body().stream().anyMatch(this::containsSourceLoop))
@@ -2025,12 +2343,32 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
-            if (earlier != null && (isUnmaskableFailure(earlier)
-                    || cleanupFailure instanceof ProcessExitSignal)) {
+            // The first genuine failure is the PRIMARY cause of the Task.
+            // Defer/finally/guard failures are secondary diagnostics and must
+            // never erase the original THROW, RAISE, PANIC or cancellation.
+            // In particular ProcessExitSignal from a defer cannot replace a
+            // pending error. Preserve original identity for source and actor
+            // supervisor attribution.
+            if (earlier != null) {
+                // An untrappable panic/authority failure in cleanup must
+                // still escape an earlier ordinary THROW. Otherwise catch or
+                // trap could swallow a fatal cleanup panic. A deferred
+                // process-exit never replaces an already pending failure.
+                if (!(cleanupFailure instanceof ProcessExitSignal)
+                        && isUnmaskableFailure(cleanupFailure)
+                        && (!isUnmaskableFailure(earlier)
+                            || (earlier instanceof java.util.concurrent.CancellationException
+                                && cleanupFailure instanceof
+                                    dev.oreslang.runtime.UntrappableTaskFailure))) {
+                    suppressCleanupFailure(cleanupFailure, earlier);
+                    return SourceFlow.throwing(cleanupFailure);
+                }
+                // Two ordinary failures: the original Task error wins.
+                // Any already-fatal primary also remains authoritative.
                 suppressCleanupFailure(earlier, cleanupFailure);
                 return currentFlow;
             }
-            if (earlier != null) suppressCleanupFailure(cleanupFailure, earlier);
+            // A cleanup failure after a normal return still fails the Task.
             return SourceFlow.throwing(cleanupFailure);
         }
 
@@ -2135,6 +2473,10 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.UsingBorrowStmt) {
+                    throw new IllegalStateException(
+                            "using request.borrow() as view is not executable without checked loan cleanup");
+                }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
                             task,
@@ -2266,6 +2608,38 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+                    if (ActorRuntime.inActorExecution()) {
+                        continuation.accept(
+                                task,
+                                SourceFlow.throwing(new IllegalStateException(
+                                        "task scope inside actor execution is not enabled until "
+                                                + "actor quota/hot-reload lifetime authority is proven")));
+                        return;
+                    }
+
+                    final TaskScope runtimeScope;
+                    try {
+                        runtimeScope = OresScheduler.requireCurrent().newTaskScope();
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, SourceFlow.throwing(failure));
+                        return;
+                    }
+
+                    Env scopedEnv = env.withStructuredTaskScope(runtimeScope);
+                    runBlock(
+                            task,
+                            taskScope.body(),
+                            scopedEnv,
+                            (t, flow) ->
+                                    finishStructuredTaskScope(
+                                            t,
+                                            runtimeScope,
+                                            flow,
+                                            continuation));
+                    return;
+                }
+
                 if (stmt instanceof Ast.BreakStmt) {
                     continuation.accept(task, SourceFlow.breaking());
                     return;
@@ -2350,11 +2724,18 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.TryStmt attempted) {
+                    SourceCleanupFrame pendingFinally = task.registerSourceCleanup(
+                            (owner, finished) ->
+                                    runBlock(owner, attempted.finallyBody(), env, finished));
                     runBlock(
                             task,
                             attempted.body(),
                             env,
                             (t, flow) -> {
+                                // Normal throw/return path explicitly owns
+                                // finally below. Cancellation of a suspended
+                                // try body owns it via the heap cleanup stack.
+                                t.disarmSourceCleanup(pendingFinally);
                                 if (flow.kind() == SourceFlowKind.THROW
                                         && isGuestCatchableFailure(flow.failure())) {
                                     Env caught = new Env(env);
@@ -2445,6 +2826,13 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 Iterable<?> values = iterableValues(iterable, env);
+                                SourceOwnedClose closer = values instanceof AutoCloseable
+                                        ? new SourceOwnedClose(() -> closeIterable(values)) : null;
+                                SourceCleanupFrame registered = closer == null ? null
+                                        : t.registerSourceCleanup((owner, finished) ->
+                                                finishSourceIterable(owner, closer,
+                                                        SourceFlow.throwing(owner.cancellationCause),
+                                                        finished));
                                 runForOfIteration(
                                         t,
                                         loop,
@@ -2452,7 +2840,11 @@ public final class OresEvalRootNode extends RootNode {
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
-                                                completed, values, flow, continuation));
+                                                completed, closer, flow, (owner, closed) -> {
+                                                    if (registered != null)
+                                                        owner.disarmSourceCleanup(registered);
+                                                    continuation.accept(owner, closed);
+                                                }));
                             });
                     return;
                 }
@@ -2485,6 +2877,13 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 Iterable<?> values = iterableValues(iterable, env);
+                                SourceOwnedClose closer = values instanceof AutoCloseable
+                                        ? new SourceOwnedClose(() -> closeIterable(values)) : null;
+                                SourceCleanupFrame registered = closer == null ? null
+                                        : t.registerSourceCleanup((owner, finished) ->
+                                                finishSourceIterable(owner, closer,
+                                                        SourceFlow.throwing(owner.cancellationCause),
+                                                        finished));
                                 runForOfDestructureIteration(
                                         t,
                                         loop,
@@ -2492,7 +2891,11 @@ public final class OresEvalRootNode extends RootNode {
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
-                                                completed, values, flow, continuation));
+                                                completed, closer, flow, (owner, closed) -> {
+                                                    if (registered != null)
+                                                        owner.disarmSourceCleanup(registered);
+                                                    continuation.accept(owner, closed);
+                                                }));
                             });
                     return;
                 }
@@ -2811,6 +3214,93 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private void finishStructuredTaskScope(
+                SourceTask task,
+                TaskScope scope,
+                SourceFlow flow,
+                SourceFlowCont continuation) {
+            boolean cancellingForUnwind =
+                    flow.kind() == SourceFlowKind.THROW;
+            SourceFlow pending = flow;
+            try {
+                if (cancellingForUnwind) {
+                    scope.cancel("source structured Task scope unwinding");
+                } else {
+                    scope.seal();
+                }
+            } catch (RuntimeException | Error failure) {
+                pending = mergeCleanupFailure(pending, failure);
+                cancellingForUnwind = true;
+            }
+
+            OresFuture<Void> drained = scope.getDone();
+            SourceFlow pendingFlow = pending;
+            boolean cleanupCancellation = cancellingForUnwind;
+
+            if (drained.isDone()) {
+                try {
+                    drained.join();
+                    continuation.accept(
+                            task,
+                            mergeStructuredChildOutcome(
+                                    pendingFlow,
+                                    scope,
+                                    cleanupCancellation));
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(
+                            task,
+                            mergeCleanupFailure(pendingFlow, failure));
+                }
+                return;
+            }
+
+            task.suspend(
+                    drained,
+                    (resumed, ignored, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(
+                                    resumed,
+                                    mergeCleanupFailure(
+                                            pendingFlow,
+                                            OresFuture.unwrap(failure)));
+                            return;
+                        }
+                        continuation.accept(
+                                resumed,
+                                mergeStructuredChildOutcome(
+                                        pendingFlow,
+                                        scope,
+                                        cleanupCancellation));
+                    });
+        }
+
+        private SourceFlow mergeStructuredChildOutcome(
+                SourceFlow flow,
+                TaskScope scope,
+                boolean cancellationWasCleanup) {
+            dev.oreslang.runtime.TaskHandle.TaskOutcome<?> outcome =
+                    scope.firstNonSuccessOutcome();
+            if (outcome == null
+                    || outcome instanceof dev.oreslang.runtime.TaskHandle.Success<?>) {
+                return flow;
+            }
+            if (outcome instanceof dev.oreslang.runtime.TaskHandle.Failed<?> failed) {
+                return mergeCleanupFailure(flow, failed.failure());
+            }
+            if (outcome instanceof dev.oreslang.runtime.TaskHandle.Cancelled<?> cancelled) {
+                if (cancellationWasCleanup) {
+                    return flow;
+                }
+                return mergeCleanupFailure(
+                        flow,
+                        new java.util.concurrent.CancellationException(
+                                "structured Task child cancelled: "
+                                        + cancelled.reason()));
+            }
+            throw new IllegalStateException(
+                    "unknown structured Task child outcome " + outcome);
+        }
+
         private void runForSuspendable(
                 SourceTask task,
                 Ast.ForStmt loop,
@@ -2902,8 +3392,15 @@ public final class OresEvalRootNode extends RootNode {
                             if (loop.update() == null) {
                                 t.scheduleLoopContinuation(
                                         loopEnv,
-                                        (resumed, ignored, failure) -> runForIteration(
-                                                resumed, loop, loopEnv, continuation));
+                                        (resumed, ignored, failure) -> {
+                                            if (failure != null) {
+                                                continuation.accept(
+                                                        resumed, SourceFlow.throwing(failure));
+                                            } else {
+                                                runForIteration(
+                                                        resumed, loop, loopEnv, continuation);
+                                            }
+                                        });
                             } else {
                                 evalSuspendableExpr(
                                         t,
@@ -2918,8 +3415,15 @@ public final class OresEvalRootNode extends RootNode {
                                             } else {
                                                 t2.scheduleLoopContinuation(
                                                         loopEnv,
-                                                        (resumed, ignoredResumeValue, failure2) -> runForIteration(
-                                                                resumed, loop, loopEnv, continuation));
+                                                        (resumed, ignoredResumeValue, failure2) -> {
+                                                            if (failure2 != null) {
+                                                                continuation.accept(
+                                                                        resumed, SourceFlow.throwing(failure2));
+                                                            } else {
+                                                                runForIteration(
+                                                                        resumed, loop, loopEnv, continuation);
+                                                            }
+                                                        });
                                             }
                                         });
                             }
@@ -3004,8 +3508,15 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runLoopSuspendable(
-                                            resumed, loop, env, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                        } else {
+                                            runLoopSuspendable(
+                                                    resumed, loop, env, continuation);
+                                        }
+                                    });
                         }
                     });
         }
@@ -3053,62 +3564,91 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
 
+        /**
+         * A generator/iterator close is requested at most once. Ordinary
+         * completion and cancellation may race while close() itself is
+         * asynchronous; both await the SAME physical producer finalizer.
+         */
+        private final class SourceOwnedClose {
+            private final Runnable release;
+            private OresFuture<Void> closing;
+
+            SourceOwnedClose(Runnable release) {
+                this.release = Objects.requireNonNull(release, "release");
+            }
+
+            synchronized OresFuture<Void> closeOnce() {
+                if (closing == null) {
+                    closing = context.asyncRuntime().submit(() -> {
+                        release.run();
+                        return null;
+                    });
+                }
+                return closing;
+            }
+        }
+
         private void runAsyncForOf(SourceTask task, Object value, Env env,
                 List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
-            runAsyncForOfIteration(task, sourceAsyncGenerator(value, env), env, body, bind, continuation);
+            GeneratorRuntime.AsyncGenerator<?> generator = sourceAsyncGenerator(value, env);
+            SourceOwnedClose closer = new SourceOwnedClose(generator::close);
+            SourceCleanupFrame registered = task.registerSourceCleanup(
+                    (owner, completed) -> finishAsyncForOf(owner, closer,
+                            SourceFlow.throwing(owner.cancellationCause), completed));
+            runAsyncForOfIteration(task, generator, closer, env, body, bind,
+                    (owner, flow) -> {
+                        owner.disarmSourceCleanup(registered);
+                        continuation.accept(owner, flow);
+                    });
         }
 
-        private void finishSourceIterable(SourceTask task, Iterable<?> values,
+        private void finishSourceIterable(SourceTask task, SourceOwnedClose closer,
                 SourceFlow flow, SourceFlowCont continuation) {
-            if (!(values instanceof AutoCloseable)) {
+            if (closer == null) {
                 continuation.accept(task, flow);
                 return;
             }
-            task.suspend(context.asyncRuntime().submit(() -> {
-                closeIterable(values);
-                return null;
-            }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+            task.suspend(closer.closeOnce(), (t, ignored, failure) ->
+                    continuation.accept(t,
+                            failure == null ? flow : mergeCleanupFailure(flow, failure)));
         }
 
-        private void finishAsyncForOf(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
+        private void finishAsyncForOf(SourceTask task, SourceOwnedClose closer,
                 SourceFlow flow, SourceFlowCont continuation) {
-            // Closing waits for producer cleanup, so it also runs off the bounded carrier.
-            task.suspend(context.asyncRuntime().submit(() -> {
-                generator.close();
-                return null;
-            }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+            task.suspend(closer.closeOnce(), (t, ignored, failure) ->
+                    continuation.accept(t,
+                            failure == null ? flow : mergeCleanupFailure(flow, failure)));
         }
 
         private void runAsyncForOfIteration(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
-                Env env, List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
+                SourceOwnedClose closer, Env env, List<Ast.Stmt> body,
+                java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
             task.suspend(generator.nextStep(), (t, value, failure) -> {
                 if (failure != null) {
-                    finishAsyncForOf(t, generator, SourceFlow.throwing(failure), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.throwing(failure), continuation);
                     return;
                 }
                 GeneratorRuntime.Step<?> step = (GeneratorRuntime.Step<?>) value;
                 if (step.done()) {
-                    finishAsyncForOf(t, generator, SourceFlow.normal(), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.normal(), continuation);
                     return;
                 }
                 Env iteration = new Env(env);
                 try {
                     bind.accept(iteration, step.value());
                 } catch (RuntimeException | Error bindingFailure) {
-                    finishAsyncForOf(t, generator, SourceFlow.throwing(bindingFailure), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.throwing(bindingFailure), continuation);
                     return;
                 }
                 runBlock(t, body, iteration, (t2, flow) -> {
                     if (flow.kind() == SourceFlowKind.BREAK) {
-                        finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
+                        finishAsyncForOf(t2, closer, SourceFlow.normal(), continuation);
                     } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
-                        finishAsyncForOf(t2, generator, flow, continuation);
+                        finishAsyncForOf(t2, closer, flow, continuation);
                     } else {
-                        runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
+                        runAsyncForOfIteration(t2, generator, closer, env, body, bind, continuation);
                     }
                 });
             });
@@ -3145,8 +3685,16 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runForOfIteration(
-                                            resumed, loop, env, items, index + 1, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                        } else {
+                                            runForOfIteration(
+                                                    resumed, loop, env, items, index + 1,
+                                                    continuation);
+                                        }
+                                    });
                         }
                     });
         }
@@ -3197,8 +3745,16 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runForOfDestructureIteration(
-                                            resumed, loop, env, items, index + 1, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                        } else {
+                                            runForOfDestructureIteration(
+                                                    resumed, loop, env, items, index + 1,
+                                                    continuation);
+                                        }
+                                    });
                         }
                     });
         }
@@ -5527,6 +6083,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethodRaw(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("tear_down")) {
+                throw new SecurityException(
+                        "actor tear_down is a runtime-only lifecycle hook, not a callable method");
+            }
             if (args.size() != method.parameters().size()) {
                 throw new IllegalArgumentException(
                         "method " + method.name() + " arity mismatch");
@@ -5637,6 +6198,13 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayDeque<Ast.Expr> deferred,
                 boolean inheritedTailBarrier) {
+            // Defense in depth: source can reach this evaluator through host
+            // adapters that do not run the normal TypeChecker on every call.
+            // Never silently ignore an unlowered scoped resource statement.
+            if (stmt instanceof Ast.UsingBorrowStmt) {
+                throw new IllegalStateException(
+                        "using request.borrow() as view is not executable without checked loan cleanup");
+            }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }
@@ -5724,6 +6292,11 @@ public final class OresEvalRootNode extends RootNode {
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                 return;
+            }
+            if (stmt instanceof Ast.TaskScopeStmt) {
+                throw new IllegalStateException(
+                        "structured Task scope reached synchronous source execution; "
+                                + "suspension scan/lowering invariant violated");
             }
             if (stmt instanceof Ast.BreakStmt) throw new BreakSignal();
             if (stmt instanceof Ast.ContinueStmt) throw new ContinueSignal();
@@ -7020,6 +7593,13 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args, externalConstruction);
             }
+            if (expr instanceof Ast.TaskExpr task) {
+                if (task.domain() == Ast.ExecutionDomain.GPU) {
+                    throw new IllegalStateException(
+                            "gpu task has no physical device provider on this backend; no implicit CPU fallback");
+                }
+                return startSourceBlockTask(task, env);
+            }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
                 if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
@@ -7212,95 +7792,91 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof FileSystemFacade fs) {
                 return switch (name) {
-                    case "read_text" -> (Invokable) fs::readText;
-                    case "read_text_async" -> (Invokable) args -> {
+                    case "read_text", "read_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.read_text_async", () -> fs.readText(values));
+                                "fs." + name, () -> fs.readText(values));
                     };
-                    case "write_text" -> (Invokable) fs::writeText;
-                    case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
-                    case "write_text_async" -> (Invokable) args -> {
+                    case "write_text", "write_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.write_text_async", () -> fs.writeText(values));
+                                "fs." + name, () -> fs.writeText(values));
                     };
-                    case "append_text" -> (Invokable) fs::appendText;
-                    case "append_text_async" -> (Invokable) args -> {
+                    case "write_text_atomic", "write_text_atomic_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.append_text_async", () -> fs.appendText(values));
+                                "fs." + name, () -> fs.writeTextAtomic(values));
                     };
-                    case "list_dir" -> (Invokable) fs::listDir;
-                    case "is_dir" -> (Invokable) fs::isDir;
-                    case "is_symlink" -> (Invokable) fs::isSymlink;
-                    case "exists" -> (Invokable) fs::exists;
-                    case "exists_async" -> (Invokable) args -> {
+                    case "append_text", "append_text_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
+                                "fs." + name, () -> fs.appendText(values));
+                    };
+                    case "list_dir", "list_dir_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.exists_async", () -> fs.exists(values));
+                                "fs." + name, () -> fs.listDir(values));
                     };
-                    case "remove" -> (Invokable) fs::remove;
-                    case "remove_async" -> (Invokable) args -> {
+                    case "is_dir", "is_dir_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.isDir(values));
+                    };
+                    case "is_symlink", "is_symlink_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.isSymlink(values));
+                    };
+                    case "exists", "exists_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.exists(values));
+                    };
+                    case "remove", "remove_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.remove_async", () -> fs.remove(values));
+                                "fs." + name, () -> fs.remove(values));
                     };
-                    case "mkdir_all" -> (Invokable) fs::mkdirAll;
-                    case "mkdir_all_async" -> (Invokable) args -> {
+                    case "mkdir_all", "mkdir_all_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.mkdir_all_async", () -> fs.mkdirAll(values));
+                                "fs." + name, () -> fs.mkdirAll(values));
                     };
                     default -> throw new IllegalArgumentException("unknown filesystem member " + name);
                 };
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
-                    case "connect" -> (Invokable) network::connect;
-                    case "connect_async" -> (Invokable) args -> {
-                        requireTwo(args, "network.connect_async");
+                    case "connect", "connect_blocking" -> (Invokable) args -> {
+                        requireTwo(args, "network." + name);
                         String host = requireString(args.get(0), "host");
                         if (!(args.get(1) instanceof Number port)) throw new IllegalArgumentException("port must be an integer");
                         List<Object> values = List.of(host, port.intValue());
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "network.connect_async", () -> network.connect(values));
+                                "network." + name, () -> network.connect(values));
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
                 return switch (name) {
-                    case "read_line_async" -> (Invokable) args -> {
-                        requireZero(args, "socket.read_line_async");
+                    case "read_line", "read_line_blocking" -> (Invokable) args -> {
+                        requireZero(args, "socket." + name);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.read_line_async", () -> {
+                                "socket." + name, () -> {
                                     String value = socket.readLine();
                                     return new OptionValue(value != null, value);
                                 });
                     };
-                    case "write_text_async" -> (Invokable) args -> {
-                        String value = requireStringArg(args, "socket.write_text_async");
+                    case "write_text", "write_text_blocking" -> (Invokable) args -> {
+                        String value = requireStringArg(args, "socket." + name);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.write_text_async", () -> { socket.writeText(value); return null; });
+                                "socket." + name, () -> { socket.writeText(value); return null; });
                     };
-                    case "close_async" -> (Invokable) args -> {
-                        requireZero(args, "socket.close_async");
-                        return context.nativeIo().submitClose(context, () -> { socket.close(); return null; });
-                    };
-                    case "read_line" -> (Invokable) args -> {
-                        requireZero(args, "network.socket.read_line");
-                        String value = socket.readLine();
-                        return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
-                    };
-                    case "write_text" -> (Invokable) args -> {
-                        socket.writeText(requireStringArg(args, "network.socket.write_text"));
-                        return null;
-                    };
-                    case "close" -> (Invokable) args -> {
-                        requireZero(args, "network.socket.close");
-                        socket.close();
-                        return null;
+                    case "close", "close_blocking" -> (Invokable) args -> {
+                        requireZero(args, "socket." + name);
+                        return context.nativeIo().submitClose(
+                                context, "socket." + name, () -> { socket.close(); return null; });
                     };
                     default -> throw new IllegalArgumentException("unknown network socket member " + name);
                 };
@@ -7414,6 +7990,75 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
                 };
             }
+            if (receiver instanceof OutboundHttpRequest.Response response) {
+                return switch (name) {
+                    case "status" -> response.status();
+                    case "header_count" -> response.headerCount();
+                    case "header_name_at" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number index)
+                                || !isIntegral(index)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientResponse.header_name_at requires one integral index");
+                        }
+                        long value = index.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException("HTTP header index is outside int range");
+                        }
+                        return response.headerNameAt((int) value);
+                    };
+                    case "header_value_at" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number index)
+                                || !isIntegral(index)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientResponse.header_value_at requires one integral index");
+                        }
+                        long value = index.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException("HTTP header index is outside int range");
+                        }
+                        return response.headerValueAt((int) value);
+                    };
+                    case "header_values" -> (Invokable) args ->
+                            response.headerValues(
+                                    requireStringArg(
+                                            args,
+                                            "HttpClientResponse.header_values"));
+                    case "take_body" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientResponse.take_body");
+                        return response.takeBody();
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientResponse.close");
+                        return response.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown HttpClientResponse member " + name);
+                };
+            }
+            if (receiver instanceof OutboundHttpRequest.Body body) {
+                return switch (name) {
+                    case "closed" -> body.closed();
+                    case "read_chunk" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number limit)
+                                || !isIntegral(limit)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientBody.read_chunk requires one integral byte limit");
+                        }
+                        long value = limit.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException(
+                                    "HTTP body read limit is outside int range");
+                        }
+                        return body.readChunk((int) value);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientBody.close");
+                        return body.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown HttpClientBody member " + name);
+                };
+            }
             if (receiver instanceof HttpFacade http) {
                 return switch (name) {
                     case "handler" -> (Invokable) args -> {
@@ -7452,17 +8097,26 @@ public final class OresEvalRootNode extends RootNode {
                         return HttpResponseDraft.text(body, (int) code,
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
-                    case "get_text" -> (Invokable) http::getText;
-                    case "get_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.get_text_async", () -> http.getText(values));
+                    case "request" -> (Invokable) args -> {
+                        if (args.size() != 3 || !(args.get(2) instanceof List<?> headers)) {
+                            throw new IllegalArgumentException(
+                                    "http.request requires method, URL and List<(String,String)> headers");
+                        }
+                        return OutboundHttpRequest.request(
+                                context,
+                                requireString(args.get(0), "HTTP method"),
+                                requireString(args.get(1), "HTTP URL"),
+                                headers);
                     };
-                    case "post_text" -> (Invokable) http::postText;
-                    case "post_text_async" -> (Invokable) args -> {
+                    case "get_text", "get_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.post_text_async", () -> http.postText(values));
+                                "http." + name, () -> http.getText(values));
+                    };
+                    case "post_text", "post_text_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
+                                "http." + name, () -> http.postText(values));
                     };
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
@@ -7861,7 +8515,13 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
             }
-            if (value instanceof Number || value instanceof Boolean || value instanceof String
+            if (value instanceof String text) {
+                // A JVM String can contain unpaired UTF-16 surrogates. Do not
+                // admit such host values as Oreslang Unicode strings.
+                Utf8StringAbi.encode(text);
+                return text;
+            }
+            if (value instanceof Number || value instanceof Boolean
                     || value instanceof Character || value instanceof OresFuture<?>) {
                 return value;
             }
@@ -7870,6 +8530,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object unwrapHostArgument(Object value) {
             if (value instanceof HostObjectFacade host) return host.value();
+            if (value instanceof String text) {
+                Utf8StringAbi.encode(text);
+                return text;
+            }
             if (value instanceof Map<?, ?> map) {
                 // Never hand Java a mutable alias to anonymous struct storage.
                 // A host call may observe the snapshot, but cannot add/remove
@@ -9132,6 +9796,10 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
+            if (name.equals("HttpClientResponse"))
+                return value instanceof OutboundHttpRequest.Response;
+            if (name.equals("HttpClientBody"))
+                return value instanceof OutboundHttpRequest.Body;
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
@@ -9161,6 +9829,8 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
+            if (value instanceof OutboundHttpRequest.Response) return "HttpClientResponse";
+            if (value instanceof OutboundHttpRequest.Body) return "HttpClientBody";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
             if (value instanceof Boolean) return "bool";
@@ -9434,6 +10104,9 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                // An implicit VM fast-throw exception may have suppression disabled,
+                // which would discard source-boundary diagnostics after warm-up.
+                if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();
@@ -9701,6 +10374,9 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class Env {
         private static final Object MISSING = new Object();
+        private static final Object MOVED_TASK_CAPTURE = new Object();
+        private static final AtomicLong NEXT_SCOPE_EPOCH = new AtomicLong();
+        private final long scopeEpoch;
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Ast.ClassDecl accessClass;
@@ -9710,6 +10386,9 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Logical structured scope follows the source continuation and captured
+        // child Env across carrier migration; it is never a ThreadLocal token.
+        private TaskScope structuredTaskScope;
         private Env(Env parent) {
             this(
                     parent,
@@ -9755,12 +10434,20 @@ public final class OresEvalRootNode extends RootNode {
                 OresObject constructingObject,
                 String lexicalModule,
                 Ast.ClassDecl lexicalContainerClass) {
+            long nextEpoch = NEXT_SCOPE_EPOCH.incrementAndGet();
+            if (nextEpoch <= 0) {
+                throw new IllegalStateException(
+                        "runtime lexical scope epoch space exhausted");
+            }
+            this.scopeEpoch = nextEpoch;
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
+            this.structuredTaskScope =
+                    parent == null ? null : parent.structuredTaskScope;
         }
 
         private Env lexicalBoundaryOnly() {
@@ -9769,6 +10456,7 @@ public final class OresEvalRootNode extends RootNode {
             return new Env(null, true, null, null, lexicalModule,
                     lexicalContainerClass);
         }
+        private long scopeEpoch() { return scopeEpoch; }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private Ast.ClassDecl accessClass() { return accessClass; }
         private Ast.ClassDecl lexicalContainerClass() { return lexicalContainerClass; }
@@ -9777,6 +10465,12 @@ public final class OresEvalRootNode extends RootNode {
             return lexicalModule != null && !Parser.ROOT_MODULE.equals(lexicalModule);
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
+        private Env withStructuredTaskScope(TaskScope scope) {
+            Env child = new Env(this);
+            child.structuredTaskScope = Objects.requireNonNull(scope, "structured Task scope");
+            return child;
+        }
+        private TaskScope structuredTaskScope() { return structuredTaskScope; }
         private void define(String name, Object value, Ast.BindingKind kind) {
             define(name, value, kind, null);
         }
@@ -9805,7 +10499,17 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = lookupSlot(name);
             return slot == null ? null : slot.staticClassView;
         }
-        private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private Object lookup(String name) {
+            Slot slot = slots.get(name);
+            if (slot != null) {
+                if (slot.value == MOVED_TASK_CAPTURE) {
+                    throw new IllegalStateException(
+                            "binding '" + name + "' was moved into an eager Task");
+                }
+                return slot.value;
+            }
+            return parent == null ? MISSING : parent.lookup(name);
+        }
         private void assign(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot != null) {
@@ -9823,9 +10527,155 @@ public final class OresEvalRootNode extends RootNode {
                     accessClass,
                     null,
                     lexicalModule);
+            cp.structuredTaskScope = structuredTaskScope;
             cp.slots.putAll(slots);
             return cp;
         }
+
+        private record MovedTaskSlot(Slot slot, Object value) { }
+
+        private static final class DetachedTaskSnapshot {
+            private final Env environment;
+            private final ArrayList<MovedTaskSlot> moved;
+            private boolean resolved;
+
+            private DetachedTaskSnapshot(
+                    Env environment,
+                    ArrayList<MovedTaskSlot> moved) {
+                this.environment =
+                        Objects.requireNonNull(environment, "detached Task environment");
+                this.moved = Objects.requireNonNull(moved, "moved Task slots");
+            }
+
+            private Env environment() {
+                return environment;
+            }
+
+            private void commit() {
+                if (resolved) {
+                    throw new IllegalStateException(
+                            "Task capture transfer was already resolved");
+                }
+                resolved = true;
+                moved.clear();
+            }
+
+            private void rollback() {
+                if (resolved) return;
+                for (int i = moved.size() - 1; i >= 0; i--) {
+                    MovedTaskSlot movedSlot = moved.get(i);
+                    if (movedSlot.slot().value != MOVED_TASK_CAPTURE) {
+                        throw new IllegalStateException(
+                                "Task capture source changed before admission rollback");
+                    }
+                    movedSlot.slot().value = movedSlot.value();
+                }
+                moved.clear();
+                resolved = true;
+            }
+        }
+
+        private DetachedTaskSnapshot detachedTaskSnapshot(
+                Map<String, Ast.TaskCaptureTransfer> admissions,
+                long expectedParentScopeEpoch) {
+            Objects.requireNonNull(admissions, "Task capture admissions");
+            if (expectedParentScopeEpoch <= 0
+                    || expectedParentScopeEpoch != scopeEpoch) {
+                throw new IllegalStateException(
+                        "Task capture transfer used a stale parent scope epoch");
+            }
+            preflightTaskCaptures(admissions);
+            ArrayList<MovedTaskSlot> moved = new ArrayList<>();
+            try {
+                Env detached =
+                        detachedTaskSnapshotUnchecked(admissions, moved);
+                return new DetachedTaskSnapshot(detached, moved);
+            } catch (RuntimeException | Error failure) {
+                // Snapshot materialization is part of the submission
+                // transaction. Even an allocation/runtime failure after the
+                // first MOVE must restore every already-poisoned parent slot.
+                for (int i = moved.size() - 1; i >= 0; i--) {
+                    MovedTaskSlot movedSlot = moved.get(i);
+                    if (movedSlot.slot().value == MOVED_TASK_CAPTURE) {
+                        movedSlot.slot().value = movedSlot.value();
+                    }
+                }
+                moved.clear();
+                throw failure;
+            }
+        }
+
+        private void preflightTaskCaptures(
+                Map<String, Ast.TaskCaptureTransfer> admissions) {
+            for (Map.Entry<String, Ast.TaskCaptureTransfer> entry
+                    : admissions.entrySet()) {
+                if (entry.getValue() == null) {
+                    throw new IllegalStateException(
+                            "Task capture admission has no transfer mode for '"
+                                    + entry.getKey() + "'");
+                }
+                Slot source = lookupSlot(entry.getKey());
+                if (source == null || source.value == MISSING) {
+                    throw new IllegalStateException(
+                            "ownership-checked Task capture '"
+                                    + entry.getKey()
+                                    + "' has no initialized runtime binding");
+                }
+                if (source.value == MOVED_TASK_CAPTURE) {
+                    throw new IllegalStateException(
+                            "ownership-checked Task capture '"
+                                    + entry.getKey()
+                                    + "' was already moved");
+                }
+            }
+        }
+
+        private Env detachedTaskSnapshotUnchecked(
+                Map<String, Ast.TaskCaptureTransfer> admissions,
+                ArrayList<MovedTaskSlot> moved) {
+            LinkedHashMap<String, Ast.TaskCaptureTransfer> unresolvedParents =
+                    new LinkedHashMap<>(admissions);
+            for (String localName : slots.keySet()) {
+                unresolvedParents.remove(localName);
+            }
+
+            Env cp = new Env(
+                    parent == null
+                            ? null
+                            : parent.detachedTaskSnapshotUnchecked(
+                                    unresolvedParents, moved),
+                    descendantsNonLexical,
+                    accessClass,
+                    null,
+                    lexicalModule);
+            cp.structuredTaskScope = structuredTaskScope;
+
+            for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                Ast.TaskCaptureTransfer transfer =
+                        admissions.get(entry.getKey());
+                if (transfer == null) continue;
+                Slot source = entry.getValue();
+                Object captured = source.value;
+
+                // COPY types are statically proven immutable/synchronized
+                // handles. MOVE preserves the exact runtime object/authority
+                // identity and poisons the parent slot before the child can
+                // run. No recursive cloning is used for ownership transfer.
+                if (transfer == Ast.TaskCaptureTransfer.MOVE) {
+                    moved.add(new MovedTaskSlot(source, captured));
+                    source.value = MOVED_TASK_CAPTURE;
+                }
+
+                cp.slots.put(
+                        entry.getKey(),
+                        new Slot(
+                                captured,
+                                source.kind,
+                                source.staticClassView));
+            }
+            return cp;
+        }
+
         private boolean hasLiveMutexGuards() {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) {
@@ -9882,31 +10732,76 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void releaseMutexGuards(boolean failed) {
-            Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
+            Set<Object> seen = java.util.Collections.newSetFromMap(
+                    new java.util.IdentityHashMap<>());
+            ArrayList<Throwable> releaseErrors = new ArrayList<>();
+            for (Slot slot : slots.values()) {
+                try {
+                    releaseMutexGuardsInValue(slot.value, failed, seen, releaseErrors);
+                } catch (RuntimeException | Error traversalFailure) {
+                    // A broken aggregate traversal must not prevent another
+                    // independent lexical slot's guards from being retired.
+                    releaseErrors.add(traversalFailure);
+                }
+            }
+            if (releaseErrors.isEmpty()) return;
+
+            // Panic/host fatal errors must not be downgraded behind an earlier
+            // ordinary release error. Keep every remaining release failure
+            // separately as suppressed diagnostics.
+            Throwable primary = releaseErrors.get(0);
+            for (Throwable failure : releaseErrors) {
+                if ((failure instanceof OresPanic || failure instanceof Error)
+                        && !(primary instanceof OresPanic || primary instanceof Error)) {
+                    primary = failure;
+                    break;
+                }
+            }
+            for (Throwable failure : releaseErrors) {
+                if (failure != primary) primary.addSuppressed(failure);
+            }
+            if (primary instanceof RuntimeException runtime) throw runtime;
+            if (primary instanceof Error error) throw error;
+            throw new IllegalStateException("unexpected checked lock cleanup failure", primary);
         }
 
-        private static void releaseMutexGuardsInValue(Object value, boolean failed, Set<Object> seen) {
+        private static void releaseMutexGuardsInValue(
+                Object value, boolean failed, Set<Object> seen,
+                ArrayList<Throwable> releaseErrors) {
             if (value == null) return;
             if (value instanceof OresMutex.Guard<?> guard) {
+                // Even a throwing release must never be attempted twice when
+                // another field/Option/list aliases the same guard.
+                if (!seen.add(guard)) return;
                 if (!guard.released()) {
-                    if (failed) guard.fail();
-                    else guard.release();
+                    try {
+                        if (failed) guard.fail();
+                        else guard.release();
+                    } catch (RuntimeException | Error releaseFailure) {
+                        releaseErrors.add(releaseFailure);
+                    }
                 }
                 return;
             }
             if (!seen.add(value)) return;
 
             if (value instanceof OptionValue option) {
-                if (option.present()) releaseMutexGuardsInValue(option.value(), failed, seen);
+                if (option.present()) {
+                    releaseMutexGuardsInValue(
+                            option.value(), failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof ResultValue result) {
-                releaseMutexGuardsInValue(result.value(), failed, seen);
+                releaseMutexGuardsInValue(
+                        result.value(), failed, seen, releaseErrors);
                 return;
             }
             if (value instanceof GeneratorRuntime.Step<?> step) {
-                if (!step.done()) releaseMutexGuardsInValue(step.value(), failed, seen);
+                if (!step.done()) {
+                    releaseMutexGuardsInValue(
+                            step.value(), failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof OresMutex.GuardFuture<?> future) {
@@ -9915,33 +10810,46 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 if (!future.isCancelled() && !future.isCompletedExceptionally()) {
-                    releaseMutexGuardsInValue(future.getNow(null), failed, seen);
+                    releaseMutexGuardsInValue(
+                            future.getNow(null), failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof OresObject object) {
                 for (Object field : object.fields.values()) {
-                    releaseMutexGuardsInValue(field, failed, seen);
+                    releaseMutexGuardsInValue(
+                            field, failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof List<?> list) {
-                for (Object item : list) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : list) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof Set<?> set) {
-                for (Object item : set) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : set) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    releaseMutexGuardsInValue(entry.getKey(), failed, seen);
-                    releaseMutexGuardsInValue(entry.getValue(), failed, seen);
+                    releaseMutexGuardsInValue(
+                            entry.getKey(), failed, seen, releaseErrors);
+                    releaseMutexGuardsInValue(
+                            entry.getValue(), failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof Object[] array) {
-                for (Object item : array) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : array) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
             }
         }
     }
@@ -10344,7 +11252,8 @@ public final class OresEvalRootNode extends RootNode {
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
-    private static final class OresPanic extends RuntimeException {
+    private static final class OresPanic extends RuntimeException
+            implements dev.oreslang.runtime.UntrappableTaskFailure {
         private OresPanic(String message) { super(message, null, true, false); }
     }
     private static final class OresCastError extends RuntimeException {
@@ -10442,11 +11351,28 @@ public final class OresEvalRootNode extends RootNode {
 
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args) {
-            return emitStdout(context, args, "stdio.print", false);
+            return emitConsole(context, args, "stdio.print", false);
         }
         private Object println(List<Object> args) {
-            return emitStdout(context, args, "stdio.println", true);
+            return emitConsole(context, args, "stdio.println", true);
         }
+    }
+    private static Object emitConsole(OresContext context, List<Object> args, String operation, boolean newline) {
+        context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
+        if (args.isEmpty() || args.size() > 32)
+            throw new IllegalArgumentException(operation + " requires 1 to 32 values");
+        // The evaluator has already evaluated every argument in source order.
+        // Render the complete record before publishing one output operation.
+        StringBuilder text = new StringBuilder();
+        for (Object argument : args) text.append(CycleSafeDisplay.render(argument));
+        long started = dev.oreslang.runtime.CorePerf.start();
+        try {
+            if (newline) context.output().println(text);
+            else { context.output().print(text); context.output().flush(); }
+        } finally {
+            dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
+        }
+        return null;
     }
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);

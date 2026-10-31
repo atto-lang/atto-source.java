@@ -48,6 +48,42 @@ final class StringTransformTest {
     }
 
     @Test
+    void embeddedNulIsDataAcrossConcatReplaceAndStdout() {
+        String nul = String.valueOf((char) 0);
+        assertEquals("A" + nul + "B|AXB|A" + nul + "BC" + nul + "D", run("""
+                pub routine main(): void {
+                  val string value = "A\\u0000B";
+                  stdio.stdout.write(value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(value.replace_literal("\\u0000", "X"));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(value + "C\\u0000D");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void decodedUnpairedSurrogatesAreRejectedBeforeUtf8Boundary() {
+        String high = "\\uD800";
+        String low = "\\uDC00";
+        for (String escaped : new String[] {high, low}) {
+            IllegalArgumentException quoted = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("pub routine main(): void { val string value = \"" + escaped
+                            + "\"; return; }"));
+            assertTrue(quoted.getMessage().contains("unpaired Unicode surrogate"));
+
+            IllegalArgumentException template = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("pub routine main(): void { val string value = `" + escaped
+                            + "`; return; }"));
+            assertTrue(template.getMessage().contains("unpaired Unicode surrogate"));
+        }
+
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub routine main(): void { val string value = \"\\uD83D\\uDE00\"; return; }"));
+    }
+
+    @Test
     void emptyNeedleIsRejected() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""

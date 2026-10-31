@@ -8,7 +8,7 @@ package dev.oreslang.runtime;
  * independently of lease accounting.</p>
  */
 abstract sealed class ActorShardBacking
-        permits ActorShardColumns, ActorDenseIndexColumns {
+        permits ActorShardColumns, ActorDenseIndexColumns, ActorProxyRequestSlab {
     abstract void revokeBackingFromLease();
     abstract boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor);
     abstract boolean isPrivateBacked();
