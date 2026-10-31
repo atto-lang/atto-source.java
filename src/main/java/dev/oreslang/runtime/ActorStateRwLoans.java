@@ -129,6 +129,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 return OresFuture.failed(new IllegalStateException(
                         "actor state RW loans closed"));
             }
+            if (retirementQuarantineCause != null) {
+                return OresFuture.failed(new IllegalStateException(
+                        "actor state RW loans quarantined after failed revocation",
+                        retirementQuarantineCause));
+            }
             if (boundAllocation == null) {
                 boundAllocation = execution.allocationDomain();
             } else if (!boundAllocation.equals(execution.allocationDomain())) {
@@ -253,7 +258,10 @@ public final class ActorStateRwLoans implements AutoCloseable {
      * every later reader until the current readers retire and the writer runs.
      */
     private void promoteLocked() {
-        if (closed || writer != null) return;
+        // An observed cancellation-revoker failure means the actor's
+        // physical state is no longer trustworthy. Never grant another
+        // queued loan while the arena is quarantined.
+        if (closed || retirementQuarantineCause != null || writer != null) return;
 
         while (!pending.isEmpty()) {
             Pending head = pending.peekFirst();
@@ -406,7 +414,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
             Objects.requireNonNull(execution, "execution");
             Authority candidate = authority(execution);
             synchronized (monitor) {
-                if (closed || released || !authority.equals(candidate)) return false;
+                if (closed || retirementQuarantineCause != null
+                        || released || !authority.equals(candidate)) return false;
                 return access == Access.WRITE
                         ? writer == this
                         : readers.get(authority) == this;
@@ -431,7 +440,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 // A previously released handle is not proof that this same
                 // execution has no *new* active or queued loan. Consult the
                 // current ledger as well as the physical release receipt.
-                return released && !reservedExecutions.contains(authority.id())
+                return released && retirementQuarantineCause == null
+                        && !reservedExecutions.contains(authority.id())
                         && !reservedHandles.contains(authority.handle())
                         && !reservedSlots.contains(authority.handle().slot());
             }
