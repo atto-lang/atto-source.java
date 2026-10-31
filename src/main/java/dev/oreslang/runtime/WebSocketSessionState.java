@@ -101,6 +101,14 @@ public final class WebSocketSessionState {
         return queuedUserBytes;
     }
 
+    /**
+     * An actor ownership handoff must not inherit USER messages or an
+     * incomplete fragmented message from the former owner.
+     */
+    public synchronized boolean hasPendingUserState() {
+        return !userMessages.isEmpty() || assembler.fragmentedMessagePending();
+    }
+
     public synchronized Optional<WebSocketFrameCodec.Message> pollUserMessage() {
         WebSocketFrameCodec.Message message = userMessages.pollFirst();
         if (message != null) queuedUserBytes -= message.payloadLength();
