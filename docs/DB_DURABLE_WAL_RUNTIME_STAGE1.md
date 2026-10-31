@@ -136,3 +136,40 @@ proof. Executable exact-head command:
 A real runner must then validate actor context lifecycle, full Maven/Graal,
 native guest lowering, and filesystem fault/crash injection. No DB durable
 commit ACK is implemented.
+
+## Stage 1.4 — trusted issuance and post-callback physical retirement
+
+WAL grant issuance is now **DENY ALL by default**. The internal
+`DbWalTrustedGrantRegistry.HostTenantAdmission` policy must be supplied
+by a trusted host with an authenticated actor-to-tenant/shard mapping;
+production `OresContext` currently installs NO permitting policy. The
+new host-only test injects an explicit synthetic permit and verifies that
+the same actor cannot issue an unapproved tenant/shard grant. This does
+NOT claim a production tenant identity provider or usable guest database API.
+
+A shard grant must bind once to the exact `DbDurableWalFile` reference
+created during trusted open; a second or drained binding fails closed.
+The grant can retire only if the *same bound file* reports closed and
+`DbWalAuthorityLifecycle` has reached CLOSED. Most importantly, the
+`DbDurableWalAuthority.revoke` path no longer retires the grant in its
+file-close callable. Instead it registers an internal
+`AsyncNativeIo.submitControlWithRetirementHook`. That hook runs only
+after the owning I/O worker has finished the callable, completion
+subscribers have drained, and the worker's physical operation loan has
+retired. An unadmitted or cancelled-before-start CONTROL close receives
+no physical-retirement callback and must stay fenced/quarantined.
+
+`DbWalAsyncAdmissionTest` now exercises a blocked terminal subscriber
+and verifies that physical close retirement cannot overtake it, as well
+as no forged retirement hook for a rejected CONTROL task. The shard
+registry test checks real file identity binding, refuses early
+retirement with an open file, then tests a closed-file lifecycle.
+
+Remaining P0: runtime installation of authenticated tenant policy;
+directory-fd/race-free filesystem validation; binding WAL frame
+tenant/shard and checksum to grant; closing/discarded-open cleanup and
+a per-grant open-admission reservation; guest-language lowering and
+real WAL durability/recovery. **Exact-head Maven/JDK25, Java host tests,
+Graal Native Image and compiled .ores guest tests are NOT EXECUTED.**
+Suggested first runner gate:
+`mvn -Dtest=DbWalTrustedGrantRegistryTest,DbWalAsyncAdmissionTest,DbWalAuthorityLifecycleTest,DbDurableWalFileTest test`.
