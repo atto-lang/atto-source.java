@@ -23,9 +23,13 @@ across different package instances; define module remains a different scope.
 
 The runner passes an exact closed source map through
 IncrementalCompiler.compilePinned, PackageNamespaceLinker, TypeChecker and
-OwnershipChecker, then runs all checked source units in a Graal Context.
-The package graph adds all member file dependencies for initialization and ABI
-invalidations. The host registers each public function's EXACT source ID,
+OwnershipChecker, then compiles and links the full verified inventory in a Graal Context,
+but initializes **only the entry and its transitive verified dependencies**.
+The dependency-first SCC plan is validated for complete inventory coverage,
+duplicate IDs, dangling edges and wrong ordering before any guest initializer
+runs. Other packages and unimported namespaces remain validated but must not
+execute startup hooks. The package graph adds imported namespace member files
+to the entry dependency closure for initialization and ABI invalidations. The host registers each public function's EXACT source ID,
 name and arity. Runtime dispatch validates that the selected function is a
 public nonactor fnc in the original file-root; it does not use named module
 lookup, copy or move function bodies, or resolve a same-spelling global name.
@@ -39,7 +43,12 @@ for trusted compiler hosts or an isolated conformance gate, not as a public
 filesystem package resolver.
 
 Initial accepted exports: file-root public, synchronous, non-generic,
-non-actor, nontrapped functions with explicit int-only params and int return.
+non-actor, nontrapped functions with explicit **int/bool scalar params and
+int/bool scalar returns**, checked without implicit conversions. Exact verified
+provider-to-provider calls across physical files in the same
+(PackageInstanceId, NamespaceName) use closed name/arity slots in the type,
+ownership and runtime passes. A missing, private, wrong-arity or cross-package
+sibling is not resolved by filesystem or global-name fallback.
 Private exports, named modules, aliases, classes, actors, type aliases,
 pub[file]/pub[pkg], generic overload identity, effects, suspensions, classes,
 deep ownership and re-exports require later checked interface lowering.
@@ -77,6 +86,32 @@ host's lockfile, or integrate zed-pkg's signed builds; a local attacker who
 controls BOTH package bytes and the host-provided expected hashes is outside
 this verifier's trust model. Ordinary CLI LinkedProgramRunner still rejects
 pkg: namespace imports without a validated package resolver.
+
+## Reachable-only startup verification (source-only, not a Graal guest run)
+
+The standalone JDK-only fixture
+`src/test/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlanSelfTest.java`
+runs with the exact production `PinnedNamespaceInitializationPlan.java`
+source, requiring no Maven, Graal, filesystem package discovery, or tokens:
+
+```sh
+mkdir -p /tmp/ores-namespace-init-classes
+javac -Xlint:all -Werror -d /tmp/ores-namespace-init-classes \
+  src/main/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlan.java \
+  src/test/java/dev/oreslang/runtime/PinnedNamespaceInitializationPlanSelfTest.java
+java -cp /tmp/ores-namespace-init-classes \
+  dev.oreslang.runtime.PinnedNamespaceInitializationPlanSelfTest
+```
+
+Acceptance: `PINNED_NAMESPACE_INIT_SOURCE_ONLY_PASS checks=13` and a zero
+exit status. These are real Java tests of the planner, **not GraalVM
+compilation or guest execution**. The focused namespace GitHub workflow
+executes this before Maven and separately requires the compiler-backed
+`PinnedNamespaceSharedCorpusTest` exit-43/53 guest results.
+The shared-corpus JUnit tests also assert that the 43 path initializes
+only the six imported providers and entry (seven units), whereas the 53
+path initializes all ten foo providers and entry (eleven units); the
+unrelated `other@1` collision package must remain dormant.
 
 ## Required follow-up and acceptance
 
