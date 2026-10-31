@@ -483,6 +483,87 @@ final class WebSocketLoopbackListenerTest {
     }
 
     @Test
+    void undeliveredActorTicketRetainsGenerationAndRejectsHostDelivery()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var runtime = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        runtime, ActorRuntime.ActorId.create(), 1,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var successor = new ActorRuntime.ActorAddress(
+                        runtime, ActorRuntime.ActorId.create(), 2,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                sendMaskedText(client, "ticket");
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        connection.readForActorAsync(handle, tenant, owner)
+                                .get(3, TimeUnit.SECONDS).kind());
+                var ticket = connection.dequeueHostActorTicket(handle, tenant, owner);
+                assertNotNull(ticket);
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.transferActorHost(
+                                handle, tenant, owner, successor, () -> true));
+                assertThrows(SecurityException.class, () ->
+                        ticket.deliverOnActor(message ->
+                                fail("host worker forged an actor mailbox turn")));
+                ticket.close(); // Scheduler cancellation and rejection are idempotent.
+                var next = connection.transferActorHost(
+                        handle, tenant, owner, successor, () -> true);
+                assertThrows(SecurityException.class,
+                        () -> connection.acquireActorLease(handle, tenant, owner));
+                try (var loan = connection.acquireActorLease(next, tenant, successor)) {
+                    assertTrue(loan.mayDeliver(next, tenant, successor));
+                }
+                connection.close();
+            }
+        }
+    }
+
+    @Test
+    void actorStopDuringPendingTicketRevokesDeliveryWithoutClaimingWorkerReceipt()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                var done = new OresFuture<Void>();
+                connection.watchHostActorDone(done, owner);
+                sendMaskedText(client, "queued");
+                connection.readForActorAsync(handle, tenant, owner)
+                        .get(3, TimeUnit.SECONDS);
+                var ticket = connection.dequeueHostActorTicket(handle, tenant, owner);
+                assertNotNull(ticket);
+                assertTrue(done.completeFromRuntime(null));
+                assertThrows(SecurityException.class, () ->
+                        ticket.deliverOnActor(message ->
+                                fail("stopped actor consumed a USER message")));
+                ticket.close();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.activeConnectionCount() != 0
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertEquals(0, listener.activeConnectionCount());
+            }
+        }
+    }
+
+    @Test
     void actorReadDeliveryAndWriteRequireHandleAndDrainBeforeTransfer()
             throws Exception {
         int port = unusedPort();
