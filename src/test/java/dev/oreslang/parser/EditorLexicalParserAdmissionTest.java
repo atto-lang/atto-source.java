@@ -30,7 +30,18 @@ final class EditorLexicalParserAdmissionTest {
     // e9dbf3b6fad5562b7ca6df631ab3c45f478480ba
     // This is a lexer-only inventory; parsing and lowering are separate gates.
     private static final List<String> PINNED_RESERVED_WORDS = List.of(
-"yield"
+            "abstract", "actor", "arr", "as", "async", "await", "block", "break",
+            "catch", "cb", "class", "conforms", "const", "continue", "contract", "cpu",
+            "def", "default", "defer", "define", "do", "done", "elif", "else",
+            "elseif", "end", "eq", "extends", "false", "fi", "finally", "fnc",
+            "for", "from", "generator", "gpu", "if", "impl", "implements", "import",
+            "interface", "is", "isoactor", "let", "loop", "match", "matches", "module",
+            "mut", "namespace", "nb", "neq", "new", "nlex", "null", "obj",
+            "of", "over", "panic", "private", "pub", "quantum", "raise", "readch",
+            "recover", "return", "routine", "rt", "select", "self", "shared", "spawn",
+            "static", "stop", "struct", "super", "suspends", "switch", "then", "throw",
+            "trait", "trap", "true", "try", "type", "typeof", "types", "untrusted",
+            "val", "void", "while", "writech", "yield"
     );
 
     @Test
