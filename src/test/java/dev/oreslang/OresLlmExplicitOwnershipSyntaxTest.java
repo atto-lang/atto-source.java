@@ -73,8 +73,11 @@ final class OresLlmExplicitOwnershipSyntaxTest {
     @Test
     void BooleanAndRemainsAllowed() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
-                pub fnc main(): bool {
+                fnc joined(): bool {
                   return true && true;
+                }
+                pub fnc main(): int {
+                  return 42;
                 }
                 """));
     }
