@@ -79,4 +79,24 @@ final class NioOnlyPolicyTest {
             }
         }
     }
+
+    @Test
+    void strictModeRejectsSynchronousHttpBeforeContextOrTransportUse() {
+        String previous = System.getProperty(NioOnlyPolicy.PROPERTY);
+        try {
+            System.setProperty(NioOnlyPolicy.PROPERTY, "nio-only");
+            UnsupportedOperationException failure = assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> NativeIo.httpGetText(
+                            null, "http://127.0.0.1/"));
+            assertTrue(failure.getMessage().contains("http.get"));
+        } finally {
+            if (previous == null) {
+                System.clearProperty(NioOnlyPolicy.PROPERTY);
+            } else {
+                System.setProperty(NioOnlyPolicy.PROPERTY, previous);
+            }
+        }
+    }
+
 }
