@@ -72,3 +72,31 @@ passed against a corresponding local source copy, but exact-head Maven,
 compiler guest, JDK25 and CI runner are **NOT EXECUTED**. There is no
 physical-worker race test of the complete `DbDurableWalAuthority`
 in this stage.
+
+## Stage 1.2: exact physical non-start callback and shutdown ownership
+
+`AsyncNativeIo.submitWithNonStartHook` invokes a trusted, short,
+nonblocking callback *only* when its operation is rejected before admission
+or wins the `ADMITTED -> CANCELLED_BEFORE_START` race during shutdown. A
+worker that has entered `RUNNING` never invokes the callback; only the
+actual I/O worker retires its WAL reservation. This removes a stranded
+capacity/queue-discard reservation without assuming an unknown physical
+write was rolled back. Callback failures quarantine the I/O context.
+
+`DbDurableWalAuthority.appendAndSync` uses this hook to call
+`DbWalAuthorityLifecycle.neverStartedWrite()`, while actual physical
+completion calls `physicalWriteRetired()`. The `openForActor` failure
+path checks if `AsyncNativeIo.register` retained a late resource after
+shutdown and **does not** close that resource before the context-owned
+physical join. This addresses a premature-close race distinct from logical
+future cancellation. `DbWalAsyncAdmissionTest` covers bounded admission,
+queue discard under shutdown interruption, no release of an actually running
+worker, and post-shutdown registered-resource quarantine. The test's
+noncooperative running worker intentionally ignores interruption until an
+explicit release, modelling in-progress kernel I/O.
+
+These are host-only primitives: no source guest authority/ABI, WAL replay,
+parent dirsync, filesystem power-loss or commit ACK. Exact-head full
+Java/JUnit integration and runtime permissions must pass on an executing
+runner before promotion; local state-machine models are not a substitute.
+Command: `mvn -Dtest=DbWalAsyncAdmissionTest,DbWalAuthorityLifecycleTest,DbDurableWalFileTest test`.
