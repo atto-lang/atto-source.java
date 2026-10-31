@@ -8,12 +8,15 @@ on:
       - '.github/workflows/editor-lexer-contract.yml'
   push:
     branches: ['test/editor-lexer-parity-20261031']
+  schedule:
+    - cron: '41 16 * * 5'
 
 permissions:
   contents: read
 
 jobs:
   lexer-and-parser:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -38,3 +41,22 @@ jobs:
           distribution: 'graalvm'
       - name: Run 69 compiler lexical/parser cases
         run: mvn -B -ntp -Dtest=EditorSyntaxLexerFixtureTest test
+
+  private-grammar-drift:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Compare private compiler grammar blobs against reviewed baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:src/main/java/dev/oreslang/parser/Lexer.java)" = bba9e091c0ad1c9b75e0c61e9dd173fcc18a236a ||
+            { echo "::error::Compiler Lexer.java changed; review editor contract and fixtures"; exit 1; }
+          test "$(git rev-parse HEAD:docs/grammar.ebnf)" = 7ecfe82817945a1972cf9ac47df3466efab1822b ||
+            { echo "::error::Compiler EBNF changed; review editor contract and fixtures"; exit 1; }
