@@ -780,6 +780,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                                 "WebSocket delivery requires authenticated actor mailbox turn");
                     }
                     if (!ownerLoan.mayDeliver(handle, tenant, recipient)) return false;
+                    // STOP and structured cancellation are checked by the
+                    // actual actor scheduler before entering guest code.
+                    // This never settles the ticket's physical I/O loan.
+                    runtime.schedulerSafepoint();
+                    if (!ownerLoan.mayDeliver(handle, tenant, recipient)) return false;
                     // Guest execution is outside every ledger/lifecycle lock.
                     // Actor turn ownership and STOP fences belong to ActorRuntime.
                     handler.accept(message);
