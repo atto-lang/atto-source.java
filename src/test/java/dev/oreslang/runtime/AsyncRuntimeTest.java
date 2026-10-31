@@ -56,6 +56,45 @@ final class AsyncRuntimeTest {
     }
 
     @Test
+    void selfCloseFromOwnAsyncCarrierFailsBeforeAdmissionIsRevoked() {
+        AsyncRuntime runtime = new AsyncRuntime();
+        try {
+            OresFuture<Integer> task = runtime.submit(() -> {
+                IllegalStateException denied = assertThrows(
+                        IllegalStateException.class, runtime::close);
+                assertTrue(denied.getMessage().contains("outside its own async carrier"));
+                assertFalse(runtime.isClosed(),
+                        "denied self-close cannot poison the runtime");
+                return 41;
+            });
+            assertEquals(41, AsyncRuntime.await(task));
+            assertEquals(42, AsyncRuntime.await(runtime.submit(() -> 42)),
+                    "runtime must keep accepting work after denied self-close");
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void otherRuntimeCanBeClosedFromUnrelatedAsyncCarrier() {
+        AsyncRuntime first = new AsyncRuntime();
+        AsyncRuntime second = new AsyncRuntime();
+        try {
+            OresFuture<Integer> task = first.submit(() -> {
+                assertDoesNotThrow(second::close,
+                        "carrier ownership must be per-runtime, not global");
+                assertTrue(second.isClosed());
+                return 7;
+            });
+            assertEquals(7, AsyncRuntime.await(task));
+            assertFalse(first.isClosed());
+        } finally {
+            first.close();
+            second.close();
+        }
+    }
+
+    @Test
     void failedCloseRetryMustWaitForPhysicalAsyncCarrierExit() throws Exception {
         AsyncRuntime runtime = new AsyncRuntime();
         CountDownLatch entered = new CountDownLatch(1);
