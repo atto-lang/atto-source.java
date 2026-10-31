@@ -353,6 +353,69 @@ final class EditorLexicalParserAdmissionTest {
         }
     }
 
+    /** Decode exact UTF-16 code units; preserves malformed host-string cases. */
+    private static String fromUtf16Hex(String hex) {
+        assertTrue(hex.length() > 0 && hex.length() <= 65_536
+                && hex.length() % 4 == 0, "bounded UTF-16 hex fixture");
+        StringBuilder decoded = new StringBuilder(hex.length() / 4);
+        for (int i = 0; i < hex.length(); i += 4) {
+            decoded.append((char) Integer.parseInt(hex.substring(i, i + 4), 16));
+        }
+        return decoded.toString();
+    }
+
+    @Test
+    void pinnedDifferentialCorpusRunsAgainstActualJavaLexer() throws Exception {
+        byte[] fixture;
+        try (var stream = getClass().getResourceAsStream(
+                "/contracts/editor-syntax/v1/compiler-lexical-differential-v1.tsv")) {
+            assertNotNull(stream, "portable differential corpus is required");
+            fixture = stream.readAllBytes();
+        }
+        assertTrue(fixture.length < 64 * 1024, "corpus exceeds size budget");
+        var git = java.security.MessageDigest.getInstance("SHA-1");
+        git.update(("blob " + fixture.length + "\0")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("eeed64b7d33c262b35120662386435575982a9bc",
+                java.util.HexFormat.of().formatHex(git.digest(fixture)),
+                "exact synthetic corpus blob must match the shared contract");
+        var entries = new java.util.HashSet<String>();
+        int executed = 0, rejected = 0;
+        for (String line : new String(fixture, java.nio.charset.StandardCharsets.UTF_8)
+                .split("\n")) {
+            if (line.isBlank() || line.startsWith("#")) continue;
+            String[] fields = line.split("\t", -1);
+            assertEquals(5, fields.length, "case must have 5 fields");
+            String id = fields[0];
+            assertTrue(id.matches("[a-z0-9]+(?:-[a-z0-9]+)*"), id);
+            assertTrue(entries.add(id), "duplicate differential case: " + id);
+            String source = fromUtf16Hex(fields[1]);
+            if (fields[2].equals("ERROR")) {
+                assertEquals("-", fields[3], id);
+                assertNotEquals("-", fields[4], id);
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class, () -> lex(source), id);
+                assertTrue(failure.getMessage().contains(fields[4]),
+                        id + ": unexpected error " + failure.getMessage());
+                rejected++;
+            } else {
+                assertEquals("-", fields[4], id);
+                List<Token.Type> expected = java.util.Arrays.stream(fields[2].split(","))
+                        .map(Token.Type::valueOf).toList();
+                assertEquals(expected, types(source), id);
+                if (!fields[3].equals("-")) {
+                    Token symbol = lex(source).stream()
+                            .filter(token -> token.type() == SYMBOL_LITERAL)
+                            .findFirst().orElseThrow();
+                    assertEquals(fromUtf16Hex(fields[3]), symbol.lexeme(), id);
+                }
+            }
+            executed++;
+        }
+        assertEquals(34, executed, "all 34 exact shared oracle inputs must execute");
+        assertEquals(11, rejected, "all invalid-source negatives must reject");
+    }
+
     @Test
     void executionDomainReservationFailsClosedAtParserAdmission() {
         for (String source : List.of("cpu { }", "gpu { }", "quantum task { }")) {
