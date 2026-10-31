@@ -256,7 +256,9 @@ public final class ActorEventBus implements AutoCloseable {
         Objects.requireNonNull(publisher, "publisher");
         requireOpen();
         group.requireCurrentMember("subscribe to publisher ActorGroup events");
-        if (!runtime.isAlive(publisher) || !group.isMember(publisher.id())) {
+        if (!runtime.isAlive(publisher)
+                || !runtime.isLiveActorAddress(publisher.address())
+                || !group.isMember(publisher.id())) {
             throw new SecurityException("publisher must be a live member of this ActorGroup");
         }
         return subscribeInternal(name, publisher.address());
@@ -285,6 +287,14 @@ public final class ActorEventBus implements AutoCloseable {
 
         synchronized (topic.deliveryLock) {
             requireOpen();
+            // Publisher leave/stop can overtake initial authorization while
+            // the observer is waiting for this topic's admission lock.
+            if (publisherScope != null
+                    && (!runtime.isLiveActorAddress(publisherScope)
+                            || !group.isMember(publisherScope.actorId()))) {
+                throw new IllegalStateException(
+                        "publisher ended before scoped subscription admission");
+            }
             if (topics.get(topic.name) != topic) {
                 throw new IllegalStateException(
                         "ActorGroup event topic is no longer registered: " + topic.name);
@@ -315,7 +325,10 @@ public final class ActorEventBus implements AutoCloseable {
                     return typed;
                 }
 
-                if (!group.isMember(subscriber) || closed.get()) {
+                if (!group.isMember(subscriber) || closed.get()
+                        || (publisherScope != null
+                            && (!runtime.isLiveActorAddress(publisherScope)
+                                    || !group.isMember(publisherScope.actorId())))) {
                     topic.subscriptions.remove(key, created);
                     created.closeChannelOnly();
                     throw new IllegalStateException(
@@ -495,8 +508,10 @@ public final class ActorEventBus implements AutoCloseable {
                     if (subscription.closed()
                             || !group.isMember(subscription.subscriber)
                             || (subscription.publisherScope != null
-                                    && !group.isMember(
-                                            subscription.publisherScope.actorId()))) {
+                                    && (!group.isMember(
+                                            subscription.publisherScope.actorId())
+                                            || !runtime.isLiveActorAddress(
+                                                    subscription.publisherScope)))) {
                         topic.subscriptions.remove(subscription.key, subscription);
                         subscription.closeChannelOnly();
                     } else if (subscription.publisherScope == null
