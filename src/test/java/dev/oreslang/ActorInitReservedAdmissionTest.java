@@ -1,85 +1,188 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Early fail-closed admission for the proposed actor init contract.
- * These tests exercise only the real Java parser; they are NOT a positive
- * native guest execution claim or a substitute for atomic spawn lowering.
+ * Compiler-backed acceptance floor for the synchronous, scalar-only actor
+ * init vertical slice. ActorRef/capability injection remains fail-closed.
+ * This source file is NOT a CI or guest pass until JUnit actually executes.
  */
 final class ActorInitReservedAdmissionTest {
 
-    private static String actor(String member) {
-        return """
-                define actor Worker as
-                  state {
-                    int count = 0;
-                  }
-                """ + member + "\nend\n";
+    private static final String ACTOR = """
+            define actor Worker as
+              state {
+                val int seed;
+                let int phase;
+              }
+
+              init(seed: int) -> state {
+                return state { seed: seed, phase: 0 };
+              }
+
+              receive(ActorMail<String> mail): void {
+                let String observed = "wrong";
+                self.handle_state(critical[read] |s| -> {
+                  if s.seed == 7; do
+                    observed = "initialized";
+                  fi
+                });
+                stdio.stdout.write(observed);
+                self.end();
+                return;
+              }
+            end
+            """;
+
+    private static String main(String spawn) {
+        return ACTOR + """
+                pub async routine main(): void {
+                  val worker = await """ + spawn + """;
+                  worker.send("go");
+                  await worker.get_done();
+                  return;
+                }
+                """;
     }
 
-    private static void rejects(String declaration) {
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void scalarNamedSpawnBuildsCompleteActorStateBeforeGuestReceive() throws Exception {
+        String program = main("spawn Worker(seed: 7)");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "actor-init-scalar.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("initialized", output.toString(StandardCharsets.UTF_8));
+    }
+
+    private static void rejectsTyped(String program, String expectedFragment) {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> Parser.parse(actor(declaration)));
-        assertTrue(failure.getMessage().contains("one-shot spawn initialization"),
-                failure.getMessage());
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(failure.getMessage().contains(expectedFragment), failure.getMessage());
     }
 
     @Test
-    void plainInitCannotBeRegisteredAsOrdinaryCallable() {
-        rejects("init(): void { return; }");
+    void missingOrUnknownInitLabelsAreRejected() {
+        rejectsTyped(main("spawn Worker()"), "all init parameters");
+        rejectsTyped(main("spawn Worker(other: 7)"), "label");
     }
 
     @Test
-    void namedInitWithParametersCannotBeRegisteredAsOrdinaryCallable() {
-        rejects("init(int seed): void { return; }");
+    void duplicateNamedSpawnArgumentIsRejected() {
+        rejectsTyped(main("spawn Worker(seed: 7, seed: 8)"), "all init parameters");
     }
 
     @Test
-    void proposedCompleteStateBuilderFailsClosedUntilLoweringExists() {
-        rejects("init(int seed) -> state { return state { count: seed }; }");
+    void wrongNamedSpawnArgumentTypeIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(main("spawn Worker(seed: \"no\")")));
     }
 
     @Test
-    void publicInitCannotLeakPrepublicationActorState() {
-        rejects("pub init(): void { return; }");
-    }
-
-    @Test
-    void asyncInitCannotSuspendInPrepublicationPhase() {
-        rejects("async init(): void { return; }");
-    }
-
-    @Test
-    void fncAndStaticMarkersDoNotBypassInitReservation() {
-        rejects("fnc init(): void { return; }");
-        rejects("static fnc init(): void { return; }");
-    }
-
-    @Test
-    void actorConstructorRemainsForbidden() {
+    void positionalSpawnParametersDoNotBypassNames() {
         IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse(actor("constructor(): void { return; }")));
-        assertTrue(failure.getMessage().contains("actors do not declare constructors"),
-                failure.getMessage());
+                IllegalArgumentException.class, () -> Parser.parse(main("spawn Worker(7)")));
+        assertTrue(failure.getMessage().contains("named"), failure.getMessage());
     }
 
     @Test
-    void existingActorOnStartRemainsAdmitted() {
-        assertDoesNotThrow(() -> Parser.parse(actor("on_start(): void { return; }")));
+    void incompleteStateInitializerRejectedBeforeExecution() {
+        rejectsTyped(ACTOR.replace("seed: seed, phase: 0", "seed: seed"),
+                "every declared state field");
     }
 
     @Test
-    void ordinaryClassInitMethodIsNotAReservedActorHook() {
+    void repeatedOrUnknownStateFieldRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(ACTOR.replace(
+                        "seed: seed, phase: 0", "seed: seed, seed: seed")));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(ACTOR.replace(
+                        "seed: seed, phase: 0", "seed: seed, other: 0")));
+    }
+
+    @Test
+    void initCannotSuspendOrInvokeOtherFunctions() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(ACTOR.replace(
+                        "init(seed: int)", "async init(seed: int)")));
+        rejectsTyped(ACTOR.replace(
+                "phase: 0", "phase: seed + 1"),
+                "scalar literal");
+        rejectsTyped(ACTOR.replace(
+                "phase: 0", "phase: print(seed)"),
+                "scalar literal");
+    }
+
+    @Test
+    void competingOnStartAndInitAreForbidden() {
+        rejectsTyped(ACTOR.replace("  receive(", "  on_start(): void { return; }\n  receive("),
+                "competing startup hooks");
+    }
+
+    @Test
+    void stateLiteralCannotEscapeReservedInit() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                          val record = state { phase: 0 };
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
+    void actorRefInitTransferRemainsFailClosed() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define actor Store as
+                          state { let int x = 0; }
+                        end
+                        define actor NeedsStore as
+                          state { val ActorRef<Store> store; }
+                          init(store: ActorRef<Store>) -> state {
+                            return state { store: store };
+                          }
+                        end
+                        """));
+    }
+
+    @Test
+    void ordinaryClassInitMethodIsNotReserved() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class Ordinary as
                   init(): void { return; }
                 end
                 """));
+    }
+
+    @Test
+    void actorConstructorIsStillForbidden() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define actor Legacy as
+                          constructor(): void { return; }
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("actors do not declare constructors"),
+                failure.getMessage());
     }
 }
