@@ -138,3 +138,45 @@ native FFI completion integration; exact-head Maven/JDK25 and Native Image
 execution, after source-org or an approved private-carrier security review;
 quantitative JFR/ThreadMXBean allocation metrics; contention latency;
 source-level negative tests; and five-backend conformance receipts.
+
+
+## Exact-source local JDK21 verification (2026-10-31)
+
+A standalone, package-scoped harness is checked in at
+`tests/ExactSourcePhysicalTurnSmoke.java`. It compiles directly against the
+**actual** `ActorPhysicalTurnGate` and `ReusableLongStateRegion` Java
+implementations, not translated source-free models. It tests post-STOP queued
+entry denial, physical completion after executor submission failure, queued
+rejection while a different task remains running, stale replay, replay of an
+already-admitted physical turn, and 2,000 start-versus-retirement races.
+
+Reproduction from the source repository root with JDK21:
+
+```sh
+mkdir -p /tmp/ores-physical-turn-test
+javac --release 21 -Xlint:all -Werror \
+  -d /tmp/ores-physical-turn-test \
+  src/main/java/dev/oreslang/runtime/ReusableLongStateRegion.java \
+  src/main/java/dev/oreslang/runtime/ActorPhysicalTurnGate.java \
+  tests/ExactSourcePhysicalTurnSmoke.java
+java -ea -cp /tmp/ores-physical-turn-test \
+  dev.oreslang.runtime.ExactSourcePhysicalTurnSmoke
+```
+
+Locally executed on JDK 21, the final exact Git blobs were:
+- `ReusableLongStateRegion.java`: `25a38bc89a651fcf6b8374a1713d3489ffc42826`
+- `ActorPhysicalTurnGate.java`: `58ff6e255d725f9f28ad9535fabd41cef69b90ff`
+- `ExactSourcePhysicalTurnSmoke.java`: `403bbb0994d3a3b462e29bbfac6071704b2a050e`
+
+All three blobs matched GitHub; local `javac` succeeded and the test
+reported `EXACT_SOURCE_JDK21_PASS assertions=8022 racing_rounds=2000`.
+The duplicate accepted-turn replay check found an idempotency gap in the
+physical gate; this was corrected before the final run.
+
+The restricted source-org workflow
+`.github/workflows/actor-state-region-physical-turn.yml` is configured to
+checkout the source repository's exact PR head with a read-only token and
+execute this smoke. Hosted run admission is still separately required.
+Neither the local smoke nor that workflow constitutes full GraalVM/Native
+Image, Maven/JUnit, complete actor scheduling or compiler guest parity.
+
