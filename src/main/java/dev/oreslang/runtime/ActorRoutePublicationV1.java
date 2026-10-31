@@ -284,15 +284,35 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                     throw failure;
                 }
 
-                // ONE volatile publication, while DATA dispatch is blocked by
-                // this monitor AND the physical mailbox freeze.
-                active = next;
+                // One volatile serving-route publication. For real actors,
+                // the final assignment executes under V2's lifecycle monitor,
+                // so a racing STOP either wins BEFORE the check (reject V2)
+                // or follows the successful publication. No arbitrary
+                // callbacks, Future notifications or cleanup run under that
+                // candidate monitor.
+                if (prior.physicalRoute() instanceof ActorRuntime.ActorRef<?> old) {
+                    old.withReadyUpgradeSuccessorPublication(
+                            (ActorRuntime.ActorRef<?>) readyPhysicalRoute,
+                            () -> active = next);
+                } else {
+                    active = next;
+                }
                 pending = null;
                 finished = true;
                 try {
                     // Retire the old Task authority before unfreezing DATA.
                     // If post-commit cleanup fails, NEVER roll back to old.
                     preflight.finishPublished();
+                    if (readyPhysicalRoute instanceof ActorRuntime.ActorRef<?> candidate) {
+                        // Actor done() can settle inside its lifecycle monitor.
+                        // This callback must NOT acquire the coordinator lock,
+                        // or a STOP/publication lock inversion could deadlock.
+                        // The volatile poison is fail-closed even if V2 dies
+                        // immediately after successful publication.
+                        candidate.done().whenCompleteRuntime((ignored, terminal) -> {
+                            if (active == next) poisoned = true;
+                        });
+                    }
                 } catch (RuntimeException | Error failure) {
                     poisoned = true;
                     nextGate.close();
@@ -334,7 +354,8 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     // Authenticated callback identity for async paths: bare sequence completion
     // cannot acknowledge one of these in-flight physical deliveries.
     private final Set<Long> trackedPhysicalSequences = new HashSet<>();
-    private boolean poisoned;
+    // Terminal V2 observers write this without taking the coordinator lock.
+    private volatile boolean poisoned;
     private boolean closed;
 
     ActorRoutePublicationV1(ActorUpgradeEpochGate initial,
