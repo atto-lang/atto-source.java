@@ -150,6 +150,53 @@ final class WebSocketOpeningRequestTest {
     }
 
     @Test
+    void rejectsEncodedC0ControlsAndAmbiguousPathEscapes() {
+        for (String target : new String[] {
+                "/chat%01", "/chat%09", "/chat%1f", "/chat%20",
+                "/chat%2fadmin", "/chat%25admin"
+        }) {
+            String raw = baseHead().replace(
+                    "GET /chat HTTP/1.1",
+                    "GET " + target + " HTTP/1.1");
+            assertThrows(IllegalArgumentException.class, () ->
+                    WebSocketOpeningRequest.read(bytes(raw), 4096, 32), target);
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketOpeningRequest.Request(
+                        "GET", "/chat%1f", "HTTP/1.1", "example.test",
+                        "websocket", "Upgrade", "13",
+                        "dGhlIHNhbXBsZSBub25jZQ==",
+                        java.util.Optional.empty()));
+    }
+
+    @Test
+    void rejectsMalformedBracketedIpv6EvenWhenCharactersLookValid() {
+        for (String host : new String[] {
+                "[:]", "[1]", "[2001:::db8]", "[1::2::3]",
+                "[1:2:3:4:5:6:7:8::]", "[::ffff:999.1.1.1]",
+                "[::ffff:01.1.1.1]"
+        }) {
+            String raw = baseHead().replace(
+                    "Host: example.test", "Host: " + host);
+            assertThrows(IllegalArgumentException.class, () ->
+                    WebSocketOpeningRequest.read(bytes(raw), 4096, 32), host);
+        }
+    }
+
+    @Test
+    void acceptsFullIpv6AndCanonicalEmbeddedIpv4Literal() throws Exception {
+        for (String host : new String[] {
+                "[2001:db8:0:0:0:0:0:1]",
+                "[::ffff:192.0.2.1]"
+        }) {
+            String raw = baseHead().replace(
+                    "Host: example.test", "Host: " + host);
+            assertEquals(host,
+                    WebSocketOpeningRequest.read(bytes(raw), 4096, 32).host());
+        }
+    }
+
+    @Test
     void enforcesByteAndHeaderCountBoundsBeforeUnboundedAccumulation() {
         assertThrows(IllegalArgumentException.class, () ->
                 WebSocketOpeningRequest.read(bytes(baseHead()), 256, 32));
