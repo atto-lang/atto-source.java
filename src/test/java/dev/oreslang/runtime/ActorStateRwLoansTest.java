@@ -508,4 +508,58 @@ final class ActorStateRwLoansTest {
             assertTrue(old.readyToSuspend(oldGeneration));
         }
     }
+
+    @Test
+    void cancelledCasBeforeHookCannotEvadePhysicalRetirementFence()
+            throws Exception {
+        var notifications = new AtomicInteger();
+        var loans = new ActorStateRwLoans(2, notifications::incrementAndGet);
+        var held = loans.acquireWriteAsync(actor(8501, 251, 1)).join();
+        var waiting = loans.acquireReadAsync(actor(8502, 252, 1));
+        var observedCancellation = new AtomicBoolean();
+        waiting.whenCompleteRuntime((value, failure) ->
+                observedCancellation.set(
+                        failure instanceof java.util.concurrent.CancellationException));
+
+        // Hold the internal arbiter monitor while cancellation claims its
+        // terminal CAS; the hook cannot remove its Pending node yet. Releasing
+        // the writer on this thread is re-entrant and exercises promoteLocked's
+        // cancelled-head path before the cancellation hook can run.
+        var field = ActorStateRwLoans.class.getDeclaredField("monitor");
+        field.setAccessible(true);
+        Object monitor = field.get(loans);
+        var cancellationResult = new AtomicBoolean();
+        var cancellationError = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread cancelling = Thread.ofPlatform().unstarted(() -> {
+            try { cancellationResult.set(waiting.cancel(false)); }
+            catch (Throwable failure) { cancellationError.set(failure); }
+        });
+        try {
+            synchronized (monitor) {
+                cancelling.start();
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (!waiting.isCancelled() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(waiting.isCancelled(),
+                        "cancellation must claim terminal state before arbiter release");
+                held.close();
+                loans.close();
+                assertFalse(loans.physicallyRetired(),
+                        "cancelled Future has not run its hook or observer drain");
+                assertEquals(0, notifications.get(),
+                        "do not retire while cancelled host observers remain outstanding");
+            }
+        } finally {
+            cancelling.join(5000);
+        }
+        assertFalse(cancelling.isAlive(), "cancellation must physically finish");
+        assertNull(cancellationError.get());
+        assertTrue(cancellationResult.get());
+        assertTrue(observedCancellation.get());
+        assertTrue(loans.physicallyRetired());
+        assertEquals(1, notifications.get(),
+                "retirement must be notified once after cancellation drains");
+    }
 }
