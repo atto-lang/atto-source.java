@@ -479,6 +479,59 @@ physical heap isolation contract. Higher-level tenant and isolate
 membership authorization still needs exact host/guest integration
 and independent security verification.
 
+## Real ActorRuntime mailbox integration (2026-10-31)
+
+The host-only WebSocket adapter now connects `ActorDeliveryTicket`
+to an actual `ActorRuntime` continuation mailbox. The package-private
+`ActorRuntime.enqueueHostActorDelivery(ref, runnable, onRetire)` validates
+the exact live `ActorRef` incarnation, reserves the existing bounded
+internal continuation credit, and publishes one `MessageEnvelope`
+which owns both actor-turn execution and retirement cleanup.
+
+The internal continuation mailbox's normal actor-turn drain uses
+`try (MessageEnvelope activeEnvelope = envelope)` so cleanup is run
+after successful delivery **or** after an exception from the handler.
+The existing STOP queue-drain path closes the same envelope without
+executing its continuation, returning the ticket's owner lease and
+connection-local ticket credit. A rejected mailbox admission retains
+cleanup responsibility with the submitting host, which closes the
+ticket once. This is not a new actor-owned thread/pool; the callback
+runs only through the actor's original serialized turn executor.
+
+`Connection.dispatchNextActorMessage(handle, context, actor, handler)`
+authenticates the full context, owning actor and NET permission,
+removes a pending USER frame from the protocol queue, makes a bounded
+ticket, and attempts real mailbox admission. The ticket checks the
+*current mailbox turn's* runtime, actor identity, generation, live
+owner and WebSocket lease immediately before executing the handler.
+A transfer cannot proceed with queued ticket obligations. The
+package-private `dispatchHostActorMessage` is a **test seam**, not
+a guest-callable alternative authority.
+
+If admission fails *after* a USER message was dequeued, the bridge
+closes the ticket, revokes the connection's logical authority and
+requests physical socket closure on the native host side. Continuing
+to accept wire messages after silently dropping the dequeued USER
+message is explicitly forbidden. Normal empty-queue polling is not
+treated as an admission failure.
+
+New focused fixtures in `WebSocketActorMailboxDeliveryTest` and the
+real TCP `WebSocketLoopbackListenerTest` check exact-once execution
+on the authenticated actor turn, duplicate-delivery avoidance, STOP
+of a queued ticket while an actor handler is running, bounded
+continuation admission and 1,024-slot saturation, and fail-closed
+connection retirement on mailbox rejection. The focused WebSocket
+workflow includes this test suite.
+
+**Not demonstrated:** these are authored host-level tests only.
+No JDK25/Graal Maven/JUnit job executed at the exact head because
+GitHub Actions runner admission remains unavailable. The compiler
+does not yet lower native WebSocket messages into a pure `.ores`
+actor mailbox handler; it must use this trusted bridge and keep
+all guest lifecycle/tenant/isolate checks intact. Neither host-side
+callback delivery nor context identity alone proves physical tenant
+heap isolation or WebSocket guest parity on LLVM/.NET/WASM.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
