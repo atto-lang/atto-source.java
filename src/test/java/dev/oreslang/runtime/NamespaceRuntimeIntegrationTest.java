@@ -60,6 +60,28 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void manifestProviderPathAliasesRejectBeforeRootResolution() throws Exception {
+        for (String noncanonical : new String[] {
+                "./src/billing/charge.ores",
+                "src//billing/charge.ores",
+                "src/billing/./charge.ores",
+                "src/billing/../billing/charge.ores"
+        }) {
+            Path project = temp.resolve("alias-" + Integer.toHexString(noncanonical.hashCode()));
+            billing(project);
+            Path manifest = project.resolve(".ores.pkg.toml");
+            String original = Files.readString(manifest);
+            Files.writeString(manifest,
+                    original.replace("src/billing/charge.ores", noncanonical));
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> PackageNamespaceWorkspace.discover(
+                            project.resolve("src/billing/charge.ores")), noncanonical);
+            assertTrue(denied.getMessage().contains(
+                    "noncanonical namespace provider filename"), denied.getMessage());
+        }
+    }
+
+    @Test
     void symlinkedEntrySourceCannotBeCanonicalizedIntoAnotherManifestMember() throws Exception {
         Path project = temp.resolve("entry-alias");
         billing(project);
