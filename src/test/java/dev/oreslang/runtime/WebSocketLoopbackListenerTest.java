@@ -258,4 +258,68 @@ final class WebSocketLoopbackListenerTest {
             }
         }
     }
+
+    @Test
+    void hostOutboundTextBinaryAndPongHaveCanonicalUnmaskedWire() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                connection.sendTextAsync("echo").get(3, TimeUnit.SECONDS);
+                assertArrayEquals(new byte[] {(byte) 0x81, 4, 'e', 'c', 'h', 'o'},
+                        client.getInputStream().readNBytes(6));
+                connection.sendBinaryAsync(new byte[] {0, 1, 2})
+                        .get(3, TimeUnit.SECONDS);
+                assertArrayEquals(new byte[] {(byte) 0x82, 3, 0, 1, 2},
+                        client.getInputStream().readNBytes(5));
+
+                // A PING goes through the reserved CONTROL queue, not the
+                // reader's Socket.getOutputStream() on its I/O read worker.
+                client.getOutputStream().write(new byte[] {
+                        (byte) 0x89, (byte) 0x81, 1, 2, 3, 4, (byte) ('p' ^ 1)
+                });
+                client.getOutputStream().flush();
+                assertEquals(WebSocketSessionState.ActionKind.SEND_PONG,
+                        connection.readAsync().get(3, TimeUnit.SECONDS).kind());
+                assertArrayEquals(new byte[] {(byte) 0x8A, 1, 'p'},
+                        client.getInputStream().readNBytes(3));
+                connection.close();
+                assertThrows(RuntimeException.class,
+                        () -> connection.sendTextAsync("stale"));
+                assertEquals(0, listener.activeConnectionCount());
+            }
+        }
+    }
+
+    @Test
+    void peerCloseFrameIsSerializedAndRetiresThePhysicalConnection() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accept = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accept.get(3, TimeUnit.SECONDS);
+                byte[] close = WebSocketSessionState.closePayload(1000, "");
+                byte[] mask = {1, 2, 3, 4};
+                client.getOutputStream().write(new byte[] {
+                        (byte) 0x88, (byte) (0x80 | close.length), 1, 2, 3, 4,
+                        (byte) (close[0] ^ mask[0]), (byte) (close[1] ^ mask[1])
+                });
+                client.getOutputStream().flush();
+                assertEquals(WebSocketSessionState.ActionKind.SEND_CLOSE,
+                        connection.readAsync().get(3, TimeUnit.SECONDS).kind());
+                assertArrayEquals(new byte[] {(byte) 0x88, 2, 3, (byte) 0xE8},
+                        client.getInputStream().readNBytes(4));
+                assertEquals(-1, client.getInputStream().read());
+                assertThrows(RuntimeException.class,
+                        () -> connection.sendBinaryAsync(new byte[] {1}));
+            }
+        }
+    }
 }
