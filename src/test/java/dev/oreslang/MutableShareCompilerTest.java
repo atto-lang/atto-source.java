@@ -115,7 +115,7 @@ final class MutableShareCompilerTest {
                 }
                 """, "rt mut share requires");
         rejected("""
-                fnc bad<T>(value: T): void {
+                fnc bad<T>(T value): void {
                   val alias = rt mut share value;
                   return;
                 }
@@ -126,7 +126,7 @@ final class MutableShareCompilerTest {
     void rejectsForgedNominalSharedMutexDeclaration() {
         rejected("""
                 define class SharedMutex<T> as
-                  pub let T value;
+                  pub let int value = 1;
                 end
                 fnc bad(): void {
                   val fake = new SharedMutex<int>();
