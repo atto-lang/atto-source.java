@@ -136,6 +136,41 @@ final class ArithmeticOverflowGuestErrorTest {
     }
 
     @Test
+    void checkedOverflowCrossesFunctionBoundaryWithNominalGuestType() {
+        // A return from another guest function must preserve the guest error
+        // effect instead of leaking a Java ArithmeticException or trapping.
+        for (String callee : new String[] {
+                "return maximum + 1;",
+                "return Math.neg(maximum);"
+        }) {
+            long argument = callee.contains("neg(")
+                    ? Long.MIN_VALUE : Long.MAX_VALUE;
+            String guest = """
+                    pub fnc checked(int maximum): int {
+                      %s
+                    }
+                    pub fnc main(): int {
+                      try {
+                        return checked(%d);
+                      } catch (err) {
+                        if err is type ArithmeticOverflowError {
+                          return 42;
+                        } else {
+                          return 1;
+                        } fi
+                      } finally {
+                      }
+                    }
+                    """.formatted(callee, argument);
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                assertEquals(42L, context.eval(OresLanguage.ID, guest).asLong(),
+                        "failed typed guest catch after cross-function " + callee);
+            }
+        }
+    }
+
+    @Test
     void uncaughtOverflowReportsGuestErrorIdentity() {
         String guest = "pub fnc main():int{return Math.neg(-9223372036854775808);}";
         try (Context context = Context.newBuilder(OresLanguage.ID)
