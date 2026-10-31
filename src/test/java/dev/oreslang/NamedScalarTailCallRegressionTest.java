@@ -63,6 +63,60 @@ final class NamedScalarTailCallRegressionTest {
         assertEquals("LD7", execute(code, "named-tail-cleanup.ores"));
     }
 
+    @Test
+    void reorderedNamedTailReturnPreservesLexicalEffectsAndFormalAbi() throws Exception {
+        String code = """
+                pub fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 4;
+                }
+                pub fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 3;
+                }
+                pub fnc combine(int left, int right): int {
+                    return left * 10 + right;
+                }
+                pub fnc tail(): int {
+                    return combine(right: second(), left: first());
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(tail());
+                    return;
+                }
+                """;
+        assertEquals("BA43", execute(code, "named-tail-reordered.ores"));
+    }
+
+    @Test
+    void failedFirstLexicalSourceAbortsLaterNamedArguments() throws Exception {
+        String code = """
+                pub fnc fails_first(): int {
+                    stdio.stdout.write("B");
+                    return 1 % 0;
+                }
+                pub fnc must_not_run(): int {
+                    stdio.stdout.write("A");
+                    return 4;
+                }
+                pub fnc combine(int left, int right): int {
+                    return left * 10 + right;
+                }
+                pub fnc protected_call(): int {
+                    try {
+                        return combine(right: fails_first(), left: must_not_run());
+                    } catch (err) {
+                        return 9;
+                    }
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(protected_call());
+                    return;
+                }
+                """;
+        assertEquals("B9", execute(code, "named-tail-exception-abort.ores"));
+    }
+
     private static String execute(String code, String filename) throws Exception {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
