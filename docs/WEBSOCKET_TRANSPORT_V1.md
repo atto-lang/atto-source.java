@@ -185,6 +185,49 @@ including permit release and shutdown races. The existing
 frame tests, including silent/slow-drip head deadlines, but no Oreslang guest
 has run this new listener.
 
+## Native-I/O owner/retirement hardening: 2026-10-31
+
+The host-only `WebSocketLoopbackListener` now tracks every successfully
+published child connection in an identity-based set guarded by the same
+lifecycle lock as listener closure. A concurrent accepted-socket upgrade
+cannot publish a child after shutdown takes its retirement snapshot.
+Closing the listener explicitly closes all published children and clears
+their USER queues; duplicate child close does not return a second permit.
+The logical listener object is also registered in `AsyncNativeIo`, so
+context shutdown retires active children *after native workers have joined*
+rather than merely closing a raw `ServerSocket` and leaving USER state
+stranded in memory.
+
+`AsyncNativeIo.ownsResource` distinguishes rejected registrations that
+*were* retained for post-join cleanup from a fully retired context that
+never took ownership; callers must close the latter socket themselves.
+This closes an earlier leak for failed register-after-retirement.
+
+A shared `WebSocketSocketDeadlineInput` now applies an **absolute**
+deadline to both single-byte and bulk socket reads, including the entire
+masked-frame payload. A peer slowly supplying partial payload bytes cannot
+keep extending the socket's per-read idle timeout indefinitely. The current
+frame deadline uses the configured handshake timeout and should be split
+into independently configured read and write deadlines once the native
+actor API is integrated. The outbound HTTP 101 and CONTROL write paths
+still require bounded nonblocking write state for production use.
+
+`WebSocketLoopbackListenerTest` contains eight authored real-loopback,
+real-`AsyncNativeIo` integration scenarios: successful accepted frame,
+parent-close USER queue clearance, capacity exhaustion with healthy-peer
+progress, pending accept interrupted by close, native-I/O context sweep,
+slow-drip masked payload, post-retirement registration cleanup, and
+scoped-NET denial before bind. These tests are **authored, not verified as
+executed**. The package-private `bind` seam takes injected native-I/O
+and NET-authorization implementations for tests; the production entrypoint
+always supplies `OresContext.requirePermission(NET, ...)`.
+
+Even if host tests pass, they do not prove Oreslang guest execution,
+generation-fenced actor delivery, cancellation-aware Future retirement,
+globally bounded memory, nonblocking writes, or backend parity. Keep this
+branch draft until authorized exact-head CI records nonzero steps and
+independent review is complete.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
