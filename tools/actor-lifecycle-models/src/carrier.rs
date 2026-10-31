@@ -87,8 +87,8 @@ fn transitions(s: State, unsafe_double_claim: bool) -> Vec<(String, State)> {
         }
     }
 
-    for actor in 0..ACTORS {
-        if !s.stopped[actor] {
+    for (actor, stopped) in s.stopped.iter().copied().enumerate() {
+        if !stopped {
             let mut next = s;
             next.stopped[actor] = true;
             out.push((format!("stop actor={actor}"), next));
@@ -110,12 +110,12 @@ fn violation(s: State) -> Option<&'static str> {
         return Some("two physical carriers executing same actor");
     }
 
-    for actor in 0..ACTORS {
-        if (s.lease[actor] == FREE) != executing[actor].is_empty() {
+    for (actor, lease) in s.lease.iter().copied().enumerate() {
+        if (lease == FREE) != executing[actor].is_empty() {
             return Some("lease disagrees with physical executor");
         }
         if let Some(&worker) = executing[actor].first() {
-            if s.lease[actor] != worker as i8 {
+            if lease != worker as i8 {
                 return Some("execution owner disagrees with lease");
             }
         }
@@ -129,10 +129,7 @@ fn violation(s: State) -> Option<&'static str> {
     None
 }
 
-fn trace(
-    mut at: State,
-    parents: &HashMap<State, Option<(State, String)>>,
-) -> Vec<String> {
+fn trace(mut at: State, parents: &HashMap<State, Option<(State, String)>>) -> Vec<String> {
     let mut path = Vec::new();
     while let Some((previous, operation)) = parents.get(&at).cloned().flatten() {
         path.push(operation);
