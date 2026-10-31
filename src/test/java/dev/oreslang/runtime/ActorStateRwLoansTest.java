@@ -590,6 +590,14 @@ final class ActorStateRwLoansTest {
         assertSame(injected, pending.cancellationHookFailureFromRuntime());
         assertSame(injected, loans.retirementQuarantineCause(),
                 "the state arbiter must preserve the physical revocation failure");
+        assertFalse(holder.heldBy(actor(8601, 261, 1)),
+                "quarantine must revoke active logical state access");
+        assertTrue(loans.acquireReadAsync(actor(8603, 263, 1))
+                .isCompletedExceptionally(), "failed revocation must deny new readers");
+        assertTrue(loans.acquireWriteAsync(actor(8604, 264, 1))
+                .isCompletedExceptionally(), "failed revocation must deny new writers");
+        assertEquals(0, loans.pendingCount(),
+                "quarantined requests must not enter the pending admission queue");
 
         loans.close();
         holder.close();
