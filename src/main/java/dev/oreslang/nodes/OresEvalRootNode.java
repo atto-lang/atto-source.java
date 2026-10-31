@@ -7675,26 +7675,45 @@ public final class OresEvalRootNode extends RootNode {
                     if (init == null && !created.arguments().isEmpty())
                         throw new IllegalArgumentException(
                                 "actor has no init hook for spawn arguments");
-                    LinkedHashMap<String, Object> provided = new LinkedHashMap<>();
-                    // Evaluate in call-site order, then bind in declaration
-                    // order. Never reorder eager source side effects.
+                    LinkedHashMap<String, Ast.Expr> namedInputs = new LinkedHashMap<>();
+                    // Validate the *entire* call, including effect safety,
+                    // before evaluating even the first expression. This also
+                    // prevents the unchecked evaluator path from turning a
+                    // malformed source-level spawn into side effects.
                     for (Ast.Expr raw : created.arguments()) {
-                        if (!(raw instanceof Ast.SpawnNamedArgExpr named)
-                                || provided.containsKey(named.label()))
+                        if (!(raw instanceof Ast.SpawnNamedArgExpr named))
                             throw new IllegalArgumentException(
-                                    "actor spawn requires unique named init arguments");
-                        provided.put(named.label(), eval(named.value(), env));
+                                    "actor spawn requires label: value arguments");
+                        if (!(named.value() instanceof Ast.NameExpr)
+                                && !(named.value() instanceof Ast.LiteralExpr))
+                            throw new SecurityException(
+                                    "actor spawn init has no effect-safe expression lowering");
+                        if (namedInputs.putIfAbsent(named.label(), named.value()) != null)
+                            throw new IllegalArgumentException(
+                                    "duplicate actor spawn init label '" + named.label() + "'");
                     }
-                    List<Object> startupValues = new ArrayList<>();
                     if (init != null) {
-                        if (provided.size() != init.parameters().size())
+                        if (namedInputs.size() != init.parameters().size())
                             throw new IllegalArgumentException(
                                     "actor spawn has missing or excess init parameters");
-                        for (Ast.Param param : init.parameters()) {
-                            if (!provided.containsKey(param.name()))
+                        for (Ast.Param parameter : init.parameters()) {
+                            if (!namedInputs.containsKey(parameter.name()))
                                 throw new IllegalArgumentException(
-                                        "actor spawn missing init label '" + param.name() + "'");
-                            startupValues.add(provided.get(param.name()));
+                                        "actor spawn missing init label '" + parameter.name() + "'");
+                        }
+                    }
+                    LinkedHashMap<String, Object> provided = new LinkedHashMap<>();
+                    // Eagerly read scalar values in source order, then bind by
+                    // declaration label. No argument expression has effects.
+                    for (Map.Entry<String, Ast.Expr> input : namedInputs.entrySet())
+                        provided.put(input.getKey(), eval(input.getValue(), env));
+                    List<Object> startupValues = new ArrayList<>();
+                    if (init != null) {
+                        for (Ast.Param parameter : init.parameters()) {
+                            Object value = provided.get(parameter.name());
+                            requireActorInitScalarType(parameter.type(), value,
+                                    "spawn init input '" + parameter.name() + "'");
+                            startupValues.add(value);
                         }
                     }
                     requireSupportedActorExecutionPolicy(actorClass);
