@@ -69,7 +69,7 @@ public final class VmNioTcpClient implements AutoCloseable {
     private final OresFuture<Connection> connected;
 
     private Connection connection;
-    private boolean closed;
+    private volatile boolean closed;
     private boolean terminationReported;
 
     static VmNioTcpClient openOwned(
@@ -155,7 +155,7 @@ public final class VmNioTcpClient implements AutoCloseable {
         try {
             numericIpv4(host);
             return true;
-        } catch (IllegalArgumentException ignored) {
+        } catch (RuntimeException ignored) {
             return false;
         }
     }
