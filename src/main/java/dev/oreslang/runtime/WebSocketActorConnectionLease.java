@@ -197,6 +197,18 @@ final class WebSocketActorConnectionLease {
         return true;
     }
 
+    /**
+     * A prior owner's delayed termination notification must never revoke a
+     * connection already atomically transferred to a successor generation.
+     * Runtime callbacks carry the exact ActorAddress captured at binding.
+     */
+    synchronized boolean revokeIfOwner(ActorRuntime.ActorAddress expectedOwner) {
+        Objects.requireNonNull(expectedOwner, "expected actor owner");
+        if (retired || !owner.equals(expectedOwner)) return false;
+        retired = true;
+        return true;
+    }
+
     synchronized boolean isLogicallyRetired() { return retired; }
     synchronized boolean hasOutstandingLoans() { return outstanding != 0; }
     synchronized int outstandingLoans() { return outstanding; }
