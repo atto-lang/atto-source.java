@@ -709,6 +709,67 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void cancelledSourceTaskCannotReleaseOldRouteBeforeCarrierUnwinds()
+            throws Exception {
+        var taskEntered = new CountDownLatch(1);
+        var releaseExecution = new CountDownLatch(1);
+        var sourceTask = new java.util.concurrent.atomic.AtomicReference<OresFuture<Void>>();
+        try (var runtime = new ActorRuntime();
+             var gate = new ActorUpgradeEpochGate(64, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            var old = runtime.<List<Integer>>spawnShared(() ->
+                    (msg, context) -> {
+                        assertEquals(List.of(5), msg);
+                        sourceTask.set(context.runtime().<Void>startActorTask(resume -> {
+                            taskEntered.countDown();
+                            try {
+                                if (!releaseExecution.await(10, TimeUnit.SECONDS))
+                                    throw new IllegalStateException("test physical task stalled");
+                            } catch (InterruptedException failure) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(failure);
+                            }
+                            return OresScheduler.done(null);
+                        }));
+                    });
+            var authority = new ActorRoutePublicationV1<>(gate, mailbox, state(7), old);
+            var submit = ActorRoutePublicationV1.actorRuntimeDrainSubmitter(
+                    (java.util.function.Function<byte[], List<Integer>>) bytes ->
+                            List.of(Byte.toUnsignedInt(bytes[0])));
+            try {
+                authority.admit(new byte[]{5});
+                assertTrue(authority.dispatchNextTracked(submit));
+                assertTrue(taskEntered.await(10, TimeUnit.SECONDS));
+                assertTrue(old.drain().isDone(),
+                        "message watermark can precede physical source Task exit");
+                var physical = old.physicalDrain();
+                assertFalse(physical.isDone());
+                assertNotNull(sourceTask.get());
+                assertTrue(sourceTask.get().cancel(false));
+                assertTrue(sourceTask.get().isDone(),
+                        "cancelled Future must settle independently of execution exit");
+                assertFalse(physical.isDone(),
+                        "cancelled Future is NOT a carrier-exit certificate");
+                assertEquals(1, mailbox.snapshot().retainedMessages());
+                assertThrows(IllegalStateException.class, () -> authority.stage(image('b')));
+                releaseExecution.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (!physical.isDone() && System.nanoTime() < deadline)
+                    Thread.sleep(10);
+                assertTrue(physical.isDone(),
+                        "actual cancellation unwind must retire the physical task");
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (mailbox.snapshot().retainedMessages() != 0
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertEquals(0, mailbox.snapshot().retainedMessages());
+            } finally {
+                releaseExecution.countDown();
+            }
+        }
+    }
+
+    @Test
     void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
         var protectedPlacement = new ActorUpgradeEpochGate.Placement(
                 ActorUpgradeEpochGate.ActorKind.PRIVATE,
