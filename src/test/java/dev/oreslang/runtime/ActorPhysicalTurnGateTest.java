@@ -7,6 +7,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.parallel.ResourceAccessMode;
@@ -275,6 +276,7 @@ final class ActorPhysicalTurnGateTest {
                 CountDownLatch delivered = new CountDownLatch(3);
                 AtomicInteger active = new AtomicInteger();
                 AtomicInteger maximum = new AtomicInteger();
+                AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
 
                 ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
                         factory -> (mail, turn) -> {
@@ -287,9 +289,11 @@ final class ActorPhysicalTurnGateTest {
                                 } else {
                                     laterEntered.countDown();
                                 }
-                            } catch (InterruptedException interrupted) {
-                                Thread.currentThread().interrupt();
-                                throw new AssertionError(interrupted);
+                            } catch (Throwable failure) {
+                                callbackFailure.compareAndSet(null, failure);
+                                if (failure instanceof InterruptedException) {
+                                    Thread.currentThread().interrupt();
+                                }
                             } finally {
                                 active.decrementAndGet();
                                 delivered.countDown();
@@ -309,6 +313,8 @@ final class ActorPhysicalTurnGateTest {
                 releaseFirst.countDown();
                 assertTrue(delivered.await(5, TimeUnit.SECONDS));
                 assertEquals(1, maximum.get());
+                assertNull(callbackFailure.get(),
+                        "a worker-thread failure must fail the actor serialization test");
             }
         } finally {
             releaseFirst.countDown();
@@ -330,6 +336,7 @@ final class ActorPhysicalTurnGateTest {
                 CountDownLatch delivered = new CountDownLatch(2);
                 AtomicInteger active = new AtomicInteger();
                 AtomicInteger maximum = new AtomicInteger();
+                AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
 
                 ActorRuntime.BehaviorFactory<Integer> handler =
                         ignored -> (mail, turn) -> {
@@ -338,9 +345,11 @@ final class ActorPhysicalTurnGateTest {
                             entered.countDown();
                             try {
                                 assertTrue(release.await(5, TimeUnit.SECONDS));
-                            } catch (InterruptedException interrupted) {
-                                Thread.currentThread().interrupt();
-                                throw new AssertionError(interrupted);
+                            } catch (Throwable failure) {
+                                callbackFailure.compareAndSet(null, failure);
+                                if (failure instanceof InterruptedException) {
+                                    Thread.currentThread().interrupt();
+                                }
                             } finally {
                                 active.decrementAndGet();
                                 delivered.countDown();
@@ -362,6 +371,8 @@ final class ActorPhysicalTurnGateTest {
 
                 release.countDown();
                 assertTrue(delivered.await(5, TimeUnit.SECONDS));
+                assertNull(callbackFailure.get(),
+                        "a worker-thread failure must fail the cross-actor overlap test");
             }
         } finally {
             release.countDown();
