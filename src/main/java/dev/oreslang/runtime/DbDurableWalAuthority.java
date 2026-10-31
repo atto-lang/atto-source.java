@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Internal actor binding to a physical WAL file. NOT a guest type or DATA
@@ -17,8 +16,7 @@ final class DbDurableWalAuthority {
     private final ActorRuntime.ActorId owner;
     private final Path filePath;
     private final DbDurableWalFile file;
-    private final AtomicBoolean outstanding = new AtomicBoolean();
-    private final AtomicBoolean revoked = new AtomicBoolean();
+    private final DbWalAuthorityLifecycle lifecycle = new DbWalAuthorityLifecycle();
 
     private DbDurableWalAuthority(OresContext context,
             ActorRuntime.ActorId owner, Path filePath, DbDurableWalFile file) {
@@ -64,8 +62,8 @@ final class DbDurableWalAuthority {
         if (boundedFrame.length < DbDurableWalFile.MIN_FRAME
                 || boundedFrame.length > DbDurableWalFile.MAX_FRAME)
             throw new IllegalArgumentException("invalid WAL frame size");
-        if (revoked.get() || !outstanding.compareAndSet(false, true))
-            throw new IllegalStateException("WAL revoked or operation already outstanding");
+        if (!lifecycle.beginWrite())
+            throw new IllegalStateException("WAL sealed or physical operation outstanding");
         // Detached copy prevents guest-owned buffer mutation while suspended.
         byte[] frame = boundedFrame.clone();
         AsyncNativeIo io = context.nativeIo();
@@ -75,26 +73,34 @@ final class DbDurableWalAuthority {
             try (AsyncNativeIo.IoLoan loan = io.borrow(file)) {
                 return file.appendAndSync(generation, operationId, frame);
             } finally {
-                outstanding.set(false);
+                // Only the actually executing physical worker releases this
+                // admission. Never trust a terminal/cancelled Future for it.
+                lifecycle.physicalWriteRetired();
             }
         });
     }
 
     synchronized OresFuture<Void> revoke() {
         requireOwner();
-        if (!revoked.compareAndSet(false, true))
-            throw new IllegalStateException("WAL authority already revoked");
-        if (outstanding.get())
-            throw new IllegalStateException("WAL physical operation unresolved");
+        // DRAINING permanently seals new writes, even if one is in flight.
+        // A second owner call after physical retirement can finish close.
+        if (!lifecycle.requestDrain())
+            throw new IllegalStateException(
+                    "WAL drain pending, closing, or already closed");
+        if (!lifecycle.beginClose())
+            throw new IllegalStateException("WAL close already scheduled");
         AsyncNativeIo io = context.nativeIo();
-        // CONTROL may be rejected during shutdown; then the registered file
-        // remains under context ownership until physical I/O retirement.
+        // CONTROL rejection/never-started cancellation leaves CLOSING:
+        // context-owned registration retains the physical file for a
+        // verified shutdown sweep. Never release or retry optimistically.
         return io.submitControl("db.wal.revoke", () -> {
             try (AsyncNativeIo.IoLoan loan = io.borrow(file)) {
                 file.close();
-            } finally {
-                io.unregister(file);
             }
+            // Only remove the registered handle once file close AND its
+            // final physical loan have actually retired.
+            io.unregister(file);
+            lifecycle.physicalCloseRetired();
             return null;
         });
     }
