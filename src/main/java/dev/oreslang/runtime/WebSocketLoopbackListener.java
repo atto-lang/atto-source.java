@@ -16,6 +16,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -25,6 +28,25 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * host I/O worker may hold the accept loan and each connection read loan.
  */
 final class WebSocketLoopbackListener implements AutoCloseable {
+    /**
+     * One daemon retirement lane for ALL loopback listeners, never one thread
+     * per actor or connection. A listener owns at most 16 child sockets and
+     * contributes one cancellable periodic sweep. No work is dispatched onto
+     * actor/CONTROL carriers. Host I/O operations retain their own loans.
+     */
+    private static final ScheduledThreadPoolExecutor ACTOR_RETIREMENT =
+            new ScheduledThreadPoolExecutor(1, task -> {
+                Thread worker = new Thread(task, "ores-ws-actor-retirement");
+                worker.setDaemon(true);
+                return worker;
+            });
+
+    static {
+        ACTOR_RETIREMENT.setRemoveOnCancelPolicy(true);
+        ACTOR_RETIREMENT.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+    }
+
+    private volatile ScheduledFuture<?> retirementSweep;
     private final AsyncNativeIo nativeIo;
     private final BiConsumer<String, String> requireNet;
     private final ServerSocket server;
@@ -42,6 +64,36 @@ final class WebSocketLoopbackListener implements AutoCloseable {
     private final Object lifecycleLock = new Object();
     private final java.util.Set<Connection> activeConnections =
             Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /**
+     * No actor callback may physically close a socket. The finite, host-only
+     * sweep inspects just this listener's existing registered children.
+     */
+    private void retireStoppedActorConnections() {
+        List<Connection> candidates;
+        synchronized (lifecycleLock) {
+            if (closed.get() || activeConnections.isEmpty()) return;
+            candidates = new ArrayList<>(activeConnections);
+        }
+        for (Connection connection : candidates) {
+            WebSocketActorClaim claim = connection.actorClaim;
+            if (claim == null || !claim.revoked()) continue;
+            try {
+                connection.close();
+            } catch (RuntimeException ignored) {
+                // The connection's retirement CAS and finally block own
+                // logical cleanup, even when the OS reports close failure.
+                // Do not kill the periodic supervisor lane on one peer.
+            }
+        }
+    }
+
+    private void startActorRetirementSweep() {
+        ScheduledFuture<?> scheduled = ACTOR_RETIREMENT.scheduleWithFixedDelay(
+                this::retireStoppedActorConnections, 50, 50, TimeUnit.MILLISECONDS);
+        retirementSweep = scheduled;
+        if (closed.get()) scheduled.cancel(false);
+    }
 
     private WebSocketLoopbackListener(AsyncNativeIo nativeIo,
             BiConsumer<String, String> requireNet, ServerSocket server,
@@ -127,6 +179,14 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     }
                 }
                 throw registrationFailure;
+            }
+            // Schedule only after native-I/O has successfully registered the
+            // physical listener. Startup failure closes the logical owner.
+            try {
+                owned.startActorRetirementSweep();
+            } catch (RuntimeException schedulerFailure) {
+                owned.close();
+                throw schedulerFailure;
             }
             return owned;
         } catch (Exception failure) {
@@ -232,6 +292,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (!closed.compareAndSet(false, true)) return;
             retiring = new ArrayList<>(activeConnections);
         }
+        ScheduledFuture<?> sweep = retirementSweep;
+        if (sweep != null) sweep.cancel(false);
         RuntimeException firstFailure = null;
         try {
             server.close(); // Wake the one pending accept.
@@ -380,10 +442,16 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 claim.requireOwnerTurn();
             }
             requireNet.accept(endpoint, "websocket.send");
-            if (retired.get() || protocol.state() != WebSocketSessionState.State.OPEN) {
-                throw new RejectedExecutionException("WebSocket is closing or retired");
-            }
-            WebSocketOutboundGate.Write write = outbound.enqueueUser(opcode, payload);
+            // The claim gate and revoke share one monitor. No USER enqueue
+            // can slip between checking this actor turn and revocation.
+            java.util.function.Supplier<WebSocketOutboundGate.Write> enqueue = () -> {
+                if (retired.get() || protocol.state() != WebSocketSessionState.State.OPEN) {
+                    throw new RejectedExecutionException("WebSocket is closing or retired");
+                }
+                return outbound.enqueueUser(opcode, payload);
+            };
+            WebSocketOutboundGate.Write write =
+                    claim == null ? enqueue.get() : claim.admitOwnerTurn(enqueue);
             wakeWriter();
             return write.receipt();
         }
