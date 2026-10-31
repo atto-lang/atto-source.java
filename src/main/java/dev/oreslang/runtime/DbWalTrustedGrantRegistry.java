@@ -46,6 +46,8 @@ final class DbWalTrustedGrantRegistry {
         }
 
         int generation() { return generation; }
+        int tenantId() { return shard.tenantId(); }
+        int shardId() { return shard.shardId(); }
 
         boolean issuedBy(DbWalTrustedGrantRegistry registry) {
             return issuer == registry;

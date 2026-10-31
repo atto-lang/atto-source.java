@@ -80,10 +80,14 @@ final class DbDurableWalAuthority {
         if (boundedFrame.length < DbDurableWalFile.MIN_FRAME
                 || boundedFrame.length > DbDurableWalFile.MAX_FRAME)
             throw new IllegalArgumentException("invalid WAL frame size");
+        // Detach BEFORE any wire validation or scheduler admission. A
+        // mutable guest buffer must not change tenant/op/checksum between
+        // validation and the asynchronous physical write.
+        byte[] frame = boundedFrame.clone();
+        DbWalFrameV1.requireMatching(
+                frame, grant.tenantId(), generation, operationId);
         if (!lifecycle.beginWrite())
             throw new IllegalStateException("WAL sealed or physical operation outstanding");
-        // Detached copy prevents guest-owned buffer mutation while suspended.
-        byte[] frame = boundedFrame.clone();
         AsyncNativeIo io = context.nativeIo();
         // If admission is refused or queued work is discarded, this gate can
         // stay sealed. Fail closed until trusted supervisor reconciliation.
