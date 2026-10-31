@@ -419,4 +419,110 @@ final class ActorNativeIoPhysicalRetirementTest {
     }
 
 
+
+    @Test
+    void preShutdownWorkerMayTransferLifetimeToLateSocketAfterSeal()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 64));
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        CountDownLatch workerStarted = new CountDownLatch(1);
+        CountDownLatch createLateSocket = new CountDownLatch(1);
+        CountDownLatch registrationAttempted = new CountDownLatch(1);
+        AtomicReference<java.net.Socket> lateSocket = new AtomicReference<>();
+        AtomicReference<ActorRuntime.PrivateMemoryBlock> memory =
+                new AtomicReference<>();
+        AtomicReference<OresFuture<Integer>> operation =
+                new AtomicReference<>();
+
+        ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                actorContext -> {
+                    ActorRuntime.PrivateMemoryBlock block =
+                            actorContext.privateMemory()
+                                    .orElseThrow()
+                                    .allocatePrivateBytes(32);
+                    block.writeInt(0, 509);
+                    memory.set(block);
+
+                    return (message, context) -> {
+                        OresFuture<Integer> future = io.submit(
+                                "late-registration",
+                                () -> {
+                                    workerStarted.countDown();
+                                    boolean proceed = false;
+                                    while (!proceed) {
+                                        try {
+                                            proceed = createLateSocket.await(
+                                                    5, TimeUnit.SECONDS);
+                                        } catch (InterruptedException ignored) {
+                                            // Shutdown interrupt is only a
+                                            // wakeup request; this worker was
+                                            // already physically admitted.
+                                        }
+                                    }
+
+                                    java.net.Socket socket =
+                                            new java.net.Socket();
+                                    lateSocket.set(socket);
+                                    try {
+                                        io.register(socket);
+                                        throw new AssertionError(
+                                                "late registration unexpectedly published");
+                                    } catch (IllegalStateException expected) {
+                                        registrationAttempted.countDown();
+                                        throw expected;
+                                    }
+                                });
+                        operation.set(future);
+                        context.runtime().ownCurrentActorFuture(future);
+                    };
+                });
+
+        try {
+            actor.send("launch");
+            assertTrue(workerStarted.await(5, TimeUnit.SECONDS));
+
+            actor.stop();
+            io.requestShutdown();
+            assertFalse(actor.done().isDone());
+            assertFalse(memory.get().closed());
+
+            createLateSocket.countDown();
+            assertTrue(registrationAttempted.await(5, TimeUnit.SECONDS));
+
+            OresFuture<Integer> future = operation.get();
+            assertNotNull(future);
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> future.get(5, TimeUnit.SECONDS));
+
+            java.net.Socket socket = lateSocket.get();
+            assertNotNull(socket);
+            assertFalse(
+                    actor.done().isDone(),
+                    "parent worker retirement must not outrun late socket descendant");
+            assertFalse(memory.get().closed());
+            assertEquals(1, runtime.actorCount());
+
+            io.close();
+
+            assertTrue(socket.isClosed());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(memory.get().closed());
+            assertTrue(actor.done().isDone());
+            assertEquals(0, runtime.actorCount());
+        } finally {
+            createLateSocket.countDown();
+            java.net.Socket socket = lateSocket.get();
+            try { io.close(); } catch (RuntimeException ignored) { }
+            if (socket != null && !socket.isClosed()) {
+                try { socket.close(); } catch (java.io.IOException ignored) { }
+            }
+            actor.stop();
+            runtime.close();
+        }
+    }
+
+
 }
