@@ -110,6 +110,8 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    /** True only while checking a direct 'await spawn Actor(...)' operand. */
+    private boolean checkingDirectAwaitedSpawn;
     /** Active lexical state-loan binder; only held during inline callback checking. */
     private String currentActorStateLoanBinder;
     /** Immutable per-field labels cannot be written even in critical[write]. */
@@ -2939,6 +2941,14 @@ public final class TypeChecker {
                 }
                 Ast.MethodDecl init = actorClass.methods().stream()
                         .filter(m -> m.name().equals("init")).findFirst().orElse(null);
+                // Without a runtime no-early-publication proof, never hand
+                // a provisional reference for an init actor to guest source.
+                // Only direct await spawn returns after startup readiness.
+                if (init != null && !checkingDirectAwaitedSpawn) {
+                    throw new IllegalArgumentException(
+                            "actor with init requires direct 'await spawn' "
+                                    + "to prevent early ActorRef publication");
+                }
                 if (init == null && !created.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
                             "actor '" + actorClass.name() + "' has no init hook for spawn arguments");
@@ -4541,7 +4551,16 @@ public final class TypeChecker {
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
-            Type awaitedType = typeOf(awaited.expression(), env, generics, self);
+            boolean previousAwaitedSpawn = checkingDirectAwaitedSpawn;
+            checkingDirectAwaitedSpawn =
+                    awaited.expression() instanceof Ast.RuntimeCallExpr runtime
+                            && runtime.operation().equals("spawn");
+            Type awaitedType;
+            try {
+                awaitedType = typeOf(awaited.expression(), env, generics, self);
+            } finally {
+                checkingDirectAwaitedSpawn = previousAwaitedSpawn;
+            }
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
