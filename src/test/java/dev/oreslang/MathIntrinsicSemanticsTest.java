@@ -91,7 +91,7 @@ final class MathIntrinsicSemanticsTest {
                 var failure = assertThrows(org.graalvm.polyglot.PolyglotException.class,
                         () -> context.eval(OresLanguage.ID, guest), name);
                 assertTrue(failure.getMessage() != null
-                                && failure.getMessage().contains("ORES_I64_OVERFLOW"),
+                                && failure.getMessage().contains("ArithmeticOverflowError"),
                         () -> "portable fixture did not use checked overflow path: "
                                 + name + ": " + failure.getMessage());
             }

@@ -34,8 +34,8 @@ final class DefaultCheckedI64ArithmeticTest {
         }) {
             PolyglotException failure = overflow(expression);
             assertTrue(failure.getMessage() != null
-                            && failure.getMessage().contains("ORES_I64_OVERFLOW"),
-                    () -> "missing normalized overflow marker for " + expression
+                            && failure.getMessage().contains("ArithmeticOverflowError"),
+                    () -> "missing guest ArithmeticOverflowError identity for " + expression
                             + ": " + failure.getMessage());
         }
     }
@@ -59,8 +59,8 @@ final class DefaultCheckedI64ArithmeticTest {
                 PolyglotException failure = assertThrows(PolyglotException.class,
                         () -> context.eval(OresLanguage.ID, guest), expression);
                 assertTrue(failure.getMessage() != null
-                                && failure.getMessage().contains("ORES_I64_OVERFLOW"),
-                        () -> "Math overflow was not normalized: " + failure.getMessage());
+                                && failure.getMessage().contains("ArithmeticOverflowError"),
+                        () -> "Math overflow did not expose guest ArithmeticOverflowError: " + failure.getMessage());
             }
         }
     }
