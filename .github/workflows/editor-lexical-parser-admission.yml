@@ -64,5 +64,5 @@ jobs:
           set -euo pipefail
           receipt=target/surefire-reports/dev.oreslang.parser.EditorLexicalParserAdmissionTest.txt
           test -f "$receipt"
-          grep -Eq '^Tests run: 19, Failures: 0, Errors: 0, Skipped: 0' "$receipt"
+          grep -Eq '^Tests run: 20, Failures: 0, Errors: 0, Skipped: 0' "$receipt"
           cat "$receipt"
