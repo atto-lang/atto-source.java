@@ -600,8 +600,8 @@ final class ActorStateRwLoansTest {
                 .isCompletedExceptionally(), "failed revocation must deny new readers");
         assertTrue(loans.acquireWriteAsync(actor(8604, 264, 1))
                 .isCompletedExceptionally(), "failed revocation must deny new writers");
-        assertEquals(0, loans.pendingCount(),
-                "quarantined requests must not enter the pending admission queue");
+        assertEquals(1, loans.pendingCount(),
+                "denied new requests must not increase the one preexisting queued reader");
 
         assertFalse(queuedReader.isDone(), "queued reader must not be granted in quarantine");
         holder.close();
