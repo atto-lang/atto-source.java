@@ -346,6 +346,60 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void directAndSnapshotIndexRejectAliasedAdmittedSourceKeys() throws IOException {
+        Path project = temporary.resolve("exact-admitted-source-identity");
+        Map<String, String> admitted = new LinkedHashMap<>();
+        add(admitted, project, "src/file.ores", "billing",
+                "pub fnc answer(): int { return 42; }");
+        Path provider = project.resolve("src/file.ores").toRealPath();
+        Path owner = manifest(project, "checkout", List.of("src/file.ores"));
+        String sourceText = admitted.get(id(provider));
+
+        // A genuine canonical member is accepted by both API entry points.
+        var direct = PackageNamespaceIndex.load(List.of(owner), admitted, Map.of());
+        assertEquals(PackageNamespaceIndex.packageId(owner, "checkout"),
+                direct.ownerOf(id(provider)));
+        var frozen = PackageNamespaceIndex.loadFromSnapshots(
+                Map.of(owner, Files.readString(owner)), admitted, Map.of());
+        assertEquals(direct.ownerOf(id(provider)), frozen.ownerOf(id(provider)));
+
+        // Leaf symlinks and intermediate symlink/.. aliases used to be silently
+        // collapsed by toRealPath(), laundering a noncanonical source-map key.
+        Path leafAlias = project.resolve("src/alias.ores");
+        Path jump = temporary.resolve("source-key-jump");
+        Path elsewhere = temporary.resolve("source-key-elsewhere");
+        Files.createDirectories(elsewhere);
+        try {
+            Files.createSymbolicLink(leafAlias, provider.getFileName());
+            Files.createSymbolicLink(jump, elsewhere);
+        } catch (UnsupportedOperationException | IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink fixtures");
+        }
+        Path parentAlias = jump.resolve("../exact-admitted-source-identity/src/file.ores");
+        assertTrue(Files.isRegularFile(leafAlias));
+        assertTrue(Files.isRegularFile(parentAlias));
+        for (Path alias : List.of(leafAlias, parentAlias)) {
+            Map<String, String> aliased = Map.of(alias.toString(), sourceText);
+            SecurityException directDenied = assertThrows(SecurityException.class,
+                    () -> PackageNamespaceIndex.load(List.of(owner), aliased, Map.of()));
+            assertTrue(directDenied.getMessage().contains("namespace admitted source path"),
+                    directDenied.getMessage());
+            SecurityException snapshotDenied = assertThrows(SecurityException.class,
+                    () -> PackageNamespaceIndex.loadFromSnapshots(
+                            Map.of(owner, Files.readString(owner)), aliased, Map.of()));
+            assertTrue(snapshotDenied.getMessage().contains("namespace admitted source path"),
+                    snapshotDenied.getMessage());
+        }
+        Path dotted = provider.getParent().resolve("./file.ores");
+        SecurityException dotDenied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.load(List.of(owner),
+                        Map.of(dotted.toString(), sourceText), Map.of()));
+        assertTrue(dotDenied.getMessage().contains("absolute and canonical"),
+                dotDenied.getMessage());
+    }
+
+    @Test
     void directIndexRejectsOversizedAndMalformedUtf8ManifestBeforeParsing() throws IOException {
         Path directory = temporary.resolve("direct-manifest-budget");
         Path ownedManifest = manifest(directory, "checkout", List.of("src/file.ores"));
