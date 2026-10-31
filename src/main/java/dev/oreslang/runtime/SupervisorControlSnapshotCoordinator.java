@@ -4,6 +4,7 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -87,7 +88,7 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
      * A timeout without a trusted registry observation is a failed read, NOT a
      * fabricated partial tree. Partial snapshots arise from the real adapter.
      */
-    public CompletableFuture<SupervisorRegistryObservation.Snapshot> request(
+    public CompletionStage<SupervisorRegistryObservation.Snapshot> request(
             SupervisorRegistryObservation.Grant grant, Object authenticatedSession,
             String tenantId, long expectedGeneration, int maxNodes, int maxDepth,
             long timeoutNanos) {
@@ -115,7 +116,7 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         } catch (RuntimeException | Error error) {
             request.result.completeExceptionally(new SnapshotFailure("CONTROL_UNAVAILABLE"));
             release(request);
-            return request.result;
+            return request.result.minimalCompletionStage();
         }
         try {
             dispatch.whenCompleteRuntime((ignored, failure) -> {
@@ -131,7 +132,7 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
                     new SnapshotFailure("CONTROL_DISPATCH_FAILED"));
             if (!request.started.get()) release(request);
         }
-        return request.result;
+        return request.result.minimalCompletionStage();
     }
 
     private void execute(Request request, Object session, String tenantId,
