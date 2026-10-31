@@ -206,4 +206,64 @@ final class CopyPolicyCompilerTest {
             assertTrue(ex.getMessage().contains("E_COPY_ANNOTATION"), ex.getMessage());
         }
     }
+
+    @Test
+    void noCopyClassCanTransferWholeOwnerWithRtTake() {
+        String source = """
+                @NoCopy
+                define class Connection as
+                  pub val int id = 7;
+                end
+                fnc transfer(Connection connection): Connection {
+                  return rt take connection;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void rtTakeInvalidatesNoCopySourceOwner() {
+        String source = """
+                @NoCopy
+                define class Connection as
+                  pub val int id = 7;
+                end
+                fnc bad(Connection connection): int {
+                  val Connection moved = rt take connection;
+                  return connection.id;
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("moved"), ex.getMessage());
+    }
+
+    @Test
+    void partialMoveOfNoCopyFieldFailsWithMoveProofErrorNotCopyError() {
+        String source = """
+                define class Vault as
+                  @NoCopy
+                  pub let int token = 42;
+                end
+                fnc bad(Vault vault): int {
+                  return rt take vault.token;
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("E_MOVE_UNPROVEN"), ex.getMessage());
+        assertFalse(ex.getMessage().contains("E_COPY_FORBIDDEN"), ex.getMessage());
+    }
+
+    @Test
+    void protectedFieldCannotEscapeThroughExplicitCastToOwnedValue() {
+        String source = HEADER + """
+                fnc bad(Vault vault): int {
+                  return rt copy (vault.token as int);
+                }
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(ex.getMessage().contains("E_COPY_FORBIDDEN"), ex.getMessage());
+    }
 }
