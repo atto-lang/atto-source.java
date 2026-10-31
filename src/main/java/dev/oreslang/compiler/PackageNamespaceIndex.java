@@ -115,7 +115,10 @@ public final class PackageNamespaceIndex {
             if (unitBytes > 8 * 1024 * 1024 || sourceBytes > 64L * 1024 * 1024) {
                 throw new IllegalArgumentException("namespace source snapshot exceeds byte budget");
             }
-            String canonical = unitId(Path.of(source.getKey()).toRealPath());
+            // A caller must supply the exact admitted file identity, not an
+            // alias silently canonicalized through toRealPath(). Otherwise
+            // source-key authority depends on mutable symlink traversal.
+            String canonical = checkedSourceUnitId(source.getKey());
             if (admittedSources.putIfAbsent(canonical, source.getValue()) != null) {
                 throw new IllegalArgumentException("source path alias/duplicate: " + canonical);
             }
@@ -321,6 +324,29 @@ public final class PackageNamespaceIndex {
             throw new IllegalArgumentException("ambiguous exported namespace symbol " + key
                     + " from " + old.sourceUnitId() + " and " + symbol.sourceUnitId());
         }
+    }
+
+    private static String checkedSourceUnitId(String submitted) throws IOException {
+        if (submitted == null || submitted.isBlank()) {
+            throw new IllegalArgumentException("namespace admitted source path missing");
+        }
+        Path source = Path.of(submitted);
+        if (!source.isAbsolute() || !source.equals(source.normalize())) {
+            throw new SecurityException("namespace admitted source path must be absolute and canonical: " + submitted);
+        }
+        Path cursor = source.getRoot();
+        if (cursor == null) throw new SecurityException("namespace admitted source has no filesystem root");
+        for (Path part : source) {
+            cursor = cursor.resolve(part);
+            if (Files.isSymbolicLink(cursor)) {
+                throw new SecurityException("namespace admitted source path is symlinked: " + cursor);
+            }
+        }
+        if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
+                || !source.equals(source.toRealPath())) {
+            throw new SecurityException("namespace admitted source path is not an unaliased file: " + submitted);
+        }
+        return unitId(source);
     }
 
     private static Path checkedManifestPath(Path manifest) throws IOException {
