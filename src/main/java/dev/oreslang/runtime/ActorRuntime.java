@@ -2636,6 +2636,11 @@ public final class ActorRuntime implements AutoCloseable {
                         || candidate.finalized || closed.get())
                     throw new IllegalStateException(
                             "physical successor lost publication lifecycle authority");
+                if (candidate.upgradeSuccessorPublished)
+                    throw new IllegalStateException(
+                            "physical successor already claimed by another logical upgrade");
+                // Ambiguous route publication must never allow a second adoption.
+                candidate.upgradeSuccessorPublished = true;
                 publishRoute.run();
             }
         }
@@ -7749,6 +7754,8 @@ public final class ActorRuntime implements AutoCloseable {
         // Revokes NEW DATA admission through both ActorRef.send() checks.
         // Existing enqueued mail/continuations may drain normally.
         private Object upgradeIngressTicket;
+        // A candidate is adopted by one logical route only; lifecycleLock owns this flag.
+        private boolean upgradeSuccessorPublished;
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean carrierActive;
