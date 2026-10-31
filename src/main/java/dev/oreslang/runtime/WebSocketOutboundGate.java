@@ -14,15 +14,23 @@ import java.util.concurrent.RejectedExecutionException;
 final class WebSocketOutboundGate {
     final class Write {
         private final WebSocketFrameCodec.Frame frame;
+        private final WebSocketActorConnectionLease.Loan actorLoan;
         private final OresFuture<Void> receipt =
                 new OresFuture<>(() -> cancel(this));
 
-        private Write(WebSocketFrameCodec.Frame frame) {
+        private Write(WebSocketFrameCodec.Frame frame,
+                WebSocketActorConnectionLease.Loan actorLoan) {
             this.frame = frame;
+            this.actorLoan = actorLoan;
         }
 
         WebSocketFrameCodec.Frame frame() { return frame; }
         OresFuture<Void> receipt() { return receipt; }
+        // Queued cancellation releases after removal; active write releases
+        // only on the physical writer's finish() after SocketChannel I/O.
+        void releaseOwnership() {
+            if (actorLoan != null) actorLoan.close();
+        }
     }
 
     private final ArrayDeque<Write> control = new ArrayDeque<>();
@@ -55,6 +63,11 @@ final class WebSocketOutboundGate {
     }
 
     synchronized Write enqueueUser(int opcode, byte[] payload) {
+        return enqueueUser(opcode, payload, null);
+    }
+
+    synchronized Write enqueueUser(int opcode, byte[] payload,
+            WebSocketActorConnectionLease.Loan actorLoan) {
         if (retired || closing) throw new RejectedExecutionException("WebSocket outbound closed");
         if (opcode != WebSocketFrameCodec.OPCODE_TEXT
                 && opcode != WebSocketFrameCodec.OPCODE_BINARY) {
@@ -70,7 +83,7 @@ final class WebSocketOutboundGate {
         }
         WebSocketFrameCodec.Frame frame =
                 new WebSocketFrameCodec.Frame(true, opcode, payload);
-        Write write = new Write(frame);
+        Write write = new Write(frame, actorLoan);
         user.addLast(write);
         heldUserCount++;
         heldUserBytes += size;
@@ -113,14 +126,23 @@ final class WebSocketOutboundGate {
             // At most one CLOSE can be queued: 'closing' is set before
             // publication and subsequent admission fails. Waiting PONGs
             // were discarded above, so this transient extra slot is bounded.
-            write = new Write(frame);
+            write = new Write(frame, null);
             control.addLast(write);
             heldControlCount++;
         }
+        RuntimeException callbackFailure = null;
         for (Write pending : dropped) {
-            pending.receipt.failFromRuntime(
-                    new RejectedExecutionException("WebSocket closing superseded pending writes"));
+            try {
+                pending.receipt.failFromRuntime(
+                        new RejectedExecutionException("WebSocket closing superseded pending writes"));
+            } catch (RuntimeException error) {
+                if (callbackFailure == null) callbackFailure = error;
+                else callbackFailure.addSuppressed(error);
+            } finally {
+                pending.releaseOwnership();
+            }
         }
+        if (callbackFailure != null) throw callbackFailure;
         return write;
     }
 
@@ -151,11 +173,18 @@ final class WebSocketOutboundGate {
             }
             wasRetired = retired;
         }
-        if (failure != null || wasRetired) {
-            completed.receipt.failFromRuntime(failure != null ? failure
-                    : new RejectedExecutionException("WebSocket retired during write"));
-        } else {
-            completed.receipt.completeFromRuntime(null);
+        try {
+            if (failure != null || wasRetired) {
+                completed.receipt.failFromRuntime(failure != null ? failure
+                        : new RejectedExecutionException("WebSocket retired during write"));
+            } else {
+                completed.receipt.completeFromRuntime(null);
+            }
+        } finally {
+            // The owning worker already exited its native socket borrow.
+            // A Future cancelled while the frame was active does not own
+            // this settlement: its physical lease remains until now.
+            completed.releaseOwnership();
         }
     }
 
@@ -177,26 +206,39 @@ final class WebSocketOutboundGate {
             // The active write retains its credit and physical loan until
             // its worker returns through finish(). No forged completion.
         }
+        RuntimeException callbackFailure = null;
         for (Write pending : dropped) {
-            pending.receipt.failFromRuntime(
-                    new RejectedExecutionException("WebSocket connection retired"));
+            try {
+                pending.receipt.failFromRuntime(
+                        new RejectedExecutionException("WebSocket connection retired"));
+            } catch (RuntimeException error) {
+                if (callbackFailure == null) callbackFailure = error;
+                else callbackFailure.addSuppressed(error);
+            } finally {
+                pending.releaseOwnership();
+            }
         }
+        if (callbackFailure != null) throw callbackFailure;
     }
 
     private void cancel(Write write) {
         boolean cancelActive = false;
+        boolean removedQueued = false;
         synchronized (this) {
             if (user.remove(write)) {
                 heldUserCount--;
                 heldUserBytes -= write.frame.payloadUnsafe().length;
+                removedQueued = true;
             } else if (control.remove(write)) {
                 heldControlCount--;
+                removedQueued = true;
             } else {
                 cancelActive = active == write;
             }
         }
-        // A partially written RFC6455 frame cannot safely be abandoned.
-        // Closing the physical transport is the only permitted active cancel.
+        if (removedQueued) write.releaseOwnership();
+        // Active write cancellation can only request physical abort; no
+        // release until the writer leaves its SocketChannel loan and finish.
         if (cancelActive) abortActive.run();
     }
 
