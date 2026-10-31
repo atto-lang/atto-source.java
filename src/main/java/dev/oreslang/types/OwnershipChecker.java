@@ -214,6 +214,8 @@ public final class OwnershipChecker {
 
     /** Restricted ownership context for a reserved actor init state result. */
     private boolean checkingActorInit;
+    /** Prevent guest-visible provisional references on an init actor. */
+    private boolean checkingDirectAwaitedSpawn;
     private Ast.ClassDecl initializingClass;
     // A deliberately conservative one-write constructor ledger. A later CFG
     // refinement may permit mutually exclusive writes, but this checker must
@@ -1096,6 +1098,14 @@ public final class OwnershipChecker {
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
                     throw error("internal spawn intrinsic requires exactly one actor target");
                 }
+                Ast.ClassDecl spawnClass = findClass(created.type().name());
+                if (spawnClass != null
+                        && spawnClass.methods().stream()
+                            .anyMatch(m -> m.name().equals("init"))
+                        && !checkingDirectAwaitedSpawn) {
+                    throw error("actor init requires direct await spawn before "
+                            + "a guest ActorRef may be used");
+                }
                 Set<String> labels = new HashSet<>();
                 for (Ast.Expr input : created.arguments()) {
                     if (!(input instanceof Ast.SpawnNamedArgExpr named)
@@ -1446,7 +1456,16 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
-            ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            boolean previousAwaitedSpawn = checkingDirectAwaitedSpawn;
+            checkingDirectAwaitedSpawn =
+                    awaited.expression() instanceof Ast.RuntimeCallExpr runtime
+                            && runtime.operation().equals("spawn");
+            ValueInfo awaitedValue;
+            try {
+                awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            } finally {
+                checkingDirectAwaitedSpawn = previousAwaitedSpawn;
+            }
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
