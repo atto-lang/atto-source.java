@@ -107,11 +107,21 @@ parent-directory denial. The component scan and subsequent reads are not an
 atomic filesystem snapshot under adversarial concurrent mutation.
 
 When the filesystem supplies a stable `BasicFileAttributes.fileKey()`, the
-workspace also records physical provider file identity at discovery and
-rechecks it during source verification. This rejects regular-file replacement
-with an **identical-byte** copy, not just content tampering and symlink swaps.
-On filesystems without a file key the byte/policy checks still apply, but the
-same-byte physical identity guarantee is unavailable.
+workspace records **both provider-file and manifest-file** identities at
+discovery, including the root manifest and every pinned dependency manifest.
+It rechecks these identities when validating the source snapshot. This
+rejects regular-file replacement with **identical-byte** copies, not just
+content tampering and symlink swaps. The root manifest check is also invoked
+on workspace admission; dependency manifest identities are verified again
+before comparing their pinned bytes and source inventories.
+
+On filesystems without a file key the byte/policy checks still apply, but
+same-byte physical identity protection is unavailable. These checks remain
+boundary observations, **not an atomic read/compile filesystem snapshot**.
+Tests cover both root and dependency same-byte regular-file replacements,
+and retain positive unchanged-file checks. A standalone OpenJDK 21 filesystem
+reproduction passed 9/9 focused cases; those are not JDK 25/GraalVM, JUnit,
+or guest-program execution evidence.
 
 A transient replace-and-revert race or hostile concurrent filesystem mutation
 is **not** proven impossible by these periodic hash checks. True race-free
