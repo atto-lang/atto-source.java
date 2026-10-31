@@ -91,10 +91,15 @@ final class AsyncStdioLogsTest {
         };
         AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, true));
         java.util.concurrent.CompletableFuture<Void> closer = null;
+        OresFuture<Void> acceptedRecord = null;
+        OresFuture<Void> acceptedBarrier = null;
         try {
-            OresFuture<Void> acceptedRecord = logs.logAsync("accepted\n");
+            acceptedRecord = logs.logAsync("accepted\n");
             assertTrue(entered.await(2, TimeUnit.SECONDS));
-            OresFuture<Void> acceptedBarrier = logs.flushAsync();
+            acceptedBarrier = logs.flushAsync();
+            // Stable references for assertions after a successful drain.
+            OresFuture<Void> record = acceptedRecord;
+            OresFuture<Void> barrier = acceptedBarrier;
             closer = java.util.concurrent.CompletableFuture.runAsync(logs::close);
 
             // Do not rely on timing to guess whether close() fenced admission.
@@ -112,14 +117,18 @@ final class AsyncStdioLogsTest {
                 if (!admissionClosed) Thread.sleep(5);
             }
             assertTrue(admissionClosed, "close must promptly fence new flush admission");
-            assertFalse(acceptedRecord.isDone(), "sink has not completed the accepted record");
-            assertFalse(acceptedBarrier.isDone(), "existing barrier must wait for the record");
+            assertFalse(record.isDone(), "sink has not completed the accepted record");
+            assertFalse(barrier.isDone(), "existing barrier must wait for the record");
             assertThrows(IllegalStateException.class, () -> logs.logAsync("late\n"));
         } finally {
             release.countDown();
             if (closer != null) closer.get(8, TimeUnit.SECONDS);
         }
         // Once close wins, existing accepted Futures still settle normally.
+        assertNotNull(acceptedRecord);
+        assertNotNull(acceptedBarrier);
+        acceptedRecord.get(2, TimeUnit.SECONDS);
+        acceptedBarrier.get(2, TimeUnit.SECONDS);
         // A second close must be idempotent after physical drain completion.
         logs.close();
     }
