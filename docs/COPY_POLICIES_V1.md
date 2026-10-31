@@ -115,6 +115,26 @@ implicitly process-global across tenants.
 * Module initialization is once per scope, with deterministic ordering
   and incarnation fencing; hot reload and tenant reincarnation cannot
   accidentally expose two live identities for the same scope.
+### Copy versus move: fail-closed partial field ownership
+
+`rt copy` asks for a new owned value; `rt take` asks to transfer the
+**same** owned value and invalidate the original owner. A class annotated
+`@NoCopy` remains moveable as a **whole owned value** unless another
+independent move restriction applies. Do not treat `consuming=true` as
+proof that an operation is copying.
+
+For `@NoCopy` field projections, `rt take owner.field` is allowed
+**only after** the compiler can prove field-level invalidation,
+reinitialization, loan exclusion, and cleanup along every control-flow
+path. Until that ledger exists, emit `E_MOVE_UNPROVEN` (not
+`E_COPY_FORBIDDEN`). Immutable fields remain non-moveable under their
+existing rules. This is a deliberate fail-closed limitation, not a
+claim that moves and copies are semantically equivalent.
+
+Dynamic property selection over classes with protected fields must also
+fail closed when the compiler cannot prove the selected field is safe;
+casts and projection wrappers cannot erase no-copy provenance.
+
 * A singleton transferred into another scope is not a move: the caller
   must pass a scoped capability/ActorRef with the appropriate authority.
 * Singleton names must have stable linker identity, including across
@@ -130,6 +150,7 @@ implicitly process-global across tenants.
 | `E_SINGLETON_COPY` | error | copying a singleton |
 | `E_SINGLETON_IDENTITY` | error | constructing, moving, cloning, or duplicating singleton identity |
 | `E_COPY_UNPROVEN` | error | class duplication without a verified copy contract; unknown generic/erased copyability |
+| `E_MOVE_UNPROVEN` | error | `rt take` from a protected partial field when the checker cannot prove that exact field was invalidated; take the containing owner instead |
 | `E_COPY_SEAL_ESCAPE` | error | losing a no-copy seal by cast, generic, export, serialization, or alias |
 | `E_COPY_ANNOTATION` | error | conflicting/duplicate annotations, illegal target, or unsupported `@Copyable` proof |
 | `W_COPY_DISCOURAGED` | warning | legal explicit copy of `@WarnOnCopy` value/field |
