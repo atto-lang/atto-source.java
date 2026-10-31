@@ -91,6 +91,102 @@ final class WebSocketOutboundGateTest {
     }
 
     @Test
+    void terminalCloseGetsReservedCreditWhileActivePongSaturatesControlQuota() throws Exception {
+        var gate = new WebSocketOutboundGate(125, 2, 250, 1, () -> { });
+        var activePong = gate.enqueueControl(
+                WebSocketFrameCodec.OPCODE_PONG, new byte[] { 7 });
+        assertSame(activePong, gate.poll());
+        var waitingUser = gate.enqueueUser(
+                WebSocketFrameCodec.OPCODE_TEXT, new byte[] { 'x' });
+        assertThrows(RejectedExecutionException.class, () ->
+                gate.enqueueControl(WebSocketFrameCodec.OPCODE_PONG, new byte[0]),
+                "ordinary CONTROL budget remains full while PONG is active");
+
+        var close = gate.enqueueControl(WebSocketFrameCodec.OPCODE_CLOSE,
+                WebSocketSessionState.closePayload(1000, ""));
+        assertEquals(2, gate.heldControlCount(),
+                "active CONTROL plus one reserved terminal CLOSE is permitted");
+        assertEquals(0, gate.heldUserCount(),
+                "close revokes queued USER credit before sending");
+        assertEquals(0, gate.heldUserBytes());
+        assertTrue(waitingUser.receipt().isCompletedExceptionally());
+        assertThrows(RejectedExecutionException.class, () ->
+                gate.enqueueControl(WebSocketFrameCodec.OPCODE_CLOSE,
+                        WebSocketSessionState.closePayload(1000, "")),
+                "terminal CLOSE can be enqueued only once");
+
+        gate.finish(activePong, null);
+        assertSame(close, gate.poll(), "CLOSE must win before any later USER");
+        gate.finish(close, null);
+        assertNull(close.receipt().get());
+        assertEquals(0, gate.heldControlCount());
+        assertEquals(0, gate.heldUserCount());
+        assertNull(gate.poll());
+        assertFalse(gate.hasPending());
+    }
+
+    @Test
+    void terminalCloseDropsQueuedControlWhenActiveAndPendingSaturateQuota()
+            throws Exception {
+        var gate = new WebSocketOutboundGate(125, 2, 250, 2, () -> { });
+        var active = gate.enqueueControl(WebSocketFrameCodec.OPCODE_PONG, new byte[] {1});
+        assertSame(active, gate.poll());
+        var queuedPong = gate.enqueueControl(
+                WebSocketFrameCodec.OPCODE_PONG, new byte[] {2});
+        var queuedUser = gate.enqueueUser(
+                WebSocketFrameCodec.OPCODE_BINARY, new byte[125]);
+        var close = gate.enqueueControl(WebSocketFrameCodec.OPCODE_CLOSE,
+                WebSocketSessionState.closePayload(1001, ""));
+        assertTrue(queuedPong.receipt().isCompletedExceptionally());
+        assertTrue(queuedUser.receipt().isCompletedExceptionally());
+        assertEquals(2, gate.heldControlCount(),
+                "only active PONG and terminal CLOSE may retain credits");
+        assertEquals(0, gate.heldUserBytes());
+        gate.finish(active, null);
+        assertSame(close, gate.poll());
+        gate.finish(close, null);
+        assertEquals(0, gate.heldControlCount());
+        assertEquals(0, gate.heldUserCount());
+    }
+
+    @Test
+    void cancelledQueuedControlReleasesCreditBeforeTerminalClose() {
+        var gate = new WebSocketOutboundGate(125, 1, 125, 1, () -> { });
+        var queuedPong = gate.enqueueControl(
+                WebSocketFrameCodec.OPCODE_PONG, new byte[] {3});
+        assertTrue(queuedPong.receipt().cancel(false));
+        assertEquals(0, gate.heldControlCount());
+        var close = gate.enqueueControl(WebSocketFrameCodec.OPCODE_CLOSE,
+                WebSocketSessionState.closePayload(1000, ""));
+        assertSame(close, gate.poll());
+        gate.finish(close, null);
+        assertEquals(0, gate.heldControlCount());
+    }
+
+    @Test
+    void cancelledActivePongDoesNotLoseReservedCloseOrPhysicalCredit() {
+        var aborts = new AtomicInteger();
+        var gate = new WebSocketOutboundGate(
+                125, 1, 125, 1, aborts::incrementAndGet);
+        var pong = gate.enqueueControl(
+                WebSocketFrameCodec.OPCODE_PONG, new byte[] {4});
+        assertSame(pong, gate.poll());
+        var close = gate.enqueueControl(WebSocketFrameCodec.OPCODE_CLOSE,
+                WebSocketSessionState.closePayload(1000, ""));
+        assertTrue(pong.receipt().cancel(true));
+        assertEquals(1, aborts.get(), "active cancel requests physical socket abort");
+        assertEquals(2, gate.heldControlCount(),
+                "cancellation cannot claim an unreturned physical credit");
+        gate.retire();
+        assertTrue(close.receipt().isCompletedExceptionally());
+        assertEquals(1, gate.heldControlCount(),
+                "active PONG credit is held until worker exits");
+        gate.finish(pong, new IOException("aborted"));
+        assertEquals(0, gate.heldControlCount());
+        assertNull(gate.poll());
+    }
+
+    @Test
     void invalidControlAndOversizeOutboundFramesFailBeforeQueueAdmission() {
         var gate = new WebSocketOutboundGate(125, 1, 125, 1, () -> { });
         assertThrows(IllegalArgumentException.class, () ->
