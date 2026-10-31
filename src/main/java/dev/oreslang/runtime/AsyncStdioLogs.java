@@ -59,16 +59,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 throw new IllegalStateException("async stdio queue is full (1024 records)");
             }
             submitted = next;
-            if (drain == null) {
-                try {
-                    drain = Thread.ofPlatform().name("ores-stdio-async-drain")
-                            .daemon(true).unstarted(this::runDrain);
-                    drain.start();
-                } catch (RuntimeException | Error startFailure) {
-                    failPending(startFailure);
-                    throw new IllegalStateException("async stdio worker failed to start", startFailure);
-                }
-            }
+            startDrainLocked();
             wake.release();
             return completion;
         }
@@ -77,6 +68,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
     public OresFuture<Void> flushAsync() {
         synchronized (lock) {
             if (failure != null) return OresFuture.failed(failure);
+            if (!accepting) return OresFuture.failed(
+                    new IllegalStateException("async stdio writer is closed"));
             if (submitted == completed) return OresFuture.completed(null);
             if (barriers.size() >= MAX_PENDING_BARRIERS) {
                 throw new IllegalStateException("async stdio flush barriers exhausted");
@@ -84,6 +77,19 @@ public final class AsyncStdioLogs implements AutoCloseable {
             OresFuture<Void> barrier = new OresFuture<>(() -> false, () -> { });
             barriers.add(new Barrier(submitted, barrier));
             return barrier;
+        }
+    }
+
+    /** Called only under lock; failed startup revokes all queued admissions. */
+    private void startDrainLocked() {
+        if (drain != null) return;
+        try {
+            drain = Thread.ofPlatform().name("ores-stdio-async-drain")
+                    .daemon(true).unstarted(this::runDrain);
+            drain.start();
+        } catch (RuntimeException | Error startFailure) {
+            failPending(startFailure);
+            throw new IllegalStateException("async stdio worker failed to start", startFailure);
         }
     }
 
@@ -135,6 +141,17 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     else barrier.completion().failFromRuntime(error);
                 }
             }
+            // The final synchronous-stdout flush also belongs to this bounded
+            // worker, even if no async log was ever admitted. Otherwise a
+            // blocked host PrintWriter can hang OresContext.close() forever.
+            // Never retry the sink after an already observed write failure.
+            synchronized (lock) {
+                if (failure != null) return;
+            }
+            writer.flush();
+            if (writer.checkError()) {
+                throw new IllegalStateException("async stdio sink reported a final flush error");
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             failPending(new IllegalStateException("async stdio drain was interrupted", interrupted));
@@ -156,9 +173,10 @@ public final class AsyncStdioLogs implements AutoCloseable {
         while ((remaining = queue.poll()) != null) remaining.completion().failFromRuntime(error);
     }
 
-    /** Seal admission before shutting down actors or the native I/O scheduler.
+    /** Seal after actor/native-I/O and auxiliary producer shutdown.
      * This does not join or wait on the potentially blocked host writer.
-     * Once sealed, logAsync rejects new records. close() later joins the worker.
+     * Once sealed, new logAsync records and flushAsync barriers are rejected;
+     * accepted records still drain through close().
      */
     public void sealAdmission() {
         synchronized (lock) {
@@ -177,10 +195,18 @@ public final class AsyncStdioLogs implements AutoCloseable {
         Thread worker;
         synchronized (lock) {
             accepting = false;
+            // A context may have used only synchronous stdout. Spawn the
+            // drain worker on close to perform that last host flush off-carrier.
+            if (drain == null && failure == null) startDrainLocked();
             worker = drain;
             if (worker != null) wake.release();
         }
-        if (worker == null) return;
+        if (worker == null) {
+            synchronized (lock) {
+                if (failure != null) throw new IllegalStateException("async stdio drain failed", failure);
+            }
+            return;
+        }
         try {
             worker.join(CLOSE_TIMEOUT_MILLIS);
         } catch (InterruptedException interrupted) {
