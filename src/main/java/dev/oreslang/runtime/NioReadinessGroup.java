@@ -73,6 +73,20 @@ final class NioReadinessGroup implements AutoCloseable {
         }
     }
 
+    /** Host/test observation only; actor code must never block on this barrier. */
+    boolean awaitIdle(long timeout, TimeUnit unit) throws InterruptedException {
+        Objects.requireNonNull(unit, "unit");
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        synchronized (lifecycle) {
+            while (pending != 0) {
+                long left = deadline - System.nanoTime();
+                if (left <= 0) return false;
+                TimeUnit.NANOSECONDS.timedWait(lifecycle, left);
+            }
+            return true;
+        }
+    }
+
     boolean isClosed() {
         synchronized (lifecycle) {
             return closed;
