@@ -362,6 +362,40 @@ final class PackageNamespaceWorkspace {
     static void verifyPinnedSnapshot(Workspace workspace, Map<String, String> admitted)
             throws IOException {
         verifyRootManifestSnapshot(workspace);
+
+        // All manifest-owned source bytes must still match the exact text
+        // admitted by collectImportClosure(), including ROOT package files.
+        // Reconstruct membership from the frozen manifest text: a replacement,
+        // deleted provider, symlink swap or changed inventory cannot silently
+        // change the source graph between collection and linking.
+        LinkedHashSet<Path> verifiedMembers = new LinkedHashSet<>();
+        for (Path manifest : workspace.manifests()) {
+            String frozenManifest = workspace.manifestSnapshots().get(manifest);
+            if (frozenManifest == null) {
+                throw new SecurityException("namespace source manifest snapshot missing: " + manifest);
+            }
+            for (Path member : members(manifest, checkedManifestText(frozenManifest))) {
+                if (!verifiedMembers.add(member)) {
+                    throw new SecurityException("namespace source member belongs to multiple packages: " + member);
+                }
+            }
+        }
+        if (!verifiedMembers.equals(new LinkedHashSet<>(workspace.files()))) {
+            throw new SecurityException("namespace source inventory changed during admission");
+        }
+        for (Path member : verifiedMembers) {
+            String id = member.toRealPath().toString().replace('\\', '/');
+            String sourceText = admitted.get(id);
+            if (sourceText == null) {
+                throw new SecurityException("namespace provider is absent from admitted source snapshot: " + id);
+            }
+            byte[] admittedBytes = sourceText.getBytes(StandardCharsets.UTF_8);
+            if (admittedBytes.length > 8L * 1024 * 1024
+                    || !boundedSourceSha256(member).equals(sha256(admittedBytes))) {
+                throw new SecurityException("namespace provider bytes changed during admission: " + member);
+            }
+        }
+
         for (var entry : workspace.dependencySourcePins().entrySet()) {
             Path manifest = entry.getKey();
             String pinnedManifestHash = workspace.dependencyManifestPins().get(manifest);
