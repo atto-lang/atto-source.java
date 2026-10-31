@@ -259,6 +259,37 @@ def remote_file_at_source_main(path, main_sha, max_bytes):
     return raw, blob_sha
 
 
+def authorized_source_authority_sha(
+        repository, expected_policy_digest, expected_repository_id,
+        source_pr, source_commit, authority_mode):
+    """Resolve the immutable source governance authority for this handoff."""
+    if authority_mode == "protected-main":
+        return authorized_main_sha(
+            repository, expected_policy_digest, expected_repository_id
+        )
+    if authority_mode != "reviewed-pr-head":
+        raise Denied("source authority mode invalid")
+
+    # The exact open PR head and latest independent ORESoftware review are the
+    # authority. Mutable unprotected main is deliberately not consulted.
+    if verify_source_pr(source_pr, source_commit) != SOURCE_REPOSITORY_ID:
+        raise Denied("source reviewed PR repository identity changed")
+    policy, _ = remote_file_at_source_main(
+        legacy.POLICY_PATH, source_commit, 16 * 1024
+    )
+    if hashlib.sha256(policy).digest() != expected_policy_digest:
+        raise Denied("source policy diverges from independently reviewed PR head")
+    codeowners, _ = remote_file_at_source_main(
+        legacy.CODEOWNERS_PATH, source_commit, MAX_GOVERNANCE_FILE
+    )
+    legacy.require_security_codeowners(codeowners)
+
+    # Close review/head TOCTOU after governance bytes are read.
+    if verify_source_pr(source_pr, source_commit) != SOURCE_REPOSITORY_ID:
+        raise Denied("source reviewed PR authorization changed during attestation")
+    return source_commit
+
+
 def parse_contract(raw, repository, source_pr, test_plan):
     try:
         doc = strict_json_loads(
@@ -1080,10 +1111,11 @@ def manifest(files):
 
 def revalidate_source_governance(
         root, repository, approved_policy, contract,
-        source_pr, authority_sha):
-    """Re-attest the protected source authority before a persistent write."""
-    current_authority = authorized_main_sha(
-        repository, approved_policy, contract["repository_id"]
+        source_pr, source_commit, authority_sha, source_authority_mode):
+    """Re-attest the selected immutable source authority before a write."""
+    current_authority = authorized_source_authority_sha(
+        repository, approved_policy, contract["repository_id"],
+        source_pr, source_commit, source_authority_mode
     )
     if current_authority != authority_sha:
         raise Denied("source governance authority changed during transfer")
@@ -1098,7 +1130,8 @@ def revalidate_source_governance(
 
 def authorize_write(
         root, repository, approved_policy, contract,
-        source_pr, source_commit, source_repo_id, authority_sha):
+        source_pr, source_commit, source_repo_id, authority_sha,
+        source_authority_mode):
     """Per-write fail-closed guard for source and destination authorization.
 
     Every source-bearing write revalidates the original protected-main
@@ -1136,7 +1169,7 @@ def authorize_write(
         raise Denied("source PR authorization changed during transfer")
     revalidate_source_governance(
         root, repository, approved_policy, contract,
-        source_pr, authority_sha
+        source_pr, source_commit, authority_sha, source_authority_mode
     )
 
 
@@ -1349,7 +1382,9 @@ def record_source_handoff_journal(source_pr, journal):
     return metadata
 
 
-def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, *, capacity_run_id, now=None):
+def publish(
+        repository, source, source_commit, source_pr, test_plan, trusted_root, *,
+        capacity_run_id, source_authority_mode="protected-main", now=None):
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
     source_commit = valid_sha(source_commit, "invalid source commit")
@@ -1361,8 +1396,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     approved_policy, approved_repository_id = legacy.checked_policy_approval(
         trusted_root, repository
     )
-    authority_sha = authorized_main_sha(
-        repository, approved_policy, approved_repository_id
+    authority_sha = authorized_source_authority_sha(
+        repository, approved_policy, approved_repository_id,
+        source_pr, source_commit, source_authority_mode
     )
     checked_control_plane(trusted_root, authority_sha)
     contract = checked_contract(
@@ -1394,7 +1430,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     def auth():
         authorize_write(
             trusted_root, repository, approved_policy, contract,
-            source_pr, source_commit, source_repo_id, authority_sha
+            source_pr, source_commit, source_repo_id, authority_sha,
+            source_authority_mode
         )
 
     elements = []
@@ -1518,8 +1555,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
     # Recheck both source policy/protection and the immutable carrier contract
     # immediately before making the source-bearing commit executable.
-    if authorized_main_sha(
-            repository, approved_policy, approved_repository_id) != authority_sha:
+    if authorized_source_authority_sha(
+            repository, approved_policy, approved_repository_id,
+            source_pr, source_commit, source_authority_mode) != authority_sha:
         raise Denied("source governance authority advanced before publication")
     checked_control_plane(trusted_root, authority_sha)
     checked_contract(
@@ -1554,8 +1592,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         # The payload ref is inert without the authorization ref. Re-run every
         # mutable governance check in that safe window so protection, policy,
         # contract or carrier-base drift cannot be authorized.
-        if authorized_main_sha(
-                repository, approved_policy, approved_repository_id) != authority_sha:
+        if authorized_source_authority_sha(
+                repository, approved_policy, approved_repository_id,
+                source_pr, source_commit, source_authority_mode) != authority_sha:
             raise Denied("source governance authority advanced before authorization")
         checked_control_plane(trusted_root, authority_sha)
         checked_contract(
@@ -1671,6 +1710,11 @@ def main(argv=None):
     parser.add_argument("--source-pr", required=True, type=int)
     parser.add_argument("--test-plan", required=True)
     parser.add_argument("--capacity-run-id", required=True, type=int)
+    parser.add_argument(
+        "--source-authority-mode",
+        choices=("protected-main", "reviewed-pr-head"),
+        default="protected-main",
+    )
     args = parser.parse_args(argv)
     root = SCRIPT_DIR.parent
     try:
@@ -1682,6 +1726,7 @@ def main(argv=None):
             args.test_plan,
             root,
             capacity_run_id=args.capacity_run_id,
+            source_authority_mode=args.source_authority_mode,
         )
     except (Denied, OSError, ValueError) as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
