@@ -86,8 +86,8 @@ final class PinnedNamespaceSharedCorpusTest {
     void otherPackageCannotSupplyMissingAggregateByNamespaceSpelling() {
         Corpus corpus = sourceCorpus();
         corpus.sources().put(ENTRY,
-            "import ns a from \"pkg:foo\";\\n"
-          + "pub fnc main(): int { return a.aggregate(21); }\\n");
+            "import ns a from \"pkg:foo\";\n"
+          + "pub fnc main(): int { return a.aggregate(21); }\n");
         assertThrows(RuntimeException.class, () -> execute(corpus, "other@1"));
     }
 
