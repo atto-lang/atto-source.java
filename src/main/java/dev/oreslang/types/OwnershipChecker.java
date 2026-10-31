@@ -4779,6 +4779,21 @@ public final class OwnershipChecker {
         if (expression instanceof Ast.SpreadExpr spread) {
             return unwrappedMoveProjection(spread.expression());
         }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            Ast.Expr trueBranch = unwrappedMoveProjection(conditional.whenTrue());
+            if (trueBranch instanceof Ast.MemberExpr || trueBranch instanceof Ast.IndexExpr) {
+                return trueBranch;
+            }
+            return unwrappedMoveProjection(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            for (Ast.MatchValueArm arm : match.arms()) {
+                Ast.Expr branch = unwrappedMoveProjection(arm.value());
+                if (branch instanceof Ast.MemberExpr || branch instanceof Ast.IndexExpr) {
+                    return branch;
+                }
+            }
+        }
         return expression;
     }
 
@@ -4806,7 +4821,31 @@ public final class OwnershipChecker {
         }
     }
 
+    private static CopyPolicyProjection strictestCopyPolicy(
+            CopyPolicyProjection first, CopyPolicyProjection second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        if (first.noCopy()) return first;
+        if (second.noCopy()) return second;
+        return first;
+    }
+
     private CopyPolicyProjection copyProjectionPolicy(Ast.Expr expr, Scope scope) {
+        // Branch expressions preserve the strictest policy from any arm;
+        // choosing a copyable branch at runtime does not permit copying a
+        // protected branch through the same static expression.
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return strictestCopyPolicy(
+                    copyProjectionPolicy(conditional.whenTrue(), scope),
+                    copyProjectionPolicy(conditional.whenFalse(), scope));
+        }
+        if (expr instanceof Ast.MatchExpr match) {
+            CopyPolicyProjection result = null;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                result = strictestCopyPolicy(result, copyProjectionPolicy(arm.value(), scope));
+            }
+            return result;
+        }
         // Explicit casts and syntax-only spreads cannot wash away the
         // ownership policy attached to a logical source place. A cast which
         // creates a distinct value still needs explicit audited lowering.
