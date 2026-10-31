@@ -323,8 +323,14 @@ final class WebSocketLoopbackListener implements AutoCloseable {
 
         /** Host-only bounded send. No guest actor handle is exposed yet. */
         OresFuture<Void> sendTextAsync(String text) {
+            Objects.requireNonNull(text, "text");
+            // Length in UTF-16 code units is a lower bound on UTF-8 output
+            // bytes for valid scalars. Reject huge input before allocating.
+            if (text.length() > maxFrameBytes) {
+                throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
+            }
             return sendUser(WebSocketFrameCodec.OPCODE_TEXT,
-                    Objects.requireNonNull(text, "text").getBytes(StandardCharsets.UTF_8));
+                    text.getBytes(StandardCharsets.UTF_8));
         }
 
         OresFuture<Void> sendBinaryAsync(byte[] payload) {
@@ -381,7 +387,12 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     } finally {
                         if (deadline != null) deadline.cancel(false);
                     }
-                    outbound.finish(write, failure);
+                    try {
+                        outbound.finish(write, failure);
+                    } catch (RuntimeException | Error completionFailure) {
+                        close();
+                        throw completionFailure;
+                    }
                     if (failure != null
                             || write.frame().opcode() == WebSocketFrameCodec.OPCODE_CLOSE) {
                         close();
@@ -410,12 +421,17 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             catch (IOException failure) {
                 throw new IllegalStateException("WebSocket peer close failed", failure);
             } finally {
-                try { outbound.retire(); }
-                finally { nativeIo.unregister(socket); }
-                synchronized (lifecycleLock) {
-                    activeConnections.remove(this);
+                try {
+                    outbound.retire();
+                } finally {
+                    try { nativeIo.unregister(socket); }
+                    finally {
+                        synchronized (lifecycleLock) {
+                            activeConnections.remove(this);
+                        }
+                        connections.release();
+                    }
                 }
-                connections.release();
             }
         }
     }
