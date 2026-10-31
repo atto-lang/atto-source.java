@@ -1334,6 +1334,18 @@ public final class OwnershipChecker {
                 ValueKind valueKind = kindOfType(valueType);
                 return new ValueInfo(valueType, valueKind, null);
             }
+            // Built-in Array/List.size is a computed Copy scalar, not
+            // a borrowable or movable class field. Preserve that distinction
+            // in the ownership checker as well as the type checker, so
+            // formatting borrowedCollection.size cannot invent a projected
+            // field loan for a non-existent slot.
+            if (concreteReceiver != null
+                    && member.member().equals("size")
+                    && Set.of("Array", "List").contains(concreteReceiver.name())
+                    && concreteReceiver.arguments().size() == 1
+                    && findClass(concreteReceiver.name()) == null) {
+                return new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             if (klass != null) {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
