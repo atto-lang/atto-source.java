@@ -100,8 +100,9 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
 
     /**
      * Trusted host bridge to a real SHARED ActorRuntime mailbox. A successful
-     * ActorRef.send() only admits the message; the runtime's drain() Future
-     * is the evidence that all messages preceding that barrier completed.
+     * ActorRef.send() only admits the message; the runtime's physicalDrain()
+     * Future proves the prior message was processed AND the actor carrier,
+     * source Task and continuation lanes were physically quiescent.
      * Never acknowledge a tracked dispatch at enqueue time.
      *
      * The decoder is a trusted canonical payload adapter: ActorRuntime may
@@ -119,7 +120,7 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             // Neither ActorRef.send() nor caller-return licenses retirement.
             physicalRoute.send(message);
             OresFuture<Void> drained = Objects.requireNonNull(
-                    physicalRoute.drain(), "runtime actor drain future");
+                    physicalRoute.physicalDrain(), "runtime physical actor drain future");
             drained.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     completion.quarantine(failure);
