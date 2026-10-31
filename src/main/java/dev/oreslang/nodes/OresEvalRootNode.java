@@ -7256,8 +7256,8 @@ public final class OresEvalRootNode extends RootNode {
                                 "unknown Math intrinsic " + operation);
                     };
                 } catch (ArithmeticException overflow) {
-                    throw new ArithmeticException(
-                            "ORES_I64_OVERFLOW: checked signed 64-bit Math." + operation);
+                    throw new ArithmeticOverflowError(
+                            "checked signed 64-bit Math." + operation);
                 }
             }
             if (value instanceof Double raw) {
@@ -9961,6 +9961,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "f32 runtime identity is disabled until binary32 storage/rounding exists");
             }
+            if (value instanceof OresGuestError error && findClass(name) == null) {
+                return name.equals("Error") || name.equals(error.guestTypeName());
+            }
             if (name.equals("float") || name.equals("f64")) return value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
@@ -10001,6 +10004,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String oresRuntimeTypeName(Object value) {
+            if (value instanceof OresGuestError error) return error.guestTypeName();
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -10288,10 +10292,10 @@ public final class OresEvalRootNode extends RootNode {
                         default -> throw new IllegalArgumentException("bad numeric operator");
                     };
                 } catch (ArithmeticException overflow) {
-                    // Default fixed-width Oreslang arithmetic is checked.
-                    // Normalize the host signal; guest ArithmeticOverflowError
-                    // effect/unwind integration remains a separate ABI gate.
-                    throw new ArithmeticException("ORES_I64_OVERFLOW: checked signed 64-bit " + op);
+                    // Host overflow is only the machine detection mechanism.
+                    // Publish Oreslang guest Error identity at the source boundary.
+                    throw new ArithmeticOverflowError(
+                            "checked signed 64-bit " + op);
                 }
             }
             double x = a.doubleValue(), y = b.doubleValue();
@@ -10319,7 +10323,8 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     return Math.negateExact(((Number) value).longValue());
                 } catch (ArithmeticException overflow) {
-                    throw new ArithmeticException("ORES_I64_OVERFLOW: checked signed 64-bit negate");
+                    throw new ArithmeticOverflowError(
+                            "checked signed 64-bit negate");
                 }
             }
             if (value instanceof Number number) return -number.doubleValue();
@@ -11553,6 +11558,28 @@ public final class OresEvalRootNode extends RootNode {
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
+    private static class OresGuestError extends RuntimeException {
+        private final String guestTypeName;
+        private final int abiCode;
+
+        private OresGuestError(String guestTypeName, int abiCode, String message) {
+            super(guestTypeName + ": " + message, null, true, false);
+            this.guestTypeName = Objects.requireNonNull(guestTypeName, "guest error type");
+            this.abiCode = abiCode;
+        }
+
+        private String guestTypeName() { return guestTypeName; }
+        @SuppressWarnings("unused")
+        private int abiCode() { return abiCode; }
+    }
+
+    private static final class ArithmeticOverflowError extends OresGuestError {
+        private static final int ABI_CODE = 65537;
+        private ArithmeticOverflowError(String message) {
+            super("ArithmeticOverflowError", ABI_CODE, message);
+        }
+    }
+
     private static final class OresPanic extends RuntimeException
             implements dev.oreslang.runtime.UntrappableTaskFailure {
         private OresPanic(String message) { super(message, null, true, false); }
