@@ -55,7 +55,7 @@ jobs:
           mvn -version
           mvn -B -ntp -Dtest=ActorInitReservedAdmissionTest,ActorInitPublicationGateTest,SourceActorCodeExecutorTest test
           for entry in \
-            dev.oreslang.ActorInitReservedAdmissionTest:21 \
+            dev.oreslang.ActorInitReservedAdmissionTest:22 \
             dev.oreslang.runtime.ActorInitPublicationGateTest:10 \
             dev.oreslang.runtime.SourceActorCodeExecutorTest:5; do
             class="${entry%%:*}"
@@ -68,4 +68,4 @@ jobs:
             done
             echo "ACTOR_INIT_SUITE_PASS class=$class tests=$expected"
           done
-          echo "ACTOR_INIT_SCALAR_NATIVE_GUEST_PASS tests=36"
+          echo "ACTOR_INIT_SCALAR_NATIVE_GUEST_PASS tests=37"
