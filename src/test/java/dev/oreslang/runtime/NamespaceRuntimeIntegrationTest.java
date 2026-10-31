@@ -804,6 +804,33 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void rootProviderSameByteSymlinkSwapAfterDiscoveryIsRejected() throws Exception {
+        Path project = temp.resolve("root-source-symlink-swap");
+        billing(project);
+        Path entry = project.resolve("src/billing/charge.ores");
+        PackageNamespaceWorkspace.Workspace snapshot =
+                PackageNamespaceWorkspace.discover(entry);
+        Map<String, String> admitted = new java.util.LinkedHashMap<>();
+        for (Path file : snapshot.files()) {
+            admitted.put(file.toRealPath().toString().replace('\\', '/'),
+                    Files.readString(file));
+        }
+        Path provider = project.resolve("src/billing/refund.ores");
+        Path sameBytes = temp.resolve("identical-refund-provider.ores");
+        Files.write(sameBytes, Files.readAllBytes(provider));
+        try {
+            Files.delete(provider);
+            Files.createSymbolicLink(provider, sameBytes);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceWorkspace.verifyPinnedSnapshot(snapshot, admitted));
+        assertTrue(denied.getMessage().contains("symlinked namespace package member"));
+    }
+
+    @Test
     void rootProviderMutationAfterDiscoveryIsRejected() throws Exception {
         Path project = temp.resolve("root-source-drift");
         billing(project);
