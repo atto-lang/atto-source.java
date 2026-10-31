@@ -18,6 +18,50 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class StdioLogAndSpreadTest {
     @Test
+    void detachedAsyncLogsDrainOnContextClose() throws Exception {
+        assertEquals("first|1\\nsecond|2\\n", run("""
+                pub routine main(): void {
+                  stdio.stdout.log_async("first", "|", 1);
+                  stdio.stdout.log_async("second", "|", 2);
+                }
+                """));
+    }
+
+    @Test
+    void awaitedAsyncBarrierPreservesOutputOrder() throws Exception {
+        assertEquals("one\\ntwo\\n", run("""
+                pub async routine main(): void {
+                  stdio.stdout.log_async("one");
+                  await stdio.flush_async_logs();
+                  stdio.stdout.log_async("two");
+                }
+                """));
+    }
+
+    @Test
+    void asyncLogSpreadAndListHaveIdenticalFormatting() throws Exception {
+        assertEquals("A1B\\nA1B\\n", run("""
+                pub routine main(): void {
+                  val parts = arr["A", 1, "B"];
+                  stdio.stdout.log_async(...parts);
+                  stdio.stdout.logList_async(parts);
+                }
+                """));
+    }
+
+    @Test
+    void asyncVariadicLogCannotBeReifiedWithoutAnExplicitLambda() {
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          val logger = stdio.stdout.log_async;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("direct-call-only"));
+    }
+
+    @Test
     void consoleCanObserveTheSameOwnerTwiceAndUseItAfterward() throws Exception {
         String output = run("""
                 define class ConsolePayload as pub val int value = 42; end
