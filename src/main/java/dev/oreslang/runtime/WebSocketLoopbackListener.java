@@ -369,18 +369,23 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     if (write == null) return;
                     Throwable failure = null;
                     ScheduledFuture<?> deadline = null;
+                    AtomicBoolean expired = new AtomicBoolean();
                     try (var loan = nativeIo.borrow(socket)) {
-                        // Classic Socket output is allowed only on a host I/O
-                        // worker. Absolute timeout closes its physical socket.
-                        // A future SocketChannel/NIO adapter is still required.
-                        deadline = writeDeadlines.schedule(this::close,
-                                limits.handshakeTimeoutMillis(), TimeUnit.MILLISECONDS);
+                        // The deadline carrier only aborts the physical socket,
+                        // never settles Futures or runs user terminal callbacks.
+                        // The owning I/O worker performs retirement on return.
+                        deadline = writeDeadlines.schedule(() -> {
+                            expired.set(true);
+                            try { socket.close(); }
+                            catch (IOException ignored) { /* writer will retire */ }
+                        }, limits.handshakeTimeoutMillis(), TimeUnit.MILLISECONDS);
                         WebSocketFrameCodec.Frame frame = write.frame();
                         WebSocketFrameCodec.writeServerFrame(
                                 socket.getOutputStream(), frame.fin(), frame.opcode(),
                                 frame.payloadUnsafe(), maxFrameBytes);
-                        if (retired.get()) {
-                            throw new IOException("WebSocket retired during outbound write");
+                        if (expired.get() || retired.get()) {
+                            throw new java.net.SocketTimeoutException(
+                                    "WebSocket outbound write aborted by deadline or retirement");
                         }
                     } catch (IOException | RuntimeException failureCaught) {
                         failure = failureCaught;
