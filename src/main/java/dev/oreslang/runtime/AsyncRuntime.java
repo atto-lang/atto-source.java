@@ -30,6 +30,9 @@ public final class AsyncRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_MILLIS = 500L;
     private static final ThreadLocal<Boolean> ASYNC_CARRIER =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
+    // Unlike the public boolean marker, this identifies the *owning*
+    // runtime. Closing a different runtime from a carrier is permitted.
+    private static final ThreadLocal<AsyncRuntime> ASYNC_OWNER = new ThreadLocal<>();
 
     @FunctionalInterface
     public interface TurnExecutor {
@@ -174,6 +177,7 @@ public final class AsyncRuntime implements AutoCloseable {
         AtomicReference<T> value = new AtomicReference<>();
         AtomicReference<Throwable> failure = new AtomicReference<>();
         ASYNC_CARRIER.set(Boolean.TRUE);
+        ASYNC_OWNER.set(this);
         try {
             turnExecutor.execute(() -> {
                 if (completion.isCancelled()) return;
@@ -186,6 +190,7 @@ public final class AsyncRuntime implements AutoCloseable {
         } catch (Throwable thrown) {
             failure.compareAndSet(null, thrown);
         } finally {
+            ASYNC_OWNER.remove();
             ASYNC_CARRIER.remove();
         }
 
@@ -238,6 +243,12 @@ public final class AsyncRuntime implements AutoCloseable {
 
     @Override
     public void close() {
+        // A carrier cannot synchronously await its own physical termination.
+        // Reject before setting the irreversible closed/admission fence.
+        if (ASYNC_OWNER.get() == this) {
+            throw new IllegalStateException(
+                    "AsyncRuntime must be closed outside its own async carrier");
+        }
         // The CLOSED bit is an admission fence, not a physical-exit
         // receipt. A previous 500ms timeout must not make a retry succeed
         // while interrupt-resistant tasks are still on their carriers.
