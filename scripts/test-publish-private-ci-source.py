@@ -497,6 +497,53 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_blocking_p0_incidents_reject_open_issue_252(self):
+        states = {
+            number: ("closed", "completed")
+            for number in pub.BLOCKING_INCIDENTS
+        }
+        states[252] = ("open", None)
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#252 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_252_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[252] += 1
+        with patch.object(
+            pub, "gh_api", side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_252_not_planned(self):
+        states = {
+            number: ("closed", "completed")
+            for number in pub.BLOCKING_INCIDENTS
+        }
+        states[252] = ("closed", "not_planned")
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#252 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_quarantined_hnpt_e2e_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "honeypot-r-us-test/hnpt-e2e", self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
+
     def test_quarantined_recovery_carrier_rejected_before_any_source_access(self):
         with (
             patch.object(pub, "require_resolved_blocking_incidents") as incidents,
@@ -1575,6 +1622,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             172: 6042602777,
             198: 6070465058,
             200: 6071264936,
+            252: 6129229261,
         }
         self.assertEqual(pub.BLOCKING_INCIDENT_IDS, expected)
         self.assertEqual(pub.BLOCKING_INCIDENTS, tuple(expected))
@@ -1587,6 +1635,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             1370782550,
             1324139596,
             1350751074,
+            1346492776,
         }
         self.assertEqual(set(pub.QUARANTINED_DESTINATION_IDS), expected_ids)
         for repository_id in sorted(expected_ids):
@@ -1617,6 +1666,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "agent-pontifex-test/agent-pontifex-e2e-tests",
             "led-dynamo/leddy-e2e",
             "claimgraph-test/claimgraph-e2e",
+            "honeypot-r-us-test/hnpt-e2e",
         }
         self.assertEqual(
             {item.casefold() for item in pub.QUARANTINED_DESTINATIONS},
