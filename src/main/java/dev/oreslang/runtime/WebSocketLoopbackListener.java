@@ -939,7 +939,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         loan.close();
                     }
                 }
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | Error failure) {
                 // An invalid/foreign handle is a rejected admission, not a
                 // reason to close an otherwise healthy connection. Only an
                 // error AFTER acquiring a valid lease retires the socket.
