@@ -267,11 +267,12 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         private final AtomicBoolean reading = new AtomicBoolean();
         private final AtomicBoolean writerActive = new AtomicBoolean();
         private final AtomicBoolean retired = new AtomicBoolean();
+        private final AtomicBoolean abortRequested = new AtomicBoolean();
         // Guarded by lifecycleLock. Never published directly to guest source.
         private WebSocketActorConnectionLease actorOwnership;
         private final WebSocketOutboundGate outbound =
                 new WebSocketOutboundGate(maxFrameBytes, 16,
-                        maxFrameBytes * 16, 4, this::close);
+                        maxFrameBytes * 16, 4, this::requestActiveWriteAbort);
 
         private Connection(Socket socket) { this.socket = socket; }
 
@@ -354,7 +355,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 if (retired.get() || closed.get() || actorOwnership == null) {
                     throw new SecurityException("WebSocket actor connection retired");
                 }
-                if (reading.get() || writerActive.get() || outbound.hasPending()
+                if (abortRequested.get() || reading.get() || writerActive.get()
+                        || outbound.hasPending()
                         || protocol.state() != WebSocketSessionState.State.OPEN
                         || protocol.hasPendingUserState()) {
                     throw new RejectedExecutionException(
@@ -400,7 +402,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 throw new SecurityException("WebSocket raw read belongs to host I/O");
             }
             requireNet.accept(endpoint, "websocket.read");
-            if (retired.get() || !reading.compareAndSet(false, true)) {
+            if (retired.get() || abortRequested.get()
+                    || !reading.compareAndSet(false, true)) {
                 throw new RejectedExecutionException("WebSocket read closed or already outstanding");
             }
             AtomicBoolean workStarted = new AtomicBoolean();
@@ -497,7 +500,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 if (actorOwnership != null) {
                     throw new SecurityException("actor-owned WebSocket requires authenticated send");
                 }
-                if (retired.get() || closed.get()
+                if (retired.get() || abortRequested.get() || closed.get()
                         || protocol.state() != WebSocketSessionState.State.OPEN) {
                     throw new RejectedExecutionException("WebSocket is closing or retired");
                 }
@@ -536,7 +539,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             requireNet.accept(endpoint, "websocket.send");
             WebSocketOutboundGate.Write write;
             synchronized (lifecycleLock) {
-                if (retired.get() || closed.get()
+                if (retired.get() || abortRequested.get() || closed.get()
                         || protocol.state() != WebSocketSessionState.State.OPEN) {
                     throw new RejectedExecutionException("WebSocket is closing or retired");
                 }
@@ -609,8 +612,33 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 }
             } finally {
                 writerActive.set(false);
-                if (!retired.get() && outbound.hasPending()) wakeWriter();
+                if (abortRequested.get()) {
+                    // Physical close runs on the native writer, never on the
+                    // actor carrier that cancelled its receipt.
+                    close();
+                } else if (!retired.get() && outbound.hasPending()) {
+                    wakeWriter();
+                }
             }
+        }
+
+        /**
+         * The receipt-cancellation hook can execute on an actor carrier.
+         * Only logical revocation and bounded native CONTROL admission are
+         * permitted here; Socket.close() belongs to a native worker.
+         */
+        private void requestActiveWriteAbort() {
+            if (!abortRequested.compareAndSet(false, true)) return;
+            synchronized (lifecycleLock) {
+                if (actorOwnership != null) actorOwnership.revoke();
+            }
+            // If CONTROL is unavailable, the already-running writer still
+            // owns a finite NIO deadline and will close in its finally.
+            // No cancellation callback releases a physical actor loan.
+            nativeIo.submitControl("websocket.cancel-write", () -> {
+                close();
+                return null;
+            });
         }
 
         Optional<WebSocketFrameCodec.Message> pollUserMessage() {
