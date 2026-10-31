@@ -178,6 +178,10 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     private final LogicalActorProxyMailboxV1 mailbox;
     private volatile Published<R> active;
     private Stage pending;
+    // Reservation is acquired under the coordinator lock, but the external
+    // transport callback executes OUTSIDE it. Stage/teardown is forbidden
+    // until every in-flight physical submit returns or throws.
+    private int physicalSubmissions;
     private boolean poisoned;
     private boolean closed;
 
@@ -217,6 +221,9 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             requireOperational();
             if (pending != null)
                 throw new IllegalStateException("logical route upgrade already staged");
+            if (physicalSubmissions != 0)
+                throw new IllegalStateException(
+                        "cannot freeze route while physical submit is in flight");
             // preflight takes the only old-generation and mailbox DATA freezes.
             var preflight = ActorUpgradePreflightV1.prepare(
                     active.taskAdmission(), mailbox, candidateImage);
@@ -252,29 +259,42 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     }
 
     /**
-     * Dispatch and physical send are one route admission critical section.
-     * The callback MUST be a trusted nonblocking transport submitter. Unknown
-     * delivery outcomes remain outstanding; never requeue an ambiguous send.
+     * Reserve a pinned old-generation dispatch under CONTROL, then invoke the
+     * trusted transport submitter with NO coordinator/epoch/mailbox lock held.
+     * The in-flight reservation forbids stage and close until the submitter
+     * returns. An ambiguous failure remains outstanding and quarantines DATA;
+     * it must never be implicitly requeued or credited.
      */
     boolean dispatchNext(BiConsumer<R, LogicalActorProxyMailboxV1.Envelope> submit) {
         Objects.requireNonNull(submit, "trusted transport submit");
+        final LogicalActorProxyMailboxV1.Envelope envelope;
+        final R physicalRoute;
         synchronized (lock) {
             requireOperational();
             if (pending != null) return false;
-            var envelope = mailbox.pollDispatch();
+            if (physicalSubmissions == Integer.MAX_VALUE)
+                throw new IllegalStateException("physical submit reservation budget exhausted");
+            envelope = mailbox.pollDispatch();
             if (envelope == null) return false;
-            try {
-                submit.accept(active.physicalRoute(), envelope);
-            } catch (RuntimeException | Error unknownDelivery) {
-                // The physical transport may already have accepted the send.
-                // Never requeue, refund credits or publish over an ambiguous
-                // in-flight delivery without a trusted completion receipt.
-                poisoned = true;
-                throw new IllegalStateException(
-                        "ambiguous physical submit; logical DATA quarantined",
-                        unknownDelivery);
-            }
+            // Route and reservation are captured atomically. A concurrent
+            // upgrade cannot freeze or retire this route until finally runs.
+            ++physicalSubmissions;
+            physicalRoute = active.physicalRoute();
+        }
+        try {
+            submit.accept(physicalRoute, envelope);
             return true;
+        } catch (RuntimeException | Error unknownDelivery) {
+            synchronized (lock) {
+                poisoned = true;
+            }
+            throw new IllegalStateException(
+                    "ambiguous physical submit; logical DATA quarantined",
+                    unknownDelivery);
+        } finally {
+            synchronized (lock) {
+                --physicalSubmissions;
+            }
         }
     }
 
@@ -316,6 +336,9 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     @Override public void close() {
         synchronized (lock) {
             if (closed) return;
+            if (physicalSubmissions != 0)
+                throw new IllegalStateException(
+                        "cannot retire logical route while physical submit is in flight");
             closed = true;
             active.taskAdmission().close();
             mailbox.close();
