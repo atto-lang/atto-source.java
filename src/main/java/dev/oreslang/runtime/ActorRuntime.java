@@ -2568,6 +2568,12 @@ public final class ActorRuntime implements AutoCloseable {
             return ActorRuntime.this.physicalDrain(this);
         }
 
+        // Trusted CONTROL-side only: this revokes direct ActorRef.send() DATA
+        // admission while the logical route coordinator stages a successor.
+        UpgradeIngressLease freezeUpgradeIngress() {
+            return ActorRuntime.this.freezeUpgradeIngress(this);
+        }
+
 
 
         /** Seal admission and finish previously admitted messages before stopping.
@@ -5750,6 +5756,53 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Physical SHARED actor ingress fence. Hold the same cell lifecycle lock
+     * as the FINAL send admission check, not just the early slot reservation.
+     * Messages reserved before the freeze but not committed must fail closed.
+     */
+    final class UpgradeIngressLease implements AutoCloseable {
+        private final ActorCell<?> cell;
+        private final Object token;
+        private boolean closed;
+
+        private UpgradeIngressLease(ActorCell<?> cell, Object token) {
+            this.cell = cell;
+            this.token = token;
+        }
+
+        @Override public void close() {
+            synchronized (cell.lifecycleLock) {
+                if (closed) return;
+                if (cell.upgradeIngressTicket != token)
+                    throw new IllegalStateException("stale or foreign actor ingress fence");
+                cell.upgradeIngressTicket = null;
+                closed = true;
+            }
+        }
+    }
+
+    private UpgradeIngressLease freezeUpgradeIngress(ActorRef<?> ref) {
+        requireSupervisorContext("freeze physical actor ingress for upgrade");
+        requireCallerRuntimeAffinity("freeze physical actor ingress for upgrade");
+        Objects.requireNonNull(ref, "actor reference");
+        if (!ref.ownedBy(this))
+            throw new ActorInvalidReferenceException("actor belongs to another runtime");
+        if (ref.kind() != ActorKind.SHARED)
+            throw new SecurityException("physical upgrade ingress fence requires SHARED actor");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) throw terminated(ref);
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.sealing)
+                throw terminated(ref);
+            if (cell.upgradeIngressTicket != null)
+                throw new IllegalStateException("physical actor ingress is already frozen");
+            Object token = new Object();
+            cell.upgradeIngressTicket = token;
+            return new UpgradeIngressLease(cell, token);
+        }
+    }
+
+    /**
      * Trusted host-only physical completion barrier. Does not imply native
      * code image, FFI or actor-owned off-heap arena reclamation; callers must
      * additionally fence new physical admissions before using this to upgrade.
@@ -5809,7 +5862,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
-            if (cell.sealing) throw new ActorSealedException(ref.id());
+            if (cell.sealing || cell.upgradeIngressTicket != null)
+                throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
                 throw new ActorMailboxFullException(ref.id());
             }
@@ -5887,7 +5941,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
-                    if (cell.sealing) {
+                    if (cell.sealing || cell.upgradeIngressTicket != null) {
                         throw new ActorSealedException(ref.id());
                     }
                     if (cell.forceKillFenced) {
@@ -7628,6 +7682,9 @@ public final class ActorRuntime implements AutoCloseable {
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
+        // Revokes NEW DATA admission through both ActorRef.send() checks.
+        // Existing enqueued mail/continuations may drain normally.
+        private Object upgradeIngressTicket;
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean carrierActive;
