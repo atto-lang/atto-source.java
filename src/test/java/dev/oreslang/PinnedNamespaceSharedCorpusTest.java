@@ -101,12 +101,12 @@ final class PinnedNamespaceSharedCorpusTest {
     void addingPinnedBImportMakesAllItsProvidersReachableButNotOtherPackage() {
         Corpus corpus = sourceCorpus();
         corpus.sources().put(ENTRY,
-                "import ns a from \\"pkg:foo\\";\\n"
-                + "import ns b from \\"pkg:foo\\";\\n"
-                + "import ns c from \\"pkg:foo\\";\\n"
+                "import ns a from \"pkg:foo\";\n"
+                + "import ns b from \"pkg:foo\";\n"
+                + "import ns c from \"pkg:foo\";\n"
                 + "pub fnc main(): int { return a.aggregate(21) + c.response_delta() "
                 + "+ b.model_code() + b.query_code() + b.storage_code() "
-                + "+ b.validation_code(); }\\n");
+                + "+ b.validation_code(); }\n");
         Set<String> units = plannedInitializationUnits(corpus);
         assertEquals(11, units.size());
         assertTrue(units.containsAll(Set.of(
