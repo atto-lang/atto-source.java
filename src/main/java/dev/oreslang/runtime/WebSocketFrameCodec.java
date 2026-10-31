@@ -75,6 +75,11 @@ public final class WebSocketFrameCodec {
         public byte[] payload() {
             return Arrays.copyOf(payload, payload.length);
         }
+
+        /** Observe message length without allocating a second defensive payload copy. */
+        public int payloadLength() {
+            return payload.length;
+        }
     }
 
     /**
