@@ -447,6 +447,14 @@ final class WebSocketLoopbackListener implements AutoCloseable {
          * native socket borrow, including cancellation and close races.
          */
         OresFuture<WebSocketSessionState.Action> readForActorAsync(
+                WebSocketActorConnectionLease.Handle handle, OresContext context,
+                ActorRuntime.ActorRef<?> actor) {
+            requireContextActor(context, actor, "websocket.read");
+            return readForActorAsync(handle, context.contextId(), actor.address());
+        }
+
+        /** Package-private synthetic-address test seam, not guest authority. */
+        OresFuture<WebSocketSessionState.Action> readForActorAsync(
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
                 ActorRuntime.ActorAddress authenticatedCaller) {
             synchronized (lifecycleLock) {
@@ -575,6 +583,15 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         }
 
         OresFuture<Void> sendTextForActorAsync(
+                WebSocketActorConnectionLease.Handle handle, OresContext context,
+                ActorRuntime.ActorRef<?> actor, String text) {
+            requireContextActor(context, actor, "websocket.send");
+            return sendTextForActorAsync(
+                    handle, context.contextId(), actor.address(), text);
+        }
+
+        /** Package-private synthetic-address test seam, not guest authority. */
+        OresFuture<Void> sendTextForActorAsync(
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
                 ActorRuntime.ActorAddress authenticatedCaller, String text) {
             Objects.requireNonNull(text, "text");
@@ -586,6 +603,15 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     handle, tenant, authenticatedCaller);
         }
 
+        OresFuture<Void> sendBinaryForActorAsync(
+                WebSocketActorConnectionLease.Handle handle, OresContext context,
+                ActorRuntime.ActorRef<?> actor, byte[] payload) {
+            requireContextActor(context, actor, "websocket.send");
+            return sendBinaryForActorAsync(
+                    handle, context.contextId(), actor.address(), payload);
+        }
+
+        /** Package-private synthetic-address test seam, not guest authority. */
         OresFuture<Void> sendBinaryForActorAsync(
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
                 ActorRuntime.ActorAddress authenticatedCaller, byte[] payload) {
@@ -723,6 +749,17 @@ final class WebSocketLoopbackListener implements AutoCloseable {
          * queue operation, never direct guest execution. The scheduler must
          * still revalidate the handle on eventual actor delivery.
          */
+        boolean pollAndEnqueueForActor(
+                WebSocketActorConnectionLease.Handle handle, OresContext context,
+                ActorRuntime.ActorRef<?> actor,
+                java.util.function.Consumer<WebSocketFrameCodec.Message> trustedEnqueue) {
+            requireContextActor(context, actor, "websocket.poll");
+            return pollAndEnqueueForActor(handle, context.contextId(),
+                    actor.address(), trustedEnqueue);
+        }
+
+        /** Synthetic-address test seam; the eventual guest runtime must
+         * revalidate the handle at actual actor delivery, not merely enqueue. */
         boolean pollAndEnqueueForActor(
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
                 ActorRuntime.ActorAddress authenticatedCaller,
