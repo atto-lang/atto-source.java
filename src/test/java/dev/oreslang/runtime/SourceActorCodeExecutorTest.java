@@ -182,13 +182,15 @@ final class SourceActorCodeExecutorTest {
                 }
             };
             java.util.ArrayList<Object> original = new java.util.ArrayList<>(
-                    java.util.List.of(12L, true, "tenant-a"));
+                    java.util.List.of(12, true, "tenant-a"));
             ActorRuntime.ActorRef<Object> ref = runtime.spawnCodeActor(
                     ActorRuntime.ActorKind.PRIVATE, executor, "Worker", original);
             original.set(0, 99L);
             original.set(2, "tenant-b");
             assertNull(ref.ready().join());
             assertEquals(java.util.List.of(12L, true, "tenant-a"), received.get());
+            assertInstanceOf(Long.class, received.get().getFirst(),
+                    "source int values must have one canonical int64 representation");
             assertThrows(UnsupportedOperationException.class,
                     () -> received.get().set(0, 99L));
             ref.send("stop");
@@ -222,6 +224,14 @@ final class SourceActorCodeExecutorTest {
             assertThrows(IllegalArgumentException.class,
                     () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
                             executor, "Worker", java.util.List.of(Double.POSITIVE_INFINITY)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker",
+                            java.util.List.of(Character.toString((char) 0xD800))));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                            executor, "Worker",
+                            java.util.List.of(Character.toString((char) 0xDC00))));
 
             // A typed ActorRef is not yet a transferable capability for
             // initialization. Deny it even when the reference belongs to
