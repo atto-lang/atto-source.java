@@ -5,6 +5,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.channels.ServerSocketChannel;
 import java.util.Objects;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -12,10 +13,6 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Optional;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
@@ -37,11 +34,6 @@ final class WebSocketLoopbackListener implements AutoCloseable {
     private final int maxFrameBytes;
     private final int maxMessageBytes;
     private final Semaphore connections;
-    // One deadline dispatcher per bounded listener. Socket.close() interrupts a
-    // blocked classic Socket output write; this is worker-bounded, NOT kernel NIO.
-    private final ScheduledExecutorService writeDeadlines =
-            Executors.newSingleThreadScheduledExecutor(
-                    Thread.ofVirtual().name("ores-ws-write-deadline-", 0).factory());
     private final AtomicBoolean accepting = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     // Accept publication and listener retirement share one lock. An accepted
@@ -109,7 +101,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         }
         String endpoint = "127.0.0.1:" + port;
         requireNet.accept(endpoint, "websocket.listen");
-        var listener = new ServerSocket();
+        // Accept must produce a real SocketChannel: a classic ServerSocket
+        // cannot become nonblocking after an HTTP/1.1 upgrade.
+        ServerSocketChannel serverChannel = ServerSocketChannel.open();
+        serverChannel.configureBlocking(true);
+        ServerSocket listener = serverChannel.socket();
         try {
             listener.setReuseAddress(false);
             listener.bind(new InetSocketAddress(
@@ -249,7 +245,6 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
-        writeDeadlines.shutdownNow();
         // The tracked owner stays in AsyncNativeIo until every native
         // close callback actually returns. Failed closes must be retried or
         // quarantined by the physical context-retirement sweep.
@@ -288,10 +283,13 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         // This timeout is the one-frame *absolute* budget,
                         // not a re-armed per-read idle timeout. A slow-drip
                         // masked payload cannot monopolize an I/O worker.
-                        var frame = WebSocketFrameCodec.readClientFrame(
-                                new WebSocketSocketDeadlineInput(
-                                        socket, limits.handshakeTimeoutMillis()),
-                                maxFrameBytes);
+                        // The upgraded socket is channel-backed and in
+                        // nonblocking mode. The codec reads via one finite
+                        // selector deadline; never call Socket.getInputStream
+                        // after configureBlocking(false).
+                        var frame = WebSocketNioDuplex.readClientFrame(
+                                socket.getChannel(), maxFrameBytes,
+                                limits.handshakeTimeoutMillis());
                         var action = protocol.accept(frame);
                         if (action.kind() == WebSocketSessionState.ActionKind.SEND_PONG
                                 || action.kind() == WebSocketSessionState.ActionKind.SEND_CLOSE) {
@@ -368,29 +366,21 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     WebSocketOutboundGate.Write write = outbound.poll();
                     if (write == null) return;
                     Throwable failure = null;
-                    ScheduledFuture<?> deadline = null;
-                    AtomicBoolean expired = new AtomicBoolean();
                     try (var loan = nativeIo.borrow(socket)) {
-                        // The deadline carrier only aborts the physical socket,
-                        // never settles Futures or runs user terminal callbacks.
-                        // The owning I/O worker performs retirement on return.
-                        deadline = writeDeadlines.schedule(() -> {
-                            expired.set(true);
-                            try { socket.close(); }
-                            catch (IOException ignored) { /* writer will retire */ }
-                        }, limits.handshakeTimeoutMillis(), TimeUnit.MILLISECONDS);
+                        // Host worker can park on OP_WRITE readiness, but the
+                        // kernel write is nonblocking and every frame has an
+                        // absolute monotonic deadline. No per-write helper
+                        // thread may forge physical loan retirement.
                         WebSocketFrameCodec.Frame frame = write.frame();
-                        WebSocketFrameCodec.writeServerFrame(
-                                socket.getOutputStream(), frame.fin(), frame.opcode(),
-                                frame.payloadUnsafe(), maxFrameBytes);
-                        if (expired.get() || retired.get()) {
-                            throw new java.net.SocketTimeoutException(
-                                    "WebSocket outbound write aborted by deadline or retirement");
+                        WebSocketNioDuplex.writeServerFrame(
+                                socket.getChannel(), frame.fin(), frame.opcode(),
+                                frame.payloadUnsafe(), maxFrameBytes,
+                                limits.handshakeTimeoutMillis());
+                        if (retired.get()) {
+                            throw new IOException("WebSocket retired during outbound write");
                         }
                     } catch (IOException | RuntimeException failureCaught) {
                         failure = failureCaught;
-                    } finally {
-                        if (deadline != null) deadline.cancel(false);
                     }
                     try {
                         outbound.finish(write, failure);
