@@ -39,6 +39,37 @@ final class ActorScopedTaskExecutionTest {
                 """, "actor-scoped-task-trusted.ores"));
     }
 
+
+    @Test
+    void nestedActorScopesDrainGrandchildBeforeParentContinues() throws Exception {
+        assertEquals("nested:parent", run("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    nb scope {
+                      do nb {
+                        nb scope {
+                          do nb {
+                            stdio.stdout.write("nested");
+                          };
+                        }
+                      };
+                    }
+                    stdio.stdout.write(":parent");
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("run");
+                  await worker.get_done();
+                  return;
+                }
+                """, "actor-scoped-task-nested.ores"));
+    }
+
     @Test
     void untrustedActorScopePreservesTimedTerminalAuthorityAndDrains() throws Exception {
         assertEquals("done", run("""
