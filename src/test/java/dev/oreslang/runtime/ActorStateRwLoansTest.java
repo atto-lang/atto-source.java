@@ -600,4 +600,158 @@ final class ActorStateRwLoansTest {
         assertEquals(0, wakes.get(),
                 "the runtime must not receive a false safe-reclamation receipt");
     }
+
+    @Test
+    void cancellationObserverKeepsExecutionAndRawSlotReservedUntilDrained()
+            throws Exception {
+        var loans = new ActorStateRwLoans(4);
+        var holder = loans.acquireWriteAsync(actor(8701, 271, 1)).join();
+        var victim = actor(8702, 272, 5);
+        var waiting = loans.acquireReadAsync(victim);
+        var callbackEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseCallback = new java.util.concurrent.CountDownLatch(1);
+        waiting.whenCompleteRuntime((value, failure) -> {
+            if (!(failure instanceof java.util.concurrent.CancellationException)) {
+                throw new AssertionError("expected cancellation", failure);
+            }
+            callbackEntered.countDown();
+            try {
+                if (!releaseCallback.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("cancellation observer timed out");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        });
+
+        var cancelled = new AtomicBoolean();
+        var threadError = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread cancelling = Thread.ofPlatform().start(() -> {
+            try { cancelled.set(waiting.cancel(false)); }
+            catch (Throwable e) { threadError.set(e); }
+        });
+        try {
+            assertTrue(callbackEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            holder.close();
+            assertTrue(loans.acquireReadAsync(actor(8702, 273, 6))
+                    .isCompletedExceptionally(), "same logical execution still retiring");
+            assertTrue(loans.acquireWriteAsync(actor(8703, 272, 6))
+                    .isCompletedExceptionally(), "same raw slot still retiring");
+            assertTrue(loans.acquireReadAsync(victim).isCompletedExceptionally(),
+                    "same full authority remains reserved until callback drain");
+        } finally {
+            releaseCallback.countDown();
+            cancelling.join(5000);
+            holder.close();
+        }
+        assertFalse(cancelling.isAlive());
+        assertNull(threadError.get());
+        assertTrue(cancelled.get());
+        var reused = loans.acquireReadAsync(actor(8703, 272, 6)).join();
+        reused.close();
+        loans.close();
+        assertTrue(loans.physicallyRetired());
+    }
+
+    @Test
+    void promotedLoanReleasedDuringObserverStillFencesExecutionAndSlot()
+            throws Exception {
+        var loans = new ActorStateRwLoans(4);
+        var holder = loans.acquireWriteAsync(actor(8801, 281, 1)).join();
+        var victim = actor(8802, 282, 4);
+        var waiting = loans.acquireReadAsync(victim);
+        var callbackEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseCallback = new java.util.concurrent.CountDownLatch(1);
+        waiting.whenCompleteRuntime((loan, failure) -> {
+            if (failure != null || loan == null) {
+                throw new AssertionError("expected granted loan", failure);
+            }
+            // Physical loan release is not the Future notification-drain
+            // receipt. Other observers may still hold scheduler resources.
+            loan.close();
+            callbackEntered.countDown();
+            try {
+                if (!releaseCallback.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("promoted observer timed out");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        });
+
+        var threadError = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread promoting = Thread.ofPlatform().start(() -> {
+            try { holder.close(); }
+            catch (Throwable e) { threadError.set(e); }
+        });
+        try {
+            assertTrue(callbackEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(0, loans.activeReaderCount(),
+                    "granted loan was already physically released");
+            assertTrue(loans.acquireWriteAsync(actor(8802, 283, 5))
+                    .isCompletedExceptionally(), "logical execution cannot be rematerialized yet");
+            assertTrue(loans.acquireReadAsync(actor(8803, 282, 5))
+                    .isCompletedExceptionally(), "raw slot cannot be reused yet");
+        } finally {
+            releaseCallback.countDown();
+            promoting.join(5000);
+            holder.close();
+        }
+        assertFalse(promoting.isAlive());
+        assertNull(threadError.get());
+        var next = loans.acquireWriteAsync(actor(8803, 282, 5)).join();
+        next.close();
+        loans.close();
+        assertTrue(loans.physicallyRetired());
+    }
+
+    @Test
+    void shutdownFailureDrainRetainsOldLoanSuspensionFence()
+            throws Exception {
+        var loans = new ActorStateRwLoans(3);
+        var victim = actor(8901, 291, 7);
+        var old = loans.acquireReadAsync(victim).join();
+        old.close();
+        assertTrue(old.readyToSuspend(victim));
+        var blocker = loans.acquireWriteAsync(actor(8902, 292, 1)).join();
+        var waiting = loans.acquireReadAsync(victim);
+        var callbackEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseCallback = new java.util.concurrent.CountDownLatch(1);
+        waiting.whenCompleteRuntime((value, failure) -> {
+            if (!(failure instanceof IllegalStateException)) {
+                throw new AssertionError("expected shutdown failure", failure);
+            }
+            callbackEntered.countDown();
+            try {
+                if (!releaseCallback.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("shutdown observer timed out");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        });
+        var threadError = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread closing = Thread.ofPlatform().start(() -> {
+            try { loans.close(); }
+            catch (Throwable e) { threadError.set(e); }
+        });
+        try {
+            assertTrue(callbackEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            blocker.close();
+            assertFalse(old.readyToSuspend(victim),
+                    "old loan cannot certify suspension while pending Future drains");
+            assertFalse(loans.physicallyRetired());
+        } finally {
+            releaseCallback.countDown();
+            closing.join(5000);
+            blocker.close();
+        }
+        assertFalse(closing.isAlive());
+        assertNull(threadError.get());
+        assertTrue(old.readyToSuspend(victim));
+        assertTrue(loans.physicallyRetired());
+    }
 }
