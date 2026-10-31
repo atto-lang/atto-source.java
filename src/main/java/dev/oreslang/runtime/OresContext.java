@@ -35,6 +35,7 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
+    private final AsyncStdioLogs asyncStdio;
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
@@ -107,6 +108,7 @@ public final class OresContext implements AutoCloseable {
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in(), StandardCharsets.UTF_8));
         this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
+        this.asyncStdio = new AsyncStdioLogs(this.output);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
@@ -163,6 +165,7 @@ public final class OresContext implements AutoCloseable {
                 try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            try { asyncStdio.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
         CorePerf.end(CorePerf.CONTEXT_STARTUP, contextPerf);
@@ -176,6 +179,7 @@ public final class OresContext implements AutoCloseable {
     public TruffleLanguage.Env env() { return env; }
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
+    public AsyncStdioLogs asyncStdio() { return asyncStdio; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
@@ -505,15 +509,23 @@ public final class OresContext implements AutoCloseable {
         }
     }
 
+    static void flushOutputAfterAsyncDrain(PrintWriter output, boolean drainComplete) {
+        if (drainComplete) output.flush();
+    }
+
     @Override
     public void close() {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+        // Admission is sealed without blocking on a possibly stuck PrintWriter.
+        // Actor/native-I/O physical joins remain mandatory before releasing heaps.
+        asyncStdio.sealAdmission();
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
-            output.flush();
+            // A blocked async writer owns PrintWriter\'s monitor; do not re-enter
+            // that lock on an already-failed physical retirement path.
             throw new IllegalStateException(
                     "Oreslang context cleanup incomplete; physical state quarantined",
                     incomplete);
@@ -530,6 +542,14 @@ public final class OresContext implements AutoCloseable {
             if (failure == null) failure = asyncFailure;
             else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
         }
+        // Actor and async producers have stopped. Bounded drain may still time
+        // out if the host sink never makes progress; that is a quarantine gate.
+        try {
+            asyncStdio.close();
+        } catch (RuntimeException stdioFailure) {
+            if (failure == null) failure = stdioFailure;
+            else if (failure != stdioFailure) failure.addSuppressed(stdioFailure);
+        }
         try {
             vm.close();
         } catch (RuntimeException vmFailure) {
@@ -537,7 +557,7 @@ public final class OresContext implements AutoCloseable {
             else if (failure != vmFailure) failure.addSuppressed(vmFailure);
         }
         if (failure != null) {
-            output.flush();
+            // Never attempt synchronous reflush after a failed bounded drain.
             throw new IllegalStateException(
                     "Oreslang context auxiliary shutdown incomplete; context quarantined",
                     failure);
@@ -549,7 +569,7 @@ public final class OresContext implements AutoCloseable {
             sharedCodeImages.close();
         }
         garbageCollector.close();
-        output.flush();
+        flushOutputAfterAsyncDrain(output, true);
         QUARANTINED_CONTEXTS.remove(this);
     }
 }
