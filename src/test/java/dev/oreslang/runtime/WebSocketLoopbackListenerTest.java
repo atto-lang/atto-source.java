@@ -269,6 +269,21 @@ final class WebSocketLoopbackListenerTest {
                 sendOpening(client, port);
                 assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
                 var connection = accept.get(3, TimeUnit.SECONDS);
+                // Java's default UTF-8 conversion silently substitutes '?'
+                // for ill-formed UTF-16. No frame may be admitted for these
+                // malformed strings; valid surrogate pairs still round-trip.
+                for (String malformed : new String[] {
+                        "\uD800", "\uDC00", "\uD800x", "x\uDC00"
+                }) {
+                    assertThrows(IllegalArgumentException.class,
+                            () -> connection.sendTextAsync(malformed));
+                }
+                connection.sendTextAsync("\uD83D\uDCA1")
+                        .get(3, TimeUnit.SECONDS);
+                assertArrayEquals(new byte[] {
+                        (byte) 0x81, 4, (byte) 0xF0, (byte) 0x9F,
+                        (byte) 0x92, (byte) 0xA1
+                }, client.getInputStream().readNBytes(6));
                 connection.sendTextAsync("echo").get(3, TimeUnit.SECONDS);
                 assertArrayEquals(new byte[] {(byte) 0x81, 4, 'e', 'c', 'h', 'o'},
                         client.getInputStream().readNBytes(6));
