@@ -507,7 +507,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
 
         private void drainWriter() {
             try {
-                while (!retired.get()) {
+                while (!retired.get() && !abortRequested.get()) {
                     WebSocketOutboundGate.Write write = outbound.poll();
                     if (write == null) return;
                     Throwable failure = null;
@@ -521,8 +521,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                                 socket.getChannel(), frame.fin(), frame.opcode(),
                                 frame.payloadUnsafe(), maxFrameBytes,
                                 limits.handshakeTimeoutMillis());
-                        if (retired.get()) {
-                            throw new IOException("WebSocket retired during outbound write");
+                        if (retired.get() || abortRequested.get()) {
+                            throw new IOException("WebSocket retired or aborted during outbound write");
                         }
                     } catch (IOException | RuntimeException failureCaught) {
                         failure = failureCaught;
@@ -541,7 +541,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 }
             } finally {
                 writerActive.set(false);
-                if (!retired.get() && outbound.hasPending()) wakeWriter();
+                if (!retired.get() && !abortRequested.get()
+                        && outbound.hasPending()) wakeWriter();
             }
         }
 
