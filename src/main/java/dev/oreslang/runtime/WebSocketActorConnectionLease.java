@@ -57,7 +57,8 @@ final class WebSocketActorConnectionLease {
                 ActorRuntime.ActorAddress currentActor) {
             synchronized (WebSocketActorConnectionLease.this) {
                 return !released && !retired && admittedGeneration == generation
-                        && authorized(handle, tenant, currentActor);
+                        && authorized(handle, tenant, currentActor)
+                        && ownerAlive.getAsBoolean();
             }
         }
 
