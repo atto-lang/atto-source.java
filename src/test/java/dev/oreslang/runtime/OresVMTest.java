@@ -10,6 +10,41 @@ import org.junit.jupiter.api.Test;
 final class OresVMTest {
 
     @Test
+    void physicalStopCannotCloseItsOwnVmOrPoisonHostShutdown() throws Exception {
+        OresVM vm = OresVM.createWithPhysicalStopLimits(1, 4);
+        var denied = new java.util.concurrent.CountDownLatch(1);
+        var secondRan = new java.util.concurrent.CountDownLatch(1);
+        var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        try {
+            vm.executePhysicalStop(() -> {
+                try {
+                    IllegalStateException failure =
+                            org.junit.jupiter.api.Assertions.assertThrows(
+                                    IllegalStateException.class, vm::close);
+                    assertTrue(failure.getMessage()
+                            .contains("outside actor, Mailman and scheduler turns"));
+                    assertTrue(vm.started(), "self-close must not revoke VM admission");
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                } finally {
+                    denied.countDown();
+                }
+            });
+            assertTrue(denied.await(3, TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertNull(unexpected.get(),
+                    () -> String.valueOf(unexpected.get()));
+            vm.executePhysicalStop(secondRan::countDown);
+            assertTrue(secondRan.await(3, TimeUnit.SECONDS),
+                    "denied close must not poison subsequent physical STOP jobs");
+            assertEquals(73, vm.rootScheduler().startSync(() -> 73)
+                    .get(3, TimeUnit.SECONDS));
+        } finally {
+            vm.close();
+        }
+        vm.close(); // idempotent once the host proves physical exit
+    }
+
+    @Test
     void failedCloseRetryMustRecheckRealPhysicalStopCarrierExit() throws Exception {
         var entered = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
