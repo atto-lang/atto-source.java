@@ -25,4 +25,28 @@ final class ActorRuntime {
     static Optional<ActorId> currentActorId(){return turn.get()==null?Optional.empty():Optional.of(turn.get().actor().id());}
     static ActorKind currentActorKind(){return turn.get()==null?null:turn.get().kind();}
     static Object currentActorExecutionDomain(){return turn.get()==null?null:turn.get().domain();}
+
+    static final class StorageActorProof {
+        private final ActorRuntime runtime;
+        private final ActorRef<?> actor;
+        private final Object domain;
+        private StorageActorProof(ActorRuntime runtime, ActorRef<?> actor, Object domain) {
+            this.runtime=runtime; this.actor=actor; this.domain=domain;
+        }
+        ActorRuntime runtime(){return runtime;}
+        ActorRef<?> actor(){return actor;}
+        boolean actorStillAlive(){return actor.isAlive();}
+        boolean validOnCurrentTurn(){
+            Turn current=turn.get();
+            return actorStillAlive() && current!=null && current.runtime()==runtime
+                    && current.actor()==actor && current.domain()==domain
+                    && current.kind()!=ActorKind.UNTRUSTED;
+        }
+    }
+    static StorageActorProof mintStorageActorProof(){
+        Turn current=turn.get();
+        if(current==null || current.kind()==ActorKind.UNTRUSTED || !current.actor().isAlive())
+            throw new SecurityException("missing verified actor turn");
+        return new StorageActorProof(current.runtime(),current.actor(),current.domain());
+    }
 }
