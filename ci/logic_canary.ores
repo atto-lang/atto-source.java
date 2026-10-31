@@ -1,0 +1,10 @@
+// Minimal real-compiler/runner admission canary.
+// This intentionally uses only scalar values and is NOT a logic-engine proof.
+// Require actual compile -> native/guest execution -> exact process exit 0.
+pub fnc main(): int {
+  let int answer = 6 * 7;
+  if answer == 42; then
+    return 0;
+  fi
+  return 17;
+}

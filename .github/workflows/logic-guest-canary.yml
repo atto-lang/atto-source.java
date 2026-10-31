@@ -1,0 +1,42 @@
+name: Oreslang logic guest compiler canary
+
+on:
+  push:
+    branches:
+      - ci/logic-canary-20261030
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oreslang-logic-canary-20261030
+  cancel-in-progress: true
+
+jobs:
+  compile-and-run-oreslang:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact Java compiler commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up GraalVM 25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Print actual checked-out compiler SHA
+        run: |
+          set -eu
+          git rev-parse HEAD
+          java -version
+          mvn -version
+      - name: Compile the real Java/GraalVM Oreslang compiler
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests package
+      - name: Parse and type-check real Oreslang guest canary
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests exec:java -Dexec.args="--check ci/logic_canary.ores"
+      - name: Execute real Oreslang guest canary
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests exec:java -Dexec.args="ci/logic_canary.ores"
