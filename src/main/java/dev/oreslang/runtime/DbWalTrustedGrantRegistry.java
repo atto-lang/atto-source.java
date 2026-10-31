@@ -35,6 +35,10 @@ final class DbWalTrustedGrantRegistry {
 
         int generation() { return generation; }
 
+        boolean issuedBy(DbWalTrustedGrantRegistry registry) {
+            return issuer == registry;
+        }
+
         void requireLive(ActorRuntime expectedRuntime) {
             issuer.requireCurrentActor(this, expectedRuntime);
         }

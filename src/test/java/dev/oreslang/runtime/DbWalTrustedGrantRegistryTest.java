@@ -73,6 +73,10 @@ final class DbWalTrustedGrantRegistryTest {
             assertTrue(issued.await(3, TimeUnit.SECONDS));
             assertNull(firstError.get());
             assertNotNull(firstGrant.get());
+            assertTrue(firstGrant.get().issuedBy(registry));
+            assertFalse(firstGrant.get().issuedBy(
+                    new DbWalTrustedGrantRegistry(runtime)),
+                    "another registry cannot be mistaken for the issuing context");
             assertEquals(1, registry.activeShardCount());
             assertThrows(SecurityException.class,
                     () -> firstGrant.get().requireLive(runtime),

@@ -38,6 +38,8 @@ final class DbDurableWalAuthority {
         ActorRuntime.ActorId actor = requireCurrentOwner(context);
         // The issuing host must authenticate tenant and shard. The opaque
         // grant reserves the shard through actor drain/physical close.
+        if (!grant.issuedBy(context.dbWalGrants()))
+            throw new SecurityException("WAL grant was not issued by owning context");
         grant.requireLive(context.actors());
         int ownerGeneration = grant.generation();
         // Caller is a trusted host service. Never derive this directory from
