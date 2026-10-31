@@ -2331,6 +2331,20 @@ public final class TypeChecker {
                             member.member()
                                     + " is a reserved actor lifecycle hook and cannot be called directly");
                 }
+                if (actorSelf && member.member().equals("queue_authorized")) {
+                    if (call.typeArgumentsPresent() || call.arguments().size() != 2) {
+                        throw new IllegalArgumentException(
+                                "self.queue_authorized expects exactly two int arguments");
+                    }
+                    for (Ast.Expr argument : call.arguments()) {
+                        Type value = deref(typeOf(argument, env, generics, self));
+                        if (value != Primitive.INT) {
+                            throw new IllegalArgumentException(
+                                    "self.queue_authorized requires int opcode and producer slot");
+                        }
+                    }
+                    return Primitive.BOOL;
+                }
                 if (actorSelf
                         && (member.member().equals("send")
                             || member.member().equals("end")
