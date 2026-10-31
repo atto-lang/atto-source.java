@@ -115,6 +115,72 @@ final class OresContextAuxiliaryCloseTest {
     }
 
     @Test
+    void fatalAuxiliaryErrorsStillRevokeEveryStageAndAttemptDrain() {
+        var stages = new OresContext.AuxiliaryCloseStages();
+        var http = new AtomicInteger();
+        var async = new AtomicInteger();
+        var vm = new AtomicInteger();
+        var stdio = new AtomicInteger();
+        AssertionError fatalVm = new AssertionError("vm-fatal");
+        AssertionError fatalDrain = new AssertionError("drain-fatal");
+
+        Runnable closeHttp = http::incrementAndGet;
+        Runnable closeAsync = () -> {
+            if (async.incrementAndGet() == 1) throw new AssertionError("async-fatal");
+        };
+        Runnable closeVm = () -> {
+            if (vm.incrementAndGet() == 1) throw fatalVm;
+        };
+        Runnable drainStdio = () -> {
+            if (stdio.incrementAndGet() == 1) throw fatalDrain;
+        };
+
+        IllegalStateException incomplete = assertThrows(IllegalStateException.class,
+                () -> stages.closeRemaining(closeHttp, closeAsync, closeVm, drainStdio));
+        assertTrue(incomplete.getMessage().contains("auxiliary shutdown incomplete"));
+        assertEquals("async-fatal", incomplete.getCause().getMessage());
+        assertEquals(2, incomplete.getCause().getSuppressed().length,
+                "VM and sink failures must not disappear after an earlier Error");
+        assertSame(fatalVm, incomplete.getCause().getSuppressed()[0]);
+        assertSame(fatalDrain, incomplete.getCause().getSuppressed()[1]);
+        assertEquals(1, http.get());
+        assertEquals(1, async.get());
+        assertEquals(1, vm.get());
+        assertEquals(1, stdio.get(), "fatal VM Error must not skip stdout drain");
+
+        assertDoesNotThrow(() -> stages.closeRemaining(closeHttp, closeAsync,
+                closeVm, drainStdio));
+        assertEquals(1, http.get(), "successful HTTP cleanup is not repeated");
+        assertEquals(2, async.get(), "failed asynchronous cleanup must be retried");
+        assertEquals(2, vm.get(), "fatal VM cleanup must be retried");
+        assertEquals(2, stdio.get(), "fatal sink cleanup must be retried");
+    }
+
+    @Test
+    void fatalDrainErrorWithoutAuxiliaryErrorRetainsFailureAndRetries() {
+        var stages = new OresContext.AuxiliaryCloseStages();
+        var http = new AtomicInteger();
+        var async = new AtomicInteger();
+        var vm = new AtomicInteger();
+        var stdio = new AtomicInteger();
+        AssertionError fatalDrain = new AssertionError("broken-stdout");
+        Runnable drain = () -> {
+            if (stdio.incrementAndGet() == 1) throw fatalDrain;
+        };
+        IllegalStateException failed = assertThrows(IllegalStateException.class,
+                () -> stages.closeRemaining(http::incrementAndGet, async::incrementAndGet,
+                        vm::incrementAndGet, drain));
+        assertTrue(failed.getMessage().contains("logging drain incomplete"));
+        assertSame(fatalDrain, failed.getCause());
+        assertDoesNotThrow(() -> stages.closeRemaining(http::incrementAndGet,
+                async::incrementAndGet, vm::incrementAndGet, drain));
+        assertEquals(1, http.get());
+        assertEquals(1, async.get());
+        assertEquals(1, vm.get());
+        assertEquals(2, stdio.get());
+    }
+
+    @Test
     void sharedFailureObjectCannotBecomeItsOwnSuppressedException() {
         var stages = new OresContext.AuxiliaryCloseStages();
         var common = new IllegalStateException("shared-stage-failure");
