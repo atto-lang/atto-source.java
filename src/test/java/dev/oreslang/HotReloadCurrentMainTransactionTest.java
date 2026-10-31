@@ -145,6 +145,40 @@ final class HotReloadCurrentMainTransactionTest {
     }
 
     @Test
+    void managerShutdownFencesAnyUnstartedGenerationEntrypoint() {
+        var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE);
+        var candidate = manager.load("not-started.ores", GOOD);
+        manager.close();
+        assertTrue(candidate.closed());
+        assertThrows(IllegalStateException.class, candidate::start);
+        assertEquals(0, manager.liveGenerations());
+    }
+
+    @Test
+    void retirementFencesAnyUnstartedGenerationEntrypoint() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var candidate = manager.load("retire-first.ores", GOOD);
+            manager.retire(candidate.id());
+            assertTrue(candidate.closed());
+            assertNull(manager.active("retire-first.ores"));
+            assertThrows(IllegalStateException.class, candidate::start);
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
+    void directGenerationCloseFencesEntrypointAndEvictsServingPointer() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var candidate = manager.load("direct-close.ores", GOOD);
+            candidate.close();
+            assertTrue(candidate.closed());
+            assertNull(manager.active("direct-close.ores"));
+            assertThrows(IllegalStateException.class, candidate::start);
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
     void unverifiedDeclaredDependenciesAreRejectedEvenWithValidSource() {
         var compiled = compiledGood();
         var forged = counterfeit(compiled, GOOD, sha256(GOOD), Set.of("other.ores"));
