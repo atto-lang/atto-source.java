@@ -70,14 +70,21 @@ final class WebSocketLoopbackListener implements AutoCloseable {
      * sweep inspects just this listener's existing registered children.
      */
     private void retireStoppedActorConnections() {
-        List<Connection> candidates;
+        // Common case is no revoked claim: scan without heap allocation.
+        // Snapshot only stale children so no socket close occurs under lock.
+        List<Connection> candidates = null;
         synchronized (lifecycleLock) {
-            if (closed.get() || activeConnections.isEmpty()) return;
-            candidates = new ArrayList<>(activeConnections);
+            if (closed.get()) return;
+            for (Connection connection : activeConnections) {
+                WebSocketActorClaim claim = connection.actorClaim;
+                if (claim != null && claim.revoked()) {
+                    if (candidates == null) candidates = new ArrayList<>(2);
+                    candidates.add(connection);
+                }
+            }
         }
+        if (candidates == null) return;
         for (Connection connection : candidates) {
-            WebSocketActorClaim claim = connection.actorClaim;
-            if (claim == null || !claim.revoked()) continue;
             try {
                 connection.close();
             } catch (RuntimeException ignored) {
