@@ -1,0 +1,101 @@
+// Differential regression: two independent pure-Oreslang inference engines
+// must produce the same least fixed point, including a recursive cycle.
+// This test is not a host-language mock and requires genuine guest execution.
+import module horn from "../src/horn";
+import module datalog from "../src/datalog";
+import module term from "../src/term";
+import module proof from "../src/proof";
+
+define module logic_differential as
+  fnc zero_atom(String name): datalog.Atom {
+    return new datalog.Atom(name, new Array<term.Term>());
+  }
+
+  fnc zero_schema(String name): datalog.Schema {
+    return new datalog.Schema(name, new Array<int>());
+  }
+
+  fnc horn_step(String from, String to): horn.Rule {
+    let mut Array<String> premises = new Array<String>();
+    premises.add(from);
+    return new horn.Rule(premises, to);
+  }
+
+  fnc datalog_step(String from, String to): datalog.Rule {
+    let mut Array<datalog.Atom> body = new Array<datalog.Atom>();
+    body.add(zero_atom(from));
+    return new datalog.Rule(zero_atom(to), body);
+  }
+
+  pub fnc run(): bool {
+    let mut Array<String> seed = new Array<String>();
+    seed.add("a");
+    let mut Array<horn.Rule> horn_rules = new Array<horn.Rule>();
+    horn_rules.add(horn_step("a", "b"));
+    horn_rules.add(horn_step("b", "c"));
+    horn_rules.add(horn_step("c", "d"));
+    horn_rules.add(horn_step("d", "a"));
+
+    // Empty-body rules are true independently of the original seed.
+    val no_premises = new Array<String>();
+    horn_rules.add(new horn.Rule(no_premises, "init"));
+
+    let mut Array<datalog.Schema> schemas = new Array<datalog.Schema>();
+    schemas.add(zero_schema("a"));
+    schemas.add(zero_schema("b"));
+    schemas.add(zero_schema("c"));
+    schemas.add(zero_schema("d"));
+    schemas.add(zero_schema("init"));
+
+    let mut Array<datalog.Atom> facts = new Array<datalog.Atom>();
+    facts.add(zero_atom("a"));
+    let mut Array<datalog.Rule> typed_rules = new Array<datalog.Rule>();
+    typed_rules.add(datalog_step("a", "b"));
+    typed_rules.add(datalog_step("b", "c"));
+    typed_rules.add(datalog_step("c", "d"));
+    typed_rules.add(datalog_step("d", "a"));
+    val empty_body = new Array<datalog.Atom>();
+    typed_rules.add(new datalog.Rule(zero_atom("init"), empty_body));
+
+    val horn_result = horn.deduce(rt borrow seed, rt borrow horn_rules, 5);
+    if horn_result.is_err(); then return false; fi
+    val typed_result = datalog.evaluate(rt borrow schemas, rt borrow facts,
+                                         rt borrow typed_rules, 5, 500);
+    if typed_result.is_err(); then return false; fi
+
+    val old_kb = horn_result.unwrap();
+    val new_kb = typed_result.unwrap();
+    if old_kb.facts.length() != 5 || new_kb.facts.length() != 5; then
+      return false;
+    fi
+
+    let mut Array<String> names = new Array<String>();
+    names.add("a");
+    names.add("b");
+    names.add("c");
+    names.add("d");
+    names.add("init");
+    names.add("absent");
+    for (const name of names) {
+      val fact = zero_atom(name);
+      if old_kb.contains(name) != new_kb.contains(rt borrow fact); then
+        return false;
+      fi
+    }
+
+    val goal = zero_atom("d");
+    val explanation = proof.explain(rt borrow new_kb, rt borrow goal, 8, 8);
+    if explanation.is_err(); then return false; fi
+    if explanation.unwrap().steps.length() != 4; then return false; fi
+
+    // Budget exhaustion is not a success or a truncated complete closure.
+    val horn_limited = horn.deduce(rt borrow seed, rt borrow horn_rules, 4);
+    if !horn_limited.is_err(); then return false; fi
+    val typed_limited = datalog.evaluate(rt borrow schemas, rt borrow facts,
+                                         rt borrow typed_rules, 4, 500);
+    if !typed_limited.is_err(); then return false; fi
+
+    // An actual recursive cycle terminates: the closure is set-valued.
+    return true;
+  }
+end

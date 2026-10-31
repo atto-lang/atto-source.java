@@ -2,12 +2,14 @@
 import module logic_smoke from "./logic_smoke";
 import module logic_advanced_smoke from "./logic_advanced_smoke";
 import module logic_edge_cases from "./logic_edge_cases";
+import module logic_differential from "./logic_differential";
 
 define module logic_test_runner as
   pub fnc main(): int {
     if !logic_smoke.run(); then return 1; fi
     if !logic_advanced_smoke.run(); then return 2; fi
     if !logic_edge_cases.run(); then return 3; fi
+    if !logic_differential.run(); then return 4; fi
     return 0;
   }
 end
