@@ -10,6 +10,7 @@ on:
       - src/main/java/dev/oreslang/runtime/WebSocketOpeningRequest.java
       - src/main/java/dev/oreslang/runtime/WebSocketSessionState.java
       - src/main/java/dev/oreslang/runtime/WebSocketOutboundGate.java
+      - src/main/java/dev/oreslang/runtime/WebSocketNioDuplex.java
       - src/main/java/dev/oreslang/runtime/WebSocketRawUpgrade.java
       - src/main/java/dev/oreslang/runtime/WebSocketSocketDeadlineInput.java
       - src/main/java/dev/oreslang/runtime/WebSocketLoopbackListener.java
@@ -19,6 +20,7 @@ on:
       - src/test/java/dev/oreslang/runtime/WebSocketOpeningRequestTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketSessionStateTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketOutboundGateTest.java
+      - src/test/java/dev/oreslang/runtime/WebSocketNioDuplexTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketRawUpgradeTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketLoopbackListenerTest.java
       - docs/WEBSOCKET_TRANSPORT_V1.md
@@ -70,6 +72,6 @@ jobs:
           version: '25.3'
           distribution: graalvm
       - name: Execute bounded WebSocket wire contracts
-        run: mvn -B -ntp -Dtest='dev.oreslang.runtime.WebSocketFrameCodecTest,dev.oreslang.runtime.WebSocketHandshakeTest,dev.oreslang.runtime.WebSocketOpeningRequestTest,dev.oreslang.runtime.WebSocketSessionStateTest,dev.oreslang.runtime.WebSocketOutboundGateTest,dev.oreslang.runtime.WebSocketRawUpgradeTest,dev.oreslang.runtime.WebSocketLoopbackListenerTest' test
+        run: mvn -B -ntp -Dtest='dev.oreslang.runtime.WebSocketFrameCodecTest,dev.oreslang.runtime.WebSocketHandshakeTest,dev.oreslang.runtime.WebSocketOpeningRequestTest,dev.oreslang.runtime.WebSocketSessionStateTest,dev.oreslang.runtime.WebSocketOutboundGateTest,dev.oreslang.runtime.WebSocketNioDuplexTest,dev.oreslang.runtime.WebSocketRawUpgradeTest,dev.oreslang.runtime.WebSocketLoopbackListenerTest' test
       - name: Verify server-socket shutdown retirement
         run: mvn -B -ntp -Dtest=dev.oreslang.runtime.AsyncNativeIoTest test
