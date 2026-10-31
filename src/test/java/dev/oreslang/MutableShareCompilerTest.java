@@ -207,6 +207,55 @@ final class MutableShareCompilerTest {
     }
 
     @Test
+    void chainedMutableSharesPreserveGuardedAccess() {
+        checked(COUNTER + """
+                fnc ok(): void {
+                  val original = SharedMutex.new(new Counter());
+                  val first = rt mut share original;
+                  val second = rt mut share first;
+                  val guard = second.lock();
+                  guard.value = 5;
+                  guard.release();
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void parenthesizedBorrowCannotBeUpgradedToMutableShare() {
+        rejected("""
+                fnc bad(): void {
+                  val mutex = SharedMutex.new(7);
+                  val alias = rt mut share (rt borrow mutex);
+                  return;
+                }
+                """, "rt mut share requires");
+    }
+
+    @Test
+    void rejectsMutexPayloadWrappedInSharedMutex() {
+        rejected("""
+                fnc bad(): void {
+                  val local = Mutex.new(1);
+                  val shared = SharedMutex.new(local);
+                  val alias = rt mut share shared;
+                  return;
+                }
+                """, "SharedMutex<T> requires shared-safe owned data");
+    }
+
+    @Test
+    void developerPolicyAdmitsGuardedMutableShareOperation() {
+        Ast.Program program = Parser.parse("""
+                fnc ok(): void {
+                  val alias = rt mut share handle;
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+    }
+
+    @Test
     void policyGateRejectsMutableSharingBeforeExecution() {
         var program = Parser.parse("""
                 fnc bad(): void {
