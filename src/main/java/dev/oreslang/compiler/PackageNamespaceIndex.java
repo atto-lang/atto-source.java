@@ -58,10 +58,30 @@ public final class PackageNamespaceIndex {
             List<Path> manifests,
             Map<String, String> sources,
             Map<String, String> pinnedDependencyAliases) throws IOException {
-        if (manifests == null || sources == null || pinnedDependencyAliases == null) {
+        if (manifests == null) throw new IllegalArgumentException("manifests cannot be null");
+        LinkedHashMap<Path, String> snapshots = new LinkedHashMap<>();
+        for (Path manifest : manifests) {
+            Path canonical = manifest.toRealPath();
+            String previous = snapshots.putIfAbsent(canonical,
+                    Files.readString(canonical, java.nio.charset.StandardCharsets.UTF_8));
+            if (previous != null) throw new IllegalArgumentException("duplicate package manifest");
+        }
+        return loadFromSnapshots(snapshots, sources, pinnedDependencyAliases);
+    }
+
+    /**
+     * Link only manifest text authenticated during workspace discovery.
+     * Filesystem checks below still reject invalid member paths, but neither
+     * package ownership nor provider membership is reparsed from mutable disk.
+     */
+    public static PackageNamespaceIndex loadFromSnapshots(
+            Map<Path, String> manifestSnapshots,
+            Map<String, String> sources,
+            Map<String, String> pinnedDependencyAliases) throws IOException {
+        if (manifestSnapshots == null || sources == null || pinnedDependencyAliases == null) {
             throw new IllegalArgumentException("namespace index inputs cannot be null");
         }
-        if (manifests.size() > 128 || sources.size() > 4096) {
+        if (manifestSnapshots.size() > 128 || sources.size() > 4096) {
             throw new IllegalArgumentException("namespace admission budget exceeded");
         }
 
@@ -84,12 +104,21 @@ public final class PackageNamespaceIndex {
         Map<NamespaceKey, Map<String, Symbol>> exports = new LinkedHashMap<>();
         Map<NamespaceKey, Set<String>> providers = new LinkedHashMap<>();
         Set<String> packageIds = new LinkedHashSet<>();
-        for (Path manifest : manifests) {
-            Path manifestReal = manifest.toRealPath();
+        for (Map.Entry<Path, String> snapshot : manifestSnapshots.entrySet()) {
+            Path manifestReal = snapshot.getKey().toAbsolutePath().normalize();
             if (!".ores.pkg.toml".equals(manifestReal.getFileName().toString())) {
-                throw new IllegalArgumentException("expected .ores.pkg.toml: " + manifest);
+                throw new IllegalArgumentException("expected .ores.pkg.toml: " + manifestReal);
             }
-            TomlParseResult toml = Toml.parse(manifestReal);
+            if (Files.isSymbolicLink(manifestReal)
+                    || !Files.isRegularFile(manifestReal)
+                    || !manifestReal.equals(manifestReal.toRealPath())) {
+                throw new SecurityException("namespace manifest path identity changed");
+            }
+            String content = snapshot.getValue();
+            if (content == null || content.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024 * 1024) {
+                throw new IllegalArgumentException("invalid immutable namespace manifest text");
+            }
+            TomlParseResult toml = Toml.parse(content);
             if (!toml.errors().isEmpty()) {
                 throw new IllegalArgumentException("invalid package manifest: " + toml.errors().getFirst());
             }
