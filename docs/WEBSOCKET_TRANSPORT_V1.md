@@ -209,8 +209,38 @@ masked-frame payload. A peer slowly supplying partial payload bytes cannot
 keep extending the socket's per-read idle timeout indefinitely. The current
 frame deadline uses the configured handshake timeout and should be split
 into independently configured read and write deadlines once the native
-actor API is integrated. The outbound HTTP 101 and CONTROL write paths
-still require bounded nonblocking write state for production use.
+actor API is integrated. The outbound HTTP 101 response still writes through the accepted Socket's
+classic output stream without a dedicated absolute write deadline. It must be
+migrated to bounded nonblocking NIO before production or guest promotion.
+
+## First host-only serialized outbound slice (2026-10-31)
+
+`WebSocketOutboundGate` reserves at most 16 pending or active USER writes and
+at most 1 MiB of their retained payload bytes per connection, independently
+of a four-slot CONTROL budget. Its limits are configured with the listener's
+frame limit (at most 64 KiB). A selected in-flight frame holds its credit until
+the writer's physical operation returns; queued cancellation releases credits,
+whereas cancellation after writing starts closes the connection to prevent a
+partially serialized frame from being followed by other frames.
+
+`WebSocketLoopbackListener.Connection.sendTextAsync` and `sendBinaryAsync`
+are host-only methods. They validate scoped NET permission, reject calls from
+actor carriers, defensively own bounded USER frames and use one dedicated
+serialized host-I/O write lane per accepted connection. The existing PONG and
+peer-CLOSE responses are now admitted through reserved CONTROL slots, instead
+of writing directly on the host read worker. A close response supersedes
+waiting USER and PONG entries, while it cannot interrupt bytes already on
+the wire. Deadline expiration or writer failure closes the socket and retires
+pending outbound admissions. A canceled *running* write also closes the
+socket; Future settlement is not physical loan retirement.
+
+The write deadline is enforced by a bounded listener-local scheduler that
+closes a classic blocking Socket; it does not make Socket.getOutputStream()
+kernel-nonblocking. True SocketChannel/selector-based outbound writes,
+independent write vs handshake deadlines, a deadline on HTTP 101, cross-peer
+memory accounting, cancellation-aware actor generation/claim semantics and
+real source-level guest transport remain required. This stage is host-only,
+and the authored outbound tests still need exact-head execution.
 
 `WebSocketLoopbackListenerTest` contains eight authored real-loopback,
 real-`AsyncNativeIo` integration scenarios: successful accepted frame,
@@ -234,8 +264,9 @@ independent review is complete.
 - End-to-end actor/generation-owned connection dispatch and retirement.
 - Source types such as `WebSocketServer`, `WebSocketConnection`, or actor
   dispatch/claim tokens.
-- Transport serialization that prioritizes returned CONTROL actions over USER
-  writes, plus close handshake deadlines and half-close.
+- True nonblocking SocketChannel outbound writes, absolute HTTP 101 write
+  deadline, completed close handshake/half-close and peer-drain behavior
+  (a bounded host-worker writer with CONTROL priority is now authored).
 - Compression/extensions.
 - Java/Graal AOT execution evidence and LLVM parity.
 
