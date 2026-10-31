@@ -116,13 +116,17 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     if (error != null && failure == null) failure = error;
                     error = failure;
                     completed = record.sequence();
-                    for (int i = barriers.size() - 1; i >= 0; i--) {
-                        Barrier barrier = barriers.get(i);
-                        if (barrier.sequence() <= completed || error != null) {
-                            barriers.remove(i);
-                            ready.add(barrier);
-                        }
+                    // Barrier sequence numbers are nondecreasing by admission.
+                    // Complete the ready prefix in FIFO registration order so a
+                    // later flush observer cannot be notified before an earlier
+                    // barrier covering the same or an older output prefix.
+                    int readyCount = 0;
+                    for (Barrier barrier : barriers) {
+                        if (error == null && barrier.sequence() > completed) break;
+                        ready.add(barrier);
+                        readyCount++;
                     }
+                    barriers.subList(0, readyCount).clear();
                 }
                 if (error == null) record.completion().completeFromRuntime(null);
                 else record.completion().failFromRuntime(error);
