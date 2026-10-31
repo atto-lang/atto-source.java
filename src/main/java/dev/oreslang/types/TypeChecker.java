@@ -91,6 +91,10 @@ public final class TypeChecker {
     // Only the verified pinned namespace graph may populate these signatures.
     private Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>>
             linkedNamespaceFunctions = Map.of();
+    // Exact verified same-package, same-namespace public provider signatures.
+    // Never populated from ambient source discovery or namespace spelling.
+    private Map<String, Map<Integer, Ast.FunctionDecl>>
+            linkedProviderFunctions = Map.of();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -244,6 +248,21 @@ public final class TypeChecker {
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts,
             Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>> namespaceFunctions) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(
+                program, linkedClasses, linkedAliases, linkedContracts, namespaceFunctions, Map.of());
+    }
+
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>> namespaceFunctions,
+            Map<String, Map<Integer, Ast.FunctionDecl>> providerFunctions) {
+        if (providerFunctions == null || (!providerFunctions.isEmpty()
+                && program.namespace() == null)) {
+            throw new IllegalArgumentException(
+                    "provider call signatures require a verified namespace source");
+        }
         if (namespaceFunctions == null) {
             throw new IllegalArgumentException("linked namespace interface cannot be null");
         }
@@ -276,6 +295,7 @@ public final class TypeChecker {
                     "linked namespace has no lexical import: " + alias);
         }
         checker.linkedNamespaceFunctions = Map.copyOf(namespaceFunctions);
+        checker.linkedProviderFunctions = Map.copyOf(providerFunctions);
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
@@ -2998,6 +3018,29 @@ public final class TypeChecker {
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                }
+                Map<Integer, Ast.FunctionDecl> siblings =
+                        linkedProviderFunctions.get(functionName.name());
+                if (siblings != null) {
+                    // An unknown arity is an error, never a fallback to an
+                    // unrelated class/module/package with the same spelling.
+                    Ast.FunctionDecl provider = siblings.get(arity);
+                    if (provider == null) throw new IllegalArgumentException(
+                            "same-package namespace provider has no public callable '"
+                                    + functionName.name() + "' at arity " + arity);
+                    if (call.typeArgumentsPresent() || !call.typeArguments().isEmpty())
+                        throw new IllegalArgumentException(
+                                "same-package namespace provider calls do not accept generics");
+                    Function signature = trapFunctionType(provider, Set.of(), null);
+                    if (signature.parameters().size() != call.arguments().size())
+                        throw new IllegalArgumentException("namespace provider argument arity mismatch");
+                    for (int i = 0; i < call.arguments().size(); ++i) {
+                        Type actual = typeOf(call.arguments().get(i), env, generics, self);
+                        requireAssignable(actual, signature.parameters().get(i),
+                                "argument " + (i + 1) + " to same-package namespace provider "
+                                        + functionName.name());
+                    }
+                    return signature.result();
                 }
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
