@@ -29,7 +29,18 @@ public final class OresContext implements AutoCloseable {
     // released only after every mandatory retirement gate has succeeded.
     private static final java.util.Set<OresContext> QUARANTINED_CONTEXTS =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // Rejected concurrent closers must not execute overlapping shutdown stages.
+    // Failed attempts release this gate so the same quarantined context may retry.
+    private final java.util.concurrent.atomic.AtomicBoolean closeInProgress =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile boolean closeCompleted;
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
+
+    // Package-local inspection for executable lifecycle tests; never unpins an
+    // incompletely retired context or exposes the quarantine to guest code.
+    static java.util.Set<OresContext> quarantinedContextSnapshot() {
+        return java.util.Set.copyOf(QUARANTINED_CONTEXTS);
+    }
 
     private final OresLanguage language;
     private final TruffleLanguage.Env env;
@@ -515,6 +526,19 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        if (closeCompleted) return;
+        if (!closeInProgress.compareAndSet(false, true)) {
+            throw new IllegalStateException(
+                    "Oreslang context cleanup already in progress; physical state quarantined");
+        }
+        try {
+            if (!closeCompleted) closeWithExclusiveAdmission();
+        } finally {
+            closeInProgress.set(false);
+        }
+    }
+
+    private void closeWithExclusiveAdmission() {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
@@ -568,5 +592,6 @@ public final class OresContext implements AutoCloseable {
         garbageCollector.close();
         flushOutputAfterAsyncDrain(output, true);
         QUARANTINED_CONTEXTS.remove(this);
+        closeCompleted = true;
     }
 }
