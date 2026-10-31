@@ -18,10 +18,12 @@ import java.util.concurrent.Semaphore;
 public final class AsyncStdioLogs implements AutoCloseable {
     private static final int MAX_RECORD_BYTES = 65_536;
     private static final int QUEUE_CAPACITY = 1_024;
+    // Byte budget includes the in-flight record, not just the records in queue.
+    private static final long MAX_PENDING_BYTES = 8L * 1024 * 1024;
     private static final int MAX_PENDING_BARRIERS = 1_024;
     private static final long CLOSE_TIMEOUT_MILLIS = 5_000;
 
-    private record Record(long sequence, String text, OresFuture<Void> completion) { }
+    private record Record(long sequence, String text, int bytes, OresFuture<Void> completion) { }
     private record Barrier(long sequence, OresFuture<Void> completion) { }
 
     private final Object lock = new Object();
@@ -32,6 +34,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
     private Thread drain;
     private long submitted;
     private long completed;
+    private long pendingBytes;
     private boolean accepting = true;
     private Throwable failure;
 
@@ -46,19 +49,26 @@ public final class AsyncStdioLogs implements AutoCloseable {
      */
     public OresFuture<Void> logAsync(String text) {
         java.util.Objects.requireNonNull(text, "text");
-        if (text.length() > MAX_RECORD_BYTES
-                || text.getBytes(StandardCharsets.UTF_8).length > MAX_RECORD_BYTES) {
+        if (text.length() > MAX_RECORD_BYTES) {
+            throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
+        }
+        int bytes = text.getBytes(StandardCharsets.UTF_8).length;
+        if (bytes > MAX_RECORD_BYTES) {
             throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
         }
         synchronized (lock) {
             if (failure != null) throw new IllegalStateException("async stdio writer failed", failure);
             if (!accepting) throw new IllegalStateException("async stdio writer is closed");
+            if (pendingBytes + bytes > MAX_PENDING_BYTES) {
+                throw new IllegalStateException("async stdio pending byte budget exceeded (8388608 bytes)");
+            }
             OresFuture<Void> completion = new OresFuture<>(() -> false, () -> { });
             long next = submitted + 1;
-            if (!queue.offer(new Record(next, text, completion))) {
+            if (!queue.offer(new Record(next, text, bytes, completion))) {
                 throw new IllegalStateException("async stdio queue is full (1024 records)");
             }
             submitted = next;
+            pendingBytes += bytes;
             if (drain == null) {
                 try {
                     drain = Thread.ofPlatform().name("ores-stdio-async-drain")
@@ -115,6 +125,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 synchronized (lock) {
                     if (error != null && failure == null) failure = error;
                     error = failure;
+                    pendingBytes -= record.bytes();
                     completed = record.sequence();
                     for (int i = barriers.size() - 1; i >= 0; i--) {
                         Barrier barrier = barriers.get(i);
@@ -149,7 +160,10 @@ public final class AsyncStdioLogs implements AutoCloseable {
         }
         for (Barrier barrier : pending) barrier.completion().failFromRuntime(error);
         Record remaining;
-        while ((remaining = queue.poll()) != null) remaining.completion().failFromRuntime(error);
+        while ((remaining = queue.poll()) != null) {
+            synchronized (lock) { pendingBytes -= remaining.bytes(); }
+            remaining.completion().failFromRuntime(error);
+        }
     }
 
     /**
