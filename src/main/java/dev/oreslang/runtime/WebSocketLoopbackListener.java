@@ -6,6 +6,10 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Objects;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.RejectedExecutionException;
@@ -28,6 +32,12 @@ final class WebSocketLoopbackListener implements AutoCloseable {
     private final Semaphore connections;
     private final AtomicBoolean accepting = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Accept publication and listener retirement share one lock. An accepted
+    // Socket must either be published into this owned set or closed locally;
+    // it must never be published after shutdown has snapshotted the set.
+    private final Object lifecycleLock = new Object();
+    private final java.util.Set<Connection> activeConnections =
+            Collections.newSetFromMap(new IdentityHashMap<>());
 
     private WebSocketLoopbackListener(OresContext context, ServerSocket server,
             String endpoint, Set<String> allowedOrigins,
@@ -69,22 +79,20 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         String endpoint = "127.0.0.1:" + port;
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "websocket.listen");
         var listener = new ServerSocket();
-        boolean registrationAttempted = false;
         try {
             listener.setReuseAddress(false);
             listener.bind(new InetSocketAddress(
                     InetAddress.getByName("127.0.0.1"), port), backlog);
-            registrationAttempted = true;
             context.nativeIo().register(listener);
             return new WebSocketLoopbackListener(context, listener,
                     endpoint, origins, limits, maxConnections,
                     maxFrameBytes, maxMessageBytes);
         } catch (Exception failure) {
-            // Once registration is attempted, AsyncNativeIo may have retained
-            // the socket after a concurrent shutdown. Do not physically close
-            // such a resource ahead of its owning context's post-join sweep.
-            // A bind failure before registration still leaves us responsible.
-            if (!registrationAttempted) {
+            // A shutdown race may take responsibility for closing this
+            // resource, whereas a *fully retired* context rejects without
+            // ownership. Probe the actual native-I/O ledger: neither blindly
+            // close a borrowed resource nor leak an unowned bound listener.
+            if (!context.nativeIo().ownsResource(listener)) {
                 try { listener.close(); }
                 catch (IOException cleanup) { failure.addSuppressed(cleanup); }
             }
@@ -118,10 +126,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         throw new RejectedExecutionException("WebSocket connection admission is full");
                     }
                     admitted = true;
-                    boolean registrationAttempted = false;
                     boolean registered = false;
                     try {
-                        registrationAttempted = true;
                         context.nativeIo().register(accepted);
                         registered = true;
                         try (var loan = context.nativeIo().borrow(accepted)) {
@@ -129,15 +135,20 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                                     accepted, endpoint, allowedOrigins, limits);
                         }
                         Connection connection = new Connection(accepted);
-                        handedOff = true;
+                        synchronized (lifecycleLock) {
+                            if (closed.get()) {
+                                throw new RejectedExecutionException(
+                                        "listener retired before connection publication");
+                            }
+                            activeConnections.add(connection);
+                            handedOff = true;
+                        }
                         return connection;
                     } catch (Exception failure) {
-                        // On late registration after context shutdown,
-                        // AsyncNativeIo owns this new socket for the post-join
-                        // sweep. The listening loan guarantees shutdown has
-                        // not already completed that sweep. Do not close it
-                        // early and forge a physical retirement receipt.
-                        if (!registrationAttempted || registered) {
+                        // Only a transferred native-I/O resource may survive
+                        // a concurrent close for the later physical sweep.
+                        // Fully retired contexts retain no such ownership.
+                        if (registered || !context.nativeIo().ownsResource(accepted)) {
                             try { accepted.close(); }
                             catch (IOException cleanup) { failure.addSuppressed(cleanup); }
                         }
@@ -161,14 +172,39 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         return future;
     }
 
+    /** Snapshot of physical children still owned; host diagnostics only. */
+    int activeConnectionCount() {
+        synchronized (lifecycleLock) { return activeConnections.size(); }
+    }
+
     @Override public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        try { server.close(); }
-        catch (IOException failure) {
-            throw new IllegalStateException("WebSocket listener close failed", failure);
+        if (ActorRuntime.inActorExecution()) {
+            throw new SecurityException("WebSocket listener retirement belongs to host I/O");
+        }
+        List<Connection> retiring;
+        synchronized (lifecycleLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            retiring = new ArrayList<>(activeConnections);
+        }
+        RuntimeException firstFailure = null;
+        try {
+            server.close(); // Wake the one pending accept.
+        } catch (IOException failure) {
+            firstFailure = new IllegalStateException(
+                    "WebSocket listener close failed", failure);
         } finally {
             context.nativeIo().unregister(server);
         }
+        // Do not hold lifecycleLock across native close callbacks. A parallel
+        // connection.close() wins one retirement CAS and releases one permit.
+        for (Connection connection : retiring) {
+            try { connection.close(); }
+            catch (RuntimeException failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
+        }
+        if (firstFailure != null) throw firstFailure;
     }
 
     /** Host-only connection: never return Socket or JVM transport state to a guest. */
@@ -230,6 +266,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (ActorRuntime.inActorExecution()) {
                 throw new SecurityException("WebSocket raw poll belongs to host I/O");
             }
+            context.requirePermission(RuntimePermissions.Permission.NET,
+                    endpoint, "websocket.poll");
             if (retired.get()) return Optional.empty();
             return protocol.pollUserMessage();
         }
@@ -242,6 +280,9 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 throw new IllegalStateException("WebSocket peer close failed", failure);
             } finally {
                 context.nativeIo().unregister(socket);
+                synchronized (lifecycleLock) {
+                    activeConnections.remove(this);
+                }
                 connections.release();
             }
         }
