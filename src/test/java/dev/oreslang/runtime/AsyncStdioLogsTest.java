@@ -182,18 +182,27 @@ final class AsyncStdioLogsTest {
             });
             java.util.List<Integer> observed =
                     java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+            CountDownLatch callbacksDelivered = new CountDownLatch(2);
             OresFuture<Void> first = logs.flushAsync();
-            first.whenCompleteRuntime((value, failure) -> observed.add(1));
+            first.whenCompleteRuntime((value, failure) -> {
+                observed.add(1);
+                callbacksDelivered.countDown();
+            });
             try {
                 releaseSink.countDown();
                 assertTrue(callbackEntered.await(2, TimeUnit.SECONDS));
                 OresFuture<Void> second = logs.flushAsync();
-                second.whenCompleteRuntime((value, failure) -> observed.add(2));
+                second.whenCompleteRuntime((value, failure) -> {
+                    observed.add(2);
+                    callbacksDelivered.countDown();
+                });
                 assertFalse(first.isDone());
                 assertFalse(second.isDone(), "late flush must wait for earlier callbacks");
                 releaseCallback.countDown();
                 first.get(3, TimeUnit.SECONDS);
                 second.get(3, TimeUnit.SECONDS);
+                assertTrue(callbacksDelivered.await(3, TimeUnit.SECONDS),
+                        "both FIFO observer callbacks must run");
                 assertEquals(java.util.List.of(1, 2), observed);
             } finally {
                 releaseSink.countDown();
