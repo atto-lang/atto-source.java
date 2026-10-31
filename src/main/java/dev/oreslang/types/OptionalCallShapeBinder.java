@@ -230,6 +230,32 @@ public final class OptionalCallShapeBinder {
     }
 
     /**
+     * Returns the immutable source-to-formal binding for an already checked
+     * direct call. Consumers MUST first call lowerDirectScalarLiteralNamedCall
+     * using their independently resolved lexical declaration; this plan is
+     * never callable selection or runtime authorization by itself.
+     */
+    public static Plan directScalarBindingPlan(
+            Ast.StagedCallExpr call, Ast.FunctionDecl resolvedTarget) {
+        lowerDirectScalarLiteralNamedCall(call, resolvedTarget);
+        return bindParsedFormals(resolvedTarget.parameters(), call.arguments());
+    }
+
+    /**
+     * Dynamic zero-arg callables have capture/borrow semantics not covered by
+     * the closed source-order scalar subset. Every compiler/runtime caller
+     * must reject locally shadowed zero-arg callees before processing an
+     * identity-changing permutation. The actual type/ownership checks remain
+     * authoritative for the selected nested function.
+     */
+    public static boolean isReorderedNamedCall(Plan plan) {
+        for (int formal = 0; formal < plan.sourceIndexByParameter().size(); formal++) {
+            if (plan.sourceIndex(formal) != formal) return true;
+        }
+        return false;
+    }
+
+    /**
      * Safe first effectful-reorder subset. A closed, direct zero-argument
      * invocation transfers no argument loans or move-only values. Its scalar
      * return type is independently checked by the ordinary TypeChecker and
