@@ -110,6 +110,10 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    /** Active lexical state-loan binder; only held during inline callback checking. */
+    private String currentActorStateLoanBinder;
+    /** Immutable per-field labels cannot be written even in critical[write]. */
+    private Set<String> currentImmutableActorStateLoanFields = Set.of();
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -2595,6 +2599,13 @@ public final class TypeChecker {
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                if (currentActorStateLoanBinder != null
+                        && indexed.receiver() instanceof Ast.NameExpr loan
+                        && loan.name().equals(currentActorStateLoanBinder)) {
+                    throw new IllegalArgumentException(
+                            "actor state loan does not admit indexed writes; "
+                                    + "use a statically checked mutable state field");
+                }
                 if (indexed.receiver() instanceof Ast.NameExpr namespace
                         && modules.containsKey(namespace.name())) {
                     throw new IllegalArgumentException(
@@ -3410,7 +3421,18 @@ public final class TypeChecker {
                                     false,
                                     Primitive.VOID);
                     boolean previousMaySuspend = currentMaySuspend;
+                    String previousLoanBinder = currentActorStateLoanBinder;
+                    Set<String> previousImmutableFields = currentImmutableActorStateLoanFields;
                     currentMaySuspend = false;
+                    currentActorStateLoanBinder = lambda.parameters().size() == 1
+                            ? lambda.parameters().getFirst().name() : null;
+                    Set<String> immutableFields = new HashSet<>();
+                    for (Ast.FieldDecl field : currentClassOwner.fields()) {
+                        if (isActorStateSchemaField(field)
+                                && field.bindingKind() != Ast.BindingKind.LET)
+                            immutableFields.add(field.name());
+                    }
+                    currentImmutableActorStateLoanFields = Set.copyOf(immutableFields);
                     try {
                         validateLambdaAgainstExpected(
                                 lambda,
@@ -3420,6 +3442,8 @@ public final class TypeChecker {
                                 self);
                     } finally {
                         currentMaySuspend = previousMaySuspend;
+                        currentActorStateLoanBinder = previousLoanBinder;
+                        currentImmutableActorStateLoanFields = previousImmutableFields;
                     }
                     return Primitive.VOID;
                 }
@@ -6150,6 +6174,14 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             boolean writing) {
+        if (writing && currentActorStateLoanBinder != null
+                && member.receiver() instanceof Ast.NameExpr binder
+                && binder.name().equals(currentActorStateLoanBinder)
+                && currentImmutableActorStateLoanFields.contains(member.member())) {
+            throw new IllegalArgumentException(
+                    "actor state field '" + member.member()
+                            + "' is immutable and cannot be rebound under critical[write]");
+        }
         Type rawReceiver;
         if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
