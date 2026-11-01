@@ -2271,6 +2271,11 @@ public final class Parser {
                     inheritedMutableReferent);
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
+        // Narrow immutable-by-default local syntax (scalar v1). Admission
+        // requires an actual built-in type token, identifier, and '=' in
+        // statement position; never reinterpret arbitrary Foo(x) expressions
+        // or an unresolved nominal identifier as a new declaration.
+        if (looksLikeImmutableScalarLocal()) return parseImmutableScalarLocal();
         if (check(LBRACKET) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.SEQUENCE, null, false);
         }
@@ -2921,6 +2926,31 @@ public final class Parser {
 
     private boolean isBareDoneDelimiter() {
         return check(DONE) && !reservedCallableNameFollowedByInvocation(current);
+    }
+
+    private boolean looksLikeImmutableScalarLocal() {
+        if (!check(IDENT)) return false;
+        String typeName = peek().lexeme();
+        if (!typeName.equals("int") && !typeName.equals("bool")
+                && !typeName.equals("string")) return false;
+        return current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == EQUAL;
+    }
+
+    private Ast.BindingStmt parseImmutableScalarLocal() {
+        Ast.TypeRef type = parseTypeRef();
+        String name = consume(IDENT, "immutable scalar local requires a name").lexeme();
+        consume(EQUAL, "immutable scalar local requires an initializer");
+        Ast.Expr initializer = parseExpression();
+        consumeExpressionStatementTerminator(initializer,
+                "immutable scalar local should end with ';'");
+        // Existing CONST AST slots are readonly, single-assignment, and
+        // reject mutable loans; do NOT give an implicitly declared name LET
+        // or VAL mutable-referent permissions. This v1 parser slice is not
+        // a general nominal/generic type-first declaration grammar.
+        return new Ast.BindingStmt(Ast.BindingKind.CONST,
+                type, name, initializer, false, null);
     }
 
     private Ast.BindingStmt parseBindingStatement() {
