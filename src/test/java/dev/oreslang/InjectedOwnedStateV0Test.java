@@ -64,6 +64,31 @@ final class InjectedOwnedStateV0Test {
     }
 
     @Test
+    void two_owned_boolean_state_instances_execute_without_aliasing() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("examples", "injected-owned-bool-state-v0.ores"));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        var out = new ByteArrayOutputStream();
+        try (var context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
+            context.eval(Source.newBuilder(
+                    "ores", source, "injected-owned-bool-state-v0.ores").build());
+        }
+        assertEquals("false|true", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void injection_cannot_target_singleton_trait_or_interface() {
+        for (String declaration : new String[] {
+                "define singleton Settings as end",
+                "define trait Writable as end",
+                "define interface Readable as end"
+        }) {
+            parseReject("@Inject(MutableStateContainer())\n" + declaration,
+                    "only available on owned classes");
+        }
+    }
+
+    @Test
     void boolean_private_state_uses_the_same_checked_lexical_lowering() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 @Inject(MutableStateContainer())
