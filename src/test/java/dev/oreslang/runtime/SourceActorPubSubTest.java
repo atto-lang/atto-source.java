@@ -68,7 +68,8 @@ final class SourceActorPubSubTest {
             AtomicReference<Throwable> failure = new AtomicReference<>();
             ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (message, context) -> {
                 try {
-                    assertSame(a, pubsub.group("a"));
+                    assertThrows(SecurityException.class,
+                            () -> pubsub.group("a"));
                     assertSame(b, pubsub.group("b"));
                 } catch (Throwable problem) {
                     failure.set(problem);
