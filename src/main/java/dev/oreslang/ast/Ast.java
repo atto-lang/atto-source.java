@@ -430,8 +430,10 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            List<Annotation> annotations) implements Decl {
         public ClassDecl {
+            annotations = List.copyOf(annotations);
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
@@ -440,6 +442,22 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /**
+         * Preserve compatibility for previous compiler IR producers. Only the
+         * parser's explicitly validated instance state-backed form provides
+         * nonempty class metadata; implicit/missing annotations never grant
+         * ownership capabilities.
+         */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, List.of());
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */
