@@ -1,0 +1,17 @@
+import class TestCase, TestSuite, TestOptions, TestOutcome, RunSummary from "../stdlib/testing";
+import fnc expect_true, expect_false, expect_equal_int, expect_equal_string, check_int_cases, run_suite, require_success, fail from "../stdlib/testing";
+fnc property_nonnegative(int value): TestOutcome {
+  return expect_true(value >= 0, "unexpected negative property case");
+}
+fnc deterministic_property_cases_pass(): TestOutcome {
+  return check_int_cases("nonnegative", arr[0, 1, 2, 100], property_nonnegative);
+}
+pub routine main(): void {
+  val TestSuite suite = new TestSuite("native-testing-core", arr[
+    new TestCase("deterministic_property_cases_pass", deterministic_property_cases_pass, false, "")
+  ]);
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary summary = run_suite(rt borrow suite, rt borrow options);
+  require_success(rt borrow summary);
+  return;
+}
