@@ -173,6 +173,34 @@ final class SourceI64RuntimeConformanceTest {
     }
 
     @TestFactory
+    Stream<DynamicTest> orestraScalarAdmissionGuestsExecuteInRealTruffleContext() {
+        // This is pure scalar admission, not Orestra scheduler, API,
+        // actor-fencing, durable store or cluster execution.
+        record Vector(String name, String expression, long expected) { }
+        return Stream.of(
+                new Vector("reservation-capacity-zero", "(1000 - 600) - 400", 0L),
+                new Vector("subtraction-first-boundary",
+                        "(9223372036854775807 - 9223372036854775700) - 65", 42L),
+                new Vector("nonzero-execution-canary", "73", 73L))
+                .map(vector -> DynamicTest.dynamicTest("orestra-scalar/" + vector.name(), () -> {
+                    String program = "pub fnc main(): int { return " + vector.expression() + "; }\\n";
+                    assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)), program);
+                    ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+                    Source source = Source.newBuilder(OresLanguage.ID, program,
+                            "orestra-scalar-" + vector.name() + ".ores")
+                            .mimeType(OresLanguage.MIME_TYPE).build();
+                    try (Context context = Context.newBuilder(OresLanguage.ID)
+                            .allowAllAccess(false).out(stdout).build()) {
+                        Value result = context.eval(source);
+                        assertTrue(result.fitsInLong(), "guest returned non-i64");
+                        assertEquals(vector.expected(), result.asLong(),
+                                "real Graal guest signed64 mismatch");
+                    }
+                    assertEquals("", stdout.toString(StandardCharsets.UTF_8));
+                }));
+    }
+
+    @TestFactory
     Stream<DynamicTest> oreslanaPortableScalarGuestsExecuteInRealTruffleContext() {
         // These exercise only the numeric admission profile of Oreslana.
         // Full ledger classes, arrays and actor isolation remain unproved.
