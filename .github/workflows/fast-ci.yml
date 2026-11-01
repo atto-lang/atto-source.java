@@ -38,6 +38,8 @@ jobs:
         run: bash tests/test_ores_test_receipt_admission.sh
       - name: Validate canonical receipt escapes (source-free)
         run: bash tests/test_ores_test_escape_canonicality.sh
+      - name: Reject v3 forged and wrong-ID receipts (source-free)
+        run: bash tests/test_portable_scalar_v3_receipt_admission.sh
       - name: Reject forged expected ORES_TEST case IDs (source-free)
         run: bash tests/test_ores_test_expected_ids.sh
       - name: Verify read-only Actions triage unit tests
@@ -76,6 +78,8 @@ jobs:
           # Shared scalar v2 authored in Java, LLVM and .NET; this is a JIT guest gate only.
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v2-20261101.ores" | tee /tmp/ores-portable-scalar-v2-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v2-jit.out portable-scalar-v2 10
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v3-20261101.ores" | tee /tmp/ores-portable-scalar-v3-fast.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-fast.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-fast-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-fast-jit.out stdlib 40
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.ores" | tee /tmp/ores-runner-matrix-fast-jit.out
