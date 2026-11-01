@@ -69,6 +69,8 @@ jobs:
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-jit.out harness-accounting-batch5 16
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v2-20261101.ores" | tee /tmp/ores-portable-scalar-v2-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v2-jit.out portable-scalar-v2 10
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v3-20261101.ores" | tee /tmp/ores-portable-scalar-v3-jit.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-jit.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-jit.out stdlib 40
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.ores" | tee /tmp/ores-runner-matrix-jit.out
@@ -178,6 +180,8 @@ jobs:
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-aot.out harness-meta-batch4 12
           timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_accounting_batch5.ores | tee /tmp/ores-accounting-batch5-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-aot.out harness-accounting-batch5 16
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/portable-scalar-v3-20261101.ores | tee /tmp/ores-portable-scalar-v3-aot.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-aot.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-aot.out stdlib 40
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-aot.out
@@ -298,6 +302,8 @@ jobs:
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-hybrid.out harness-meta-batch4 12
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_accounting_batch5.ores | tee /tmp/ores-accounting-batch5-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-hybrid.out harness-accounting-batch5 16
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/portable-scalar-v3-20261101.ores | tee /tmp/ores-portable-scalar-v3-hybrid.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-hybrid.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-hybrid.out stdlib 40
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-hybrid.out
