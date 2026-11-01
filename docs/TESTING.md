@@ -68,6 +68,21 @@ pub routine main(): void {
 
 ## Follow-ups
 
+## Fail-closed hardening in the v2 draft
+
+The native stdlib now rejects vacuous integer properties (a zero-case table
+cannot `pass`) and `require_success` rejects suites where neither a PASS nor
+a FAIL actually executed. These align with the Rust native CLI's existing
+nonempty-execution admission contract. Typed bool equality, integer inequality,
+and string inequality helpers are additive. The direct guest fixture
+`examples/native-testing-harness-guards.ores` exercises these outcomes;
+it must be compiled and executed by a real Oreslang backend before asserting
+they work in the guest. An authored fixture alone is **not** execution evidence.
+
+See [Native test harness v2](TEST_HARNESS_V2.md) for the proposed
+async/actor/cluster TestKit, lifecycle, exact-head reporting, and five-backend
+acceptance matrix. Those APIs are not implemented by this change.
+
 The following should not be simulated in userland before their native
 dependencies are available:
 
