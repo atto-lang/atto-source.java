@@ -128,6 +128,9 @@ final class TcpPoolLeaseLedger {
             if (stopped || next <= epoch) return false;
             epoch = next;
             for (Slot slot : slots) {
+                // Revoking a policy fences even idle, pre-connected sockets.
+                // They may have been authenticated under the old epoch.
+                slot.quarantine = true;
                 if (slot.current == null) continue;
                 Lease token = slot.current;
                 token.revoked = true;
