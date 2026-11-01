@@ -1,0 +1,49 @@
+name: Actor Sync source guest progress (Java/Graal)
+on:
+  pull_request:
+    paths:
+      - 'stdlib/actor_sync.ores'
+      - 'src/test/java/dev/oreslang/ActorSyncStdlibTest.java'
+      - 'src/test/resources/actor-sync-v1/**'
+      - '.github/workflows/actor-sync-source-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-head-graal-source-guest:
+    name: Exact-head Oreslang source guest semantics (NOT durable sync)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact revision and pinned .ores fixture identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          test "$(git hash-object stdlib/actor_sync.ores)" = "48c85c40b53d33a4a420cf4bb77e00fe3df3bb94"
+          test "$(git hash-object src/test/resources/actor-sync-v1/cursor-progression.ores)" = "a454e7107ab62bbaa38cca44627c794b3bf0d4c2"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile compiler sources and record exact built artifact
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests package
+          sha256sum target/*.jar
+          java -version
+      - name: Execute Oreslang guest progress fixture with JUnit
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ActorSyncStdlibTest test
+          echo "ACTOR_SYNC_SOURCE_GUEST_PROGRESS_ONLY=${{ github.event.pull_request.head.sha || github.sha }}"
