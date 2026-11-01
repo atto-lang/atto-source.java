@@ -7719,6 +7719,17 @@ public final class OresEvalRootNode extends RootNode {
                         return new java.util.ArrayList<>(java.util.Arrays.asList(text.split(java.util.regex.Pattern.quote(delimiter), -1)));
                     };
                 }
+                if (name.equals("utf8_bytes")) {
+                    return (Invokable) args -> {
+                        requireZero(args, "string.utf8_bytes");
+                        byte[] encoded = Utf8StringAbi.encode(text).bytes();
+                        ArrayList<Long> bytes = new ArrayList<>(encoded.length);
+                        for (byte value : encoded) {
+                            bytes.add((long) (value & 0xff));
+                        }
+                        return bytes;
+                    };
+                }
                 if (name.equals("trim")) {
                     return (Invokable) args -> { requireZero(args, "string.trim"); return text.trim(); };
                 }
