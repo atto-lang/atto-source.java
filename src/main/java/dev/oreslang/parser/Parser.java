@@ -1597,6 +1597,23 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after MutableStateContainer");
                 consume(RPAREN, "MutableStateContainer v0 takes no constructor arguments");
                 consume(RPAREN, "expected ')' after @Inject(MutableStateContainer())");
+                // This marker must never become inert callable/member/module
+                // annotation metadata. Reserve it exclusively for class
+                // declarations, including accepted class-first permutations.
+                boolean classTarget = false;
+                for (int probe = current; probe < tokens.size(); probe++) {
+                    Token.Type kind = tokens.get(probe).type();
+                    if (kind == CLASS) {
+                        classTarget = true;
+                        break;
+                    }
+                    if (kind != DEFINE && kind != PUB && kind != PRIVATE
+                            && kind != ABSTRACT) break;
+                }
+                if (!classTarget) {
+                    throw error(previous(),
+                            "@Inject(MutableStateContainer()) is only available on owned classes");
+                }
                 result.add(new Ast.Annotation("$compiler.inject.mutable-state-v0", List.of()));
                 continue;
             }
