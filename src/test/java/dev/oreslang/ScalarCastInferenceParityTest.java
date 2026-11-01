@@ -173,6 +173,23 @@ final class ScalarCastInferenceParityTest {
         }
     }
 
+    @Test void fiveBackendNestedCastAndInferenceAdversarialMatrix() {
+        // Sources match the LLVM/Wasm native guest matrix. This check establishes
+        // Java typechecker admission, not an executed five-backend result.
+        for (String body : new String[] {
+                "const x = (7 as int) + (35 as int);",
+                "const x = ((2 + 5) as int) * 6;",
+                "const x = (7 as int as int) * 6;",
+                "const x = 7 as int; const y = x as int; const z = y * 6;"
+        }) accepts(body);
+        for (String body : new String[] {
+                "const x = (7 as int) as bool;",
+                "const x = (false as bool) as int;",
+                "const x = (7 as int) as? int; const int wrong = x;",
+                "const x = (7 as int) + true;"
+        }) rejects(body);
+    }
+
     @Test void bothFormsProduceTheSameGuestValue() throws Exception {
         String source = """
                 pub fnc main(): void {
