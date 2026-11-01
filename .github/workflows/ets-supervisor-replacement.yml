@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp '-Dtest=EtsSupervisedReplacementLifecycleTest,EtsHeirHandoffRuntimeTest' -DfailIfNoTests=true test
-      - name: Verify exactly eight real runtime-backed JUnit tests ran
+      - name: Verify exactly nine real runtime-backed JUnit tests ran
         shell: bash
         run: |
           set -euo pipefail
@@ -55,7 +55,7 @@ jobs:
           grep -q 'skipped="0"' "$report"
           heir=target/surefire-reports/TEST-dev.oreslang.runtime.EtsHeirHandoffRuntimeTest.xml
           test -s "$heir"
-          grep -q 'tests="5"' "$heir"
+          grep -q 'tests="6"' "$heir"
           grep -q 'errors="0"' "$heir"
           grep -q 'failures="0"' "$heir"
           grep -q 'skipped="0"' "$heir"
