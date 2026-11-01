@@ -1052,6 +1052,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
+            if (binding.declaredType() != null
+                    && binding.declaredType().name().equals("Vector")
+                    && findClass("Vector") == null
+                    && value instanceof List<?> sequence) {
+                // A Vector literal or a List-typed expression may not enter
+                // a statically bounded Vector binding as an unbounded list.
+                OresVector admitted = allocateGuestVector(binding.declaredType());
+                if (!(value instanceof OresVector existing
+                        && existing.maxCapacity() <= admitted.maxCapacity())) {
+                    admitted.addAll(sequence);
+                    value = admitted;
+                }
+            }
             Ast.ClassDecl view = staticClassView(binding.declaredType());
             if (view == null) view = staticClassView(binding.initializer(), env);
             env.define(binding.name(), value, binding.kind(), view);
