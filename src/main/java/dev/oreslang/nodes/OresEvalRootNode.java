@@ -2575,12 +2575,26 @@ public final class OresEvalRootNode extends RootNode {
                                 task,
                                 returned.value(),
                                 env,
-                                (t, value, failure) ->
+                                (t, value, failure) -> {
+                                    if (failure != null) {
                                         continuation.accept(
                                                 t,
-                                                failure == null
-                                                        ? SourceFlow.returning(value)
-                                                        : SourceFlow.throwing(failure)));
+                                                SourceFlow.throwing(failure));
+                                        return;
+                                    }
+                                    try {
+                                        rejectActorIoCapabilityStorageValue(
+                                                value,
+                                                "actor return value");
+                                        continuation.accept(
+                                                t,
+                                                SourceFlow.returning(value));
+                                    } catch (RuntimeException | Error escape) {
+                                        continuation.accept(
+                                                t,
+                                                SourceFlow.throwing(escape));
+                                    }
+                                });
                     }
                     return;
                 }
@@ -6902,7 +6916,9 @@ public final class OresEvalRootNode extends RootNode {
                     // Crossing an untyped linked-code-unit boundary keeps this
                     // activation until the imported call returns so the caller's
                     // declared return-shape check still runs.
-                    throw new ReturnSignal(invoke(invocation));
+                    Object returned = invoke(invocation);
+                    rejectActorIoCapabilityStorageValue(returned, "actor return value");
+                    throw new ReturnSignal(returned);
                 }
                 if (value instanceof Ast.ConditionalExpr conditional) {
                     Ast.Expr selected = truth(eval(conditional.condition(), env))
@@ -6913,7 +6929,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
-            throw new ReturnSignal(eval(value, env));
+            Object returned = eval(value, env);
+            rejectActorIoCapabilityStorageValue(returned, "actor return value");
+            throw new ReturnSignal(returned);
         }
 
         private static boolean isActorLexicalBoundary(Ast.ClassDecl lexicalClass) {
