@@ -18,6 +18,8 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.CriticalGate;
+import dev.oreslang.types.CriticalEffectPreflight;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -152,6 +154,21 @@ public final class OresEvalRootNode extends RootNode {
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        // Bootstrap: site-scoped gates are retained only for this checked
+        // code image and evaluator. Actor state requires actor-generation
+        // ownership and remains explicitly unsupported in this stage.
+        private final Map<Ast.CriticalStmt, CriticalGate> rootCriticalGates =
+                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+
+        private CriticalGate rootCriticalGate(Ast.CriticalStmt stmt) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "actor critical blocks require actor-owned generation-fenced gate identity");
+            }
+            synchronized (rootCriticalGates) {
+                return rootCriticalGates.computeIfAbsent(stmt, ignored -> new CriticalGate());
+            }
+        }
 
         private int checkedOptionDepth(Ast.CallExpr call) {
             synchronized (optionDepthCache) {
@@ -2469,6 +2486,99 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Scheduler-facing lowering substrate for a bounded non-suspending
+         * lexical critical body. The compiler intentionally does NOT admit
+         * source critical blocks yet: actor-owned resource identity, transitive
+         * effects and guest acceptance fixtures remain independent gates.
+         *
+         * No guest body executes from a Future settlement callback. A queued
+         * admission resumes through SourceTask.suspend/OresScheduler only.
+         */
+        private void runCriticalSuspendable(
+                SourceTask task,
+                Ast.CriticalStmt critical,
+                Env env,
+                SourceFlowCont continuation) {
+            CriticalEffectPreflight.verify(critical.body());
+            CriticalGate gate = rootCriticalGate(critical);
+            OresFuture<CriticalGate.Ticket> admission = gate.requestAwaitable();
+            SourceCleanupFrame cleanup = task.registerSourceCleanup((owner, finished) -> {
+                // This is an authenticated cancellation-unwind turn; it also
+                // reclaims an already-granted but not-yet-resumed ticket.
+                releaseCriticalAdmission(gate, admission);
+                finished.accept(owner, SourceFlow.normal());
+            });
+            SourceValueCont afterAdmission = (owner, value, failure) -> {
+                if (failure != null) {
+                    owner.disarmSourceCleanup(cleanup);
+                    continuation.accept(owner, SourceFlow.throwing(
+                            OresFuture.unwrap(failure)));
+                    return;
+                }
+                if (!(value instanceof CriticalGate.Ticket ticket) || !gate.holds(ticket)) {
+                    owner.disarmSourceCleanup(cleanup);
+                    continuation.accept(owner, SourceFlow.throwing(
+                            new IllegalStateException(
+                                    "critical admission ticket was revoked before execution")));
+                    return;
+                }
+                boolean[] delivered = { false };
+                try {
+                    runBlock(owner, critical.body(), env, (completedTask, flow) -> {
+                        delivered[0] = true;
+                        SourceFlow completed = flow;
+                        try {
+                            gate.release(ticket);
+                        } catch (RuntimeException | Error failed) {
+                            completed = mergeCleanupFailure(completed, failed);
+                        } finally {
+                            completedTask.disarmSourceCleanup(cleanup);
+                        }
+                        continuation.accept(completedTask, completed);
+                    });
+                } catch (RuntimeException | Error failed) {
+                    if (delivered[0]) throw failed; // downstream owner handles it
+                    try {
+                        gate.release(ticket);
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        suppressCleanupFailure(failed, cleanupFailure);
+                    } finally {
+                        owner.disarmSourceCleanup(cleanup);
+                    }
+                    continuation.accept(owner, SourceFlow.throwing(failed));
+                }
+            };
+            if (admission.isDone()) {
+                Object value = null;
+                Throwable failure = null;
+                try {
+                    value = admission.join();
+                } catch (RuntimeException | Error failed) {
+                    failure = failed;
+                }
+                afterAdmission.accept(task, value, failure);
+            } else {
+                task.suspend(admission, afterAdmission);
+            }
+        }
+
+        private void releaseCriticalAdmission(
+                CriticalGate gate, OresFuture<CriticalGate.Ticket> admission) {
+            admission.cancel(false);
+            if (admission.isDone() && !admission.isCancelled()) {
+                try {
+                    gate.release(admission.join());
+                } catch (RuntimeException failed) {
+                    // A failed/retired admission does not own the gate. A
+                    // successful ticket release is idempotent; do not disguise
+                    // a failed guest body as a successful protected mutation.
+                    if (gate.retired()) return;
+                    throw failed;
+                }
+            }
+        }
+
         private void runSuspendableStatement(
                 SourceTask task,
                 Ast.Stmt stmt,
@@ -2476,9 +2586,14 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
-                if (stmt instanceof Ast.CriticalStmt || stmt instanceof Ast.TryCriticalStmt)
+                if (stmt instanceof Ast.CriticalStmt critical) {
+                    runCriticalSuspendable(task, critical, env, continuation);
+                    return;
+                }
+                if (stmt instanceof Ast.TryCriticalStmt) {
                     throw new IllegalStateException(
-                            "critical source requires scheduler-owned admission and lexical guard unwind");
+                            "try critical requires immediate nonblocking ticket and fallback lowering");
+                }
                 if (stmt instanceof Ast.UsingBorrowStmt) {
                     throw new IllegalStateException(
                             "using request.borrow() as view is not executable without checked loan cleanup");
