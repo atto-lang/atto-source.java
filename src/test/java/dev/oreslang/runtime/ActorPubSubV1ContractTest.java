@@ -50,7 +50,9 @@ final class ActorPubSubV1ContractTest {
                     publisherJoin.join();
                     // Publication authority comes from group membership. This actor
                     // intentionally never calls subscribe().
-                    completed.publish(message).completion().join();
+                    ActorEventBus.PublishReceipt receipt = completed.publish(message);
+                    assertTrue(receipt.completion().isDone(),
+                            "empty-capacity reliable publish should admit without blocking");
                 } catch (Throwable problem) {
                     failure.compareAndSet(null, problem);
                 } finally {
@@ -63,6 +65,8 @@ final class ActorPubSubV1ContractTest {
 
             publisher.send("p-1");
             assertTrue(published.await(5, TimeUnit.SECONDS));
+            assertEquals(1, group.events().topics().getFirst().subscribers(),
+                    "publisher membership must not create an implicit subscription");
 
             subscriber.send("read");
             assertTrue(read.await(5, TimeUnit.SECONDS));
