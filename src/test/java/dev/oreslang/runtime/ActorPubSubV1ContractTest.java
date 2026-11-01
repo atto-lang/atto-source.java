@@ -19,7 +19,8 @@ final class ActorPubSubV1ContractTest {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             ActorRuntime.ActorGroupJoinCapability subscriberJoin = group.joinCapability();
             ActorRuntime.ActorGroupJoinCapability publisherJoin = group.joinCapability();
-            group.events().defineTopic("payment.completed", ActorEventBus.DeliveryPolicy.RELIABLE, 4);
+            ActorEventBus.Topic<String> completed = group.events().topic(
+                    "payment.completed", ActorEventBus.DeliveryPolicy.RELIABLE, 4);
 
             CountDownLatch subscribed = new CountDownLatch(1);
             CountDownLatch published = new CountDownLatch(1);
@@ -32,7 +33,7 @@ final class ActorPubSubV1ContractTest {
                 try {
                     if ("subscribe".equals(message)) {
                         subscriberJoin.join();
-                        subscription.set(group.events().subscribe("payment.completed"));
+                        subscription.set(completed.subscribe());
                         subscribed.countDown();
                         return;
                     }
@@ -49,7 +50,7 @@ final class ActorPubSubV1ContractTest {
                     publisherJoin.join();
                     // Publication authority comes from group membership. This actor
                     // intentionally never calls subscribe().
-                    group.events().publish("payment.completed", message).completion().join();
+                    completed.publish(message).completion().join();
                 } catch (Throwable problem) {
                     failure.compareAndSet(null, problem);
                 } finally {
@@ -82,8 +83,10 @@ final class ActorPubSubV1ContractTest {
             ActorRuntime.ActorGroup b = runtime.createActorGroup();
             ActorRuntime.ActorGroupJoinCapability joinA = a.joinCapability();
             ActorRuntime.ActorGroupJoinCapability joinB = b.joinCapability();
-            a.events().defineTopic("updates", ActorEventBus.DeliveryPolicy.LATEST, 1);
-            b.events().defineTopic("updates", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            ActorEventBus.Topic<Integer> topicA =
+                    a.events().topic("updates", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            ActorEventBus.Topic<Integer> topicB =
+                    b.events().topic("updates", ActorEventBus.DeliveryPolicy.LATEST, 1);
 
             CountDownLatch done = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -93,15 +96,15 @@ final class ActorPubSubV1ContractTest {
                     joinA.join();
                     joinB.join();
 
-                    ActorEventBus.Subscription<Integer> subA = a.events().subscribe("updates");
-                    ActorEventBus.Subscription<Integer> subB = b.events().subscribe("updates");
+                    ActorEventBus.Subscription<Integer> subA = topicA.subscribe();
+                    ActorEventBus.Subscription<Integer> subB = topicB.subscribe();
                     subA.close();
 
                     assertTrue(subA.closed());
                     assertFalse(subB.closed());
                     assertTrue(b.contains(context.self()));
 
-                    b.events().publish("updates", 7);
+                    topicB.publish(7);
                     assertEquals(7, subB.tryRead().orElseThrow().value());
 
                     a.leaveCurrent();
