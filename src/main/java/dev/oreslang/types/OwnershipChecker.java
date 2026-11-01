@@ -2149,6 +2149,11 @@ public final class OwnershipChecker {
                 result = new Ast.TypeRef(
                         "List", List.of(Ast.TypeRef.simple("String")), false);
             }
+            case "utf8_bytes" -> {
+                arity = 0;
+                result = new Ast.TypeRef(
+                        "List", List.of(Ast.TypeRef.simple("int")), false);
+            }
             case "trim" -> {
                 arity = 0;
                 result = Ast.TypeRef.simple("String");
