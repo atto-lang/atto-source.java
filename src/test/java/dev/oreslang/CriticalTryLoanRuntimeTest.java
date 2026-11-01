@@ -92,7 +92,9 @@ final class CriticalTryLoanRuntimeTest {
             worker.join(3000);
             assertFalse(worker.isAlive());
             assertNull(failure.get());
-            assertTrue(arbiter.tryAcquire(owner).isPresent());
+            var resumed = arbiter.tryAcquire(owner).orElseThrow();
+            assertTrue(resumed.heldBy(owner));
+            resumed.close();
         }
     }
 
