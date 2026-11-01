@@ -1,0 +1,19 @@
+// A negative guest case: real compiler execution must exit nonzero after
+// emitting an exact machine summary. CI checks both; compiler errors alone
+// cannot satisfy this test. Intentional failure must not count as PASS.
+import class TestCase, TestSuite, TestOptions, TestOutcome, RunSummary from '../stdlib/testing';
+import fnc pass, fail, run_suite, require_success from '../stdlib/testing';
+
+fnc passed(): TestOutcome { return pass(); }
+fnc skipped(): TestOutcome { return fail("must not execute skipped callback"); }
+fnc failed(): TestOutcome { return fail("intentional case failure"); }
+
+pub routine main(): void {
+  val List<TestCase> cases = arr[];
+  val TestSuite suite = new TestSuite("reject", cases);
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary summary = run_suite(rt borrow suite, rt borrow options);
+  require_success(rt borrow summary);
+  stdio.stdout.println("UNEXPECTED_SUCCESS");
+  return;
+}
