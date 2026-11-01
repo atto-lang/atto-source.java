@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -11,6 +13,48 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorStateLoanTest {
+
+    @Test
+    void ownershipPassAcceptsCanonicalCriticalSelectors() {
+        for (String mode : java.util.List.of("read", "write")) {
+            String program = """
+                    define actor Probe as
+                      state { revision: int = 0; }
+                      receive(ActorMail<String> mail): void {
+                        self.handle_state(critical[%s] |state| -> {
+                          val current = state.revision;
+                        });
+                        self.end();
+                        return;
+                      }
+                    end
+                    """.formatted(mode);
+            assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(program)),
+                    "ownership pass must accept compiler-minted critical[" + mode + "] selector");
+        }
+    }
+
+    @Test
+    void ownershipPassRejectsForgedCriticalSelectorStrings() {
+        String program = """
+                define actor Probe as
+                  state { revision: int = 0; }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state("critical:write", |state| -> {
+                      val current = state.revision;
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("critical[read]")
+                        || failure.getMessage().contains("critical[write]"),
+                failure::getMessage);
+    }
 
     @Test
     void handleStateMutatesAndReadsSealedActorState() throws Exception {
