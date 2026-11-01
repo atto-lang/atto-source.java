@@ -126,4 +126,23 @@ final class ActorHierarchyMlAdmissionTest {
         assertEquals(42, result.exitStatus(),
                 "real Java/Graal Oreslang guest must return the native scalar step 42");
     }
+    @Test
+    void canonicalCounterActorFixtureIsPinnedAsTargetSyntaxOnly() throws Exception {
+        byte[] source;
+        try (InputStream input = getClass().getResourceAsStream(
+                "/parity/actor-counter-target.ores")) {
+            assertNotNull(input, "portable actor Counter fixture missing");
+            source = input.readAllBytes();
+        }
+        ByteArrayOutputStream blob = new ByteArrayOutputStream();
+        blob.write(("blob " + source.length + "\\0").getBytes(StandardCharsets.US_ASCII));
+        blob.write(source);
+        assertEquals("c49780b4b42251db20ae9ac864eb8606bf7da922",
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1")
+                        .digest(blob.toByteArray())),
+                "target actor fixture must match all five compiler trees");
+        // No guest-execution claim until state loans, spawn and mailbox
+        // dispatch are successfully lowered on the same backend.
+    }
+
 }
