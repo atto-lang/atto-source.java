@@ -178,6 +178,17 @@ final class ActorHierarchyAdmissionTest {
     }
 
     @Test
+    void ordinaryClassCannotClaimActorStreamOperatorMarker() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Pretender implements StreamOperator<int,int> as
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("actor-only implements marker"),
+                error.getMessage());
+    }
+
+    @Test
     void classIsNotAnActorImplementedContract() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
