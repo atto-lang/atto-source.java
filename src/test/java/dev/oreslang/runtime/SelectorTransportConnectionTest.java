@@ -298,6 +298,32 @@ final class SelectorTransportConnectionTest {
     }
 
     @Test
+    void selectorDeadlinesSaturateAcrossSignedNanoTimeOrigins() {
+        // A nanoTime origin can be negative; the old MAX-now guard could
+        // overflow and produce a timeout well before the requested deadline.
+        assertEquals(Long.MIN_VALUE + 43,
+                SelectorTransportConnection.saturatingDeadline(
+                        Long.MIN_VALUE + 3, 40));
+        assertEquals(Long.MAX_VALUE,
+                SelectorTransportConnection.saturatingDeadline(
+                        Long.MAX_VALUE - 5, 40));
+        assertEquals(Long.MAX_VALUE,
+                SelectorTransportConnection.saturatingRemaining(
+                        Long.MAX_VALUE, -42));
+        assertEquals(Long.MAX_VALUE,
+                SelectorTransportConnection.saturatingRemaining(
+                        Long.MAX_VALUE - 1, -42));
+        assertEquals(Long.MIN_VALUE,
+                SelectorTransportConnection.saturatingRemaining(
+                        Long.MIN_VALUE, 42));
+        assertEquals(2_000_000_000L,
+                SelectorTransportConnection.saturatingRemaining(
+                        3_000_000_000L, 1_000_000_000L));
+        assertThrows(IllegalArgumentException.class,
+                () -> SelectorTransportConnection.saturatingDeadline(1, -1));
+    }
+
+    @Test
     void exclusiveOperationGateAllowsSequentialRoundTrip()
             throws Exception {
         try (ServerSocket server = new ServerSocket(
