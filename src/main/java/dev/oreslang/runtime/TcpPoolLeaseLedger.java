@@ -41,6 +41,7 @@ final class TcpPoolLeaseLedger {
     private static final class Slot {
         private long generation = 1;
         private Lease current;
+        private boolean quarantine;
     }
 
     private final ReentrantLock gate = new ReentrantLock();
@@ -74,7 +75,8 @@ final class TcpPoolLeaseLedger {
                     !partition.equals(requestedPartition) ||
                     index < 0 || index >= slots.length) return null;
             Slot state = slots[index];
-            if (state.generation == Long.MAX_VALUE || state.current != null) return null;
+            if (state.generation == Long.MAX_VALUE || state.current != null ||
+                    state.quarantine) return null;
             Lease token = new Lease(this, index, state.generation, actor,
                                     epoch, partition);
             state.current = token;
@@ -153,6 +155,25 @@ final class TcpPoolLeaseLedger {
         }
     }
 
+    /**
+     * Trusted transport owner calls ONLY after the old physical connection
+     * has actually been closed and all I/O/buffer completions are quiescent.
+     * An actor cannot present a lease token as proof of physical closure.
+     */
+    boolean tryConfirmPhysicalClose(int index, long expectedGeneration) {
+        if (!gate.tryLock()) return false;
+        try {
+            if (stopped || index < 0 || index >= slots.length) return false;
+            Slot state = slots[index];
+            if (!state.quarantine || state.current != null ||
+                    state.generation != expectedGeneration) return false;
+            state.quarantine = false;
+            return true;
+        } finally {
+            gate.unlock();
+        }
+    }
+
     private boolean owns(Lease token) {
         if (token == null || token.owner != this || token.slot < 0 ||
                 token.slot >= slots.length) return false;
@@ -169,6 +190,7 @@ final class TcpPoolLeaseLedger {
     private void retire(Lease token) {
         Slot slot = slots[token.slot];
         slot.current = null;
+        slot.quarantine = true; // Never reuse until the trusted close fence.
         token.revoked = true;
         if (slot.generation < Long.MAX_VALUE) slot.generation++;
     }
