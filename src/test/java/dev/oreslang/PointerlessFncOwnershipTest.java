@@ -581,6 +581,113 @@ final class PointerlessFncOwnershipTest {
                 """)));
     }
 
+
+    /**
+     * Heap location does not relax an owner's loan ledger. In particular,
+     * growing Array<T> may relocate its backing storage, so any live view
+     * into an element must exclude mutation of the containing Array owner.
+     */
+    @Test
+    void liveIndexedHeapBorrowBlocksResizableVectorMutation() {
+        String source = """
+                fnc invalid(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  const element = rt borrow values[0];
+                  values.add(8);
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source),
+                "an unrelated syntax error must never count as heap-borrow enforcement");
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure.getMessage());
+    }
+
+    @Test
+    void heapVectorExclusiveBorrowBlocksConcurrentReadLoan() {
+        String source = """
+                fnc invalid(): void {
+                  let mut Array<int> values = new Array<int>();
+                  const writer = rt mut borrow values;
+                  const reader = rt borrow values;
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure.getMessage());
+    }
+
+    @Test
+    void heapVectorReadLoanBlocksOwnerMoveEvenWithoutReallocation() {
+        String source = """
+                fnc invalid(): void {
+                  let mut Array<int> values = new Array<int>();
+                  const view = rt borrow values;
+                  val Array<int> escaped = rt take values;
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure.getMessage());
+    }
+
+    @Test
+    void projectedHeapLoansCanEndBeforeLaterMutation() {
+        String source = """
+                fnc valid(): int {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  if true; do
+                    const first = rt borrow values[0];
+                    const second = rt borrow values[0];
+                  fi
+                  values.add(8);
+                  return 2;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+    }
+
+    @Test
+    void explicitIndexedHeapTakeCannotLeaveLiveSourceSlot() {
+        String source = """
+                fnc invalid(Array<int> values): int {
+                  return rt take values[0];
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("indexed projection"),
+                failure.getMessage());
+    }
+
+    @Test
+    void projectedHeapBorrowCannotEscapeThroughReturnValue() {
+        String source = """
+                fnc invalid(): borrow int {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  return rt borrow values[0];
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure.getMessage());
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
