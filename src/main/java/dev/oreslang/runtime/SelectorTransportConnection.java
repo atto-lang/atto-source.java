@@ -166,6 +166,17 @@ final class SelectorTransportConnection implements AutoCloseable {
             driveHandshake(
                     created.getHandshakeStatus(),
                     phaseDeadline(handshakeTimeout));
+        } catch (IOException | RuntimeException handshakeFailure) {
+            // A failed TLS handshake may have consumed or emitted partial
+            // records and changed both SSLEngine and socket state. Never
+            // return such a connection to a future shared connection pool.
+            // Preserve the primary failure while retiring physical resources.
+            try {
+                close();
+            } catch (IOException closeFailure) {
+                handshakeFailure.addSuppressed(closeFailure);
+            }
+            throw handshakeFailure;
         } finally {
             leaveOperation();
         }
