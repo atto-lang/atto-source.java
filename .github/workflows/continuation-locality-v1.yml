@@ -43,4 +43,4 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - run: mvn -B -q -Dtest=ActorAffinitySoftSpillTest,AsyncRuntimeTest test
+      - run: mvn -B -q -Dtest=ActorAffinitySoftSpillTest,AsyncRuntimeTest,OresSchedulerTest,SuspendsContractLanguageTest test
