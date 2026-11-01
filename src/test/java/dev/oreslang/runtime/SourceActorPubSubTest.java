@@ -96,6 +96,53 @@ final class SourceActorPubSubTest {
     }
 
     @Test
+    void cachedActorGroupHandleCannotOutliveMembershipRevocation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Group group = pubsub.group("revoked");
+            group.topic("events", "latest", 1);
+
+            CountDownLatch cached = new CountDownLatch(1);
+            CountDownLatch revoked = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<SourceActorPubSub.Group> actorHandle = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (message, context) -> {
+                try {
+                    if ("cache".equals(message)) {
+                        actorHandle.set(pubsub.group("revoked"));
+                        cached.countDown();
+                        return;
+                    }
+                    assertThrows(SecurityException.class,
+                            () -> actorHandle.get().topic("events"));
+                    assertThrows(SecurityException.class,
+                            () -> actorHandle.get().memberCount());
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    if ("check".equals(message)) checked.countDown();
+                }
+            });
+
+            group.join(actor);
+            actor.send("cache");
+            assertTrue(cached.await(5, TimeUnit.SECONDS));
+            group.leave(actor);
+            revoked.countDown();
+
+            actor.send("check");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertEquals(0L, revoked.getCount());
+            assertNull(failure.get());
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void topicPolicyIsBoundedAndDefinitionIsStable() {
         try (ActorRuntime runtime = new ActorRuntime();
              SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
