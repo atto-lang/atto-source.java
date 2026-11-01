@@ -7108,9 +7108,15 @@ public final class ActorRuntime implements AutoCloseable {
         actorOutputStreams.clear();
         for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
         syncCells.clear();
-        for (EtsTable<?, ?> table : List.copyOf(etsTables)) table.closeFromRuntime();
-        etsTables.clear();
-        etsTablesByOwner.clear();
+        synchronized (etsOwnershipLock) {
+            // Registry teardown and pending ACK must never cross: actor
+            // finalization, table closure, and index clearing share this
+            // ownership lock. No guest callback may execute inside it.
+            for (EtsTable<?, ?> table : List.copyOf(etsTables))
+                table.closeFromRuntime();
+            etsTables.clear();
+            etsTablesByOwner.clear();
+        }
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
