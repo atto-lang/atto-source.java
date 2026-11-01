@@ -2039,6 +2039,9 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "readonly record values cannot be bound with mutable referent access");
             }
+            rejectActorIoCapabilityStorage(
+                    actual,
+                    "actor-local binding '" + binding.name() + "'");
 
             if (namedInference) {
                 String name = inferredName;
@@ -2172,6 +2175,7 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            rejectActorIoCapabilityStorage(actual, "actor return value");
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             return;
@@ -2696,6 +2700,7 @@ public final class TypeChecker {
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
+            rejectActorIoCapabilityStorage(value, "assignment to " + where);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             for (Type slot : dynamicFixedSlots) {
@@ -5963,6 +5968,35 @@ public final class TypeChecker {
                 || !isSendSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+        }
+    }
+
+    private boolean containsActorIoCapability(Type type) {
+        type = deref(type);
+        if (type instanceof ListType list) {
+            return containsActorIoCapability(list.element());
+        }
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(this::containsActorIoCapability);
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(this::containsActorIoCapability);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(this::containsActorIoCapability);
+        }
+        if (type instanceof Named named) {
+            if (named.name().startsWith("$ActorIO")) return true;
+            return named.arguments().stream().anyMatch(this::containsActorIoCapability);
+        }
+        return false;
+    }
+
+    private void rejectActorIoCapabilityStorage(Type type, String where) {
+        if (currentActorKind != Ast.ActorKind.NONE
+                && containsActorIoCapability(type)) {
+            throw new IllegalArgumentException(
+                    where + " cannot store, alias, return, or assign the implicit actor io capability");
         }
     }
 
