@@ -36,7 +36,8 @@ fnc check(
 }
 
 pub routine main(): void {
-  val TestSuite empty = new TestSuite("runner", arr[]);
+  val List<TestCase> no_tests = arr[];
+  val TestSuite empty = new TestSuite("runner", no_tests);
   val TestSuite all_skipped = new TestSuite(
     "runner",
     arr[new TestCase("skipped", must_not_run, true, "skip with reason")]
