@@ -89,6 +89,40 @@ final class SourceI64RuntimeConformanceTest {
         }));
     }
 
+
+    // Candidate scalar intersection with LLVM, Wasm, Cranelift and .NET.
+    // These dynamically named tests execute real Java/Graal Oreslang guest code.
+    private static final List<Case> WAVE_SCALARS = List.of(
+            new Case("34", "(2 + 3) * 8 + 2", "42"),
+            new Case("35", "-(-42)", "42"),
+            new Case("36", "(100 - 16) - 42", "42"),
+            new Case("37", "-7 * -6", "42"),
+            new Case("38", "(7 - 14) * -6", "42"),
+            new Case("39", "9223372036854775807 - 9223372036854775765", "42"),
+            new Case("40", "-9223372036854775808 + 9223372036854775807 + 43", "42"),
+            new Case("41", "2 * (3 + 4) * 3", "42"));
+
+    @TestFactory
+    Stream<DynamicTest> sharedSignedI64WaveExecutesInRealGraalGuest() {
+        return WAVE_SCALARS.stream().map(test -> DynamicTest.dynamicTest(
+                "parity-wave-" + test.id(), () -> {
+                    String program = "pub fnc main():void { stdio.stdout.write("
+                            + test.expression() + "); return; }\\n".replace("\\n", "\n");
+                    assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)),
+                            "Graal source rejection: " + test.id());
+                    ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+                    Source compiled = Source.newBuilder(OresLanguage.ID, program,
+                            "scalar-wave-" + test.id() + ".ores")
+                            .mimeType(OresLanguage.MIME_TYPE).build();
+                    try (Context context = Context.newBuilder(OresLanguage.ID)
+                            .allowAllAccess(false).out(stdout).build()) {
+                        context.eval(compiled);
+                    }
+                    assertEquals(test.expected(), stdout.toString(StandardCharsets.UTF_8),
+                            "actual Graal guest scalar mismatch: " + test.id());
+                }));
+    }
+
     @Test
     void cannotLowerFloatDivisionOrOverflowLiteralAsPortableI64() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(
