@@ -1,5 +1,5 @@
 import class TestCase, TestSuite, TestOptions, TestOutcome, RunSummary from "../stdlib/testing";
-import fnc expect_true, expect_false, expect_equal_int, expect_equal_string, check_int_cases, run_suite, require_success, fail from "../stdlib/testing";
+import fnc expect_true, expect_false, expect_equal_int, expect_equal_string, expect_near_float, check_int_cases, escape_machine_field, run_suite, require_success, fail from "../stdlib/testing";
 fnc property_nonnegative(int value): TestOutcome {
   return expect_true(value >= 0, "unexpected negative property case");
 }
@@ -14,10 +14,22 @@ fnc negative_property_case_is_failure(): TestOutcome {
   return expect_true(!rejected.passed && rejected.message != "",
     "a failing property must return an informative failing outcome");
 }
+fnc machine_receipt_fields_escape_delimiters(): TestOutcome {
+  val String actual = escape_machine_field("a|b\nc\\d");
+  return expect_equal_string(actual, "a\\u007cb\\nc\\\\d",
+    "event field must escape separators, line breaks and backslashes unambiguously");
+}
+fnc negative_float_tolerance_does_not_pass(): TestOutcome {
+  val TestOutcome result = expect_near_float(1.0, 1.0, 0.0 - 0.01,
+    "negative tolerance cannot pass");
+  return expect_true(!result.passed, "negative tolerance was incorrectly accepted");
+}
 pub routine main(): void {
   val TestSuite suite = new TestSuite("native-testing-core", arr[
     new TestCase("deterministic_property_cases_pass", deterministic_property_cases_pass, false, ""),
-    new TestCase("negative_property_case_is_failure", negative_property_case_is_failure, false, "")
+    new TestCase("negative_property_case_is_failure", negative_property_case_is_failure, false, ""),
+    new TestCase("machine_receipt_fields_escape_delimiters", machine_receipt_fields_escape_delimiters, false, ""),
+    new TestCase("negative_float_tolerance_does_not_pass", negative_float_tolerance_does_not_pass, false, "")
   ]);
   val TestOptions options = new TestOptions("", false, true);
   val RunSummary summary = run_suite(rt borrow suite, rt borrow options);
