@@ -688,6 +688,100 @@ final class PointerlessFncOwnershipTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void projectedHeapFieldReadLoanBlocksParentMove() {
+        String source = """
+                define class HeapHolder as
+                  pub let int element = 7;
+                end
+                fnc invalid(): void {
+                  let mut HeapHolder holder = new HeapHolder();
+                  const view = rt borrow holder.element;
+                  val HeapHolder moved = rt take holder;
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source),
+                "a parse error cannot substitute for owner/loan tracking");
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure.getMessage());
+    }
+
+    @Test
+    void projectedHeapFieldReadLoanBlocksParentWrite() {
+        String source = """
+                define class HeapHolder as
+                  pub let int element = 7;
+                end
+                fnc invalid(): void {
+                  let mut HeapHolder holder = new HeapHolder();
+                  const view = rt borrow holder.element;
+                  holder.element = 8;
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure.getMessage());
+    }
+
+    @Test
+    void projectedHeapArrayLoanCannotSurviveCooperation() {
+        String source = """
+                pub async fnc main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  const element = rt borrow values[0];
+                  rt cooperate;
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure.getMessage());
+    }
+
+    @Test
+    void projectedHeapArrayLoanRejectsUnstableComputedIndex() {
+        String source = """
+                fnc invalid(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  const element = rt borrow values[0 + 0];
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("stable name or literal"),
+                failure.getMessage());
+    }
+
+    @Test
+    void wholeHeapArrayCanMoveAfterProjectedLoanScopeEnds() {
+        String source = """
+                fnc valid(): int {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  if true; do
+                    const element = rt borrow values[0];
+                  fi
+                  val Array<int> moved = rt take values;
+                  return 42;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
