@@ -135,6 +135,25 @@ final class ScalarCastInferenceParityTest {
                 () -> TypeChecker.check(Parser.parse(rejected)));
     }
 
+    @Test void fiveBackendCommonCheckedIntCastExpressionIsNotABitcast() {
+        // Shared five-backend source grammar. Typechecking here is not a
+        // claim that LLVM, Wasm, Cranelift or .NET guests executed.
+        for (String source : new String[] {
+                "pub fnc main():int{return (7 as int)+35;}",
+                "pub fnc main():int{return (7 as int as int)+35;}"
+        }) {
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), source);
+        }
+        for (String source : new String[] {
+                "pub fnc main():int{return 7 as bool;}",
+                "pub fnc main():int{return true as int;}",
+                "pub fnc main():int{return 9223372036854775808 as int;}"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
     @Test void bothFormsProduceTheSameGuestValue() throws Exception {
         String source = """
                 pub fnc main(): void {
