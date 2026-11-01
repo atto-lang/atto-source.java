@@ -1,5 +1,21 @@
 # Native DB durable WAL: Java/GraalVM physical host substrate
 
+## Stage 1.9 — deterministic maximum-frame/delete replay regressions
+
+`DbWalReplayV1Test.maximumPutAndDeleteTornTailDifferentialCorpus` adds a
+portable reference corpus shared byte-for-byte in construction rules with the
+LLVM test: tenant 7/generation 4, PUT(1,41,key=1,value=0), maximum
+PUT(2,42,key=64,value=1024), and DELETE(3,43,key=64,value=0).
+The 1,118-byte PUT checksum bytes MUST equal `42 1d 02 86`; the 94-byte
+DELETE checksum bytes MUST equal `23 1f df 0a` (independent golden values).
+Reopen scan expects exactly 3 records, 1,243 bytes, sequence 3 and operation
+43. All 1,117 nonempty incomplete maximum-frame prefixes retain the durable
+first record without an automatic truncate/ACK; complete corrupted checksum,
+illegal DELETE payload and 1,025-byte oversize value are rejected read-only.
+This is an authored host regression, not exact-tree JUnit/guest execution.
+
+
+
 ## Stage 1.8 — partial WAL header validation (host-only)
 
 Recovery now checks every available prefix byte of ODB1 magic/version,

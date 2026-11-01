@@ -29,6 +29,96 @@ final class DbWalReplayV1Test {
         u16(b,27,a); u16(b,29,c);
         return b;
     }
+    // Shared deterministic ODB1 wire corpus with the LLVM host regression.
+    // Checksums are fixed oracle values independently calculated for these
+    // header/payload bytes, not merely rederived in an assertion.
+    private static byte[] boundaryFrame(
+            int kind, int seq, int operation, int keyLength, int valueLength) {
+        byte[] wire = new byte[26 + keyLength + valueLength + 4];
+        wire[0] = 79; wire[1] = 68; wire[2] = 66; wire[3] = 49;
+        wire[4] = 1; wire[5] = (byte) kind;
+        u32(wire, 6, 7); u32(wire, 10, 4);
+        u32(wire, 14, seq); u32(wire, 18, operation);
+        u16(wire, 22, keyLength); u16(wire, 24, valueLength);
+        for (int i = 0; i < keyLength; i++)
+            wire[26 + i] = (byte) (i * 17 + 3);
+        for (int i = 0; i < valueLength; i++)
+            wire[26 + keyLength + i] = (byte) (i * 29 + 11);
+        int a = 1, b = 0;
+        for (int i = 0; i < wire.length - 4; i++) {
+            a = (a + (wire[i] & 255)) % 65521;
+            b = (b + a) % 65521;
+        }
+        u16(wire, wire.length - 4, a);
+        u16(wire, wire.length - 2, b);
+        return wire;
+    }
+
+    @Test void maximumPutAndDeleteTornTailDifferentialCorpus() throws Exception {
+        byte[] first = boundaryFrame(1, 1, 41, 1, 0);
+        byte[] maximum = boundaryFrame(1, 2, 42, 64, 1024);
+        byte[] deletion = boundaryFrame(2, 3, 43, 64, 0);
+        assertEquals(31, first.length);
+        assertEquals(1118, maximum.length);
+        assertEquals(94, deletion.length);
+        assertArrayEquals(new byte[]{0x42, 0x1d, 0x02, (byte) 0x86},
+                java.util.Arrays.copyOfRange(maximum, 1114, 1118),
+                "independent maximum-size checksum oracle");
+        assertArrayEquals(new byte[]{0x23, 0x1f, (byte) 0xdf, 0x0a},
+                java.util.Arrays.copyOfRange(deletion, 90, 94),
+                "independent delete checksum oracle");
+        Path path = root.resolve("boundary.odb");
+        try (var file = FileChannel.open(path, StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            file.write(ByteBuffer.wrap(first), 0);
+            file.write(ByteBuffer.wrap(maximum), 31);
+            file.write(ByteBuffer.wrap(deletion), 1149);
+            var full = DbWalReplayV1.scan(file, 7, 4);
+            assertEquals(3, full.records());
+            assertEquals(1243, full.validBytes());
+            assertEquals(3, full.lastSequence());
+            assertEquals(43, full.lastOperation());
+            assertFalse(full.incompleteTail());
+
+            // A max-size WAL write can be interrupted after ANY byte.
+            // Only its complete, checksummed form is accepted as a record.
+            for (int n = 1; n < maximum.length; n++) {
+                file.truncate(31);
+                file.write(ByteBuffer.wrap(maximum, 0, n), 31);
+                var torn = DbWalReplayV1.scan(file, 7, 4);
+                assertEquals(1, torn.records(), "prefix " + n);
+                assertEquals(31, torn.validBytes());
+                assertTrue(torn.incompleteTail(), "prefix " + n);
+                assertEquals(31 + n, file.size(),
+                        "replay must never truncate an unknown tail");
+            }
+            file.truncate(31);
+            byte[] corrupt = maximum.clone();
+            corrupt[1117] ^= 1;
+            file.write(ByteBuffer.wrap(corrupt), 31);
+            assertThrows(IllegalArgumentException.class,
+                    () -> DbWalReplayV1.scan(file, 7, 4),
+                    "complete maximum frame with corrupt checksum");
+            assertEquals(1149, file.size());
+
+            file.truncate(31);
+            byte[] illegalDelete = boundaryFrame(2, 2, 42, 64, 1);
+            file.write(ByteBuffer.wrap(illegalDelete), 31);
+            assertThrows(IOException.class,
+                    () -> DbWalReplayV1.scan(file, 7, 4),
+                    "DELETE record must not carry a value");
+            assertEquals(31 + illegalDelete.length, file.size());
+
+            file.truncate(31);
+            byte[] oversized = boundaryFrame(1, 2, 42, 64, 1025);
+            file.write(ByteBuffer.wrap(oversized), 31);
+            assertThrows(IOException.class,
+                    () -> DbWalReplayV1.scan(file, 7, 4),
+                    "1025-byte values exceed the ODB1 maximum");
+            assertEquals(31 + oversized.length, file.size());
+        }
+    }
+
     @Test void incompleteTailRequiresValidHeaderPrefixAndOwner() throws Exception {
         byte[] a = frame(1, 41), b = frame(2, 42), c = frame(3, 43);
         Path p = root.resolve("partial.odb");
