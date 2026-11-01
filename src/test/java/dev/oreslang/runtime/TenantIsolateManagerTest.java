@@ -149,4 +149,29 @@ final class TenantIsolateManagerTest {
         assertThrows(SecurityException.class, () -> manager.evaluate_source(a, source));
         manager.close(); // idempotent after full retirement
     }
+    @Test
+    void stderrLimitResetsBetweenGuestEvaluationsWithoutEscapingTenant() throws Exception {
+        try (TenantIsolateManager manager = new TenantIsolateManager(1, 16)) {
+            var tenantHandle = manager.open_trusted_tenant("stderr-tenant", IsolatePolicy.developer());
+            // Inspect the host-owned bounded sink to inject exactly one quota's
+            // worth of previous stderr. No guest gets the sink or Context.
+            var registryField = TenantIsolateManager.class.getDeclaredField("tenants");
+            registryField.setAccessible(true);
+            var registry = (java.util.Map<?, ?>) registryField.get(manager);
+            Object tenant = registry.get("stderr-tenant");
+            assertNotNull(tenant);
+            var errorField = tenant.getClass().getDeclaredField("errorOutput");
+            errorField.setAccessible(true);
+            var errorSink = (java.io.OutputStream) errorField.get(tenant);
+            Source guest = source("pub routine main(): void { return; }", "stderr-reset.ores");
+            for (int run = 0; run < 5; run++) {
+                // The following write would fail on run 2 if stderr from run 1
+                // were retained instead of discarded at guest admission.
+                assertDoesNotThrow(() -> errorSink.write(new byte[16]));
+                assertEquals("", manager.evaluate_source(tenantHandle, guest));
+            }
+            assertEquals(1, manager.tenant_count());
+        }
+    }
+
 }

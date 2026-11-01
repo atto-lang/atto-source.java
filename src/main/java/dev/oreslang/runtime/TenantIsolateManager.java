@@ -79,13 +79,16 @@ public final class TenantIsolateManager implements AutoCloseable {
         private final TenantHandle handle;
         private final Context context;
         private final BoundedOutput output;
+        private final BoundedOutput errorOutput;
         private volatile TenantState state = TenantState.ACTIVE;
         private boolean physicallyClosed;
 
-        private Tenant(TenantHandle handle, Context context, BoundedOutput output) {
+        private Tenant(TenantHandle handle, Context context, BoundedOutput output,
+                BoundedOutput errorOutput) {
             this.handle = handle;
             this.context = context;
             this.output = output;
+            this.errorOutput = errorOutput;
         }
     }
 
@@ -130,7 +133,7 @@ public final class TenantIsolateManager implements AutoCloseable {
         Context context = policy.restrictedContextBuilder()
                 .out(output).err(errors).build();
         TenantHandle handle = new TenantHandle(this, tenantId);
-        tenants.put(tenantId, new Tenant(handle, context, output));
+        tenants.put(tenantId, new Tenant(handle, context, output, errors));
         return handle;
     }
 
@@ -149,7 +152,11 @@ public final class TenantIsolateManager implements AutoCloseable {
             if (tenant.state != TenantState.ACTIVE) {
                 throw new IllegalStateException("TENANT_NOT_ACTIVE: " + tenant.state);
             }
+            // Both bounded sinks are per-evaluation. Retaining stderr across
+            // evaluations lets one trusted tenant exhaust its own quota
+            // with prior diagnostics even when a later guest is quiet.
             tenant.output.discard();
+            tenant.errorOutput.discard();
             tenant.context.eval(source);
             return tenant.output.drain();
         }
