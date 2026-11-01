@@ -129,6 +129,39 @@ final class StringTransformTest {
     }
 
     @Test
+    void strictUtf8StringDecodesCopiedByteListsAndRejectsMalformedInput() {
+        assertEquals("A" + String.valueOf((char) 0) + "B|é😀", run("""
+                pub routine main(): void {
+                  val List<int> first = [65, 0, 66];
+                  val List<int> second = [195, 169, 240, 159, 152, 128];
+                  stdio.stdout.write(first.utf8_string());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.utf8_string());
+                  return;
+                }
+                """));
+
+        PolyglotException malformed = assertThrows(PolyglotException.class,
+                () -> run("""
+                        pub routine main(): void {
+                          val List<int> bytes = [192, 175];
+                          stdio.stdout.write(bytes.utf8_string());
+                          return;
+                        }
+                        """));
+        assertTrue(malformed.getMessage().contains("invalid UTF-8"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          val List<string> values = ["not", "bytes"];
+                          val string decoded = values.utf8_string();
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
     void emptyNeedleIsRejected() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""
