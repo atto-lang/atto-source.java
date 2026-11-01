@@ -194,7 +194,71 @@ public final class SupervisorStopOnlyControlProof {
         }
     }
 
+    /**
+     * The production child registry enforces the physical finalization
+     * assertion, one-time host invocation, and exact STOP generation ledger.
+     * A trusted caller owns the physical finalization and host reconciliation
+     * evidence; this host-only proof does not fabricate those external events.
+     */
+    private static void registryStopLedgerAndIncarnationFence() {
+        var supervisor = ActorRuntime.SupervisorId.create();
+        var group = ActorRuntime.ActorGroupId.create();
+        var registry = new SupervisorChildRegistry(supervisor, group);
+        var failedActor = ActorRuntime.ActorId.create();
+        var first = registry.register(failedActor);
+        var child = first.child();
+        check(first.phase() == SupervisorChildRegistry.Phase.ACTIVE
+                        && first.incarnation() == 1,
+                "registered child is not ACTIVE generation 1");
+        boolean denied = false;
+        try { registry.beginStop(child, failedActor, 1, 1); }
+        catch (IllegalStateException expected) { denied = true; }
+        check(denied, "STOP before asserted physical finalization admitted");
+        registry.finalized(child, failedActor, 1);
+        var permit = registry.beginStop(child, failedActor, 1, 1);
+        check(registry.snapshot(child).phase() == SupervisorChildRegistry.Phase.STOPPING,
+                "STOP did not quarantine generation");
+        check(registry.stopReceipt(child).status()
+                        == SupervisorChildRegistry.StopReceiptStatus.PENDING,
+                "missing pending host STOP receipt");
+        denied = false;
+        try { registry.beginRestart(child, failedActor, 1); }
+        catch (IllegalStateException expected) { denied = true; }
+        check(denied, "STOPPING child re-entered restart");
+        registry.claimHostStopInvocation(permit);
+        denied = false;
+        try { registry.claimHostStopInvocation(permit); }
+        catch (IllegalStateException expected) { denied = true; }
+        check(denied, "host STOP effect can be invoked more than once");
+
+        registry.markStopUncertain(permit);
+        check(registry.stopReceipt(child).status()
+                        == SupervisorChildRegistry.StopReceiptStatus.UNCERTAIN,
+                "ambiguous host STOP lost uncertainty");
+        var forged = new SupervisorChildRegistry.StopReservation(
+                child, failedActor, 1, 2, java.util.UUID.randomUUID());
+        denied = false;
+        try { registry.reconcileVerifiedStop(forged); }
+        catch (IllegalStateException expected) { denied = true; }
+        check(denied, "forged turn/nonce reconciled foreign STOP");
+        denied = false;
+        try { registry.finalized(child, failedActor, 1); }
+        catch (IllegalStateException expected) { denied = true; }
+        check(denied, "stale finalizer reopened STOPPING incarnation");
+        check(registry.reconcileVerifiedStop(permit).phase()
+                        == SupervisorChildRegistry.Phase.STOPPED,
+                "trusted exact-key reconciliation failed");
+        check(registry.stopReceipt(child).status()
+                        == SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED,
+                "STOP lacked authoritative acknowledgment receipt");
+        denied = false;
+        try { registry.beginStop(child, failedActor, 1, 2); }
+        catch (IllegalStateException expected) { denied = true; }
+        check(denied, "stopped incarnation accepted a second STOP");
+    }
+
     public static void runAll() throws Exception {
+        registryStopLedgerAndIncarnationFence();
         replayAndGenerationFence();
         awaitHostStopAndRejectForeignControl();
         failedHostStopIsNotRetried();
@@ -202,6 +266,6 @@ public final class SupervisorStopOnlyControlProof {
 
     public static void main(String[] args) throws Exception {
         runAll();
-        System.out.println("JAVA_SUPERVISOR_CONTROL=PASS cases=3");
+        System.out.println("JAVA_SUPERVISOR_CONTROL=PASS cases=4");
     }
 }
