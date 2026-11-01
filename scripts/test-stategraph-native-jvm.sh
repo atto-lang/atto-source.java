@@ -34,6 +34,29 @@ rm -f "$common_out" "$common_err"
 printf 'SG_JAVA_COMMON_SCALAR_NATIVE_PASS blob=%s guest_exit=42 source_only=no\n' \
   "$(git rev-parse "HEAD:$shared")"
 
+# One byte-identical generic userland Oreslang program across all backends.
+generic=contracts/stategraph-portability/shared-generic-state.ores
+[[ -f "$generic" && ! -L "$generic" ]] || { echo 'SG_JAVA_GENERIC_SOURCE_MISSING' >&2; exit 1; }
+git ls-files --error-unmatch -- "$generic" >/dev/null
+[[ "$(git hash-object "$generic")" = "c3a67b837a73f427a6157c446cc6e3989e9a66da" ]] ||
+  { echo 'SG_JAVA_GENERIC_SOURCE_DRIFT' >&2; exit 1; }
+[[ "$(git rev-parse "HEAD:$generic")" = "c3a67b837a73f427a6157c446cc6e3989e9a66da" ]]
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$generic" ||
+  { echo 'SG_JAVA_GENERIC_TYPECHECK_NOT_ACCEPTED' >&2; exit 1; }
+common_out="$(mktemp)"
+common_err="$(mktemp)"
+set +e
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$generic" --execute > "$common_out" 2> "$common_err"
+generic_status=$?
+set -e
+if [[ "$generic_status" -ne 42 || -s "$common_out" ]]; then
+  cat "$common_err" >&2
+  echo "SG_JAVA_GENERIC_GUEST_NOT_ACCEPTED status=$generic_status" >&2
+  exit 1
+fi
+rm -f "$common_out" "$common_err"
+printf 'SG_JAVA_GENERIC_NATIVE_GUEST_PASS blob=%s result=42\n' "$(git rev-parse "HEAD:$generic")"
+
 for name in scalar branch nominal; do
   file="tests/stategraph-portability/$name.ores"
   git ls-files --error-unmatch -- "$file" >/dev/null
