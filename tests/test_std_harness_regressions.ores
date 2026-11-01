@@ -24,12 +24,79 @@ fnc negative_float_tolerance_does_not_pass(): TestOutcome {
     "negative tolerance cannot pass");
   return expect_true(!result.passed, "negative tolerance was incorrectly accepted");
 }
+fnc boolean_equal_true_is_a_pass(): TestOutcome {
+  return expect_equal_bool(true, true, "equal booleans must pass");
+}
+fnc boolean_equal_mismatch_is_a_failure(): TestOutcome {
+  val TestOutcome mismatch = expect_equal_bool(true, false, "different bools");
+  return expect_false(mismatch.passed, "unequal booleans cannot pass");
+}
+fnc integer_inequality_accepts_distinct_values(): TestOutcome {
+  return expect_not_equal_int(-1, 0, "distinct ints must differ");
+}
+fnc integer_inequality_rejects_equal_values(): TestOutcome {
+  val TestOutcome outcome = expect_not_equal_int(7, 7, "same ints");
+  return expect_false(outcome.passed, "equal ints cannot satisfy inequality");
+}
+fnc string_inequality_accepts_distinct_values(): TestOutcome {
+  return expect_not_equal_string("a", "b", "distinct strings must differ");
+}
+fnc string_inequality_rejects_equal_values(): TestOutcome {
+  val TestOutcome outcome = expect_not_equal_string("same", "same", "same strings");
+  return expect_false(outcome.passed, "equal strings cannot satisfy inequality");
+}
+fnc float_near_boundary_is_inclusive(): TestOutcome {
+  return expect_near_float(1.25, 1.0, 0.25, "tolerance boundary should be included");
+}
+fnc float_far_outside_tolerance_is_rejected(): TestOutcome {
+  val TestOutcome outcome = expect_near_float(1.5, 1.0, 0.25, "too far");
+  return expect_false(outcome.passed, "tolerance must not widen unexpectedly");
+}
+fnc machine_escape_distinguishes_pipe_and_literal_escape(): TestOutcome {
+  return expect_not_equal_string(escape_machine_field("|"), escape_machine_field("\\u007c"),
+    "escaped pipe and literal escape must never collide");
+}
+fnc machine_escape_cr_and_tab(): TestOutcome {
+  return expect_equal_string(escape_machine_field("a\rb\tc"), "a\\rb\\tc",
+    "CR and tab must not inject machine record boundaries");
+}
+fnc failing_property_retains_first_error(): TestOutcome {
+  val TestOutcome result = check_int_cases("nonnegative", arr[-1, 0], property_nonnegative);
+  return expect_equal_string(result.message, "unexpected negative property case",
+    "failing property should preserve first diagnostic");
+}
+fnc repeated_property_inputs_are_not_an_empty_vacuous_pass(): TestOutcome {
+  return check_int_cases("duplicates", arr[0, 0, 1, 1], property_nonnegative);
+}
+fnc negative_i64_boundary_is_exact(): TestOutcome {
+  val int minimum = -9223372036854775807 - 1;
+  return expect_equal_int(minimum + 1, -9223372036854775807,
+    "i64 minimum successor must be exact");
+}
+fnc i64_above_binary64_mantissa_is_exact(): TestOutcome {
+  return expect_equal_int(9007199254740993 - 9007199254740992, 1,
+    "native integer arithmetic must not silently round through double");
+}
 pub routine main(): void {
   val TestSuite suite = new TestSuite("native-testing-core", arr[
     new TestCase("deterministic_property_cases_pass", deterministic_property_cases_pass, false, ""),
     new TestCase("negative_property_case_is_failure", negative_property_case_is_failure, false, ""),
     new TestCase("machine_receipt_fields_escape_delimiters", machine_receipt_fields_escape_delimiters, false, ""),
-    new TestCase("negative_float_tolerance_does_not_pass", negative_float_tolerance_does_not_pass, false, "")
+    new TestCase("negative_float_tolerance_does_not_pass", negative_float_tolerance_does_not_pass, false, ""),
+    new TestCase("boolean_equal_true_is_a_pass", boolean_equal_true_is_a_pass, false, ""),
+    new TestCase("boolean_equal_mismatch_is_a_failure", boolean_equal_mismatch_is_a_failure, false, ""),
+    new TestCase("integer_inequality_accepts_distinct_values", integer_inequality_accepts_distinct_values, false, ""),
+    new TestCase("integer_inequality_rejects_equal_values", integer_inequality_rejects_equal_values, false, ""),
+    new TestCase("string_inequality_accepts_distinct_values", string_inequality_accepts_distinct_values, false, ""),
+    new TestCase("string_inequality_rejects_equal_values", string_inequality_rejects_equal_values, false, ""),
+    new TestCase("float_near_boundary_is_inclusive", float_near_boundary_is_inclusive, false, ""),
+    new TestCase("float_far_outside_tolerance_is_rejected", float_far_outside_tolerance_is_rejected, false, ""),
+    new TestCase("machine_escape_distinguishes_pipe_and_literal_escape", machine_escape_distinguishes_pipe_and_literal_escape, false, ""),
+    new TestCase("machine_escape_cr_and_tab", machine_escape_cr_and_tab, false, ""),
+    new TestCase("failing_property_retains_first_error", failing_property_retains_first_error, false, ""),
+    new TestCase("repeated_property_inputs_are_not_an_empty_vacuous_pass", repeated_property_inputs_are_not_an_empty_vacuous_pass, false, ""),
+    new TestCase("negative_i64_boundary_is_exact", negative_i64_boundary_is_exact, false, ""),
+    new TestCase("i64_above_binary64_mantissa_is_exact", i64_above_binary64_mantissa_is_exact, false, "")
   ]);
   val TestOptions options = new TestOptions("", false, true);
   val RunSummary summary = run_suite(rt borrow suite, rt borrow options);
