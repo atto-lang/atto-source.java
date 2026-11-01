@@ -195,6 +195,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
      * inserted and false when an existing key was replaced.
      */
     public boolean put(K key, V value) {
+        requireRuntimeAffinity("write ETS table");
         ActorRuntime.FrozenActorGroupEventPayload frozenKey = freeze(key);
         ActorRuntime.FrozenActorGroupEventPayload frozenValue;
         try {
@@ -204,6 +205,11 @@ public final class EtsTable<K, V> implements AutoCloseable {
             throw failure;
         }
 
+        // Ownership accounting must NOT depend on entries.containsKey():
+        // an unauthorized update of an existing row also needs to refund
+        // its temporary frozen key/value reservations.
+        boolean transferred = false;
+        boolean keyReleased = false;
         lock.lock();
         try {
             requireWrite("write ETS table");
@@ -211,21 +217,22 @@ public final class EtsTable<K, V> implements AutoCloseable {
             StoredEntry existing = entries.get(frozenKey.value());
             if (existing != null) {
                 frozenKey.reservation().close();
-                ActorRuntime.FrozenActorGroupEventPayload oldValue = existing.value;
+                keyReleased = true;
+                ActorRuntime.FrozenActorGroupEventPayload previous = existing.value;
                 existing.value = frozenValue;
-                oldValue.reservation().close();
+                transferred = true;
+                previous.reservation().close();
                 return false;
             }
-            if (entries.size() >= capacity) {
+            if (entries.size() >= capacity)
                 throw new IllegalStateException(
                         "ETS table capacity exceeded: maximum " + capacity);
-            }
             entries.put(frozenKey.value(), new StoredEntry(frozenKey, frozenValue));
+            transferred = true;
             return true;
         } catch (Throwable failure) {
-            // If ownership transferred into entries, do not double release.
-            if (!entries.containsKey(frozenKey.value())) {
-                safeClose(frozenKey);
+            if (!transferred) {
+                if (!keyReleased) safeClose(frozenKey);
                 safeClose(frozenValue);
             }
             throw failure;
@@ -237,7 +244,11 @@ public final class EtsTable<K, V> implements AutoCloseable {
     /**
      * Atomic insert-if-absent. Returns true only for the winning insertion.
      */
+    /**
+     * Atomic insert-if-absent. Returns true only for the winning insertion.
+     */
     public boolean putIfAbsent(K key, V value) {
+        requireRuntimeAffinity("insert into ETS table");
         ActorRuntime.FrozenActorGroupEventPayload frozenKey = freeze(key);
         ActorRuntime.FrozenActorGroupEventPayload frozenValue;
         try {
@@ -247,6 +258,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
             throw failure;
         }
 
+        boolean transferred = false;
         lock.lock();
         try {
             requireWrite("insert into ETS table");
@@ -256,16 +268,14 @@ public final class EtsTable<K, V> implements AutoCloseable {
                 frozenValue.reservation().close();
                 return false;
             }
-            if (entries.size() >= capacity) {
-                frozenKey.reservation().close();
-                frozenValue.reservation().close();
+            if (entries.size() >= capacity)
                 throw new IllegalStateException(
                         "ETS table capacity exceeded: maximum " + capacity);
-            }
             entries.put(frozenKey.value(), new StoredEntry(frozenKey, frozenValue));
+            transferred = true;
             return true;
         } catch (Throwable failure) {
-            if (!entries.containsKey(frozenKey.value())) {
+            if (!transferred) {
                 safeClose(frozenKey);
                 safeClose(frozenValue);
             }
