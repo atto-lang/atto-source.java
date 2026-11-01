@@ -118,6 +118,49 @@ final class SourceActorPubSubExecutionTest {
                 error.getMessage());
     }
 
+    @Test
+    void pubSubHandlesCannotCrossActorMailboxBoundary() {
+        String program = """
+                define actor BadReceiver as
+                  receive(ActorMail<Topic<String>> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  return;
+                }
+                """;
+
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(program, "source-pubsub-mailbox-capability-rejected.ores"));
+        assertTrue(
+                error.getMessage().contains("cannot use Topic across an actor boundary"),
+                error.getMessage());
+    }
+
+    @Test
+    void pubSubHandlesCannotCrossAsyncTaskBoundary() {
+        String program = """
+                async fnc bad(Topic<String> topic): void {
+                  return;
+                }
+
+                pub routine main(): void {
+                  return;
+                }
+                """;
+
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(program, "source-pubsub-async-capability-rejected.ores"));
+        assertTrue(
+                error.getMessage().contains("must be concrete owned task-safe data"),
+                error.getMessage());
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, sourceText, name)
