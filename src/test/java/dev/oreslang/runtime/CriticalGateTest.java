@@ -227,6 +227,44 @@ final class CriticalGateTest {
         }
     }
 
+    @Test void singleCarrierSchedulerRunsOtherWorkWhileCriticalWaiterIsParked()
+            throws Exception {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.requestAwaitable().join();
+        java.util.concurrent.CountDownLatch registered =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger dispatches =
+                new java.util.concurrent.atomic.AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> waiting = scheduler.start(resume -> {
+                dispatches.incrementAndGet();
+                if (resume.initial()) {
+                    OresFuture<CriticalGate.Ticket> admission = gate.requestAwaitable();
+                    assertFalse(admission.isDone());
+                    registered.countDown();
+                    return OresScheduler.await(admission);
+                }
+                assertNull(resume.failure());
+                CriticalGate.Ticket ticket =
+                        (CriticalGate.Ticket) resume.value();
+                assertTrue(gate.holds(ticket));
+                gate.release(ticket);
+                return OresScheduler.done(42);
+            });
+            assertTrue(registered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            // The sole scheduler carrier is free to execute another source
+            // turn even though the first task has a queued critical ticket.
+            OresFuture<Integer> releaser = scheduler.start(resume -> {
+                gate.release(owner);
+                return OresScheduler.done(7);
+            });
+            assertEquals(7, releaser.get(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(42, waiting.get(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(2, dispatches.get());
+            assertEquals(0, gate.waiting());
+        }
+    }
+
     @Test void logicalTicketCanBeReleasedOnAnotherCarrier() throws InterruptedException {
         CriticalGate gate = new CriticalGate();
         var owner = gate.request();
