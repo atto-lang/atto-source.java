@@ -47,14 +47,8 @@ final class ActorPubSubV1ContractTest {
             ActorRuntime.ActorRef<String> publisher = runtime.spawnShared(() -> (message, context) -> {
                 try {
                     publisherJoin.join();
-                    assertEquals(0, group.events().topics().getFirst().subscribers());
-                    // The assertion above is only true before the subscriber joins; it is
-                    // intentionally not used as the publisher/subscriber distinction.
-                } catch (Throwable ignored) {
-                    // The publisher has no subscription of its own; publication authority
-                    // comes from group membership, not from subscription state.
-                }
-                try {
+                    // Publication authority comes from group membership. This actor
+                    // intentionally never calls subscribe().
                     group.events().publish("payment.completed", message).completion().join();
                 } catch (Throwable problem) {
                     failure.compareAndSet(null, problem);
