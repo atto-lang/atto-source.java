@@ -10,6 +10,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -260,6 +262,13 @@ final class ScalarCastInferenceParityTest {
         }
         String printed = output.toString(StandardCharsets.UTF_8);
         assertTrue(printed.contains("42"), printed);
+    }
+
+    @Test void byteIdenticalFiveBackendFixtureTypechecks() throws Exception {
+        String source = Files.readString(
+                Path.of("tests", "scalar-cast-inference-five-backend.ores"),
+                StandardCharsets.UTF_8);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
     }
 
     @Test void bothFormsProduceTheSameGuestValue() throws Exception {
