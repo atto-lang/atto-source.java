@@ -1,0 +1,52 @@
+// First Java-owned state backed container slice.
+// No implicit shared access: each InventoryState instance owns its private
+// fields. rt borrow/rt mut borrow are scoped method-call capabilities.
+@StateBacked(MutableStateContainer(scope = #instance))
+define class InventoryState as
+  let int available = 10;
+  let int reserved = 0;
+
+  pub available_count(): int {
+    return self.available;
+  }
+  pub reserved_count(): int {
+    return self.reserved;
+  }
+  pub try_reserve(mut self InventoryState)(int amount): bool {
+    if amount <= 0; then return false; fi
+    if amount > self.available; then return false; fi
+    self.available = self.available - amount;
+    self.reserved = self.reserved + amount;
+    return true;
+  }
+end
+
+fnc checkout(borrow mut InventoryState state, int amount): bool {
+  return state.try_reserve(amount);
+}
+fnc remaining(borrow InventoryState state): int {
+  return state.available_count();
+}
+
+pub routine main(): void {
+  let mut InventoryState inventory = new InventoryState();
+  let mut InventoryState other = new InventoryState();
+  const bool accepted = checkout(rt mut borrow inventory, 3);
+  const bool refused = checkout(rt mut borrow inventory, 20);
+  const bool zero = checkout(rt mut borrow inventory, 0);
+  const bool negative = checkout(rt mut borrow inventory, -1);
+  stdio.stdout.write(remaining(rt borrow inventory));
+  stdio.stdout.write("|");
+  stdio.stdout.write(inventory.reserved_count());
+  stdio.stdout.write("|");
+  stdio.stdout.write(other.available_count());
+  stdio.stdout.write("|");
+  stdio.stdout.write(accepted);
+  stdio.stdout.write("|");
+  stdio.stdout.write(refused);
+  stdio.stdout.write("|");
+  stdio.stdout.write(zero);
+  stdio.stdout.write("|");
+  stdio.stdout.write(negative);
+  return;
+}
