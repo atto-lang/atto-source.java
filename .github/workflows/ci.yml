@@ -57,6 +57,14 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-harness-guards.ores"
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-jit.out
+          grep -Fqx "ORES_TEST|SUMMARY|total=40|passed=40|failed=0|skipped=0|filtered=0" /tmp/ores-regressions-40-jit.out
+          test "$(grep -c '^ORES_TEST|PASS|stdlib/' /tmp/ores-regressions-40-jit.out)" -eq 40
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-regressions-40-jit.out)" -eq 1
+          test "$(grep -c '^ORES_TEST|' /tmp/ores-regressions-40-jit.out)" -eq 41
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.ores" | tee /tmp/ores-runner-matrix-jit.out
+          grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-jit.out
+          test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-jit.out)" -eq 1
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee /tmp/ores-testing-jit.out
           grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-jit.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-jit.out)" -eq 1
@@ -64,6 +72,36 @@ jobs:
           grep -Fx "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-jit.out
           grep -Fx "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-jit.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-semantics-jit.out)" -eq 2
+          # Expected-failure guests must emit their exact summary before a
+          # nonzero exit. Compiler errors and timeouts alone are not evidence.
+          for variant in empty skipped filtered failed; do
+            case "$variant" in
+              empty) expected="total=0|passed=0|failed=0|skipped=0|filtered=0" ;;
+              skipped) expected="total=1|passed=0|failed=0|skipped=1|filtered=0" ;;
+              filtered) expected="total=0|passed=0|failed=0|skipped=0|filtered=1" ;;
+              failed) expected="total=1|passed=0|failed=1|skipped=0|filtered=0" ;;
+            esac
+            out="/tmp/ores-testing-negative-${variant}.out"
+            set +e
+            timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-negative-${variant}.ores" > "$out" 2>&1
+            result=$?
+            set -e
+            if [ "$result" -eq 0 ] || [ "$result" -eq 124 ] || [ "$result" -eq 137 ]; then
+              echo "Expected guest rejection with non-timeout failure: $variant (exit $result)" >&2
+              exit 1
+            fi
+            grep -Fqx "ORES_TEST|SUMMARY|${expected}" "$out"
+            test "$(grep -c '^ORES_TEST|SUMMARY|' "$out")" -eq 1
+            if [ "$variant" = "failed" ]; then
+              grep -Fq "native Oreslang test suite failed" "$out"
+            else
+              grep -Fq "native Oreslang test suite was empty or only skipped/filtered" "$out"
+            fi
+            if grep -Fq "UNEXPECTED_SUCCESS" "$out"; then
+              echo "Expected guest rejection continued past require_success: $variant" >&2
+              exit 1
+            fi
+          done
       - name: Run Orestra integration smoke under JVM/JIT
         run: |
           set -euo pipefail
@@ -123,6 +161,14 @@ jobs:
         run: |
           set -euo pipefail
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing-harness-guards.ores
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-aot.out
+          grep -Fqx "ORES_TEST|SUMMARY|total=40|passed=40|failed=0|skipped=0|filtered=0" /tmp/ores-regressions-40-aot.out
+          test "$(grep -c '^ORES_TEST|PASS|stdlib/' /tmp/ores-regressions-40-aot.out)" -eq 40
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-regressions-40-aot.out)" -eq 1
+          test "$(grep -c '^ORES_TEST|' /tmp/ores-regressions-40-aot.out)" -eq 41
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-aot.out
+          grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-aot.out
+          test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-aot.out)" -eq 1
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-aot.out
           grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-aot.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-aot.out)" -eq 1
@@ -230,6 +276,14 @@ jobs:
         run: |
           set -euo pipefail
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-harness-guards.ores
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-hybrid.out
+          grep -Fqx "ORES_TEST|SUMMARY|total=40|passed=40|failed=0|skipped=0|filtered=0" /tmp/ores-regressions-40-hybrid.out
+          test "$(grep -c '^ORES_TEST|PASS|stdlib/' /tmp/ores-regressions-40-hybrid.out)" -eq 40
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-regressions-40-hybrid.out)" -eq 1
+          test "$(grep -c '^ORES_TEST|' /tmp/ores-regressions-40-hybrid.out)" -eq 41
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-hybrid.out
+          grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-hybrid.out
+          test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-hybrid.out)" -eq 1
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-hybrid.out
           grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-hybrid.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-hybrid.out)" -eq 1
