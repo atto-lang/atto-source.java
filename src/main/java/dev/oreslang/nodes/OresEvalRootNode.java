@@ -1051,20 +1051,24 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
-        private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
-            if (binding.declaredType() != null
-                    && binding.declaredType().name().equals("Vector")
-                    && findClass("Vector") == null
-                    && value instanceof List<?> sequence) {
-                // A Vector literal or a List-typed expression may not enter
-                // a statically bounded Vector binding as an unbounded list.
-                OresVector admitted = allocateGuestVector(binding.declaredType());
-                if (!(value instanceof OresVector existing
-                        && existing.maxCapacity() <= admitted.maxCapacity())) {
-                    admitted.addAll(sequence);
-                    value = admitted;
-                }
+        private Object admitDeclaredVector(Ast.TypeRef declared, Object value) {
+            if (declared == null || !declared.name().equals("Vector")
+                    || findClass("Vector") != null || !(value instanceof List<?> sequence)) {
+                return value;
             }
+            // All source-declared Vector boundaries must preserve a bound,
+            // including literals, parameter binding and function returns.
+            OresVector admitted = allocateGuestVector(declared);
+            if (value instanceof OresVector existing
+                    && existing.maxCapacity() <= admitted.maxCapacity()) {
+                return existing;
+            }
+            admitted.addAll(sequence);
+            return admitted;
+        }
+
+        private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
+            value = admitDeclaredVector(binding.declaredType(), value);
             Ast.ClassDecl view = staticClassView(binding.declaredType());
             if (view == null) view = staticClassView(binding.initializer(), env);
             env.define(binding.name(), value, binding.kind(), view);
@@ -1102,7 +1106,7 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> tuple = new ArrayList<>(args.size());
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
-                Object value = args.get(i);
+                Object value = admitDeclaredVector(param.type(), args.get(i));
                 tuple.add(value);
                 env.define(
                         param.name(),
@@ -10298,6 +10302,10 @@ public final class OresEvalRootNode extends RootNode {
                     shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
                 }
                 return value;
+            }
+
+            if (declared.name().equals("Vector") && value instanceof List<?>) {
+                return admitDeclaredVector(declared, value);
             }
 
             if (declared.name().equals("Array") || declared.name().equals("List")) {
