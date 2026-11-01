@@ -1406,6 +1406,18 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (isActorStateSchemaField(field)) {
+                if (klass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "sealed actor state schema field cannot appear on ordinary class '"
+                                    + klass.name() + "'");
+                }
+                if (field.visibility() != Ast.Visibility.PRIVATE) {
+                    throw new IllegalArgumentException(
+                            "sealed actor state field '" + klass.name() + "." + field.name()
+                                    + "' must remain private");
+                }
+            }
             if (klass.actorKind() == Ast.ActorKind.NONE
                     && field.initializer() != null
                     && fieldInitializerMaySuspend(field.initializer())) {
@@ -3229,6 +3241,56 @@ public final class TypeChecker {
                             member.member()
                                     + " is a reserved actor lifecycle hook and cannot be called directly");
                 }
+                if (actorSelf && member.member().equals("handle_state")) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state does not accept call-site type arguments");
+                    }
+                    boolean mutableStateLoan = true; // legacy one-argument write form
+                    Ast.LambdaExpr lambda;
+                    if (call.arguments().size() == 2
+                            && call.arguments().getFirst() instanceof Ast.CriticalStateModeExpr mode
+                            && call.arguments().get(1) instanceof Ast.LambdaExpr scoped) {
+                        mutableStateLoan = mode.mode() == Ast.StateLoanMode.WRITE;
+                        lambda = scoped;
+                    } else if (call.arguments().size() == 1
+                            && call.arguments().getFirst() instanceof Ast.LambdaExpr legacy) {
+                        lambda = legacy;
+                    } else {
+                        throw new IllegalArgumentException(
+                                "self.handle_state requires critical[read] or critical[write] "
+                                        + "and exactly one inline lexical lambda");
+                    }
+                    if (currentClassOwner == null
+                            || currentClassOwner.actorKind() == Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state is only available inside actor instance code");
+                    }
+                    Type stateLoan = actorStateLoanType(currentClassOwner, mutableStateLoan);
+                    if (stateLoanLambdaHasForbiddenSuspensionOrEscape(lambda)) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state callback cannot suspend, defer, select, use rt intrinsics, yield, or create a nested closure until suspension-safe state loans are implemented");
+                    }
+                    Function expectedStateCallback =
+                            new Function(
+                                    List.of(stateLoan),
+                                    List.of(false),
+                                    false,
+                                    Primitive.VOID);
+                    boolean previousMaySuspend = currentMaySuspend;
+                    currentMaySuspend = false;
+                    try {
+                        validateLambdaAgainstExpected(
+                                lambda,
+                                expectedStateCallback,
+                                env,
+                                generics,
+                                self);
+                    } finally {
+                        currentMaySuspend = previousMaySuspend;
+                    }
+                    return Primitive.VOID;
+                }
                 if (actorSelf
                         && (member.member().equals("send")
                             || member.member().equals("end")
@@ -3622,6 +3684,7 @@ public final class TypeChecker {
                             if (field != null) {
                                 requireClassMemberVisible(
                                         field.field().visibility(), field.owner(), "field", field.field().name());
+                                requireActorStateLoan(field);
                                 if (call.typeArgumentsPresent()) {
                                     throw new IllegalArgumentException(
                                             "function-valued field '" + member.member()
@@ -4065,6 +4128,7 @@ public final class TypeChecker {
                     if (field != null) {
                         requireClassMemberVisible(
                                 field.field().visibility(), field.owner(), "field", field.field().name());
+                        requireActorStateLoan(field);
                         Type pattern = classFieldType(field.owner(), field.field());
                         return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                     }
@@ -5264,6 +5328,7 @@ public final class TypeChecker {
             }
             requireClassMemberVisible(
                     field.field().visibility(), field.owner(), "field", field.field().name());
+            requireActorStateLoan(field);
             Type pattern = classFieldType(field.owner(), field.field());
             return substituteGenerics(
                     pattern,
@@ -5770,6 +5835,208 @@ public final class TypeChecker {
         };
     }
 
+    private static boolean isActorStateSchemaField(Ast.FieldDecl field) {
+        return field.annotations().stream()
+                .anyMatch(annotation -> annotation.name().equals("__actor_state_schema"));
+    }
+
+    private static void requireActorStateLoan(ResolvedField field) {
+        if (isActorStateSchemaField(field.field())) {
+            throw new IllegalArgumentException(
+                    "actor state field '" + field.owner().name() + "."
+                            + field.field().name()
+                            + "' is sealed; access requires verified critical handle_state(...) state loan");
+        }
+    }
+
+    private Type actorStateLoanType(Ast.ClassDecl actor, boolean mutable) {
+        LinkedHashMap<String, Type> members = new LinkedHashMap<>();
+        for (Ast.FieldDecl field : actor.fields()) {
+            if (!isActorStateSchemaField(field)) continue;
+            members.put(field.name(), classFieldType(actor, field));
+        }
+        if (members.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "self.handle_state requires an actor with a state { ... } schema");
+        }
+        // The structural type and borrow BOTH carry read-only provenance.
+        // A shared read loan cannot be escalated into a mutable write loan.
+        return new Borrow(
+                new Record(members, !mutable, AggregateKind.RECORD),
+                mutable);
+    }
+
+    private boolean stateLoanLambdaHasForbiddenSuspensionOrEscape(Ast.LambdaExpr lambda) {
+        if (lambda.expressionBody() != null) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(lambda.expressionBody());
+        }
+        return stateLoanBlockHasForbiddenSuspensionOrEscape(lambda.blockBody());
+    }
+
+    private boolean stateLoanBlockHasForbiddenSuspensionOrEscape(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stateLoanStmtHasForbiddenSuspensionOrEscape(stmt)) return true;
+        }
+        return false;
+    }
+
+    private boolean stateLoanStmtHasForbiddenSuspensionOrEscape(Ast.Stmt stmt) {
+        if (stmt instanceof Ast.BindingStmt binding) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(binding.initializer());
+        }
+        if (stmt instanceof Ast.DestructureStmt destructure) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(destructure.initializer());
+        }
+        if (stmt instanceof Ast.ReturnStmt returned) {
+            return returned.value() != null
+                    && stateLoanExprHasForbiddenSuspensionOrEscape(returned.value());
+        }
+        if (stmt instanceof Ast.YieldStmt) return true;
+        if (stmt instanceof Ast.ExprStmt expression) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(expression.expression());
+        }
+        if (stmt instanceof Ast.DeferStmt) return true;
+        if (stmt instanceof Ast.BlockStmt block) {
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(block.body());
+        }
+        if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) return false;
+        if (stmt instanceof Ast.IfStmt conditional) {
+            for (Ast.IfBranch branch : conditional.branches()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(branch.condition())
+                        || stateLoanBlockHasForbiddenSuspensionOrEscape(branch.body())) {
+                    return true;
+                }
+            }
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(conditional.elseBody());
+        }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            if (stateLoanExprHasForbiddenSuspensionOrEscape(matched.subject())) return true;
+            for (Ast.MatchArm arm : matched.arms()) {
+                if ((arm.guard() != null
+                                && stateLoanExprHasForbiddenSuspensionOrEscape(arm.guard()))
+                        || stateLoanBlockHasForbiddenSuspensionOrEscape(arm.body())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (stmt instanceof Ast.SwitchStmt switched) {
+            if (stateLoanExprHasForbiddenSuspensionOrEscape(switched.subject())) return true;
+            for (Ast.SwitchCase arm : switched.cases()) {
+                for (Ast.Expr constant : arm.constants()) {
+                    if (stateLoanExprHasForbiddenSuspensionOrEscape(constant)) return true;
+                }
+                if (stateLoanBlockHasForbiddenSuspensionOrEscape(arm.body())) return true;
+            }
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(switched.defaultBody());
+        }
+        if (stmt instanceof Ast.TryStmt attempted) {
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(attempted.body())
+                    || stateLoanBlockHasForbiddenSuspensionOrEscape(attempted.catchBody())
+                    || stateLoanBlockHasForbiddenSuspensionOrEscape(attempted.finallyBody());
+        }
+        // Generic loops, including for-of and do/while, lack a statically
+        // verified iteration bound. An exclusive actor loan must not be held
+        // across potentially unbounded work or async iteration.
+        if (stmt instanceof Ast.ForOfStmt
+                || stmt instanceof Ast.ForOfDestructureStmt
+                || stmt instanceof Ast.ForStmt
+                || stmt instanceof Ast.DoWhileStmt) return true;
+        // A free-running loop can retain the critical loan for unbounded
+        // time. Require an independently checked finite bound before
+        // allowing loops in a future critical state callback revision.
+        if (stmt instanceof Ast.LoopStmt) return true;
+        if (stmt instanceof Ast.SelectStmt) return true;
+        return true;
+    }
+
+    private boolean stateLoanExprHasForbiddenSuspensionOrEscape(Ast.Expr expr) {
+        if (expr == null) return false;
+        if (expr instanceof Ast.AwaitExpr
+                || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.RuntimeCallExpr
+                || expr instanceof Ast.LambdaExpr) {
+            return true;
+        }
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(binary.left())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(binary.right());
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(unary.operand());
+        }
+        if (expr instanceof Ast.AssignExpr assignment) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(assignment.target())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(assignment.value());
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(conditional.condition())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(conditional.whenTrue())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(conditional.whenFalse());
+        }
+        if (expr instanceof Ast.MatchExpr matched) {
+            if (stateLoanExprHasForbiddenSuspensionOrEscape(matched.subject())) return true;
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                if ((arm.guard() != null
+                                && stateLoanExprHasForbiddenSuspensionOrEscape(arm.guard()))
+                        || stateLoanExprHasForbiddenSuspensionOrEscape(arm.value())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof Ast.TypeTestExpr test) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(test.value());
+        }
+        if (expr instanceof Ast.PatternTestExpr test) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(test.value());
+        }
+        if (expr instanceof Ast.CastExpr cast) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(cast.value());
+        }
+        if (expr instanceof Ast.SpreadExpr spread) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(spread.expression());
+        }
+        // Fail closed: a call may hide I/O, blocking, state re-entry or
+        // suspension through an unverified transitive effect. Do not permit
+        // *any* call under a live exclusive loan until a typed pure/no-suspend
+        // effect proof is available, including stdio, tools and helper calls.
+        if (expr instanceof Ast.CallExpr) return true;
+        if (expr instanceof Ast.MemberExpr member) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(member.receiver());
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(indexed.receiver())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(indexed.index());
+        }
+        // Constructors/allocations have unverified effects and resource
+        // bounds; reject until the actor-state allocator/effect contract
+        // accounts for their worst-case admission and lifetime.
+        if (expr instanceof Ast.NewExpr) return true;
+        if (expr instanceof Ast.TrapExpr) return true;
+        if (expr instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(element)) return true;
+            }
+            return false;
+        }
+        if (expr instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(element)) return true;
+            }
+            return false;
+        }
+        if (expr instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(field.value())) return true;
+            }
+            return false;
+        }
+        return true;
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -5810,6 +6077,7 @@ public final class TypeChecker {
                 if (field != null) {
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
+                    requireActorStateLoan(field);
                     if (writing && field.field().bindingKind() != Ast.BindingKind.LET) {
                         // Preserve the pre-existing constructor assignment path
                         // for fields declared without an initializer. A field

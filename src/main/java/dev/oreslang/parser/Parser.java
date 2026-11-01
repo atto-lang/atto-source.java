@@ -885,6 +885,8 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
+    private static final String ACTOR_STATE_SCHEMA_ANNOTATION = "__actor_state_schema";
+
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
     }
@@ -901,6 +903,8 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        boolean stateSchemaSeen = false;
+        boolean legacyActorFieldSeen = false;
         int requestConcurrency = 1;
         int messageConcurrency = 1;
         boolean declaredRequestConcurrency = false;
@@ -956,12 +960,31 @@ public final class Parser {
                         "declarations cannot be nested inside actors; declare nested types at file or module scope");
             }
 
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                if (!annotations.isEmpty())
+                    throw error(peek(), "actor state schema does not accept annotations");
+                validateNoModifiers(mods, "actor state schema");
+                if (stateSchemaSeen)
+                    throw error(peek(), "actor may declare only one state { ... } schema");
+                if (legacyActorFieldSeen)
+                    throw error(peek(), "actor state schema cannot be mixed with legacy free-standing actor fields");
+                parseActorStateSchema(fields);
+                stateSchemaSeen = true;
+                continue;
+            }
+
             if (isBindingKind(peek().type())) {
+                if (stateSchemaSeen)
+                    throw error(peek(), "free-standing actor fields cannot follow state { ... }; put persistent data inside the single state schema");
+                legacyActorFieldSeen = true;
                 validateActorFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                if (stateSchemaSeen)
+                    throw error(peek(), "free-standing actor fields cannot follow state { ... }; put persistent data inside the single state schema");
+                legacyActorFieldSeen = true;
                 validateActorFieldModifiers(mods);
                 fields.add(parseFinalActorField(annotations, mods.visibility));
                 continue;
@@ -976,6 +999,9 @@ public final class Parser {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
+            if (check(IDENT) && peek().lexeme().equals("handle_state")) {
+                throw error(peek(), "handle_state is a sealed runtime actor intrinsic");
+            }
             if (mods.isStatic && explicitMethod) {
                 throw error(previous(), "static actor functions use 'static fnc', not 'static method'");
             }
@@ -1045,6 +1071,48 @@ public final class Parser {
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+    }
+
+
+    private void parseActorStateSchema(List<Ast.FieldDecl> fields) {
+        consumeContextualIdentifier("state", "expected 'state'");
+        consume(LBRACE, "actor state schema must use 'state { ... }'");
+
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            List<Ast.Annotation> annotations = parseAnnotations();
+            if (!annotations.isEmpty())
+                throw error(peek(), "actor state fields do not accept annotations yet");
+            Modifiers modifiers = parseModifiers();
+            validateNoModifiers(modifiers, "actor state fields");
+
+            Ast.FieldDecl field;
+            if (check(IDENT) && checkNext(COLON)) {
+                String fieldName = advance().lexeme();
+                consume(COLON, "expected ':' after actor state field name");
+                Ast.TypeRef type = parseTypeRef();
+                Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+                consumeExpressionClassFieldTerminator(
+                        initializer, "actor state field should end with ';'");
+                field = new Ast.FieldDecl(
+                        fieldName, Ast.Visibility.PRIVATE, Ast.BindingKind.LET,
+                        type, List.of(), initializer, false);
+            } else if (isBindingKind(peek().type())) {
+                field = parseField(List.of(), Ast.Visibility.PRIVATE);
+            } else if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                field = parseFinalActorField(List.of(), Ast.Visibility.PRIVATE);
+            } else {
+                throw error(peek(), "actor state schema accepts only typed fields such as 'revision: int = 0;'");
+            }
+            if (!names.add(field.name()))
+                throw error(previous(), "duplicate actor state field '" + field.name() + "'");
+            List<Ast.Annotation> marked = new ArrayList<>(field.annotations());
+            marked.add(new Ast.Annotation(ACTOR_STATE_SCHEMA_ANNOTATION, List.of()));
+            fields.add(new Ast.FieldDecl(
+                    field.name(), Ast.Visibility.PRIVATE, field.bindingKind(),
+                    field.type(), marked, field.initializer(), field.mutableReferent()));
+        }
+        consume(RBRACE, "expected '}' to close actor state schema");
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -1496,6 +1564,13 @@ public final class Parser {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
+            // Internal annotations are compiler-minted provenance, never
+            // user-controlled metadata. A forged marker must not turn an
+            // ordinary actor field into a privileged sealed-state field.
+            if (name.equals(ACTOR_STATE_SCHEMA_ANNOTATION)) {
+                throw error(previous(), "@" + name
+                        + " is reserved for compiler-generated actor state schemas");
+            }
             // These names claim code generation, target selection or ABI effects.
             // Until a typed annotation registry and AOT lowering exist, retaining
             // them as inert metadata would silently change program semantics.
@@ -4044,7 +4119,34 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.Expr> args;
+                if (expr instanceof Ast.MemberExpr member
+                        && member.member().equals("handle_state")
+                        && check(IDENT) && peek().lexeme().equals("critical")) {
+                    // Canonical explicit state access mode:
+                    // self.handle_state(critical[read|write] |state| -> {...}).
+                    // Keep the selector AST-internal as a literal capability
+                    // marker; the type checker and evaluator must enforce the
+                    // selected mode, never merely parse the spelling.
+                    advance();
+                    consume(LBRACKET, "expected '[' after critical");
+                    Token mode = consume(IDENT, "critical expects read or write");
+                    if (!mode.lexeme().equals("read") && !mode.lexeme().equals("write")) {
+                        throw error(mode, "critical state access mode must be read or write");
+                    }
+                    consume(RBRACKET, "expected ']' after critical state access mode");
+                    Ast.Expr callback = parseExpression();
+                    if (!(callback instanceof Ast.LambdaExpr)) {
+                        throw error(previous(), "critical state access requires an inline lexical lambda");
+                    }
+                    if (!check(RPAREN)) {
+                        throw error(peek(), "critical state access accepts exactly one callback");
+                    }
+                    args = List.of(new Ast.CriticalStateModeExpr(mode.lexeme().equals("read")
+                            ? Ast.StateLoanMode.READ : Ast.StateLoanMode.WRITE), callback);
+                } else {
+                    args = parseCallArgumentsUntil(RPAREN);
+                }
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT, DOUBLE_COLON)) {
