@@ -1,0 +1,12 @@
+near-max-sum
+near-min-successor-two
+wide-precision-multiply
+signed-precision-three
+trillion-zero-cancel
+mixed-precedence
+right-nested-subtraction-v3
+left-nested-subtraction-v3
+wide-positive-product
+wide-negative-product
+quadruple-negation
+max-range-roundtrip
