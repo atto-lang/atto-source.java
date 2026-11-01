@@ -152,7 +152,7 @@ public final class ActorEventBus implements AutoCloseable {
             long coalesced) { }
 
     /**
-     * Typed host/runtime facade that mirrors the intended source-level Topic<T>
+     * Typed host/runtime facade that mirrors the intended source-level {@code Topic<T>}
      * abstraction. It carries no lifecycle authority and delegates all
      * membership, isolation, bounded-admission, and teardown checks to this bus.
      */
