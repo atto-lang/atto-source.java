@@ -310,4 +310,54 @@ final class HeapContainerBorrowParityTest {
                     "literal must retain declared bound: " + failure.getMessage());
         }
     }
+
+    @Test
+    void vectorResultCapacityCannotWidenAcrossFunctionReturn() throws Exception {
+        String program = """
+                fnc make_vector(): Vector<max_capacity=1>[int] {
+                  return [21];
+                }
+                pub routine main(): void {
+                  let mut Vector<int> values = make_vector();
+                  values.push(22);
+                  return;
+                }
+                """;
+        accepts(program);
+        Source source = Source.newBuilder(OresLanguage.ID, program, "vector-return-bound.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("max_capacity"),
+                    "return must not widen a bounded Vector: " + failure.getMessage());
+        }
+    }
+
+    @Test
+    void vectorParameterCapacityCannotBeBypassedByUnboundedCaller() throws Exception {
+        String program = """
+                fnc append_beyond_limit(Vector<max_capacity=1>[int] values): void {
+                  values.push(22);
+                  return;
+                }
+                pub routine main(): void {
+                  let mut Vector<int> values = new Vector<int>();
+                  values.push(21);
+                  append_beyond_limit(values);
+                  return;
+                }
+                """;
+        accepts(program);
+        Source source = Source.newBuilder(OresLanguage.ID, program, "vector-param-bound.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("max_capacity"),
+                    "parameter must not widen a bounded Vector: " + failure.getMessage());
+        }
+    }
 }
