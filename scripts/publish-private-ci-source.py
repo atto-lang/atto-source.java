@@ -27,6 +27,7 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 MAX_GH_API_RESPONSE_CHARS = 24 * 1024 * 1024
+MAX_INCIDENT_COMMENT_PAGES = 10  # 100 comments/page; deny at the audit bound
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
@@ -342,17 +343,24 @@ def require_resolved_blocking_incidents():
             issue.get("closed_at"),
             "blocking P0 incident close timestamp invalid",
         )
-        comments = gh_api_list(
-            "repos/" + BLOCKING_INCIDENT_REPO + "/issues/"
-            + str(number) + "/comments?per_page=100"
-        )
-        # If a page is completely full, later comments may exist and could
-        # revoke or supersede disposition. Fail closed instead of accepting an
-        # incomplete view.
-        if len(comments) >= 100:
+        # Read all pages before interpreting the independent reviewer's last
+        # comment. A later page may revoke an earlier approval. Bound the
+        # authenticated REST reads; never accept a saturated final page.
+        comments = []
+        for page in range(1, MAX_INCIDENT_COMMENT_PAGES + 1):
+            batch = gh_api_list(
+                "repos/" + BLOCKING_INCIDENT_REPO + "/issues/"
+                + str(number) + "/comments?per_page=100&page=" + str(page)
+            )
+            if len(batch) > 100:
+                raise Denied("blocking P0 incident comment page exceeds 100")
+            comments.extend(batch)
+            if len(batch) < 100:
+                break
+        else:
             raise Denied(
                 "blocking P0 incident #" + str(number)
-                + " disposition comments exceed single-page audit bound"
+                + " disposition comments exceed bounded audit pages"
             )
         marker = INCIDENT_DISPOSITION_MARKER + " issue=#" + str(number)
         reviewer_comments = []
