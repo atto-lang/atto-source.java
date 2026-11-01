@@ -23,6 +23,11 @@ final class EtsHeirHandoffRuntimeTest {
             EtsTable<String, Long> table) { }
 
     private static Actors start(ActorRuntime runtime) throws Exception {
+        return start(runtime, EtsTable.Access.PRIVATE);
+    }
+
+    private static Actors start(ActorRuntime runtime, EtsTable.Access access)
+            throws Exception {
         CountDownLatch created = new CountDownLatch(1);
         CountDownLatch successorReady = new CountDownLatch(1);
         AtomicReference<EtsTable<String, Long>> owned = new AtomicReference<>();
@@ -31,7 +36,7 @@ final class EtsHeirHandoffRuntimeTest {
             if (message == 1) {
                 try {
                     EtsTable<String, Long> table =
-                            context.runtime().createEtsTable(4, EtsTable.Access.PRIVATE);
+                            context.runtime().createEtsTable(4, access);
                     table.put("counter", 42L);
                     owned.set(table);
                 } catch (Throwable error) {
@@ -172,4 +177,63 @@ final class EtsHeirHandoffRuntimeTest {
             hostTable.close();
         }
     }
+    @Test
+    void publicTableIsFencedForPeerReadersAndWritersDuringOwnerHandoff()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actors = start(runtime, EtsTable.Access.PUBLIC);
+            var table = actors.table();
+            CountDownLatch checked = new CountDownLatch(1);
+            CountDownLatch after = new CountDownLatch(1);
+            AtomicReference<Throwable> problem = new AtomicReference<>();
+
+            var peer = runtime.spawnSharedTrusted(factory -> (message, context) -> {
+                try {
+                    if (message == 1) {
+                        assertThrows(SecurityException.class,
+                                () -> table.get("counter"));
+                        assertThrows(SecurityException.class,
+                                () -> table.put("counter", 1000L));
+                        assertThrows(SecurityException.class,
+                                table::snapshot);
+                        assertThrows(SecurityException.class,
+                                () -> runtime.prepareEtsHeir(
+                                        table, actors.oldOwner(), actors.heir()));
+                    } else if (message == 2) {
+                        assertEquals(Long.valueOf(42L),
+                                table.get("counter").orElseThrow());
+                        assertFalse(table.put("counter", 43L));
+                    }
+                } catch (Throwable failure) {
+                    problem.compareAndSet(null, failure);
+                } finally {
+                    if (message == 1) checked.countDown();
+                    else after.countDown();
+                }
+            });
+
+            var ticket = runtime.prepareEtsHeir(
+                    table, actors.oldOwner(), actors.heir());
+            peer.send(1);
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(problem.get());
+            assertEquals(1L, table.ownerEpoch());
+            assertEquals(Long.valueOf(42L), table.get("counter").orElseThrow());
+
+            actors.oldOwner().stop();
+            assertTrue(actors.oldOwner().awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.acknowledgeEtsHeir(ticket));
+            peer.send(2);
+            assertTrue(after.await(5, TimeUnit.SECONDS));
+            assertNull(problem.get());
+            assertEquals(Long.valueOf(43L), table.get("counter").orElseThrow());
+
+            peer.stop();
+            actors.heir().stop();
+            assertTrue(peer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actors.heir().awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(table.closed());
+        }
+    }
+
 }
