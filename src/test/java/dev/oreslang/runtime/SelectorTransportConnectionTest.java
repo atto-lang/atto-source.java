@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -10,6 +11,7 @@ import java.net.Socket;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -176,6 +178,103 @@ final class SelectorTransportConnectionTest {
             if (failure != null
                     && !(failure instanceof InterruptedException)) {
                 fail("loopback peer failed", failure);
+            }
+        }
+    }
+
+    @Test
+    void concurrentReadWriteAndPhaseChangesCannotAliasSelectorState()
+            throws Exception {
+        CountDownLatch releasePeer = new CountDownLatch(1);
+        try (ServerSocket server = new ServerSocket(
+                0, 50, InetAddress.getLoopbackAddress())) {
+            Thread peer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    releasePeer.await();
+                } catch (Exception ignored) {
+                    // Socket shutdown is permitted while the peer is waiting.
+                }
+            });
+            SelectorTransportConnection connection =
+                    SelectorTransportConnection.open(
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(6));
+            AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
+            Thread owner = null;
+            try {
+                InetSocketAddress address = new InetSocketAddress(
+                        InetAddress.getLoopbackAddress(),
+                        server.getLocalPort());
+                connection.connect(address, Duration.ofSeconds(2));
+                connection.setReadTimeout(Duration.ofSeconds(5));
+                owner = Thread.ofVirtual().start(() -> {
+                    try {
+                        connection.input().read();
+                    } catch (Throwable failure) {
+                        ownerFailure.set(failure);
+                    }
+                });
+                // Read private admission state only for deterministic test
+                // synchronization; it is never a public capability or lease.
+                Field field = SelectorTransportConnection.class
+                        .getDeclaredField("operationClaimed");
+                field.setAccessible(true);
+                AtomicBoolean claimed = (AtomicBoolean) field.get(connection);
+                long deadline = System.nanoTime()
+                        + TimeUnit.SECONDS.toNanos(2);
+                while (!claimed.get() && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertTrue(claimed.get(), "read must acquire the selector gate");
+
+                IOException secondReader = assertThrows(IOException.class,
+                        () -> connection.input().read(new byte[1]));
+                assertTrue(secondReader.getMessage().contains("exclusive transport lease"));
+                IOException competingWriter = assertThrows(IOException.class,
+                        () -> connection.output().write(new byte[] { 7 }));
+                assertTrue(competingWriter.getMessage().contains("exclusive transport lease"));
+                IOException competingConnect = assertThrows(IOException.class,
+                        () -> connection.connect(address, Duration.ofSeconds(1)));
+                assertTrue(competingConnect.getMessage().contains("exclusive transport lease"));
+                assertTrue(claimed.get(), "failed claims must not release another operation");
+                connection.close();
+                owner.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(owner.isAlive(), "close must wake active selector owner");
+                assertInstanceOf(IOException.class, ownerFailure.get());
+                assertFalse(claimed.get(), "operation claim must release on unwind");
+            } finally {
+                connection.close();
+                releasePeer.countDown();
+                if (owner != null) owner.join(TimeUnit.SECONDS.toMillis(2));
+                peer.join(TimeUnit.SECONDS.toMillis(2));
+            }
+        }
+    }
+
+    @Test
+    void exclusiveOperationGateAllowsSequentialRoundTrip()
+            throws Exception {
+        try (ServerSocket server = new ServerSocket(
+                0, 50, InetAddress.getLoopbackAddress())) {
+            Thread peer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    int value = socket.getInputStream().read();
+                    socket.getOutputStream().write(value + 1);
+                } catch (IOException error) {
+                    throw new AssertionError(error);
+                }
+            });
+            try (SelectorTransportConnection connection =
+                    SelectorTransportConnection.open(
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(5))) {
+                connection.connect(
+                        new InetSocketAddress(
+                                InetAddress.getLoopbackAddress(), server.getLocalPort()),
+                        Duration.ofSeconds(2));
+                connection.output().write(41);
+                assertEquals(42, connection.input().read());
+            } finally {
+                peer.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(peer.isAlive());
             }
         }
     }
