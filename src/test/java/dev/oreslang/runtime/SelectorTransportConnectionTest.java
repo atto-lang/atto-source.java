@@ -353,6 +353,57 @@ final class SelectorTransportConnectionTest {
     }
 
     @Test
+    void fragmentedLoopbackResponseDoesNotAssumeTcpMessageBoundaries()
+            throws Exception {
+        CountDownLatch secondFragment = new CountDownLatch(1);
+        AtomicReference<Throwable> peerFailure = new AtomicReference<>();
+        try (ServerSocket server = new ServerSocket(
+                0, 50, InetAddress.getLoopbackAddress())) {
+            Thread peer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(2000);
+                    if (socket.getInputStream().read() != 7)
+                        throw new AssertionError("unexpected request byte");
+                    socket.getOutputStream().write(new byte[] {0, 0});
+                    socket.getOutputStream().flush();
+                    if (!secondFragment.await(2, TimeUnit.SECONDS))
+                        throw new AssertionError("second fragment not released");
+                    socket.getOutputStream().write(new byte[] {0, 42});
+                    socket.getOutputStream().flush();
+                } catch (Throwable failure) {
+                    peerFailure.set(failure);
+                }
+            });
+            try (SelectorTransportConnection connection =
+                    SelectorTransportConnection.open(
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(6))) {
+                connection.connect(new InetSocketAddress(
+                        InetAddress.getLoopbackAddress(), server.getLocalPort()),
+                        Duration.ofSeconds(2));
+                connection.setReadTimeout(Duration.ofSeconds(3));
+                connection.output().write(7);
+                byte[] payload = new byte[4];
+                int offset = connection.input().read(payload, 0, 4);
+                assertTrue(offset > 0 && offset <= 2,
+                        "first read cannot fabricate the missing fragment");
+                secondFragment.countDown();
+                while (offset < payload.length) {
+                    int count = connection.input().read(
+                            payload, offset, payload.length - offset);
+                    assertTrue(count > 0, "premature EOF during fragmented reply");
+                    offset += count;
+                }
+                assertArrayEquals(new byte[] {0, 0, 0, 42}, payload);
+            } finally {
+                secondFragment.countDown();
+                peer.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(peer.isAlive());
+            }
+            assertNull(peerFailure.get());
+        }
+    }
+
+    @Test
     void readTimeoutReleasesExclusiveClaimForNextOperation()
             throws Exception {
         CountDownLatch peerMayWrite = new CountDownLatch(1);
