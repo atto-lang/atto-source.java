@@ -2178,13 +2178,18 @@ public final class Parser {
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
         if (check(IDENT) && peek().lexeme().equals("critical") && checkNext(LBRACE)) {
-            // Do not parse a bare block or perform an unguarded mutation when
-            // the critical guard cannot be acquired by a suspended continuation.
-            throw error(peek(), "critical block requires scheduler-owned nonblocking admission, scoped release and no-suspension verification");
+            advance(); // contextual critical keyword; preserve its dedicated AST.
+            return new Ast.CriticalStmt(parseBlock());
         }
         if (check(TRY) && current + 1 < tokens.size()
-                && tokens.get(current + 1).lexeme().equals("critical")) {
-            throw error(peek(), "try critical requires an immediate nonblocking guard-lowering implementation");
+                && tokens.get(current + 1).lexeme().equals("critical")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // try
+            advance(); // contextual critical keyword
+            List<Ast.Stmt> protectedBody = parseBlock();
+            consume(ELSE, "try critical requires 'else { ... }' on failed immediate admission");
+            return new Ast.TryCriticalStmt(protectedBody, parseBlock());
         }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
