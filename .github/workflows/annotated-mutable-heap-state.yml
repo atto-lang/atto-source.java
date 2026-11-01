@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/test/java/dev/oreslang/AnnotatedMutableHeapStateAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/InjectedOwnedStateV0Test.java'
       - '.github/workflows/annotated-mutable-heap-state.yml'
   workflow_dispatch:
 permissions:
@@ -37,4 +38,4 @@ jobs:
           cache: maven
       - name: Run actual parser, ownership and guest tests
         run: |
-          mvn -B -ntp -Dtest=AnnotatedMutableHeapStateAdmissionTest test
+          mvn -B -ntp -Dtest=AnnotatedMutableHeapStateAdmissionTest,InjectedOwnedStateV0Test test
