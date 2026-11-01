@@ -771,9 +771,10 @@ public final class Parser {
                 throw error(peek(), "supervisors declare lifecycle hooks, not actor fields or nested types");
             }
             validateActorMethodModifiers(mods);
-            if (mods.isStatic || mods.isAbstract || mods.generator || mods.structural
-                    || mods.trapped || mods.nonLexical || mods.shared || mods.untrusted) {
-                throw error(peek(), "supervisor hooks cannot use static, abstract, generator, trap or actor modifiers");
+            if (mods.isStatic || mods.isAbstract || mods.async || mods.suspends
+                    || mods.generator || mods.structural || mods.trapped
+                    || mods.nonLexical || mods.shared || mods.untrusted) {
+                throw error(peek(), "supervisor hooks cannot use async, suspends, static, abstract, generator, trap or actor modifiers");
             }
             if (match(FNC)) {
                 throw error(previous(), "supervisor hooks omit 'fnc'; declare the lifecycle method name");
@@ -803,6 +804,7 @@ public final class Parser {
                 if (hook.arity() != 1
                         || !hook.parameters().getFirst().type().name().equals("Failure")
                         || !hook.parameters().getFirst().type().arguments().isEmpty()
+                        || hook.parameters().getFirst().type().inferArguments()
                         || hook.parameters().getFirst().mutable()
                         || hook.parameters().getFirst().structural()
                         || hook.parameters().getFirst().name().equals("self")) {
@@ -811,7 +813,9 @@ public final class Parser {
             } else if (hook.arity() != 0) {
                 throw error(previous(), "supervisor lifecycle hook '" + hook.name() + "' takes no arguments");
             }
-            if (!hook.returnType().name().equals("void")) {
+            if (!hook.returnType().name().equals("void")
+                    || !hook.returnType().arguments().isEmpty()
+                    || hook.returnType().inferArguments()) {
                 throw error(previous(), "supervisor lifecycle hooks must return void");
             }
             hooks.add(hook);
