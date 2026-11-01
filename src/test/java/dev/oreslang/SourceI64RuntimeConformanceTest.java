@@ -101,7 +101,15 @@ final class SourceI64RuntimeConformanceTest {
             new Case("38", "(7 - 14) * -6", "42"),
             new Case("39", "9223372036854775807 - 9223372036854775765", "42"),
             new Case("40", "-9223372036854775808 + 9223372036854775807 + 43", "42"),
-            new Case("41", "2 * (3 + 4) * 3", "42"));
+            new Case("41", "2 * (3 + 4) * 3", "42"),
+            new Case("50", "2 * 3 * 7", "42"),
+            new Case("51", "(0 - 7) * (0 - 6)", "42"),
+            new Case("52", "(21 + 21) + (0 - 0)", "42"),
+            new Case("53", "6 * 7", "42"),
+            new Case("54", "(-7) * (-6)", "42"),
+            new Case("55", "9223372036854775807 - 9223372036854775807 + 42", "42"),
+            new Case("56", "-9223372036854775808 - (-9223372036854775808) + 42", "42"),
+            new Case("57", "(100 - 58) * (0 + 1)", "42"));
 
     // SHA-256 of the exact Oreslang corpus files programs/34..41, including
     // comments and LF. This rejects backend-specific source rewrites.
@@ -113,7 +121,15 @@ final class SourceI64RuntimeConformanceTest {
             "391467d7baf7b84b339a63e55be2395d9a8a4d92b5719f249df428b34bac7ccd",
             "d1fa2dc614cd61c442ab1bfa5683fac50cc9d72139e0dcdf0a67b3610d427bd6",
             "0322dc2a7d48fed12d917aaaf2a50c025b77402a2b21fdbb87224fece59b44b0",
-            "3483cb15d4b2f2c24f90ba65e55e886b59eaea2190aa9c18f8ed10badba04e76");
+            "3483cb15d4b2f2c24f90ba65e55e886b59eaea2190aa9c18f8ed10badba04e76",
+            "939b28fccd280d8a3690ebd4d874f263a9ddfe0c87d420d93b9bd684ffe34074",
+            "873112bfda242442d29a8b2ba9f74bc494db44e4e66ac51484ad886786bb525b",
+            "2ee8ae2204d348d177a995e1086543fbc9fcff3d66c80827d40468f2953a9157",
+            "171928949cd43a61f2072f311f94e27f697968848d07b1b90affc9e061d3c41e",
+            "61cf977237ae559e2a759efde340e31b62f95a244702b94f8641ff24931ebecf",
+            "a1da8a0e27b1a72a6371447868cd75d192f3b0da18122c53ac48cfc848f2320f",
+            "ea84b5d71bbb8a7356fe87b70c04a0518da28c53fb2e271d2b6429bbe6a44581",
+            "ba3cd5f0d90f7b6f9c4776561f5b7149dfd2c7d420492fe98df3f249a3fb9922");
 
     @TestFactory
     Stream<DynamicTest> sharedSignedI64WaveExecutesInRealGraalGuest() {
@@ -125,7 +141,8 @@ final class SourceI64RuntimeConformanceTest {
                             + "pub fnc main(): int { return " + test.expression() + "; }\n";
                     String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                             .digest(program.getBytes(StandardCharsets.UTF_8)));
-                    int index = Integer.parseInt(test.id()) - 34;
+                    int numericId = Integer.parseInt(test.id());
+                    int index = numericId >= 50 ? numericId - 42 : numericId - 34;
                     assertEquals(WAVE_SOURCE_SHA256.get(index), sha256,
                             "Oreslang source bytes must equal the canonical parity fixture");
                     assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)),
