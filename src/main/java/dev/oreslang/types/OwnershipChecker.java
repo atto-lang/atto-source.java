@@ -1819,12 +1819,11 @@ public final class OwnershipChecker {
                                     }
                                 }
                                 case "pop" -> {
-                                    if (call.arguments().isEmpty()) {
-                                        if (!isCopyType(element)) {
-                                            throw error("cannot pop move-only protected Vector element through a MutexGuard");
-                                        }
-                                        return new ValueInfo(Ast.TypeRef.simple("Option"), ValueKind.COPY, null);
-                                    }
+                                    // Moving the last element out of a guarded
+                                    // collection needs an explicit owned-result
+                                    // proof. Do not fabricate raw Option arity
+                                    // or treat a live MutexGuard as a move token.
+                                    throw error("cannot pop from protected Vector through MutexGuard without an owned-result transfer proof");
                                 }
                                 case "reserve" -> {
                                     if (call.arguments().size() == 1) {
