@@ -2193,14 +2193,26 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
-        // Reject reserved lexical critical forms before the generic expression
-        // or try/catch parser could reinterpret them as different constructs.
-        // Admit only after a no-yield AST, effect proof and physical-retirement
-        // gate have been implemented. Ordinary critical(...) calls survive.
+        // Parse critical scopes into a dedicated AST, preserving named versus
+        // ambient gates and immediate try-enter versus queued admission.
+        // Type checking and both execution paths remain deliberately CLOSED
+        // until transitive effects, scheduler ownership and unwinding are proven.
+        // A normal callable named critical(...) is still an identifier.
         if (looksLikeReservedCriticalBlock(0)
                 || (check(TRY) && looksLikeReservedCriticalBlock(1))) {
-            throw error(peek(), "E_CRITICAL_UNLOWERED: lexical critical/try critical "
-                    + "requires scheduler-owned admission and a nonsuspending protected body");
+            boolean immediate = match(TRY);
+            consume(IDENT, "expected critical");
+            String gateName = null;
+            if (!check(LBRACE)) {
+                gateName = consume(IDENT, "critical gate requires a binding name").lexeme();
+            }
+            List<Ast.Stmt> body = parseBlock();
+            List<Ast.Stmt> fallback = List.of();
+            if (immediate) {
+                consume(ELSE, "try critical requires an explicit else fallback");
+                fallback = parseBlock();
+            }
+            return new Ast.CriticalStmt(immediate, gateName, body, fallback);
         }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is

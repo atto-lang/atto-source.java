@@ -1954,6 +1954,14 @@ public final class TypeChecker {
                     "using request.borrow() as view requires verified transport-loan "
                             + "lifetime checking and evaluator lowering; feature is not enabled");
         }
+        if (stmt instanceof Ast.CriticalStmt) {
+            // Parsing a scope is not permission to execute it. An AST-only
+            // syntax probe must never become an accidental compiler pass.
+            throw new IllegalArgumentException(
+                    "E_CRITICAL_UNLOWERED: critical block needs transitive "
+                    + "nonsuspension proof, scheduler-owned logical admission "
+                    + "and physical-retirement lowering");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             String inferredName = binding.inferredTypeName() != null
                     ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);

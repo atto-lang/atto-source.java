@@ -24,13 +24,47 @@ final class CriticalSuspensionAdmissionV1Test {
         rejected("pub critical routine run(): void { return; }", "E_CRITICAL_UNLOWERED");
     }
 
-    @Test void criticalBlockIsReservedNotMisparsedAsExpression() {
-        rejected("suspends fnc run(): void { critical { return; } }", "E_CRITICAL_UNLOWERED");
-        rejected("suspends fnc run(): void { critical gate { return; } }", "E_CRITICAL_UNLOWERED");
-        rejected("fnc run(): void { try critical { return; } else { return; } }",
-                "E_CRITICAL_UNLOWERED");
-        rejected("fnc run(): void { try critical gate { return; } else { return; } }",
-                "E_CRITICAL_UNLOWERED");
+    private static dev.oreslang.ast.Ast.CriticalStmt statement(String source) {
+        var ast = Parser.parse(source);
+        var fn = (dev.oreslang.ast.Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
+        return (dev.oreslang.ast.Ast.CriticalStmt) fn.body().getFirst();
+    }
+
+    @Test void criticalBlocksHaveDedicatedUnloweredAstAndTypeGate() {
+        var plain = statement("suspends fnc run(): void { critical { return; } }");
+        assertFalse(plain.tryOnly());
+        assertNull(plain.gateName());
+        assertEquals(1, plain.body().size());
+
+        var named = statement("suspends fnc run(): void { critical gate { return; } }");
+        assertFalse(named.tryOnly());
+        assertEquals("gate", named.gateName());
+
+        var immediate = statement("fnc run(): void { try critical { return; } else { return; } }");
+        assertTrue(immediate.tryOnly());
+        assertNull(immediate.gateName());
+        assertEquals(1, immediate.elseBody().size());
+
+        var namedImmediate = statement("fnc run(): void { try critical gate { return; } else { return; } }");
+        assertTrue(namedImmediate.tryOnly());
+        assertEquals("gate", namedImmediate.gateName());
+
+        for (String source : new String[] {
+            "suspends fnc run(): void { critical { return; } }",
+            "suspends fnc run(): void { critical gate { return; } }",
+            "fnc run(): void { try critical { return; } else { return; } }",
+            "fnc run(): void { try critical gate { return; } else { return; } }"
+        }) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("E_CRITICAL_UNLOWERED"), error.getMessage());
+        }
+    }
+
+    @Test void tryCriticalRequiresExplicitFallbackAndCannotBeMisparsedAsTryCatch() {
+        rejected("fnc run(): void { try critical { return; } }", "try critical requires an explicit else");
+        rejected("fnc run(): void { try critical gate { return; } catch(e) { return; } }",
+                "try critical requires an explicit else");
     }
 
     @Test void lexerDoesNotTreatCommentsAndStringsAsCriticalSyntax() {

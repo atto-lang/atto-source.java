@@ -2477,6 +2477,10 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "using request.borrow() as view is not executable without checked loan cleanup");
                 }
+                if (stmt instanceof Ast.CriticalStmt) {
+                    throw new IllegalStateException(
+                            "E_CRITICAL_UNLOWERED: suspending source critical execution requires scheduler lowering");
+                }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
                             task,
@@ -6204,6 +6208,10 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.UsingBorrowStmt) {
                 throw new IllegalStateException(
                         "using request.borrow() as view is not executable without checked loan cleanup");
+            }
+            if (stmt instanceof Ast.CriticalStmt) {
+                throw new IllegalStateException(
+                        "E_CRITICAL_UNLOWERED: synchronous critical execution requires scheduler lowering");
             }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();

@@ -669,7 +669,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, TaskScopeStmt, UsingBorrowStmt, CriticalStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     /**
@@ -759,6 +759,24 @@ public final class Ast {
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+    }
+
+    /**
+     * Lexically scoped critical section. Acquisition is a separate potential
+     * suspension point; the protected body must statically prove it never
+     * suspends. This declaration-only AST is NOT an execution permit.
+     */
+    public record CriticalStmt(
+            boolean tryOnly, String gateName, List<Stmt> body,
+            List<Stmt> elseBody) implements Stmt {
+        public CriticalStmt {
+            if (gateName != null && !gateName.matches("[A-Za-z_][A-Za-z_0-9]*"))
+                throw new IllegalArgumentException("critical gate requires a simple binding name");
+            body = List.copyOf(body);
+            elseBody = List.copyOf(elseBody);
+            if (!tryOnly && !elseBody.isEmpty())
+                throw new IllegalArgumentException("ordinary critical cannot have else");
+        }
     }
 
     /**
