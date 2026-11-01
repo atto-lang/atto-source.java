@@ -77,8 +77,64 @@ fnc i64_above_binary64_mantissa_is_exact(): TestOutcome {
   return expect_equal_int(9007199254740993 - 9007199254740992, 1,
     "native integer arithmetic must not silently round through double");
 }
+
+fnc property_fails_without_message(int value): TestOutcome {
+  return fail("");
+}
+fnc empty_property_reports_its_name(): TestOutcome {
+  val TestOutcome outcome = check_int_cases("empty-input", arr[], property_nonnegative);
+  return expect_equal_string(outcome.message, "property has no cases: empty-input",
+    "empty property must produce a named diagnostic");
+}
+fnc property_empty_diagnostic_has_fallback(): TestOutcome {
+  val TestOutcome outcome = check_int_cases("silent-failure", arr[5], property_fails_without_message);
+  return expect_equal_string(outcome.message, "property failed: silent-failure",
+    "silent property failure must receive a named diagnostic");
+}
+fnc false_assertion_rejects_true(): TestOutcome {
+  val TestOutcome outcome = expect_false(true, "true is not false");
+  return expect_false(outcome.passed, "expect_false must reject true");
+}
+fnc integer_equality_rejects_mismatch(): TestOutcome {
+  val TestOutcome outcome = expect_equal_int(0, 1, "different ints");
+  return expect_false(outcome.passed, "integer equality must reject different values");
+}
+fnc string_equality_rejects_mismatch(): TestOutcome {
+  val TestOutcome outcome = expect_equal_string("left", "right", "different strings");
+  return expect_false(outcome.passed, "string equality must reject different values");
+}
+fnc machine_newline_differs_from_literal_escape(): TestOutcome {
+  return expect_not_equal_string(escape_machine_field("\n"), escape_machine_field("\\n"),
+    "raw newline and literal backslash-n must never collapse");
+}
+fnc machine_escape_repeated_pipes(): TestOutcome {
+  return expect_equal_string(escape_machine_field("a||b"), "a\\u007c\\u007cb",
+    "adjacent separators must each be escaped");
+}
+fnc float_exact_zero_tolerance_passes(): TestOutcome {
+  return expect_near_float(-3.25, -3.25, 0.0,
+    "exactly equal finite floats must pass zero tolerance");
+}
+fnc boolean_false_equality_passes(): TestOutcome {
+  return expect_equal_bool(false, false, "false equals false");
+}
+fnc machine_empty_field_stays_empty(): TestOutcome {
+  return expect_equal_string(escape_machine_field(""), "",
+    "empty receipt field must not gain bytes");
+}
+
 pub routine main(): void {
   val TestSuite suite = new TestSuite("native-testing-core", arr[
+    new TestCase("empty_property_reports_its_name", empty_property_reports_its_name, false, ""),
+    new TestCase("property_empty_diagnostic_has_fallback", property_empty_diagnostic_has_fallback, false, ""),
+    new TestCase("false_assertion_rejects_true", false_assertion_rejects_true, false, ""),
+    new TestCase("integer_equality_rejects_mismatch", integer_equality_rejects_mismatch, false, ""),
+    new TestCase("string_equality_rejects_mismatch", string_equality_rejects_mismatch, false, ""),
+    new TestCase("machine_newline_differs_from_literal_escape", machine_newline_differs_from_literal_escape, false, ""),
+    new TestCase("machine_escape_repeated_pipes", machine_escape_repeated_pipes, false, ""),
+    new TestCase("float_exact_zero_tolerance_passes", float_exact_zero_tolerance_passes, false, ""),
+    new TestCase("boolean_false_equality_passes", boolean_false_equality_passes, false, ""),
+    new TestCase("machine_empty_field_stays_empty", machine_empty_field_stays_empty, false, ""),
     new TestCase("deterministic_property_cases_pass", deterministic_property_cases_pass, false, ""),
     new TestCase("negative_property_case_is_failure", negative_property_case_is_failure, false, ""),
     new TestCase("machine_receipt_fields_escape_delimiters", machine_receipt_fields_escape_delimiters, false, ""),
