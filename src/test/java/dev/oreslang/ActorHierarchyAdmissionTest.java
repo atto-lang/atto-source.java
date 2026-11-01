@@ -87,6 +87,35 @@ final class ActorHierarchyAdmissionTest {
     }
 
     @Test
+    void inheritedCallableInterfaceCannotBeLaunderedThroughEmptyChildMarker() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface Parent as
+                          fnc ping(): int;
+                        end
+                        define interface Child extends Parent as
+                        end
+                        define actor A1 implements Child as
+                          pub ping(): int { return 1; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("including inherited members"),
+                error.getMessage());
+    }
+
+    @Test
+    void inheritedEmptyMarkerInterfacesRemainValid() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface Parent as
+                end
+                define interface Child extends Parent as
+                end
+                define actor A1 implements Child as
+                end
+                """)));
+    }
+
+    @Test
     void multipleActorSuperclassesAreRejectedEvenWithDistinctNames() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
