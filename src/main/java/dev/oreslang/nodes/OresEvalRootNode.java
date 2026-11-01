@@ -5955,6 +5955,15 @@ public final class OresEvalRootNode extends RootNode {
                     return step.done() ? GeneratorRuntime.Step.doneStep()
                             : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
                 }
+                if (value instanceof OresVector vector) {
+                    // Detached async values cannot silently lose max_capacity by
+                    // widening a bounded Vector into an unrestricted ArrayList.
+                    OresVector copy = new OresVector(vector.maxCapacity(), 0);
+                    for (Object item : vector) {
+                        copy.add(detachAsyncValue(item, visiting));
+                    }
+                    return copy;
+                }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) copy.add(detachAsyncValue(item, visiting));
