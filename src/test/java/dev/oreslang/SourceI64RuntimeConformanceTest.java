@@ -171,4 +171,31 @@ final class SourceI64RuntimeConformanceTest {
         assertThrows(IllegalArgumentException.class, () ->
                 Parser.parse("pub fnc main():int{return 9223372036854775808;}"));
     }
+
+    @TestFactory
+    Stream<DynamicTest> oreslanaPortableScalarGuestsExecuteInRealTruffleContext() {
+        // These exercise only the numeric admission profile of Oreslana.
+        // Full ledger classes, arrays and actor isolation remain unproved.
+        record Vector(String name, String expression, long expected) { }
+        return Stream.of(
+                new Vector("capacity-zero", "(4096 - 64) + (32 * 2) - 4096", 0L),
+                new Vector("nonzero-execution", "73", 73L),
+                new Vector("i64-upper-bound", "(9223372036854775807 - 9223372036854775800) * 6", 42L))
+                .map(vector -> DynamicTest.dynamicTest("oreslana/" + vector.name(), () -> {
+                    String program = "pub fnc main(): int { return " + vector.expression() + "; }\n";
+                    assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)), program);
+                    ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+                    Source source = Source.newBuilder(OresLanguage.ID, program,
+                            "oreslana-" + vector.name() + ".ores")
+                            .mimeType(OresLanguage.MIME_TYPE).build();
+                    try (Context context = Context.newBuilder(OresLanguage.ID)
+                            .allowAllAccess(false).out(stdout).build()) {
+                        Value result = context.eval(source);
+                        assertTrue(result.fitsInLong(), "guest returned non-i64");
+                        assertEquals(vector.expected(), result.asLong(),
+                                "real Truffle guest scalar mismatch");
+                    }
+                    assertEquals("", stdout.toString(StandardCharsets.UTF_8));
+                }));
+    }
 }
