@@ -1705,6 +1705,19 @@ public final class TypeChecker {
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            // ActorRef is the only transferable actor capability. A structural
+            // interface/trait advertising fields or user-callable methods can
+            // otherwise turn an actor instance into an ordinary dispatchable
+            // object without mailbox admission. Marker-only contracts are
+            // safe type metadata; StreamOperator has a separate checked,
+            // compiler-owned message-port admission path above.
+            if (klass.actorKind() != Ast.ActorKind.NONE && !iface.members().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' may implement only marker traits/interfaces "
+                                + "or compiler-owned StreamOperator until actor-ref-safe protocol "
+                                + "dispatch and sealed state are lowered; '" + iface.name()
+                                + "' declares callable or field members");
+            }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
