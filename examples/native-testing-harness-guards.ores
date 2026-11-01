@@ -2,7 +2,7 @@
 // A zero process exit is meaningful only after a real Oreslang compiler executes
 // this source. This is not an ORES_TEST receipt suite or a Rust host-only oracle.
 import class TestOutcome from '../stdlib/testing';
-import fnc pass, expect_false, expect_equal_bool, expect_not_equal_int, expect_not_equal_string, expect_near_float, check_int_cases from '../stdlib/testing';
+import fnc pass, fail, expect_true, expect_false, expect_equal_bool, expect_equal_int, expect_equal_float, expect_equal_string, expect_not_equal_int, expect_not_equal_string, expect_near_float, check_int_cases from '../stdlib/testing';
 
 fnc property_ok(int value): TestOutcome {
   return expect_not_equal_int(value, -1, "unexpected sentinel");
@@ -10,6 +10,10 @@ fnc property_ok(int value): TestOutcome {
 
 fnc property_fail_on_two(int value): TestOutcome {
   return expect_not_equal_int(value, 2, "two is forbidden");
+}
+
+fnc property_silent_failure(int value): TestOutcome {
+  return fail("");
 }
 
 pub routine main(): void {
@@ -88,6 +92,64 @@ pub routine main(): void {
   fi
   if !expect_near_float(1.0, 1.0, 0.0, "exact zero tolerance").passed; do
     rt fail("exact equality at zero tolerance rejected");
+  fi
+
+  // Further direct guest checks; none are credited without compiler execution.
+  if !expect_true(true, "true assertion").passed; do
+    rt fail("expect_true rejected true");
+  fi
+  val TestOutcome false_true = expect_true(false, "false must fail");
+  if false_true.passed || false_true.message != "false must fail"; do
+    rt fail("expect_true false failure or diagnostic lost");
+  fi
+
+  if !expect_equal_int(-7, -7, "signed equality").passed; do
+    rt fail("signed equality rejected");
+  fi
+  if expect_equal_int(-7, 7, "signed mismatch").passed; do
+    rt fail("signed mismatch accepted");
+  fi
+
+  if !expect_equal_string("", "", "empty equality").passed; do
+    rt fail("empty strings not equal");
+  fi
+  if expect_equal_string("alpha", "ALPHA", "case-sensitive mismatch").passed; do
+    rt fail("case-sensitive string mismatch accepted");
+  fi
+
+  if !expect_equal_float(2.5, 2.5, "exact float").passed; do
+    rt fail("exact float equality rejected");
+  fi
+  if expect_equal_float(2.5, 2.0, "float mismatch").passed; do
+    rt fail("float mismatch accepted");
+  fi
+
+  if !expect_near_float(1.0, 1.125, 0.125, "inclusive tolerance").passed; do
+    rt fail("inclusive tolerance boundary rejected");
+  fi
+  if expect_near_float(1.0, 1.126, 0.125, "outside tolerance").passed; do
+    rt fail("out-of-tolerance difference accepted");
+  fi
+
+  if !check_int_cases("singleton", arr[7], property_ok).passed; do
+    rt fail("single-case property rejected");
+  fi
+  val TestOutcome empty_named = check_int_cases("empty-named", empty_cases, property_ok);
+  if empty_named.passed || empty_named.message != "property has no cases: empty-named"; do
+    rt fail("empty property name diagnostic missing");
+  fi
+
+  val TestOutcome silent = check_int_cases("silent", arr[1], property_silent_failure);
+  if silent.passed || silent.message != "property failed: silent"; do
+    rt fail("silent property failure fallback missing");
+  fi
+  val TestOutcome true_false = expect_false(true, "true is not false");
+  if true_false.passed || true_false.message != "true is not false"; do
+    rt fail("expect_false failure diagnostic lost");
+  fi
+  val TestOutcome equal_inequality = expect_not_equal_string("same", "same", "same strings");
+  if equal_inequality.passed || equal_inequality.message != "same strings"; do
+    rt fail("string inequality diagnostic lost");
   fi
   return;
 }
