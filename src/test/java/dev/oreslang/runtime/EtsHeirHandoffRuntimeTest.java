@@ -74,12 +74,12 @@ final class EtsHeirHandoffRuntimeTest {
             actors.oldOwner().stop();
             assertTrue(actors.oldOwner().awaitTermination(5, TimeUnit.SECONDS));
             assertFalse(table.closed(), "pending table remains fenced for heir");
-            assertEquals(42L, table.get("counter").orElseThrow());
+            assertEquals(Long.valueOf(42L), table.get("counter").orElseThrow());
             assertTrue(runtime.acknowledgeEtsHeir(receipt));
             assertFalse(runtime.acknowledgeEtsHeir(receipt));
             assertEquals(actors.heir().id(), table.ownerId().orElseThrow());
             assertEquals(2L, table.ownerEpoch());
-            assertEquals(42L, table.get("counter").orElseThrow());
+            assertEquals(Long.valueOf(42L), table.get("counter").orElseThrow());
             assertEquals(1, table.size());
 
             actors.heir().stop();
@@ -121,7 +121,7 @@ final class EtsHeirHandoffRuntimeTest {
             assertFalse(runtime.acknowledgeEtsHeir(ticket));
             assertEquals(1L, actors.table().ownerEpoch());
             assertEquals(actors.oldOwner().id(), actors.table().ownerId().orElseThrow());
-            assertEquals(42L, actors.table().get("counter").orElseThrow());
+            assertEquals(Long.valueOf(42L), actors.table().get("counter").orElseThrow());
             actors.oldOwner().stop();
             assertTrue(actors.oldOwner().awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(actors.table().closed());
