@@ -1943,6 +1943,23 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.CriticalStmt critical) {
+            // Entering the gate may suspend; only suspends callables may do so.
+            // Prove the protected body cannot itself suspend or call unknown
+            // effectful targets BEFORE attempting any source lowering.
+            CriticalEffectPreflight.verify(critical.body());
+            if (!currentMaySuspend)
+                throw new IllegalArgumentException(
+                        "critical block may suspend on entry; enclosing callable must be suspends");
+            throw new IllegalArgumentException(
+                    "critical block awaits scheduler-owned gate admission and lexical unwind lowering");
+        }
+        if (stmt instanceof Ast.TryCriticalStmt attempted) {
+            CriticalEffectPreflight.verify(attempted.body());
+            CriticalEffectPreflight.verify(attempted.elseBody());
+            throw new IllegalArgumentException(
+                    "try critical requires immediate nonblocking ticket and guarded fallback lowering");
+        }
         // Parse into a dedicated lexical node, but do not authorize execution
         // until RequestHandle provenance, scoped-loan fencing, suspension,
         // cancellation and unwind behavior have all been implemented. This
