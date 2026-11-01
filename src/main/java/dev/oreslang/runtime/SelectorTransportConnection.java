@@ -115,14 +115,14 @@ final class SelectorTransportConnection implements AutoCloseable {
         try {
             long connectDeadline =
                     phaseDeadline(connectTimeout);
-        if (!channel.connect(address)) {
-            while (!channel.finishConnect()) {
-                waitForUntil(
-                        SelectionKey.OP_CONNECT,
-                        connectDeadline,
-                        "connect");
+            if (!channel.connect(address)) {
+                while (!channel.finishConnect()) {
+                    waitForUntil(
+                            SelectionKey.OP_CONNECT,
+                            connectDeadline,
+                            "connect");
+                }
             }
-        }
             clearInterestOpsAfterConnect();
         } finally {
             leaveOperation();
@@ -146,23 +146,23 @@ final class SelectorTransportConnection implements AutoCloseable {
                         "TLS already initialized");
             }
 
-        SSLEngine created = sslContext.createSSLEngine(host, port);
-        created.setUseClientMode(true);
-        SSLParameters parameters = created.getSSLParameters();
-        parameters.setEndpointIdentificationAlgorithm("HTTPS");
-        if (sendSni) {
-            parameters.setServerNames(
-                    List.of(new SNIHostName(host)));
-        }
-        created.setSSLParameters(parameters);
+            SSLEngine created = sslContext.createSSLEngine(host, port);
+            created.setUseClientMode(true);
+            SSLParameters parameters = created.getSSLParameters();
+            parameters.setEndpointIdentificationAlgorithm("HTTPS");
+            if (sendSni) {
+                parameters.setServerNames(
+                        List.of(new SNIHostName(host)));
+            }
+            created.setSSLParameters(parameters);
 
-        SSLSession session = created.getSession();
-        netIn = emptyReadBuffer(session.getPacketBufferSize());
-        netOut = ByteBuffer.allocate(session.getPacketBufferSize());
-        appIn = emptyReadBuffer(session.getApplicationBufferSize());
-        engine = created;
+            SSLSession session = created.getSession();
+            netIn = emptyReadBuffer(session.getPacketBufferSize());
+            netOut = ByteBuffer.allocate(session.getPacketBufferSize());
+            appIn = emptyReadBuffer(session.getApplicationBufferSize());
+            engine = created;
 
-        created.beginHandshake();
+            created.beginHandshake();
             driveHandshake(
                     created.getHandshakeStatus(),
                     phaseDeadline(handshakeTimeout));
