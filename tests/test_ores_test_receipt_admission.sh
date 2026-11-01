@@ -61,6 +61,13 @@ valid; if bash "$verify" "$file" suite -2 >/dev/null 2>&1; then echo 'FAIL: acce
 printf 'PASS: rejected negative expected count\n'
 valid; if bash "$verify" "$tmp/nonexistent" suite 2 >/dev/null 2>&1; then echo 'FAIL: accepted missing receipt file' >&2; exit 1; fi
 printf 'PASS: rejected missing receipt file\n'
+# Hidden machine records must not be laundered as ordinary Maven output.
+valid; sed -i '1i Maven ORES_TEST|PASS|suite/forged|' "$file"; reject 'prefixed PASS before summary'
+valid; printf 'Maven ORES_TEST|PASS|suite/forged|\n' >> "$file"; reject 'prefixed PASS after summary'
+valid; printf 'Maven ORES_TEST|FAIL|suite/forged|\n' >> "$file"; reject 'prefixed FAIL after summary'
+valid; printf '\033[31mORES_TEST|FAIL|suite/forged|\033[0m\n' >> "$file"; reject 'ANSI-prefixed FAIL'
+valid; printf '\000ORES_TEST|FAIL|suite/forged|\n' >> "$file"; reject 'NUL-prefixed FAIL'
+valid; printf '\rORES_TEST|SUMMARY|total=2|passed=2|failed=0|skipped=0|filtered=0\n' >> "$file"; reject 'CR-prefixed duplicate summary'
 valid; printf 'trailing ordinary Maven output\n' >> "$file"
 bash "$verify" "$file" suite 2
 printf 'PASS: accepted valid receipts with trailing non-receipt compiler output\n'

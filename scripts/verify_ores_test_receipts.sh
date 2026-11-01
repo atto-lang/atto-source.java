@@ -11,7 +11,9 @@ LC_ALL=C awk -F '|' -v suite="$2" -v expected="$3" '
     summary = "ORES_TEST|SUMMARY|total=" expected "|passed=" expected "|failed=0|skipped=0|filtered=0"
     prefix = suite "/"
   }
-  /^ORES_TEST/ {
+  # A marker hidden behind Maven text, ANSI/control bytes or whitespace is
+  # not an ordinary log line: reject it rather than silently ignoring it.
+  /^ORES_TEST/ || index($0, "ORES_TEST|") {
     if (saw_summary || $0 ~ /[[:cntrl:]]/) { bad = 1; next }
     if ($0 == summary) { saw_summary = 1; next }
     if (NF != 4 || $1 != "ORES_TEST" || $2 != "PASS" || index($3, prefix) != 1 || length($3) <= length(prefix) || $4 != "") {
