@@ -386,15 +386,35 @@ finite sequence shapes.
 
 ## Bindings
 
-Every local binding is declared as exactly one of:
+Every local binding is declared with a fixed/rebindable permission:
 
-- `const`: compile-time constant; cannot be reassigned.
-- `val`: runtime single-assignment binding; cannot be reassigned.
-- `let`: mutable binding and the only local binding kind that may be reassigned.
+- `const`: fixed readonly local binding; its checked initializer is evaluated
+  eagerly once in lexical order and the binding cannot be reassigned.
+- `val`: runtime single-assignment binding; it cannot be reassigned and keeps
+  its existing referent-mutation permission subject to ownership checks.
+- `let`: rebindable binding and the only local binding kind that may be
+  reassigned.
+
+A proven compile-time-constant value is optimization/type-check metadata, not
+the meaning of the `const` binding keyword. Contexts such as switch/case
+patterns that require a compile-time constant expression check that property
+explicitly.
+
+Primitive type-first locals are immutable by default:
+
+```ores
+int answer = compute();
+bool ready = check_ready();
+```
+
+For the supported scalar subset this has the same fixed readonly binding
+permission as `const int answer = compute();`. Use explicit `let` when
+rebinding is intended.
 
 ```ores
 const max = 10;
-val request_id = process.context_id;
+const request_id = process.context_id;
+val mutable_view = process.mutable_view;
 let retries = 0;
 retries = retries + 1;
 ```
@@ -419,7 +439,7 @@ A bare `_` is a sequence discard pattern: it consumes that array/tuple position 
 [_, _, const final] = (1, 2, 3);
 ```
 
-`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
+`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding, matching standalone local `const` binding semantics; neither spelling by itself requires the initializer value to be known at compile time.
 
 Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
 
@@ -1485,7 +1505,7 @@ Iterator variables are declarations, so every `for ... of ...` header must expli
 
 Bare forms such as `for item of values` are rejected at compile time with `variable used before declared`. `val` is not accepted as a for-of binder; the iterator surface intentionally uses only `const` and `let`.
 
-`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn. It does **not** claim that the element value is a compile-time constant; the ordinary compile-time-constant initializer rule for standalone `const` declarations does not apply to this compiler-initialized slot. `let` creates the same per-iteration slot but permits rebinding that local.
+`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn, the same binding-level immutability used by standalone local `const`. It does **not** claim that the element value is a compile-time constant. `let` creates the same per-iteration slot but permits rebinding that local.
 
 Parentheses may fence the entire iterator header when that improves readability or avoids syntactic ambiguity:
 

@@ -56,6 +56,26 @@ final class ScalarCastInferenceParityTest {
         }) accepts(body);
     }
 
+    @Test void runtimeConstAndTypeFirstShareFixedBindingSemantics() {
+        String accepted = """
+                fnc next(int p): int {
+                  int typed = p + 1;
+                  const inferred = p + 1;
+                  const int annotated = p + 1;
+                  return typed + inferred + annotated;
+                }
+                pub fnc main(): int { return next(13); }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(accepted)));
+        for (String source : new String[] {
+                "fnc f(int p):int{const x=p+1;x=9;return x;}",
+                "fnc f(int p):int{int x=p+1;x=9;return x;}"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
     @Test void typeFirstLocalsAreImmutableByDefault() {
         for (String body : new String[] {
                 "int x = 7; const y = x; const int z = y as int;",
