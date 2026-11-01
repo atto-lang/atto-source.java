@@ -2,7 +2,7 @@
 // A zero process exit is meaningful only after a real Oreslang compiler executes
 // this source. This is not an ORES_TEST receipt suite or a Rust host-only oracle.
 import class TestOutcome from '../stdlib/testing';
-import fnc pass, fail, expect_true, expect_false, expect_equal_bool, expect_equal_int, expect_equal_float, expect_equal_string, expect_not_equal_int, expect_not_equal_string, expect_near_float, check_int_cases from '../stdlib/testing';
+import fnc pass, fail, expect_true, expect_false, expect_equal_bool, expect_equal_int, expect_equal_float, expect_equal_string, expect_not_equal_int, expect_not_equal_string, expect_near_float, escape_machine_field, check_int_cases from '../stdlib/testing';
 
 fnc property_ok(int value): TestOutcome {
   return expect_not_equal_int(value, -1, "unexpected sentinel");
@@ -185,6 +185,22 @@ pub routine main(): void {
   fi
   if escape_machine_field("\t") == escape_machine_field("\\t"); do
     rt fail("raw tab collided with literal backslash-t");
+  fi
+  // Ensure safe and repeated machine fields are encoded deterministically.
+  if escape_machine_field("") != ""; do
+    rt fail("empty machine field changed");
+  fi
+  if escape_machine_field("safe-ASCII_09") != "safe-ASCII_09"; do
+    rt fail("safe machine field changed");
+  fi
+  if escape_machine_field("|") != "\\u007c"; do
+    rt fail("single pipe machine-field encoding changed");
+  fi
+  if escape_machine_field("||") != "\\u007c\\u007c"; do
+    rt fail("repeated pipe machine-field encoding changed");
+  fi
+  if escape_machine_field("\n") != "\\n"; do
+    rt fail("single newline machine-field encoding changed");
   fi
   return;
 }
