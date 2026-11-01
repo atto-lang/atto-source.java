@@ -470,10 +470,29 @@ public final class Ast {
                     throw new IllegalArgumentException(
                             "instance state backing requires at least one private owned field");
                 }
+                if (!genericParameters.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "instance state backing does not admit generic storage before typed layout lowering");
+                }
                 for (FieldDecl field : fields) {
                     if (field.visibility() != Visibility.PRIVATE) {
                         throw new IllegalArgumentException(
                                 "instance state backing rejects public representation field '" + field.name() + "'");
+                    }
+                    // This first verified-ownership target is a closed scalar
+                    // storage shape. A generic, pointer, class, channel, array,
+                    // reference, or inferred field could smuggle shared mutable
+                    // heap reachability through an apparently owned container.
+                    // Broaden only when deep ownership and region retirement
+                    // are represented in the compiler HIR.
+                    TypeRef type = field.type();
+                    if (type == null || !type.arguments().isEmpty() ||
+                            !List.of("int", "bool", "float", "string").contains(type.name()) ||
+                            field.initializer() == null ||
+                            field.bindingKind() != BindingKind.LET) {
+                        throw new IllegalArgumentException(
+                                "instance state backing requires explicitly initialized mutable scalar field '"
+                                        + field.name() + "'; nested/aliased heap state needs typed region lowering");
                     }
                 }
                 for (MethodDecl method : methods) {
