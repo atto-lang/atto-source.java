@@ -3844,6 +3844,9 @@ public final class Parser {
     private Ast.Expr parseMultiplicative() {
         Ast.Expr expr = parseUnary();
         while (match(STAR, SLASH, PERCENT)) {
+            if (previous().type() == PERCENT) {
+                throw error(previous(), "noncanonical '%' source operator; use named Integer.rem/mod");
+            }
             String op = previous().lexeme();
             expr = new Ast.BinaryExpr(op, expr, parseUnary());
         }
