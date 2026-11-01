@@ -1,0 +1,157 @@
+// Native Oreslang harness behavior tests. Nested suites use human output
+// so ORES_TEST machine summaries remain attributable to the outer suite.
+import class TestCase, TestSuite, TestOptions, TestOutcome, RunSummary from "../stdlib/testing";
+import fnc pass, fail, expect_true, run_suite, require_success from "../stdlib/testing";
+
+fnc positive_body(): TestOutcome { return pass(); }
+fnc negative_body(): TestOutcome { return fail("intentionally failing inner case"); }
+
+fnc filter_selects_only_exact_full_path(): TestOutcome {
+  val TestSuite suite = new TestSuite("filter", arr[
+    new TestCase("one", positive_body, false, ""),
+    new TestCase("two", positive_body, false, ""),
+    new TestCase("three", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("filter/two", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 1 && result.passed == 1 && result.filtered == 2,
+    "exact filter must select one case and count other cases as filtered");
+}
+
+fnc filter_does_not_select_prefix_match(): TestOutcome {
+  val TestSuite suite = new TestSuite("filter", arr[
+    new TestCase("one", positive_body, false, ""),
+    new TestCase("one-more", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("filter/on", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 0 && result.passed == 0 && result.filtered == 2,
+    "prefix filter must not silently select more tests");
+}
+
+fnc unfiltered_suite_counts_every_case(): TestOutcome {
+  val TestSuite suite = new TestSuite("filter", arr[
+    new TestCase("one", positive_body, false, ""),
+    new TestCase("two", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 2 && result.passed == 2 && result.filtered == 0,
+    "empty only filter should execute all cases");
+}
+
+fnc skip_does_not_execute_failing_body(): TestOutcome {
+  val TestSuite suite = new TestSuite("skip", arr[
+    new TestCase("failure-must-not-run", negative_body, true, "disabled by test")
+  ]);
+  val TestOptions options = new TestOptions("", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 1 && result.skipped == 1 && result.failed == 0 && result.passed == 0,
+    "skipped failing body was executed or miscounted");
+}
+
+fnc skipped_and_passed_accounted_separately(): TestOutcome {
+  val TestSuite suite = new TestSuite("skip", arr[
+    new TestCase("disabled", negative_body, true, "no guest execution"),
+    new TestCase("enabled", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 2 && result.skipped == 1 && result.passed == 1 && result.failed == 0,
+    "skipped must not count as passed or failed");
+}
+
+fnc all_skipped_suite_has_no_executed_cases(): TestOutcome {
+  val TestSuite suite = new TestSuite("skip", arr[
+    new TestCase("disabled", positive_body, true, "not executed"),
+    new TestCase("also-disabled", negative_body, true, "not executed")
+  ]);
+  val TestOptions options = new TestOptions("", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 2 && result.passed + result.failed == 0 && result.skipped == 2,
+    "all-skipped suite must not fabricate executed cases");
+}
+
+fnc fail_fast_stops_after_first_failing_case(): TestOutcome {
+  val TestSuite suite = new TestSuite("fast", arr[
+    new TestCase("first", positive_body, false, ""),
+    new TestCase("second", negative_body, false, ""),
+    new TestCase("third", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("", true, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 2 && result.passed == 1 && result.failed == 1,
+    "fail-fast must stop immediately after the first failure");
+}
+
+fnc fail_fast_does_not_stop_on_skip(): TestOutcome {
+  val TestSuite suite = new TestSuite("fast", arr[
+    new TestCase("skipped", negative_body, true, "skip"),
+    new TestCase("enabled", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("", true, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 2 && result.skipped == 1 && result.passed == 1 && result.failed == 0,
+    "fail-fast must continue after a skipped case");
+}
+
+fnc non_fail_fast_continues_after_failure(): TestOutcome {
+  val TestSuite suite = new TestSuite("slow", arr[
+    new TestCase("first-failure", negative_body, false, ""),
+    new TestCase("later-success", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 2 && result.failed == 1 && result.passed == 1,
+    "when fail_fast is false, later cases must still run");
+}
+
+fnc filtered_skip_is_not_counted_as_skipped(): TestOutcome {
+  val TestSuite suite = new TestSuite("split", arr[
+    new TestCase("disabled", negative_body, true, "skip"),
+    new TestCase("enabled", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("split/enabled", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 1 && result.filtered == 1 && result.skipped == 0 && result.passed == 1,
+    "filtered cases must not inflate skip counter");
+}
+
+fnc empty_suite_is_not_a_green_receipt(): TestOutcome {
+  val TestSuite suite = new TestSuite("empty", arr[]);
+  val TestOptions options = new TestOptions("", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 0 && result.passed == 0 && result.failed == 0,
+    "empty suite must report zero executed tests");
+}
+
+fnc filtered_all_suite_is_not_a_green_receipt(): TestOutcome {
+  val TestSuite suite = new TestSuite("all", arr[
+    new TestCase("one", positive_body, false, "")
+  ]);
+  val TestOptions options = new TestOptions("all/missing", false, false);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  return expect_true(result.total == 0 && result.filtered == 1 && result.passed == 0,
+    "filtering every case must never credit a pass");
+}
+
+pub routine main(): void {
+  val TestSuite suite = new TestSuite("harness-meta-batch4", arr[
+    new TestCase("filter_selects_only_exact_full_path", filter_selects_only_exact_full_path, false, ""),
+    new TestCase("filter_does_not_select_prefix_match", filter_does_not_select_prefix_match, false, ""),
+    new TestCase("unfiltered_suite_counts_every_case", unfiltered_suite_counts_every_case, false, ""),
+    new TestCase("skip_does_not_execute_failing_body", skip_does_not_execute_failing_body, false, ""),
+    new TestCase("skipped_and_passed_accounted_separately", skipped_and_passed_accounted_separately, false, ""),
+    new TestCase("all_skipped_suite_has_no_executed_cases", all_skipped_suite_has_no_executed_cases, false, ""),
+    new TestCase("fail_fast_stops_after_first_failing_case", fail_fast_stops_after_first_failing_case, false, ""),
+    new TestCase("fail_fast_does_not_stop_on_skip", fail_fast_does_not_stop_on_skip, false, ""),
+    new TestCase("non_fail_fast_continues_after_failure", non_fail_fast_continues_after_failure, false, ""),
+    new TestCase("filtered_skip_is_not_counted_as_skipped", filtered_skip_is_not_counted_as_skipped, false, ""),
+    new TestCase("empty_suite_is_not_a_green_receipt", empty_suite_is_not_a_green_receipt, false, ""),
+    new TestCase("filtered_all_suite_is_not_a_green_receipt", filtered_all_suite_is_not_a_green_receipt, false, "")
+  ]);
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow options);
+  require_success(rt borrow result);
+  return;
+}
