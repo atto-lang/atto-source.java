@@ -338,7 +338,7 @@ final class HeapContainerBorrowParityTest {
     @Test
     void vectorParameterCapacityCannotBeBypassedByUnboundedCaller() throws Exception {
         String program = """
-                fnc append_beyond_limit(Vector<max_capacity=1>[int] values): void {
+                fnc append_beyond_limit(Vector<max_capacity=1>[int] mut values): void {
                   values.push(22);
                   return;
                 }
