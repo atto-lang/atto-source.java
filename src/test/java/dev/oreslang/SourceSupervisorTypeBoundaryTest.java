@@ -84,6 +84,34 @@ final class SourceSupervisorTypeBoundaryTest {
     }
 
     @Test
+    void controlHooksCannotSuspendOrBecomeAsync() {
+        // A supervisor CONTROL turn is synchronous and bounded; no
+        // scheduling/suspension modifier may be silently accepted as a hook.
+        for (String modifier : new String[] { "async", "suspends", "async suspends" }) {
+            for (String hook : new String[] {
+                    "on_panic(f: Failure)", "on_start()", "tear_down()"
+            }) {
+                String source = "define supervisor S1 as " + HOOK + " "
+                        + modifier + " " + hook + ": void { return; } end";
+                IllegalArgumentException denied = assertThrows(
+                        IllegalArgumentException.class, () -> Parser.parse(source), source);
+                assertTrue(denied.getMessage().contains("supervisor hooks cannot use"), source);
+            }
+        }
+    }
+
+    @Test
+    void controlHookReturnTypeMustBeUnparameterizedVoid() {
+        for (String source : new String[] {
+                "define supervisor S1 as on_panic(f: Failure): void<int> { return; } end",
+                "define supervisor S1 as " + HOOK
+                        + " on_start(): void<int> { return; } end"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
     void unknownHookAnnotationsCannotBeImplicitAuthority() {
         String source = "define supervisor S1 as "
                 + "@GrantControl " + HOOK + " end";
