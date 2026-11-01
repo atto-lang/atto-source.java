@@ -287,6 +287,45 @@ class RunnerAdmissionTriageContract(unittest.TestCase):
         with self.assertRaises(triage.TriageError):
             triage.inspect(repo, 17, self.sha, fetch, pr_number=9)
 
+    def test_non_pr_inspection_rejects_unbound_job_identity(self):
+        repo = "owner/repo"
+        run_path = f"repos/{repo}/actions/runs/17"
+        page_path = f"{run_path}/attempts/2/jobs?per_page=100"
+        mutations = {
+            "missing_run_id": lambda job: job.pop("run_id"),
+            "wrong_run_id": lambda job: job.update(run_id=18),
+            "missing_head_sha": lambda job: job.pop("head_sha"),
+            "wrong_head_sha": lambda job: job.update(head_sha="b" * 40),
+            "wrong_attempt": lambda job: job.update(run_attempt=3),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                job = copy.deepcopy(self.job)
+                mutate(job)
+                def fetch(path):
+                    if path == run_path:
+                        return copy.deepcopy(self.run)
+                    if path == page_path:
+                        return {"total_count": 1, "jobs": [job]}
+                    raise AssertionError("unexpected GET path: " + path)
+                with self.assertRaises(triage.TriageError):
+                    triage.inspect(repo, 17, self.sha, fetch)
+
+    def test_non_pr_inspection_binds_valid_job_provenance(self):
+        repo = "owner/repo"
+        run_path = f"repos/{repo}/actions/runs/17"
+        page_path = f"{run_path}/attempts/2/jobs?per_page=100"
+        def fetch(path):
+            if path == run_path:
+                return copy.deepcopy(self.run)
+            if path == page_path:
+                return {"total_count": 1, "jobs": [copy.deepcopy(self.job)]}
+            raise AssertionError("unexpected GET path: " + path)
+        report = triage.inspect(repo, 17, self.sha, fetch)
+        self.assertTrue(report["job_provenance_verified"])
+        self.assertFalse(report["pr_head_verified"])
+        self.assertEqual(report["category"], "observed_no_step_failure")
+
     def test_gh_access_is_get_only(self):
         with patch.object(triage.subprocess, "run",
                           return_value=SimpleNamespace(returncode=0, stdout='{"ok": true}')) as called:

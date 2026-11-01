@@ -332,16 +332,16 @@ def inspect(repo, run_id, expected_sha, fetch=get_json, pr_number=None):
     if not _positive_int(run.get("run_attempt")):
         raise TriageError("run attempt unavailable or invalid")
     jobs = _fetch_jobs_pages(repo, run_id, run["run_attempt"], fetch)
-    if pr_path:
-        # Attempt is established by the *scoped URL*, not by an optional
-        # run_attempt property in individual GitHub job responses.
-        # Still require each job's independently readable ID and SHA.
-        for job in jobs:
-            if (job.get("run_id") != run_id or
-                    job.get("head_sha") != expected_sha or
-                    (job.get("run_attempt") is not None and
-                     job.get("run_attempt") != run["run_attempt"])):
-                raise TriageError("job exact-head/attempt provenance unverified")
+    # The attempt-scoped jobs URL is necessary but not sufficient: require
+    # every returned job to bind to the requested run and exact source head,
+    # even when the caller did not supply --pr. Otherwise a mismatched or
+    # incomplete job response could be credited as executed CI evidence.
+    for job in jobs:
+        if (job.get("run_id") != run_id or
+                job.get("head_sha") != expected_sha or
+                (job.get("run_attempt") is not None and
+                 job.get("run_attempt") != run["run_attempt"])):
+            raise TriageError("job exact-head/attempt provenance unverified")
     final_run = fetch(run_path)
     # The latest attempt can change while we page through jobs.
     identity_fields = ("id", "head_sha", "run_attempt", "status", "conclusion")
@@ -353,7 +353,7 @@ def inspect(repo, run_id, expected_sha, fetch=get_json, pr_number=None):
     return {"repository": repo, "run_id": run_id, "head_sha": expected_sha,
             "run_attempt": run["run_attempt"], "pr_number": pr_number,
             "pr_head_verified": bool(pr_path),
-            "job_provenance_verified": bool(pr_path and jobs),
+            "job_provenance_verified": bool(jobs),
             "conclusion": run.get("conclusion"), **outcome}
 
 
