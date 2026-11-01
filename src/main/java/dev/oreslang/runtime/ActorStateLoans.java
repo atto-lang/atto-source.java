@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -38,6 +39,37 @@ public final class ActorStateLoans implements AutoCloseable {
 
     public int activeCount() {
         synchronized (monitor) { return active == null ? 0 : 1; }
+    }
+
+    /**
+     * Immediate, non-queueing admission for a try-critical region. A contended
+     * guard returns empty without adding a waiter, retaining handler identity,
+     * or bypassing an earlier FIFO waiter. Logical ownership follows the
+     * supplied handler identity rather than the current carrier thread.
+     *
+     * This is an internal runtime primitive, NOT source-level critical{}
+     * lowering. The compiler must still prove no suspension inside its body.
+     */
+    public Optional<ExclusiveLoan> tryAcquire(Object handlerIdentity) {
+        Objects.requireNonNull(handlerIdentity, "handlerIdentity");
+        synchronized (monitor) {
+            if (closed) throw new IllegalStateException("actor state loans closed");
+            if (owners.contains(handlerIdentity)) {
+                throw new IllegalStateException(
+                        "handler already holds or awaits a state loan");
+            }
+            if (active != null || !pending.isEmpty()) return Optional.empty();
+            // Never reserve an identity or enqueue on the losing path.
+            if (nextEpoch == Long.MAX_VALUE)
+                throw new IllegalStateException("actor state loan epochs exhausted");
+            owners.add(handlerIdentity);
+            try {
+                return Optional.of(createLocked(handlerIdentity));
+            } catch (RuntimeException | Error failure) {
+                owners.remove(handlerIdentity);
+                throw failure;
+            }
+        }
     }
 
     /**
