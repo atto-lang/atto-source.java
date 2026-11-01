@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -15,237 +17,84 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class SourceActorPubSubExecutionTest {
     @Test
     void sharedActorSubscribesAndReceivesTypedInMemoryPublication() throws Exception {
-        String program = """
-                define actor Subscriber as
-                  suspends receive(ActorMail<String> mail): void {
-                    val group = actor.group("payments");
-                    val topic = group.topic<String>("payment.completed");
-                    val subscription = topic.subscribe();
-
-                    self.send("subscribed");
-                    val value = await subscription.next();
-                    self.send(value);
-
-                    subscription.close();
-                    self.end();
-                    return;
-                  }
-                end
-
-                pub async routine main(): void {
-                  val group = actor.group("payments");
-                  val topic = group.topic<String>(
-                    "payment.completed",
-                    "reliable",
-                    4
-                  );
-
-                  val subscriber = spawn Subscriber();
-                  await subscriber.get_ready();
-                  group.join(subscriber);
-
-                  subscriber.send("start");
-
-                  val ready = (await subscriber.outputs.next()).value.unwrap();
-                  stdio.stdout.write(ready.value);
-                  stdio.stdout.write("|");
-
-                  await topic.publish("p-1");
-
-                  val received = (await subscriber.outputs.next()).value.unwrap();
-                  stdio.stdout.write(received.value);
-
-                  await subscriber.get_done();
-                  group.leave(subscriber);
-                  group.close();
-                  return;
-                }
-                """;
-
         assertEquals(
                 "subscribed|p-1",
-                run(program, "source-actor-pubsub-v1.ores"));
+                run(fixture("actor-pubsub-v1.ores"), "source-actor-pubsub-v1.ores"));
     }
 
     @Test
     void actorMayJoinMultipleGroupsAndLeavingOnePreservesTheOther() throws Exception {
-        String program = """
-                define actor MultiSubscriber as
-                  suspends receive(ActorMail<String> mail): void {
-                    val group = actor.group("room-b");
-                    val topic = group.topic<String>("events");
-                    val subscription = topic.subscribe();
-
-                    self.send("ready-b");
-                    val value = await subscription.next();
-                    self.send(value);
-
-                    subscription.close();
-                    self.end();
-                    return;
-                  }
-                end
-
-                pub async routine main(): void {
-                  val a = actor.group("room-a");
-                  val b = actor.group("room-b");
-                  a.topic<String>("events", "latest", 1);
-                  val topicB = b.topic<String>("events", "reliable", 4);
-
-                  val subscriber = spawn MultiSubscriber();
-                  await subscriber.get_ready();
-
-                  a.join(subscriber);
-                  b.join(subscriber);
-                  b.join(subscriber);
-                  a.leave(subscriber);
-
-                  subscriber.send("start");
-                  val ready = (await subscriber.outputs.next()).value.unwrap();
-                  stdio.stdout.write(ready.value);
-                  stdio.stdout.write("|");
-
-                  await topicB.publish("b-still-live");
-                  val value = (await subscriber.outputs.next()).value.unwrap();
-                  stdio.stdout.write(value.value);
-
-                  await subscriber.get_done();
-                  b.leave(subscriber);
-                  a.close();
-                  b.close();
-                  return;
-                }
-                """;
-
         assertEquals(
                 "ready-b|b-still-live",
-                run(program, "source-actor-pubsub-multi-group.ores"));
+                run(
+                        fixture("actor-pubsub-multigroup-v1.ores"),
+                        "source-actor-pubsub-multi-group.ores"));
     }
 
     @Test
-    void topicPayloadTypeMismatchFailsBeforeExecution() {
-        String program = """
-                pub async routine main(): void {
-                  val group = actor.group("typed");
-                  val topic = group.topic<String>("events", "reliable", 4);
-                  await topic.publish(42);
-                  return;
-                }
-                """;
-
+    void topicPayloadTypeMismatchFailsBeforeExecution() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
-                () -> run(program, "source-actor-pubsub-type-mismatch.ores"));
+                () -> run(
+                        fixture("actor-pubsub-reject-payload-type.ores"),
+                        "source-actor-pubsub-type-mismatch.ores"));
         assertTrue(error.getMessage().contains("Topic.publish value"), error.getMessage());
     }
 
     @Test
-    void actorCannotDefineTopicOrGrantMembershipAuthority() {
-        String program = """
-                define actor BadAuthority as
-                  receive(ActorMail<String> mail): void {
-                    val group = actor.group("authority");
-                    group.topic<String>("new-topic", "reliable", 4);
-                    self.end();
-                    return;
-                  }
-                end
-
-                pub async routine main(): void {
-                  val group = actor.group("authority");
-                  val actorRef = spawn BadAuthority();
-                  await actorRef.get_ready();
-                  group.join(actorRef);
-                  actorRef.send("run");
-                  await actorRef.get_done();
-                  group.close();
-                  return;
-                }
-                """;
-
+    void actorCannotDefineTopicOrGrantMembershipAuthority() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
-                () -> run(program, "source-pubsub-actor-authority-rejected.ores"));
+                () -> run(
+                        fixture("actor-pubsub-reject-actor-authority.ores"),
+                        "source-pubsub-actor-authority-rejected.ores"));
         assertTrue(
-                error.getMessage().contains("actor code may resolve an existing Topic<T> but cannot define one"),
+                error.getMessage().contains(
+                        "actor code may resolve an existing Topic<T> but cannot define one"),
                 error.getMessage());
     }
 
     @Test
-    void privateActorCannotUseZeroCopyTopicSubscription() {
-        String program = """
-                define isoactor PrivateSubscriber as
-                  receive(ActorMail<String> mail): void {
-                    val group = actor.group("private-events");
-                    val topic = group.topic<String>("events");
-                    val subscription = topic.subscribe();
-                    self.end();
-                    return;
-                  }
-                end
-
-                pub async routine main(): void {
-                  val group = actor.group("private-events");
-                  group.topic<String>("events", "reliable", 4);
-                  val subscriber = spawn PrivateSubscriber();
-                  await subscriber.get_ready();
-                  group.join(subscriber);
-                  subscriber.send("start");
-                  await subscriber.get_done();
-                  group.close();
-                  return;
-                }
-                """;
-
+    void privateActorCannotUseZeroCopyTopicSubscription() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
-                () -> run(program, "source-private-pubsub-rejected.ores"));
+                () -> run(
+                        fixture("actor-pubsub-reject-private-subscribe.ores"),
+                        "source-private-pubsub-rejected.ores"));
         assertTrue(
-                error.getMessage().contains("Topic.subscribe currently requires a shared actor"),
+                error.getMessage().contains(
+                        "Topic.subscribe currently requires a shared actor"),
                 error.getMessage());
     }
 
     @Test
-    void pubSubHandlesCannotCrossActorMailboxBoundary() {
-        String program = """
-                define actor BadReceiver as
-                  receive(ActorMail<Topic<String>> mail): void {
-                    self.end();
-                    return;
-                  }
-                end
-
-                pub routine main(): void {
-                  return;
-                }
-                """;
-
+    void pubSubHandlesCannotCrossActorMailboxBoundary() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
-                () -> run(program, "source-pubsub-mailbox-capability-rejected.ores"));
+                () -> run(
+                        fixture("actor-pubsub-reject-mailbox-capability.ores"),
+                        "source-pubsub-mailbox-capability-rejected.ores"));
         assertTrue(
                 error.getMessage().contains("cannot use Topic across an actor boundary"),
                 error.getMessage());
     }
 
     @Test
-    void pubSubHandlesCannotCrossAsyncTaskBoundary() {
-        String program = """
-                async fnc bad(Topic<String> topic): void {
-                  return;
-                }
-
-                pub routine main(): void {
-                  return;
-                }
-                """;
-
+    void pubSubHandlesCannotCrossAsyncTaskBoundary() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
-                () -> run(program, "source-pubsub-async-capability-rejected.ores"));
+                () -> run(
+                        fixture("actor-pubsub-reject-async-capability.ores"),
+                        "source-pubsub-async-capability-rejected.ores"));
         assertTrue(
                 error.getMessage().contains("must be concrete owned task-safe data"),
                 error.getMessage());
+    }
+
+    private static String fixture(String name) throws Exception {
+        return Files.readString(
+                Path.of("contracts", "v1", "fixtures", name),
+                StandardCharsets.UTF_8);
     }
 
     private static String run(String sourceText, String name) throws Exception {
