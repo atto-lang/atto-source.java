@@ -1,0 +1,29 @@
+// First Java/Graal owned-state injection slice.
+// Not shared state and NOT critical[read/write] / actor-state lowering.
+@Inject(MutableStateContainer())
+define class Counter as
+  state {
+    count: int = 0;
+  }
+
+  pub increment(mut self Counter)(): void {
+    self.count = self.count + 1;
+    return;
+  }
+
+  pub get_count(): int {
+    return self.count;
+  }
+end
+
+pub routine main(): void {
+  let mut Counter first = new Counter();
+  let mut Counter second = new Counter();
+  first.increment();
+  second.increment();
+  second.increment();
+  stdio.stdout.write(first.get_count());
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.get_count());
+  return;
+}
