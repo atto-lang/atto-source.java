@@ -9330,6 +9330,14 @@ public final class TypeChecker {
                 }
             }
         }
+        Ast.TypeRef inlineCapacity = metadata.get("inline_capacity");
+        Ast.TypeRef maxCapacity = metadata.get("max_capacity");
+        if (inlineCapacity != null && maxCapacity != null
+                && inlineCapacity.intLiteralValue() > maxCapacity.intLiteralValue()) {
+            throw new IllegalArgumentException(collectionName + " inline_capacity="
+                    + inlineCapacity.intLiteralValue()
+                    + " exceeds max_capacity=" + maxCapacity.intLiteralValue());
+        }
     }
 
     private void validateFixedExtentMetadata(
@@ -9379,7 +9387,14 @@ public final class TypeChecker {
         if (!Set.of("Array", "List", "Vector", "Slice", "FixedArray", "FixedList").contains(name)) return;
         List<Ast.TypeRef> dimensions = sequenceShapeDimensions(declared);
         if (dimensions.isEmpty() || dimensions.size() > 1) return;
-        Integer declaredRank = metadataRank(namedTypeParameters(declared));
+        Map<String, Ast.TypeRef> metadata = namedTypeParameters(declared);
+        Ast.TypeRef maxCapacity = metadata.get("max_capacity");
+        if (maxCapacity != null && literal.elements().size() > maxCapacity.intLiteralValue()) {
+            throw new IllegalArgumentException(name + " literal length "
+                    + literal.elements().size() + " exceeds max_capacity="
+                    + maxCapacity.intLiteralValue());
+        }
+        Integer declaredRank = metadataRank(metadata);
         if (declaredRank != null && declaredRank > 1) {
             // Nested list literals are checked against the fully resolved rank-N
             // type by the ordinary assignability pass below. Phase-by-phase
