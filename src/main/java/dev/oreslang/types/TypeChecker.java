@@ -9386,7 +9386,9 @@ public final class TypeChecker {
         String name = declared.name();
         if (!Set.of("Array", "List", "Vector", "Slice", "FixedArray", "FixedList").contains(name)) return;
         List<Ast.TypeRef> dimensions = sequenceShapeDimensions(declared);
-        if (dimensions.isEmpty() || dimensions.size() > 1) return;
+        // The initializer quota applies to both canonical Vector[T] and
+        // legacy Vector<T> spelling; neither may bypass max_capacity by
+        // changing sequence-shape syntax or dimensionality.
         Map<String, Ast.TypeRef> metadata = namedTypeParameters(declared);
         Ast.TypeRef maxCapacity = metadata.get("max_capacity");
         if (maxCapacity != null && literal.elements().size() > maxCapacity.intLiteralValue()) {
@@ -9394,6 +9396,7 @@ public final class TypeChecker {
                     + literal.elements().size() + " exceeds max_capacity="
                     + maxCapacity.intLiteralValue());
         }
+        if (dimensions.isEmpty() || dimensions.size() > 1) return;
         Integer declaredRank = metadataRank(metadata);
         if (declaredRank != null && declaredRank > 1) {
             // Nested list literals are checked against the fully resolved rank-N
