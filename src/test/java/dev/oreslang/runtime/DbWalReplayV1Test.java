@@ -72,6 +72,20 @@ final class DbWalReplayV1Test {
                         "a malformed incomplete header must fail: " + field);
                 assertEquals(88, file.size(), "replay is always read-only");
             }
+            // Each partially present u32 identity/sequence byte MUST be
+            // validated as soon as its prefix appears. Full-header-only
+            // negatives would otherwise miss this early tail admission bug.
+            for (int position = 6; position <= 17; position++) {
+                byte[] damaged = c.clone();
+                damaged[position] ^= 1;
+                int prefix = position + 1;
+                file.truncate(62);
+                file.write(ByteBuffer.wrap(damaged, 0, prefix), 62);
+                assertThrows(IOException.class,
+                        () -> DbWalReplayV1.scan(file, 7, 4),
+                        "partially present identity/sequence byte " + position);
+                assertEquals(62 + prefix, file.size());
+            }
         }
     }
 
