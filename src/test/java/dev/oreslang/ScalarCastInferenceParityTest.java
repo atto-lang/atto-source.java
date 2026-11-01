@@ -89,6 +89,8 @@ final class ScalarCastInferenceParityTest {
                 "int x = 7; x = 8;",
                 "bool flag = true; flag = false;",
                 "string text = \"a\"; text = \"b\";",
+                "int x = 7; rt mut borrow x;",
+                "bool flag = true; rt mut borrow flag;",
                 "int x = true;",
                 "bool flag = 7;",
                 "string text = 7;"
