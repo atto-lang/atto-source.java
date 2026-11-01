@@ -264,6 +264,35 @@ final class ScalarCastInferenceParityTest {
         assertTrue(printed.contains("42"), printed);
     }
 
+    @Test void exactFiveBackendCheckedCastSourcesMatchGitBlobs() throws Exception {
+        // Compile the identical UTF-8 Oreslang source used by LLVM, Wasm,
+        // Cranelift, and .NET. Java typecheck alone is not guest evidence.
+        String[][] cases = {
+                {"portable-checked-cast-positive-v2.ores",
+                        "1a80e07da1289c87d04454866883f4e06cfc8d77", "accept"},
+                {"portable-checked-cast-negative-v2.ores",
+                        "ecc4ccea80f016243e38f351df60cfad9eb6e136", "reject"}
+        };
+        for (String[] item : cases) {
+            Path sourcePath = Path.of("contracts", "v1", item[0]);
+            assertTrue(Files.isRegularFile(sourcePath), "missing native guest " + item[0]);
+            byte[] bytes = Files.readAllBytes(sourcePath);
+            assertTrue(bytes.length > 0 && bytes.length < 1024, item[0]);
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            sha1.update(("blob " + bytes.length + "\0").getBytes(StandardCharsets.UTF_8));
+            sha1.update(bytes);
+            assertEquals(item[1], HexFormat.of().formatHex(sha1.digest()),
+                    "source bytes diverged from other backends: " + item[0]);
+            String nativeOreslang = new String(bytes, StandardCharsets.UTF_8);
+            if ("accept".equals(item[2])) {
+                assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(nativeOreslang)));
+            } else {
+                assertThrows(IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse(nativeOreslang)));
+            }
+        }
+    }
+
     @Test void byteIdenticalFiveBackendFixtureTypechecks() throws Exception {
         String source = Files.readString(
                 Path.of("tests", "scalar-cast-inference-five-backend.ores"),
