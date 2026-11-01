@@ -7,7 +7,10 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -188,6 +191,36 @@ final class ScalarCastInferenceParityTest {
                 "const x = (7 as int) as? int; const int wrong = x;",
                 "const x = (7 as int) + true;"
         }) rejects(body);
+    }
+
+    @Test void pinnedFiveBackendCastFixturesAreByteIdenticalAndTypechecked() throws Exception {
+        // Source bytes, not a backend-specific reformatting, are shared with
+        // LLVM/Wasm/.NET/Cranelift candidates 45–49. This checks Java's
+        // compiler frontend only; it is NOT five-backend guest execution.
+        String[][] cases = {
+                {"45-cast-int-literal.ores", "69cecd231d32bf70ea36424e59c932861d01fe44"},
+                {"46-chained-cast-int.ores", "b088dd3f5e3114be4affbb4935582b58f010d75f"},
+                {"47-grouped-cast-multiply.ores", "9ebc3f7bc230557fe2f2639172883bb2f4589464"},
+                {"48-readonly-local-cast.ores", "87d0773504e0d22fc3cf1ee76755b36a2fc415c6"},
+                {"49-const-typed-identity.ores", "bff7c6070008c5c6a8b3316e8a289f93d3f8c5b3"}
+        };
+        for (String[] testCase : cases) {
+            String filename = testCase[0];
+            byte[] bytes;
+            try (InputStream resource =
+                         ScalarCastInferenceParityTest.class.getResourceAsStream("/parity/" + filename)) {
+                assertNotNull(resource, "missing native Oreslang guest: " + filename);
+                bytes = resource.readAllBytes();
+            }
+            assertTrue(bytes.length > 0 && bytes.length < 8192, filename);
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            sha1.update(("blob " + bytes.length + "\0").getBytes(StandardCharsets.UTF_8));
+            sha1.update(bytes);
+            assertEquals(testCase[1], HexFormat.of().formatHex(sha1.digest()),
+                    "Git blob drift for shared native guest " + filename);
+            String oreslang = new String(bytes, StandardCharsets.UTF_8);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(oreslang)), filename);
+        }
     }
 
     @Test void bothFormsProduceTheSameGuestValue() throws Exception {
