@@ -37,6 +37,15 @@ public final class SupervisorStopOnlyControlProof {
         check(latch.await(6, TimeUnit.SECONDS), reason);
     }
 
+    private static void awaitState(java.util.function.BooleanSupplier state, String reason)
+            throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
+        while (!state.getAsBoolean() && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        check(state.getAsBoolean(), reason);
+    }
+
     /**
      * Replayed scheduler tasks must not grant an extra decision. The same
      * immutable notice can be delivered as two independent CONTROL turns,
@@ -133,6 +142,8 @@ public final class SupervisorStopOnlyControlProof {
             foreign.join(6000);
             check(!foreign.isAlive(), "foreign acknowledgment stalled");
             await(committed, "CONTROL continuation did not commit host receipt");
+            awaitState(() -> process.resolved() == 1,
+                    "acknowledged STOP not yet recorded as resolved");
             check(committingThread.get() != completingThread.get(),
                     "foreign completion thread executed CONTROL finalization");
             check(effects.get() == 1 && commits.get() == 1 && process.resolved() == 1,
@@ -170,6 +181,8 @@ public final class SupervisorStopOnlyControlProof {
             await(invoked, "host STOP did not start");
             ack.completeExceptionally(new IllegalStateException("ambiguous host STOP"));
             await(classified, "failed host STOP not classified on CONTROL");
+            awaitState(() -> process.failure().isPresent(),
+                    "ambiguous host effect did not transition to FAILED");
             workers.submit(() -> { }).get(6, TimeUnit.SECONDS);
             check(effects.get() == 1 && failures.get() == 1 && successes.get() == 0,
                     "ambiguous STOP was retried or acknowledged");
