@@ -135,7 +135,7 @@ final class ActorHierarchyMlAdmissionTest {
             source = input.readAllBytes();
         }
         ByteArrayOutputStream blob = new ByteArrayOutputStream();
-        blob.write(("blob " + source.length + "\\0").getBytes(StandardCharsets.US_ASCII));
+        blob.write(("blob " + source.length + "\0").getBytes(StandardCharsets.US_ASCII));
         blob.write(source);
         assertEquals("c49780b4b42251db20ae9ac864eb8606bf7da922",
                 HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1")
