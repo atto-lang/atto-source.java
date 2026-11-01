@@ -119,6 +119,49 @@ final class StateBackedOwnedInstanceV1Test {
     }
 
     @Test
+    void readonlyBorrowCannotInvokeExclusiveMutableOperation() {
+        String source = """
+                @StateBacked(MutableStateContainer(scope = #instance))
+                define class Inventory as
+                    let int available = 10;
+                    pub reserve(mut self Inventory)(int amount): bool {
+                        self.available = self.available - amount;
+                        return true;
+                    }
+                end
+                fnc invalid(borrow Inventory state): void {
+                    state.reserve(1);
+                    return;
+                }
+                """;
+        Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.analyze(parsed));
+        assertTrue(denied.getMessage().toLowerCase()
+                .matches("(?s).*(mutab|borrow|receiver).*"), denied::getMessage);
+    }
+
+    @Test
+    void moveOnlyBackingCannotBeImplicitlyShared() {
+        String source = """
+                @StateBacked(MutableStateContainer(scope = #instance))
+                define class Inventory as
+                    let int available = 10;
+                    pub read(): int { return self.available; }
+                end
+                pub fnc main(): int {
+                    let mut Inventory state = new Inventory();
+                    rt share state;
+                    return 0;
+                }
+                """;
+        Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.analyze(parsed));
+        assertTrue(denied.getMessage().contains("rt share"), denied::getMessage);
+    }
+
+    @Test
     void stateBackingRejectsReferenceReachabilityAndOpaqueFieldStorage() {
         for (Ast.TypeRef unsafe : new Ast.TypeRef[]{
                 Ast.TypeRef.simple("Pointer"),
