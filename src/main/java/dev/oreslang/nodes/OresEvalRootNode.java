@@ -5057,6 +5057,27 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (ActorRuntime.inActorExecution() && isActorIoOutWriteCall(call)) {
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t,
+                                        actorIoOutWrite(values),
+                                        null);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -7125,6 +7146,23 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(values);
         }
 
+        private static boolean isActorIoOutWriteCall(Ast.CallExpr call) {
+            return call.callee() instanceof Ast.MemberExpr ioWrite
+                    && ioWrite.member().equals("write")
+                    && ioWrite.receiver() instanceof Ast.MemberExpr ioOut
+                    && ioOut.member().equals("out")
+                    && ioOut.receiver() instanceof Ast.NameExpr ioName
+                    && ioName.name().equals("io");
+        }
+
+        private Object actorIoOutWrite(List<Object> args) {
+            if (!ActorRuntime.inActorExecution()) {
+                throw new SecurityException(
+                        "io.out.write requires an active actor execution context");
+            }
+            return new ActorIoOutFacade(context).write(args);
+        }
+
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
             return booleanIntrinsicName(call, env) != null;
         }
@@ -7270,6 +7308,15 @@ public final class OresEvalRootNode extends RootNode {
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
+                if (ActorRuntime.inActorExecution() && name.name().equals("io")) {
+                    return new ActorIoFacade(context);
+                }
+                if (ActorRuntime.inActorExecution()
+                        && (name.name().equals("stdio") || name.name().equals("print"))) {
+                    throw new SecurityException(
+                            name.name()
+                                    + " is process-level I/O and is unavailable inside actors; use io.*");
+                }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
@@ -7537,6 +7584,9 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (ActorRuntime.inActorExecution() && isActorIoOutWriteCall(call)) {
+                    return actorIoOutWrite(evaluateArguments(call.arguments(), env));
+                }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
@@ -7765,6 +7815,28 @@ public final class OresEvalRootNode extends RootNode {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host object member " + name);
                 return hostMember(host.value(), "host object", name);
+            }
+            if (receiver instanceof ActorIoFacade io) {
+                return switch (name) {
+                    case "out" -> new ActorIoOutFacade(io.context());
+                    case "in", "err", "events", "meta" ->
+                            new ReservedActorIoChannel(name);
+                    default -> throw new IllegalArgumentException(
+                            "unknown actor io member " + name);
+                };
+            }
+            if (receiver instanceof ActorIoOutFacade) {
+                if (name.equals("write")) {
+                    throw new IllegalArgumentException(
+                            "io.out.write is an actor execution intrinsic; invoke it directly");
+                }
+                throw new IllegalArgumentException(
+                        "unknown io.out member " + name);
+            }
+            if (receiver instanceof ReservedActorIoChannel reserved) {
+                throw new IllegalStateException(
+                        "actor-local io." + reserved.name()
+                                + " is reserved but not implemented on this backend yet");
             }
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
@@ -11346,6 +11418,35 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object has(List<Object> args) {
             return NativeIo.envHas(context, requireStringArg(args, "env.has"));
+        }
+    }
+
+    /**
+     * Implicit actor-local I/O execution capability. It is not a field on self,
+     * is never process stdio authority, and cannot be captured as an ordinary
+     * function/capability value.
+     */
+    private record ActorIoFacade(OresContext context) { }
+
+    private record ActorIoOutFacade(OresContext context) {
+        private Object write(List<Object> args) {
+            requireOne(args, "io.out.write");
+            try {
+                context.actors().emitCurrentActorOutput(args.getFirst());
+                // V1 acknowledges bounded logical admission. It does not mean
+                // an OS descriptor was written/flushed or durable storage committed.
+                return OresFuture.completed(null);
+            } catch (RuntimeException failure) {
+                // Operational admission/lifecycle failure belongs to the
+                // async result, rather than escaping before source can await it.
+                return OresFuture.failed(failure);
+            }
+        }
+    }
+
+    private record ReservedActorIoChannel(String name) {
+        private ReservedActorIoChannel {
+            Objects.requireNonNull(name, "actor io channel");
         }
     }
 
