@@ -151,6 +151,35 @@ public final class ActorEventBus implements AutoCloseable {
             long dropped,
             long coalesced) { }
 
+    /**
+     * Typed host/runtime facade that mirrors the intended source-level Topic<T>
+     * abstraction. It carries no lifecycle authority and delegates all
+     * membership, isolation, bounded-admission, and teardown checks to this bus.
+     */
+    public final class Topic<T> {
+        private final String name;
+        private final DeliveryPolicy policy;
+        private final int capacity;
+
+        private Topic(String name, DeliveryPolicy policy, int capacity) {
+            this.name = Objects.requireNonNull(name, "name");
+            this.policy = Objects.requireNonNull(policy, "policy");
+            this.capacity = capacity;
+        }
+
+        public String name() { return name; }
+        public DeliveryPolicy policy() { return policy; }
+        public int capacity() { return capacity; }
+
+        public Subscription<T> subscribe() {
+            return ActorEventBus.this.subscribe(name);
+        }
+
+        public PublishReceipt publish(T value) {
+            return ActorEventBus.this.publish(name, value);
+        }
+    }
+
     private final ActorRuntime runtime;
     private final ActorRuntime.ActorGroup group;
     private final Map<String, TopicState> topics = new ConcurrentHashMap<>();
@@ -176,6 +205,23 @@ public final class ActorEventBus implements AutoCloseable {
                 .map(TopicState::info)
                 .sorted((left, right) -> left.name().compareTo(right.name()))
                 .toList();
+    }
+
+    /**
+     * Define (idempotently) and return a typed topic facade. Topic identity is
+     * still group-local and name-based at the runtime boundary; T is the
+     * source/compiler type carried by the facade.
+     */
+    public <T> Topic<T> topic(String name, DeliveryPolicy policy, int capacity) {
+        defineTopic(name, policy, capacity);
+        return new Topic<>(normalizeTopicName(name), policy, capacity);
+    }
+
+    /** Return a typed facade for an already-defined topic. */
+    public <T> Topic<T> topic(String name) {
+        requireOpen();
+        TopicState state = requireTopic(name);
+        return new Topic<>(state.name, state.policy, state.capacity);
     }
 
     public void defineTopic(String name, DeliveryPolicy policy, int capacity) {
