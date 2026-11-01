@@ -299,4 +299,29 @@ final class TcpPoolLeaseLedgerTest {
         }
     }
 
+    @Test
+    void completionReplayCannotFinishAnotherExchangeOnTheSameLease() {
+        var table = fresh();
+        var first = acquire(table);
+        assertTrue(table.tryBegin(first, A, 7));
+        assertTrue(table.tryComplete(first));
+        // Without a physical-op nonce, begin again on the same lease would
+        // let a late duplicate completion finish a new exchange. Deny it.
+        assertFalse(table.tryBegin(first, A, 7),
+                "v1 is one complete exchange per issued lease");
+        assertFalse(table.tryComplete(first),
+                "replayed completion must not affect new work");
+        assertTrue(table.tryRelease(first, A, 7));
+        assertTrue(table.tryConfirmPhysicalClose(
+                0, first.generation() + 1));
+        var next = table.tryAcquire(0, B, PARTITION, 7);
+        assertNotNull(next);
+        assertTrue(table.tryBegin(next, B, 7));
+        assertFalse(table.tryComplete(first),
+                "old completion cannot finish replacement lease");
+        assertFalse(table.tryBegin(next, B, 7));
+        assertTrue(table.tryComplete(next));
+        assertTrue(table.tryRelease(next, B, 7));
+    }
+
 }
