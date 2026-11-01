@@ -12,20 +12,20 @@ fnc check(bool condition, String name): void {
 }
 
 fnc two(int a, int b): Array<int> {
-  let Array<int> values = new Array<int>();
+  let mut Array<int> values = new Array<int>();
   values.add(a);
   values.add(b);
   return values;
 }
 
 fnc three(int a, int b, int c): Array<int> {
-  let Array<int> values = two(a, b);
+  let mut Array<int> values = two(a, b);
   values.add(c);
   return values;
 }
 
 pub routine main(): void {
-  let ReplayWindow w = window(7, 4);
+  let mut ReplayWindow w = window(7, 4);
   check(w.capacity_bytes() == 4, "capacity");
   check(w.incarnation() == 7, "generation");
   check(w.produced_until() == 0, "initial-produced");
@@ -87,11 +87,11 @@ pub routine main(): void {
   check(w.append(7, three(8, 9, 10)).is_err(), "window-full");
   check(w.acked_until() == 5, "no-implicit-ack");
 
-  let ReplayWindow isolated = window(91, 1);
+  let mut ReplayWindow isolated = window(91, 1);
   check(isolated.append(91, two(1, 2)).is_err(), "overcapacity-append");
   check(isolated.produced_until() == 0, "overcapacity-atomic");
   check(isolated.append(91, two(1, 256)).is_err(), "overcapacity-invalid");
-  let Array<int> one = new Array<int>();
+  let mut Array<int> one = new Array<int>();
   one.add(255);
   check(isolated.append(91, one).expect("single") == 1, "single-byte");
   check(isolated.append(91, one).is_err(), "single-backpressure");
