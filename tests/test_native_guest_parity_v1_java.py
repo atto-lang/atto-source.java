@@ -68,28 +68,28 @@ def main():
             execution = run([sys.executable, str(probe), str(fixture), "--execute"], root)
             if execution.returncode != 42 or execution.stdout:
                 raise RuntimeError("guest main() did not return exact exit code 42 with empty stdout")
-        wave_hashes = []
-        for case_id, expression in WAVE_SCALARS:
-            wave_fixture = Path(td) / ("wave-" + case_id + ".ores")
-            wave_fixture.write_bytes(("pub fnc main(): int { return " + expression + "; }\\n".replace("\\n", "\n")).encode("utf-8"))
-            wave_hashes.append((case_id, hashlib.sha256(wave_fixture.read_bytes()).hexdigest()))
-            check = run([sys.executable, str(probe), str(wave_fixture)], root)
-            if check.returncode != 0 or check.stdout:
-                raise RuntimeError("JVM compiler did not admit scalar case " + case_id)
-            guest = run([sys.executable, str(probe), str(wave_fixture), "--execute"], root)
-            if guest.returncode != 42 or guest.stdout:
-                raise RuntimeError("JVM guest returned wrong result: " + case_id)
-        for name, expression in (
-            ("literal-range", "9223372036854775808"),
-            ("int-division", "7 / 2"),
-        ):
-            negative = Path(td) / ("negative-" + name + ".ores")
-            negative.write_bytes(("pub fnc main(): int { return " + expression + "; }\\n".replace("\\n", "\n")).encode("utf-8"))
-            rejection = run([sys.executable, str(probe), str(negative)], root)
-            if rejection.returncode != 1 or rejection.stdout == b"" and rejection.stderr == b"":
-                raise RuntimeError("JVM guest negative was not diagnosed: " + name)
-        print("WAVE: eight JVM guest cases returned 42, two frontend negatives rejected; source SHA256=" +
-              repr(wave_hashes))
+            wave_hashes = []
+            for case_id, expression in WAVE_SCALARS:
+                wave_fixture = Path(td) / ("wave-" + case_id + ".ores")
+                wave_fixture.write_bytes(("pub fnc main(): int { return " + expression + "; }\\n".replace("\\n", "\n")).encode("utf-8"))
+                wave_hashes.append((case_id, hashlib.sha256(wave_fixture.read_bytes()).hexdigest()))
+                check = run([sys.executable, str(probe), str(wave_fixture)], root)
+                if check.returncode != 0 or check.stdout:
+                    raise RuntimeError("JVM compiler did not admit scalar case " + case_id)
+                guest = run([sys.executable, str(probe), str(wave_fixture), "--execute"], root)
+                if guest.returncode != 42 or guest.stdout:
+                    raise RuntimeError("JVM guest returned wrong result: " + case_id)
+            for name, expression in (
+                ("literal-range", "9223372036854775808"),
+                ("int-division", "7 / 2"),
+            ):
+                negative = Path(td) / ("negative-" + name + ".ores")
+                negative.write_bytes(("pub fnc main(): int { return " + expression + "; }\\n".replace("\\n", "\n")).encode("utf-8"))
+                rejection = run([sys.executable, str(probe), str(negative)], root)
+                if rejection.returncode != 1 or rejection.stdout == b"" and rejection.stderr == b"":
+                    raise RuntimeError("JVM guest negative was not diagnosed: " + name)
+            print("WAVE: eight JVM guest cases returned 42, two frontend negatives rejected; source SHA256=" +
+                  repr(wave_hashes))
         print("PASS: real JVM/Truffle guest scalar-main SHA256=" + SCALAR_SHA256,
               flush=True)
         print("NOT CERTIFIED: guest Native Image AOT; owned array; private field diagnostics")
