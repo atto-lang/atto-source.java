@@ -442,6 +442,38 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            if (!annotations.isEmpty()) {
+                if (annotations.size() != 1
+                        || !annotations.getFirst().name().equals("StateBacked")
+                        || annotations.getFirst().arguments().size() != 1
+                        || !annotations.getFirst().arguments().getFirst().name().equals("$state_instance$")) {
+                    throw new IllegalArgumentException("unsupported class state backing annotation");
+                }
+                // V1 lowers a fresh, exclusively owned instance directly to
+                // its ordinary object fields. No shared region, hidden
+                // provider, actor state, inheritance or lock is synthesized.
+                if (actorKind != ActorKind.NONE || isAbstract
+                        || !parents.isEmpty() || !interfaces.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "instance state backing requires a concrete, non-actor, non-inherited class");
+                }
+                if (fields.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "instance state backing requires at least one private owned field");
+                }
+                for (FieldDecl field : fields) {
+                    if (field.visibility() != Visibility.PRIVATE) {
+                        throw new IllegalArgumentException(
+                                "instance state backing rejects public representation field '" + field.name() + "'");
+                    }
+                }
+                for (MethodDecl method : methods) {
+                    if (method.isStatic()) {
+                        throw new IllegalArgumentException(
+                                "instance state backing rejects static class method '" + method.name() + "'");
+                    }
+                }
+            }
         }
 
         /**
