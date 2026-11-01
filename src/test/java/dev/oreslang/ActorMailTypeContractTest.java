@@ -17,10 +17,8 @@ final class ActorMailTypeContractTest {
                     val int sequence = mail.sequence;
                     val ActorId recipient = mail.recipient;
                     val Option<ActorId> sender = mail.sender;
-                    stdio.println(value);
-                    stdio.println(sequence);
-                    stdio.println(recipient);
-                    stdio.println(sender);
+                    // Actor execution has logical io.*, not process stdio.
+                    // These local bindings are the envelope type contract under test.
                     return;
                   }
                 end
