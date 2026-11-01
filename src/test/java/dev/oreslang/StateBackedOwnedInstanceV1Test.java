@@ -2,6 +2,9 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.TreeShaker;
+import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -11,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -88,6 +92,30 @@ final class StateBackedOwnedInstanceV1Test {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.analyze(parsed));
         assertTrue(error.getMessage().contains("private field"), error::getMessage);
+    }
+
+    @Test
+    void compilerRewritersDoNotEraseStateBackingCapability() {
+        String source = """
+                @StateBacked(MutableStateContainer(scope = #instance))
+                define pub class Store as
+                    let int value = 5;
+                    pub read(): int { return self.value; }
+                end
+                """;
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(source);
+        Ast.Program expanded = AnnotationExpander.expand(checked);
+        Ast.Program optimized = TreeShaker.shake(
+                expanded, BuildOptions.library(Map.of())).program();
+        Ast.ClassDecl retained = optimized.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.ClassDecl)
+                .map(d -> (Ast.ClassDecl) d)
+                .filter(k -> k.name().equals("Store"))
+                .findFirst().orElseThrow();
+        assertEquals("StateBacked", retained.annotations().getFirst().name());
+        assertEquals("$state_instance$",
+                retained.annotations().getFirst().arguments().getFirst().name());
     }
 
     @Test
