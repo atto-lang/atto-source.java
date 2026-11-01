@@ -4627,6 +4627,10 @@ public final class TypeChecker {
             for (Ast.Param param : lambda.parameters()) {
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    rejectActorExecutionIntrinsicBinding(
+                            param.name(), "actor lambda parameter");
+                }
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             defineImplicitArguments(lambdaEnv, parameters);
@@ -5408,6 +5412,10 @@ public final class TypeChecker {
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        if (currentActorKind != Ast.ActorKind.NONE) {
+            rejectActorExecutionIntrinsicBinding(
+                    param.name(), "actor lambda parameter");
+        }
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
@@ -5454,6 +5462,10 @@ public final class TypeChecker {
             lambdaArgumentTypes.add(declared);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        param.name(), "actor lambda parameter");
+            }
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
@@ -6386,6 +6398,10 @@ public final class TypeChecker {
             Type target = deref(resolve(test.targetType(), generics, self));
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type refinement: " + source + " cannot be " + target);
+            }
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        test.binding(), "actor type-test binding");
             }
             destination.define(
                     test.binding(),
@@ -7386,6 +7402,10 @@ public final class TypeChecker {
             requireAssignable(input, declared, operation + " lambda parameter");
             requireAssignable(declared, input, operation + " lambda parameter");
             arguments.add(declared);
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        param.name(), "actor lambda parameter");
+            }
             lambdaEnv.define(param.name(), declared, Ast.BindingKind.VAL);
         }
         defineImplicitArguments(lambdaEnv, arguments);
