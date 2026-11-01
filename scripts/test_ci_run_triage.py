@@ -418,6 +418,55 @@ class RunnerAdmissionTriageContract(unittest.TestCase):
         self.job["steps"] = [self.step(conclusion="success")]
         self.assertEqual(self.aggregate()["category"], "executed_success")
 
+    def test_direct_assess_rejects_missing_job_head_sha_on_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [self.step(conclusion="success")]
+        del self.job["head_sha"]
+        with self.assertRaisesRegex(triage.TriageError, "job head SHA"):
+            triage.assess(self.run, [self.job], self.sha)
+
+    def test_direct_assess_rejects_missing_job_run_id_on_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [self.step(conclusion="success")]
+        del self.job["run_id"]
+        with self.assertRaisesRegex(triage.TriageError, "job run ID"):
+            triage.assess(self.run, [self.job], self.sha)
+
+    def test_direct_assess_rejects_invalid_job_ids_on_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [self.step(conclusion="success")]
+        for invalid in (None, 0, -1, True, "101", 1.0):
+            with self.subTest(invalid=repr(invalid)):
+                self.job["id"] = invalid
+                with self.assertRaisesRegex(triage.TriageError, "invalid job ID"):
+                    triage.assess(self.run, [self.job], self.sha)
+
+    def test_direct_assess_rejects_missing_run_id_on_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [self.step(conclusion="success")]
+        del self.run["id"]
+        with self.assertRaisesRegex(triage.TriageError, "job run ID"):
+            triage.assess(self.run, [self.job], self.sha)
+
+    def test_direct_assess_rejects_mismatched_job_run_without_run_id_arg(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [self.step(conclusion="success")]
+        self.job["run_id"] = 18
+        with self.assertRaisesRegex(triage.TriageError, "job run ID"):
+            triage.assess(self.run, [self.job], self.sha)
+
+    def test_direct_assess_accepts_bound_job_with_no_run_id_arg(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [self.step(conclusion="success")]
+        self.assertEqual(triage.assess(self.run, [self.job], self.sha)["category"],
+                         "executed_success")
+
     def test_gh_access_is_get_only(self):
         with patch.object(triage.subprocess, "run",
                           return_value=SimpleNamespace(returncode=0, stdout='{"ok": true}')) as called:

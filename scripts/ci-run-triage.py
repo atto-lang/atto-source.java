@@ -102,10 +102,17 @@ def _valid_execution_interval(step):
 def _classify_job(job, run, run_id=None):
     if not isinstance(job, dict):
         raise TriageError("invalid job metadata")
-    if job.get("head_sha") is not None and job["head_sha"] != run["head_sha"]:
-        raise TriageError("job head SHA mismatch")
-    if run_id is not None and job.get("run_id") is not None and job["run_id"] != run_id:
-        raise TriageError("job run ID mismatch")
+    # The exported classify/assess functions must enforce the same exact-run
+    # identity as inspect(). Otherwise a synthetic positive job with absent
+    # provenance could be called executed_success by direct API callers.
+    if not _positive_int(job.get("id")):
+        raise TriageError("invalid job ID")
+    if not _valid_sha(run.get("head_sha")) or job.get("head_sha") != run["head_sha"]:
+        raise TriageError("job head SHA missing or mismatched")
+    if not _positive_int(run.get("id")) or job.get("run_id") != run["id"]:
+        raise TriageError("job run ID missing or mismatched")
+    if run_id is not None and run["id"] != run_id:
+        raise TriageError("run ID mismatch")
     attempt = run.get("run_attempt")
     if attempt is not None and not _positive_int(attempt):
         raise TriageError("invalid run attempt")
