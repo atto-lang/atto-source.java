@@ -117,7 +117,7 @@ jobs:
           suite = ET.parse(xml).getroot()
           counts = {key: int(suite.attrib.get(key, "-1"))
                     for key in ("tests", "failures", "errors", "skipped")}
-          if counts != {"tests": 13, "failures": 0, "errors": 0, "skipped": 0}:
+          if counts != {"tests": 15, "failures": 0, "errors": 0, "skipped": 0}:
               raise SystemExit(f"standalone JUnit tests not fully executed: {counts}")
           def sha256(file):
               return hashlib.sha256(file.read_bytes()).hexdigest()
