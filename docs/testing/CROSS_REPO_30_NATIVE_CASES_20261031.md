@@ -116,3 +116,17 @@ The 24-case common matrix tests exact signed64 boundaries, adjacent values beyon
 **Additional Rust tests (separate lane, not native `TestCase` registrations):** [source.rs #21](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/21) gained 12 new Rust numeric-separator admission tests and 8 additional Rust tests that compile, link, and execute real scalar Oreslang guests. The source.rs parser now rejects malformed decimal separators like `1__0`, `1_`, and their negative counterparts. [source.cranelift #20](https://github.com/ores-truffle-oreslang/oreslang-source.cranelift/pull/20) gained 7 Rust JIT/CLI integration functions with multiple positive/negative vectors. Totals are **43 Rust functions in source.rs** and **12 in source.cranelift** within the rollout PRs (55 combined).
 
 **Evidence separation:** these are committed, source-backed tests; no exact-head compiler-backed guest pass has been confirmed for this batch. Any CI job with `steps=[]` remains an admission failure. The Java harness PR #2393 overlaps #2395 and requires canonical reconciliation. Do not mirror private source across organizations while the transfer hold remains active; use source-free canaries only for runner admission, then run exact-head compiler-backed checks in an authorized environment.
+
+## Batch-4 exact-commit runner admission observations
+
+Sampled on 2026-11-01. Each listed run is associated with the **specific commit** shown, not a subsequent moving branch. Workflow conclusion `failure` with zero returned job steps proves no native compiler test body executed in that job; runner/policy/billing diagnosis remains unresolved.
+
+| Repo | Commit head sampled | Run / representative job | Executed job steps |
+| --- | --- | --- | ---: |
+| `oreslang-source.rs` | `652dbb2d96583a99787a96dec7d0db4f31580214` | 41276698230 / 124760202305 | 0 |
+| `oreslang-source.cranelift` | `fea65f956b99892c87b797c9a343ae5e8497b8d4` | 41276546243 / 124759767022 | 0 |
+| `oreslang-source.java` | `0ea65adcc466cd66fcabe17e9abc2edb026463ad` | 41276597309 / 124759907855 | 0 |
+| `oreslang-source.llvm` | `a8fcd525029ed20a3a760000b2c4371c8a4a801e` | 41276439213 / 124759461359 | 0 |
+| `oreslang-source.net` | `2f3354bf0d1c071ce3a41418e4ae8edd1f64a54c` | 41276442466 / 124759470946 | 0 |
+
+No guest compiler pass or fail is inferred; none of these runs establishes alternative runner capacity or permits private-source mirroring.
