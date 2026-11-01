@@ -8496,6 +8496,22 @@ public final class OresEvalRootNode extends RootNode {
                         list.set(checkedSequenceIndex(index, list.size()), args.get(1));
                         return null;
                     };
+                    case "utf8_string" -> (Invokable) args -> {
+                        requireZero(args, "List<int>.utf8_string");
+                        byte[] bytes = new byte[rawList.size()];
+                        for (int index = 0; index < rawList.size(); index++) {
+                            Object value = rawList.get(index);
+                            if (!(value instanceof Number number)
+                                    || !isIntegral(number)
+                                    || number.longValue() < 0
+                                    || number.longValue() > 255) {
+                                throw new IllegalArgumentException(
+                                        "List<int>.utf8_string bytes must be integers in 0..255");
+                            }
+                            bytes[index] = (byte) number.intValue();
+                        }
+                        return Utf8StringAbi.decode(bytes, bytes.length);
+                    };
                     default -> throw new IllegalArgumentException(
                             "unknown List member " + name);
                 };
