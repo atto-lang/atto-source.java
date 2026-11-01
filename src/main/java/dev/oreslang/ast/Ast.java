@@ -48,6 +48,7 @@ public final class Ast {
     public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
+            rejectStateBackedOutsideClass(annotations, "module");
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
         }
@@ -63,6 +64,13 @@ public final class Ast {
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
+    }
+
+    private static void rejectStateBackedOutsideClass(List<Annotation> annotations, String target) {
+        if (annotations.stream().anyMatch(a -> a.name().equals("StateBacked"))) {
+            throw new IllegalArgumentException(
+                    "@StateBacked is only valid on a concrete, instance-owned class, not " + target);
+        }
     }
 
     public record TypeRef(String name, List<TypeRef> arguments, boolean inferArguments) {
@@ -346,6 +354,7 @@ public final class Ast {
             }
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
+            rejectStateBackedOutsideClass(annotations, "function");
             body = List.copyOf(body);
             java.util.Objects.requireNonNull(effects, "function checked effects");
         }
@@ -534,6 +543,7 @@ public final class Ast {
         public ConstructorDecl {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
+            rejectStateBackedOutsideClass(annotations, "constructor");
             body = List.copyOf(body);
         }
 
@@ -612,7 +622,10 @@ public final class Ast {
             List<Annotation> annotations,
             Expr initializer,
             boolean mutableReferent) implements Decl {
-        public FieldDecl { annotations = List.copyOf(annotations); }
+        public FieldDecl {
+            annotations = List.copyOf(annotations);
+            rejectStateBackedOutsideClass(annotations, "field");
+        }
         public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
                          List<Annotation> annotations, Expr initializer) {
             this(name, visibility, bindingKind, type, annotations, initializer,
@@ -664,6 +677,7 @@ public final class Ast {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
+            rejectStateBackedOutsideClass(annotations, "method");
             body = List.copyOf(body);
             java.util.Objects.requireNonNull(effects, "method checked effects");
         }
