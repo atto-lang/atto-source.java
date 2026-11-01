@@ -1,0 +1,671 @@
+// Native SQL planning layer. A transport adapter must bind params separately.
+pub define class Query as
+  pub val string sql;
+  pub val Array<string> params;
+  pub constructor(string sql, Array<string> params) {
+    self.sql = sql;
+    self.params = params;
+  }
+end
+
+// Read-only query plan facade. The parameter array is copied at admission
+// and is not exposed through the API; individual bound strings are immutable.
+// No Sendable/runtime capability assertion: keep plans actor-local pending
+// backend ownership and database-driver integration.
+pub define class QueryPlan as
+  pub val string sql;
+  val Array<string> saved_params;
+  pub constructor(string sql, Array<string> params) {
+    self.sql = sql;
+    let mut Array<string> snapshot = arr[];
+    for (val param of params) {
+      snapshot.add(param);
+    }
+    self.saved_params = snapshot;
+  }
+  pub param_count(): int {
+    return self.saved_params.size;
+  }
+  pub param_at(int index): Result<string, string> {
+    if index < 0 || index >= self.saved_params.size then
+      return Err("query parameter index out of bounds");
+    fi
+    return Ok(self.saved_params.get(index));
+  }
+end
+
+// Execution-oriented bind value metadata. No binary wire encoding exists yet.
+// Constructors are public: the future driver MUST call pg.admitted_db_value()
+// when accepting an externally constructed value or plan.
+pub define class DbValue as
+  pub val string kind;
+  pub val string scalar;
+  pub val bool is_null;
+  pub constructor(string kind, string scalar, bool is_null) {
+    self.kind = kind;
+    self.scalar = scalar;
+    self.is_null = is_null;
+  }
+end
+
+// A defensive, actor-local snapshot of typed values. It is NOT a connection
+// capability, a Sendable value, or proof that SQL is trusted.
+pub define class TypedQueryPlan as
+  pub val string sql;
+  val Array<DbValue> saved_values;
+  pub constructor(string sql, Array<DbValue> values) {
+    self.sql = sql;
+    let mut Array<DbValue> copy = arr[];
+    for (val value of values) {
+      copy.add(value);
+    }
+    self.saved_values = copy;
+  }
+  pub param_count(): int {
+    return self.saved_values.size;
+  }
+  pub param_at(int index): Result<DbValue, string> {
+    if index < 0 || index >= self.saved_values.size then
+      return Err("typed parameter index out of bounds");
+    fi
+    return Ok(self.saved_values.get(index));
+  }
+end
+
+// Data-only inputs for the checked primary-key table builder. Never store SQL here.
+pub define class ColumnSpec as
+  pub val string name;
+  pub val string kind;
+  pub val bool nullable;
+  pub constructor(string name, string kind, bool nullable) {
+    self.name = name;
+    self.kind = kind;
+    self.nullable = nullable;
+  }
+end
+
+// Data-only checked schema constraints: no SQL fragments.
+pub define class ConstraintSpec as
+  pub val string kind;
+  val Array<string> saved_columns;
+  pub val string reference_table;
+  val Array<string> saved_reference_columns;
+  pub constructor(string kind, Array<string> columns, string reference_table, Array<string> reference_columns) {
+    self.kind = kind;
+    let mut Array<string> local_snapshot = arr[];
+    for (val local_name of columns) {
+      local_snapshot.add(local_name);
+    }
+    self.saved_columns = local_snapshot;
+    self.reference_table = reference_table;
+    let mut Array<string> reference_snapshot = arr[];
+    for (val reference_name of reference_columns) {
+      reference_snapshot.add(reference_name);
+    }
+    self.saved_reference_columns = reference_snapshot;
+  }
+  // Never return the internal arrays. Read access returns a fresh local copy.
+  pub local_columns(): Array<string> {
+    let mut Array<string> copy = arr[];
+    for (val local_name of self.saved_columns) {
+      copy.add(local_name);
+    }
+    return copy;
+  }
+  pub referenced_columns(): Array<string> {
+    let mut Array<string> copy = arr[];
+    for (val reference_name of self.saved_reference_columns) {
+      copy.add(reference_name);
+    }
+    return copy;
+  }
+end
+
+// Actor/connection ownership snapshot for a future live PostgreSQL adapter.
+// The driver must keep the authoritative current instance actor-local.
+// Public construction never grants execution authority; all operations must
+// re-check against the driver-owned current state.
+pub define class DbConnectionState as
+  pub val string connection_id;
+  pub val string owner_actor_id;
+  pub val int actor_generation;
+  pub val int lease_generation;
+  pub val string tenant_role;
+  pub val string phase;
+  pub constructor(
+    string connection_id,
+    string owner_actor_id,
+    int actor_generation,
+    int lease_generation,
+    string tenant_role,
+    string phase
+  ) {
+    self.connection_id = connection_id;
+    self.owner_actor_id = owner_actor_id;
+    self.actor_generation = actor_generation;
+    self.lease_generation = lease_generation;
+    self.tenant_role = tenant_role;
+    self.phase = phase;
+  }
+end
+
+define module pg as
+  // Fail closed for ASCII C0, NUL and DEL in all identifier surfaces.
+  // This is NOT full UTF-8 byte-length validation; legacy SQL methods
+  // remain trusted-only and require driver-side 63-byte PostgreSQL checks.
+  pub fnc invalid_identifier_surface(string name): bool {
+    if name == "" then return true; fi
+    for (val control of arr["\u0000", "\u0001", "\u0002", "\u0003", "\u0004", "\u0005", "\u0006", "\u0007", "\u0008", "\t", "\n", "\u000b", "\u000c", "\r", "\u000e", "\u000f", "\u0010", "\u0011", "\u0012", "\u0013", "\u0014", "\u0015", "\u0016", "\u0017", "\u0018", "\u0019", "\u001a", "\u001b", "\u001c", "\u001d", "\u001e", "\u001f", "\u007f"]) {
+      if name.replace_literal(control, "") != name then return true; fi
+    }
+    return false;
+  }
+  pub fnc ident(string name): string {
+    // Legacy string API panics on bad surface; typed builders return Err.
+    if invalid_identifier_surface(name) then panic("invalid PostgreSQL identifier surface"); fi
+    return "\"" + name.replace_literal("\"", "\"\"") + "\"";
+  }
+  pub fnc column(string name, string kind, bool nullable): Result<string, string> {
+    if invalid_identifier_surface(name) then return Err("invalid PostgreSQL column identifier"); fi
+    if kind != "uuid" && kind != "text" && kind != "integer" && kind != "bigint"
+      && kind != "boolean" && kind != "jsonb" && kind != "timestamptz" && kind != "bytea" then
+      return Err("unsupported PostgreSQL type");
+    fi
+    let string sql = ident(name) + " " + kind;
+    if !nullable then sql = sql + " NOT NULL"; fi
+    return Ok(sql);
+  }
+  // Factory keeps callers independent of ColumnSpec module-export conventions.
+  // Safe typed-DDL identifier subset: ASCII only, length 1..63 bytes.
+  // is_identifier rejects quotes, controls, Unicode and qualification.
+  // It restricts input to ASCII, so each character is exactly one UTF-8 byte.
+  // The pinned compiler exposes no string byte-length API; map admitted
+  // characters to a delimiter then count split components.
+  pub fnc admitted_identifier(string name): bool {
+    if !name.is_identifier() then return false; fi
+    // The delimiter must never originate in caller input.
+    if name.replace_literal("|", "") != name then return false; fi
+    let string mapped = name;
+    for (val letter of arr["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "_"]) {
+      mapped = mapped.replace_literal(letter, "|");
+    }
+    // Every original byte must have been admitted by the ASCII whitelist.
+    // is_identifier() alone may recognize Unicode identifiers.
+    if mapped.replace_literal("|", "") != "" then return false; fi
+    return mapped.split_literal("|").size <= 64;
+  }
+  pub fnc column_spec(string name, string kind, bool nullable): ColumnSpec {
+    return new ColumnSpec(name, kind, nullable);
+  }
+  // Compatibility: one shared typed renderer owns all PostgreSQL DDL output.
+  // The no-extra-constraint path retains the original SQL byte-for-byte.
+  pub fnc table_typed_pk(string name, Array<ColumnSpec> columns, Array<string> key_columns): Result<string, string> {
+    return table_typed_pk_constraints(name, columns, key_columns, arr[]);
+  }
+  // Data-only factories. The constructor remains publicly accessible, so
+  // table_typed_pk_constraints must independently validate every field.
+  pub fnc constraint_unique(Array<string> columns): ConstraintSpec {
+    return new ConstraintSpec("unique", columns, "", arr[]);
+  }
+  // Borrowed variants preserve caller ownership while taking an independent
+  // data snapshot. Use these when the caller must keep using its Array.
+  pub fnc constraint_unique_borrowed(borrow Array<string> columns): ConstraintSpec {
+    let mut Array<string> copy = arr[];
+    for (let int index = 0; index < columns.size; index++) {
+      copy.add(columns.get(index));
+    }
+    return new ConstraintSpec("unique", copy, "", arr[]);
+  }
+  pub fnc constraint_foreign_key(Array<string> columns, string reference_table, Array<string> reference_columns): ConstraintSpec {
+    return new ConstraintSpec("foreign_key", columns, reference_table, reference_columns);
+  }
+  pub fnc constraint_foreign_key_borrowed(
+    borrow Array<string> columns,
+    string reference_table,
+    borrow Array<string> reference_columns
+  ): ConstraintSpec {
+    let mut Array<string> local_copy = arr[];
+    for (let int local_index = 0; local_index < columns.size; local_index++) {
+      local_copy.add(columns.get(local_index));
+    }
+    let mut Array<string> reference_copy = arr[];
+    for (let int reference_index = 0; reference_index < reference_columns.size; reference_index++) {
+      reference_copy.add(reference_columns.get(reference_index));
+    }
+    return new ConstraintSpec("foreign_key", local_copy, reference_table, reference_copy);
+  }
+  // One direct, deterministic renderer owns typed PK, UNIQUE and FK output.
+  // No string surgery on completed SQL and no caller-provided SQL fragments.
+  // Inputs remain actor-local during synchronous planning; Array fields are
+  // not immutable snapshots and cannot yet cross actor/driver boundaries.
+  pub fnc table_typed_pk_constraints(
+    string name,
+    Array<ColumnSpec> columns,
+    Array<string> key_columns,
+    Array<ConstraintSpec> constraints
+  ): Result<string, string> {
+    // Bound the quadratic duplicate checks before constructing any SQL.
+    if columns.size > 64 then return Err("too many PostgreSQL table columns"); fi
+    if key_columns.size > 32 then return Err("too many PostgreSQL primary-key columns"); fi
+    if constraints.size > 32 then return Err("too many PostgreSQL table constraints"); fi
+    if !admitted_identifier(name) then return Err("unadmitted PostgreSQL table identifier"); fi
+    let string sql = "CREATE TABLE " + ident(name) + " (";
+    let bool first = true;
+    for (val spec of columns) {
+      if !admitted_identifier(spec.name) then return Err("unadmitted PostgreSQL column identifier"); fi
+      val rendered = column(spec.name, spec.kind, spec.nullable);
+      if rendered.is_err() then return Err("invalid PostgreSQL column definition"); fi
+      let bool seen = false;
+      for (val other of columns) {
+        if other.name == spec.name then
+          if seen then return Err("duplicate PostgreSQL column identifier"); fi
+          seen = true;
+        fi
+      }
+      if !first then sql = sql + ","; fi
+      sql = sql + "\n  " + rendered.unwrap();
+      first = false;
+    }
+    if first then return Err("PostgreSQL table requires at least one column"); fi
+    let bool first_key = true;
+    let string keys = "PRIMARY KEY (";
+    for (val key of key_columns) {
+      if !admitted_identifier(key) then return Err("unadmitted PostgreSQL primary-key identifier"); fi
+      let bool found = false;
+      for (val spec of columns) {
+        if spec.name == key then
+          if spec.nullable then return Err("primary-key column must be NOT NULL"); fi
+          found = true;
+        fi
+      }
+      if !found then return Err("primary-key column is not declared"); fi
+      let bool seen = false;
+      for (val other_key of key_columns) {
+        if other_key == key then
+          if seen then return Err("duplicate primary-key identifier"); fi
+          seen = true;
+        fi
+      }
+      if !first_key then keys = keys + ", "; fi
+      keys = keys + ident(key);
+      first_key = false;
+    }
+    if first_key then return Err("PostgreSQL primary key requires at least one column"); fi
+    // The common PK header remains open for additional typed constraints.
+    let string sql_body = sql + ",\n  " + keys + ")";
+    let string extra = "";
+    // Exact duplicate detection, never substring matching on rendered SQL.
+    let mut Array<string> seen_clauses = arr[];
+    for (val rule of constraints) {
+      val local_columns = rule.local_columns();
+      val reference_columns = rule.referenced_columns();
+      if rule.kind != "unique" && rule.kind != "foreign_key" then
+        return Err("unsupported PostgreSQL constraint kind");
+      fi
+      if local_columns.size == 0 || local_columns.size > 32 then
+        return Err("constraint requires 1 to 32 local columns");
+      fi
+      let string local_sql = "";
+      let bool first_local = true;
+      for (val local_name of local_columns) {
+        if !admitted_identifier(local_name) then return Err("invalid constraint column identifier"); fi
+        let bool declared = false;
+        for (val column_decl of columns) {
+          if column_decl.name == local_name then declared = true; fi
+        }
+        if !declared then return Err("constraint column is not declared"); fi
+        let bool seen = false;
+        for (val earlier of local_columns) {
+          if earlier == local_name then
+            if seen then return Err("duplicate constraint column"); fi
+            seen = true;
+          fi
+        }
+        if !first_local then local_sql = local_sql + ", "; fi
+        local_sql = local_sql + ident(local_name);
+        first_local = false;
+      }
+      let string clause = "";
+      if rule.kind == "unique" then
+        if rule.reference_table != "" || reference_columns.size != 0 then
+          return Err("unique constraint cannot contain foreign-key fields");
+        fi
+        clause = "UNIQUE (" + local_sql + ")";
+      fi
+      if rule.kind == "foreign_key" then
+        if !admitted_identifier(rule.reference_table) then
+          return Err("invalid referenced table identifier");
+        fi
+        if reference_columns.size != local_columns.size then
+          return Err("foreign-key column arity mismatch");
+        fi
+        let string referenced_sql = "";
+        let bool first_ref = true;
+        for (val referenced_name of reference_columns) {
+          if !admitted_identifier(referenced_name) then
+            return Err("invalid referenced column identifier");
+          fi
+          let bool seen_ref = false;
+          for (val other_ref of reference_columns) {
+            if other_ref == referenced_name then
+              if seen_ref then return Err("duplicate referenced column"); fi
+              seen_ref = true;
+            fi
+          }
+          if !first_ref then referenced_sql = referenced_sql + ", "; fi
+          referenced_sql = referenced_sql + ident(referenced_name);
+          first_ref = false;
+        }
+        clause = "FOREIGN KEY (" + local_sql + ") REFERENCES "
+          + ident(rule.reference_table) + " (" + referenced_sql + ")";
+      fi
+      // Compare complete clauses: prefix/substring matching is not identity.
+      for (val prior_clause of seen_clauses) {
+        if prior_clause == clause then return Err("duplicate PostgreSQL constraint"); fi
+      }
+      seen_clauses.add(clause);
+      extra = extra + ",\n  " + clause;
+    }
+    // Emit exactly one terminator, with no replacement in already-rendered SQL.
+    return Ok(sql_body + extra + "\n);\n");
+  }
+  // Legacy trusted-SQL escape hatch: never admit user-supplied SQL fragments.
+  pub fnc table(string name, Array<string> columns, Array<string> trusted_constraints): string {
+    let string sql = "CREATE TABLE " + ident(name) + " (";
+    let bool first = true;
+    for (val column of columns) {
+      if !first then sql = sql + ","; fi
+      sql = sql + "\n  " + column;
+      first = false;
+    }
+    if first then panic("PostgreSQL table requires at least one column"); fi
+    for (val constraint of trusted_constraints) {
+      sql = sql + ",\n  " + constraint;
+    }
+    return sql + "\n);\n";
+  }
+  // Only data values are parameters. This checked planner snapshots them
+  // before exposing the plan; it is NOT a tenant credential or a DB executor.
+  pub fnc find_in_workspace_plan_checked(string table, string workspace, string id): Result<QueryPlan, string> {
+    if !admitted_identifier(table) then return Err("unadmitted PostgreSQL query table identifier"); fi
+    return Ok(new QueryPlan("SELECT * FROM " + ident(table)
+      + " WHERE workspace_id = $1::uuid AND id = $2::uuid", arr[workspace, id]));
+  }
+  // Compatibility adapter for existing trusted local Query objects.
+  // This copies parameter values; it does NOT sanitize SQL or grant authority.
+  pub fnc snapshot_legacy_query(Query query): QueryPlan {
+    return new QueryPlan(query.sql, query.params);
+  }
+  // Borrow the parameter container directly: this keeps caller ownership and
+  // avoids requiring a projected borrow through a Query field.
+  pub fnc snapshot_query_params_borrowed(
+    string sql, borrow Array<string> params
+  ): QueryPlan {
+    let mut Array<string> copy = arr[];
+    for (let int index = 0; index < params.size; index++) {
+      copy.add(params.get(index));
+    }
+    return new QueryPlan(sql, copy);
+  }
+  // Restricted table admission only. Workspace text is NOT tenant authority,
+  // and Query.params is still actor-local mutable data, not an owned plan.
+  pub fnc find_in_workspace_checked(string table, string workspace, string id): Result<Query, string> {
+    if !admitted_identifier(table) then return Err("unadmitted PostgreSQL query table identifier"); fi
+    return Ok(find_in_workspace(table, workspace, id));
+  }
+  pub fnc find_in_workspace(string table, string workspace, string id): Query {
+    return new Query("SELECT * FROM " + ident(table)
+      + " WHERE workspace_id = $1::uuid AND id = $2::uuid", arr[workspace, id]);
+  }
+  // This is a tag/value admission check, NOT a UUID or JSON parser.
+  // A future driver must check again at its own trust boundary and enforce
+  // byte caps, PostgreSQL type coercion and binary/text wire encoding.
+  pub fnc admitted_db_value(borrow DbValue value): bool {
+    if value.kind != "uuid" && value.kind != "text" && value.kind != "integer"
+      && value.kind != "bigint" && value.kind != "boolean"
+      && value.kind != "jsonb" && value.kind != "timestamptz"
+      && value.kind != "bytea" then
+      return false;
+    fi
+    // Null has no scalar payload; otherwise empty strings are significant.
+    if value.is_null && value.scalar != "" then return false; fi
+    return true;
+  }
+  pub fnc checked_db_value(string kind, string scalar, bool is_null): Result<DbValue, string> {
+    val value = new DbValue(kind, scalar, is_null);
+    if !admitted_db_value(rt borrow value) then return Err("unadmitted PostgreSQL bind value"); fi
+    return Ok(value);
+  }
+  // The only public typed plan adapter accepts exactly two admitted,
+  // non-null UUID-tagged values and snapshots them before returning.
+  // Not an authorization capability: every future execution rechecks binds.
+  pub fnc workspace_typed_values_checked(
+    string table, Array<DbValue> values
+  ): Result<TypedQueryPlan, string> {
+    if !admitted_identifier(table) then
+      return Err("unadmitted PostgreSQL query table identifier");
+    fi
+    if values.size != 2 then return Err("workspace query requires exactly two binds"); fi
+    for (val value of values) {
+      if !admitted_db_value(rt borrow value) then
+        return Err("unadmitted PostgreSQL bind value");
+      fi
+      if value.kind != "uuid" || value.is_null then
+        return Err("workspace query requires non-null UUID binds");
+      fi
+    }
+    return Ok(new TypedQueryPlan(
+      "SELECT * FROM " + ident(table)
+        + " WHERE workspace_id = $1::uuid AND id = $2::uuid", values));
+  }
+  pub fnc workspace_typed_values_borrowed_checked(
+    string table, borrow Array<DbValue> values
+  ): Result<TypedQueryPlan, string> {
+    if !admitted_identifier(table) then
+      return Err("unadmitted PostgreSQL query table identifier");
+    fi
+    if values.size != 2 then return Err("workspace query requires exactly two binds"); fi
+    let mut Array<DbValue> copy = arr[];
+    for (let int index = 0; index < values.size; index++) {
+      val value = values.get(index);
+      if !admitted_db_value(rt borrow value) then
+        return Err("unadmitted PostgreSQL bind value");
+      fi
+      if value.kind != "uuid" || value.is_null then
+        return Err("workspace query requires non-null UUID binds");
+      fi
+      copy.add(value);
+    }
+    return Ok(new TypedQueryPlan(
+      "SELECT * FROM " + ident(table)
+        + " WHERE workspace_id = $1::uuid AND id = $2::uuid", copy));
+  }
+  // Only a vetted fixed SQL template is exported here: caller data stays
+  // in the two typed bind slots and never affects SQL text. Workspace data
+  // does NOT authenticate the caller; a future driver must enforce tenant
+  // capability, role, and database RLS independently.
+  pub fnc find_in_workspace_typed_plan_checked(
+    string table, string workspace, string id
+  ): Result<TypedQueryPlan, string> {
+    let Array<DbValue> binds = arr[
+      new DbValue("uuid", workspace, false),
+      new DbValue("uuid", id, false)
+    ];
+    return workspace_typed_values_checked(table, binds);
+  }
+  // Opaque actor identity may contain non-SQL characters, but it must be
+  // nonempty and free from control/NUL surfaces.
+  pub fnc admitted_actor_identity(string actor_id): bool {
+    return !invalid_identifier_surface(actor_id);
+  }
+  pub fnc admitted_connection_state(borrow DbConnectionState state): bool {
+    if !admitted_identifier(state.connection_id) then return false; fi
+    if !admitted_actor_identity(state.owner_actor_id) then return false; fi
+    if state.actor_generation < 1 || state.lease_generation < 1 then return false; fi
+    if !admitted_identifier(state.tenant_role) then return false; fi
+    if state.phase != "idle"
+      && state.phase != "active"
+      && state.phase != "rollback_required"
+      && state.phase != "committed"
+      && state.phase != "rolled_back"
+      && state.phase != "released" then
+      return false;
+    fi
+    return true;
+  }
+  // This checks the exact actor incarnation and exact pool lease generation.
+  // It is only meaningful when state is the driver's authoritative current
+  // actor-local state, not a caller-provided snapshot.
+  pub fnc same_connection_authority(
+    borrow DbConnectionState state,
+    string owner_actor_id,
+    int actor_generation,
+    int lease_generation
+  ): bool {
+    if !admitted_connection_state(rt borrow state) then return false; fi
+    if state.phase == "released" then return false; fi
+    return state.owner_actor_id == owner_actor_id
+      && state.actor_generation == actor_generation
+      && state.lease_generation == lease_generation;
+  }
+  pub fnc same_lease_identity(
+    borrow DbConnectionState current,
+    borrow DbConnectionState presented
+  ): bool {
+    if !admitted_connection_state(rt borrow current)
+      || !admitted_connection_state(rt borrow presented) then
+      return false;
+    fi
+    return current.connection_id == presented.connection_id
+      && current.owner_actor_id == presented.owner_actor_id
+      && current.actor_generation == presented.actor_generation
+      && current.lease_generation == presented.lease_generation;
+  }
+  pub fnc acquire_connection_checked(
+    string connection_id,
+    string owner_actor_id,
+    int actor_generation,
+    int lease_generation,
+    string tenant_role
+  ): Result<DbConnectionState, string> {
+    val state = new DbConnectionState(
+      connection_id, owner_actor_id, actor_generation, lease_generation,
+      tenant_role, "idle");
+    if !admitted_connection_state(rt borrow state) then
+      return Err("unadmitted PostgreSQL connection lease");
+    fi
+    return Ok(state);
+  }
+  pub fnc begin_transaction_checked(
+    borrow DbConnectionState current,
+    string owner_actor_id,
+    int actor_generation,
+    int lease_generation
+  ): Result<DbConnectionState, string> {
+    if !same_connection_authority(
+      rt borrow current, owner_actor_id, actor_generation, lease_generation
+    ) then
+      return Err("stale or foreign PostgreSQL connection lease");
+    fi
+    if current.phase != "idle" then return Err("PostgreSQL transaction is not idle"); fi
+    return Ok(new DbConnectionState(
+      current.connection_id, current.owner_actor_id, current.actor_generation,
+      current.lease_generation, current.tenant_role, "active"));
+  }
+  // Call only after the transport has received a successful COMMIT completion.
+  pub fnc acknowledge_commit_checked(
+    borrow DbConnectionState current,
+    string owner_actor_id,
+    int actor_generation,
+    int lease_generation
+  ): Result<DbConnectionState, string> {
+    if !same_connection_authority(
+      rt borrow current, owner_actor_id, actor_generation, lease_generation
+    ) then
+      return Err("stale or foreign PostgreSQL connection lease");
+    fi
+    if current.phase != "active" then return Err("PostgreSQL transaction is not active"); fi
+    return Ok(new DbConnectionState(
+      current.connection_id, current.owner_actor_id, current.actor_generation,
+      current.lease_generation, current.tenant_role, "committed"));
+  }
+  // Actor abort never makes an active connection reusable. It first enters a
+  // rollback-required quarantine until the database confirms rollback.
+  pub fnc mark_actor_abort_checked(
+    borrow DbConnectionState current,
+    string owner_actor_id,
+    int actor_generation,
+    int lease_generation
+  ): Result<DbConnectionState, string> {
+    if !same_connection_authority(
+      rt borrow current, owner_actor_id, actor_generation, lease_generation
+    ) then
+      return Err("stale or foreign PostgreSQL connection lease");
+    fi
+    if current.phase != "active" then return Err("actor abort requires an active PostgreSQL transaction"); fi
+    return Ok(new DbConnectionState(
+      current.connection_id, current.owner_actor_id, current.actor_generation,
+      current.lease_generation, current.tenant_role, "rollback_required"));
+  }
+  // Call only after ROLLBACK has completed and the driver has observed a clean
+  // idle protocol state. Unknown outcomes must remain quarantined instead.
+  pub fnc acknowledge_abort_rollback_checked(
+    borrow DbConnectionState current,
+    string owner_actor_id,
+    int actor_generation,
+    int lease_generation
+  ): Result<DbConnectionState, string> {
+    if !same_connection_authority(
+      rt borrow current, owner_actor_id, actor_generation, lease_generation
+    ) then
+      return Err("stale or foreign PostgreSQL connection lease");
+    fi
+    if current.phase != "rollback_required" then
+      return Err("PostgreSQL connection does not require abort rollback");
+    fi
+    return Ok(new DbConnectionState(
+      current.connection_id, current.owner_actor_id, current.actor_generation,
+      current.lease_generation, current.tenant_role, "rolled_back"));
+  }
+  // A pool may release only a clean non-active state. The live adapter must
+  // additionally reset role/session settings or destroy the connection.
+  pub fnc release_connection_checked(
+    borrow DbConnectionState current,
+    string owner_actor_id,
+    int actor_generation,
+    int lease_generation
+  ): Result<DbConnectionState, string> {
+    if !same_connection_authority(
+      rt borrow current, owner_actor_id, actor_generation, lease_generation
+    ) then
+      return Err("stale or foreign PostgreSQL connection lease");
+    fi
+    if current.phase == "active" || current.phase == "rollback_required" then
+      return Err("PostgreSQL connection cannot be released before transaction cleanup");
+    fi
+    return Ok(new DbConnectionState(
+      current.connection_id, current.owner_actor_id, current.actor_generation,
+      current.lease_generation, current.tenant_role, "released"));
+  }
+  // Pool reassignment is monotone. Reusing the same lease generation would
+  // let a stale actor ticket regain authority after a connection is recycled.
+  pub fnc reassign_released_connection_checked(
+    borrow DbConnectionState released,
+    string new_owner_actor_id,
+    int new_actor_generation,
+    int new_lease_generation,
+    string new_tenant_role
+  ): Result<DbConnectionState, string> {
+    if !admitted_connection_state(rt borrow released) then
+      return Err("unadmitted PostgreSQL released connection state");
+    fi
+    if released.phase != "released" then return Err("PostgreSQL connection is not released"); fi
+    if new_lease_generation <= released.lease_generation then
+      return Err("PostgreSQL lease generation must increase");
+    fi
+    return acquire_connection_checked(
+      released.connection_id, new_owner_actor_id, new_actor_generation,
+      new_lease_generation, new_tenant_role);
+  }
+
+end
