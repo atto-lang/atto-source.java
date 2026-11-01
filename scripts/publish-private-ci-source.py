@@ -51,6 +51,7 @@ QUARANTINED_DESTINATIONS = (
     "led-dynamo/leddy-e2e",
     "ClaimGraph-test/claimgraph-e2e",
     "honeypot-r-us-test/hnpt-e2e",
+    "ores-llm/ores-llm-ml-conformance-tests",
 )
 QUARANTINED_DESTINATION_IDS = (
     1323575966,  # zed-pkg-test/java-app (#22)
@@ -60,6 +61,7 @@ QUARANTINED_DESTINATION_IDS = (
     1324139596,  # led-dynamo/leddy-e2e (#172)
     1350751074,  # ClaimGraph-test/claimgraph-e2e (#198/#200)
     1346492776,  # honeypot-r-us-test/hnpt-e2e (#252)
+    1441272675,  # ores-llm/ores-llm-ml-conformance-tests (ores-llm issue #29)
 )
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
