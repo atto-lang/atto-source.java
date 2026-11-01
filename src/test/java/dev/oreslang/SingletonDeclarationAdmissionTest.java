@@ -47,6 +47,10 @@ final class SingletonDeclarationAdmissionTest {
         // Git blobs 9f0f0a35db63264e7fd57ffe0a9986333e21f2a6 and
         // 2f9b1c149c051eff1fb96dba795a914a37ed28b8.
         String[] sources = {
+                "define singleton StateBank with Stateful<BankState> as\n"
+                + "    @Inject\n"
+                + "    state: MutableStateContainer<BankState>\n"
+                + "end\n",
                 "define singleton StateBank implements Stateful<BankState> as\n"
                 + "    @Inject\n"
                 + "    state: MutableStateContainer<BankState>\n"
