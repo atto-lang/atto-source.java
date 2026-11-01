@@ -175,6 +175,24 @@ final class ActorSyncStdlibTest {
     }
 
     @Test
+    void canonicalPortableSourceFixtureExecutesWithExactOutput() throws Exception {
+        String fixture=Files.readString(Path.of(
+            "src/test/resources/actor-sync-v1/cursor-progression.ores"));
+        assertEquals("""
+                true
+                true
+                false
+                true
+                true
+                false
+                true
+                true
+                3
+                5
+                """,run(fixture));
+    }
+
+    @Test
     void invalidGenerationsAndRevisionsFailClosed() {
         assertThrows(PolyglotException.class,()->run("""
                 import * as sync from "std/actor_sync";
