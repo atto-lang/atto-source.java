@@ -1,0 +1,68 @@
+// Direct compiler-backed guest acceptance fixture for stdlib/testing.ores.
+// A zero process exit is meaningful only after a real Oreslang compiler executes
+// this source. This is not an ORES_TEST receipt suite or a Rust host-only oracle.
+import class TestOutcome from '../stdlib/testing';
+import fnc pass, expect_false, expect_equal_bool, expect_not_equal_int, expect_not_equal_string, expect_near_float, check_int_cases from '../stdlib/testing';
+
+fnc property_ok(int value): TestOutcome {
+  return expect_not_equal_int(value, -1, "unexpected sentinel");
+}
+
+fnc property_fail_on_two(int value): TestOutcome {
+  return expect_not_equal_int(value, 2, "two is forbidden");
+}
+
+pub routine main(): void {
+  // A vacuous property cannot be credited as a passing test.
+  val List<int> empty_cases = arr[];
+  val TestOutcome vacuous = check_int_cases("empty-corpus", empty_cases, property_ok);
+  if vacuous.passed; do
+    rt fail("empty property incorrectly passed");
+  fi
+
+  val TestOutcome property_pass = check_int_cases("nonempty", arr[0, 1, 3], property_ok);
+  if !property_pass.passed; do
+    rt fail("nonempty good property incorrectly failed");
+  fi
+
+  val TestOutcome property_failure = check_int_cases("fails-at-two", arr[0, 2, 3], property_fail_on_two);
+  if property_failure.passed; do
+    rt fail("violated property incorrectly passed");
+  fi
+  if property_failure.message != "two is forbidden"; do
+    rt fail("property failure message was not preserved");
+  fi
+
+  val TestOutcome bool_pass = expect_equal_bool(true, true, "boolean equality");
+  if !bool_pass.passed; do
+    rt fail("boolean equality incorrectly failed");
+  fi
+  val TestOutcome bool_fail = expect_equal_bool(false, true, "boolean inequality");
+  if bool_fail.passed; do
+    rt fail("boolean inequality incorrectly passed");
+  fi
+
+  val TestOutcome unequal_int = expect_not_equal_int(1, 2, "distinct ints");
+  if !unequal_int.passed; do
+    rt fail("distinct integer values incorrectly failed");
+  fi
+  val TestOutcome same_int = expect_not_equal_int(2, 2, "same ints");
+  if same_int.passed; do
+    rt fail("identical integers incorrectly passed inequality");
+  fi
+
+  val TestOutcome different_string = expect_not_equal_string("alpha", "beta", "distinct strings");
+  if !different_string.passed; do
+    rt fail("distinct strings incorrectly failed");
+  fi
+  val TestOutcome same_string = expect_not_equal_string("alpha", "alpha", "same string");
+  if same_string.passed; do
+    rt fail("equal strings incorrectly passed inequality");
+  fi
+
+  val TestOutcome negative_tolerance = expect_near_float(1.0, 1.0, -0.01, "bad tolerance");
+  if negative_tolerance.passed; do
+    rt fail("negative tolerance incorrectly passed");
+  fi
+  return;
+}
