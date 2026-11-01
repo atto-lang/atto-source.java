@@ -1,0 +1,27 @@
+// Java/Graal owned-state v0: distinct instance initialization and mutable receivers.
+// Not singleton state, shared DI, guarded state loans, or cross-backend parity.
+@Inject(MutableStateContainer())
+define class Flag as
+  state {
+    ready: bool = true;
+  }
+
+  pub disable(mut self Flag)(): void {
+    self.ready = false;
+    return;
+  }
+
+  pub is_ready(): bool {
+    return self.ready;
+  }
+end
+
+pub routine main(): void {
+  let mut Flag first = new Flag();
+  let mut Flag second = new Flag();
+  first.disable();
+  stdio.stdout.write(first.is_ready());
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.is_ready());
+  return;
+}
