@@ -65,3 +65,16 @@ Test cases: **52 authored `TestCase` registrations in 20 repositories** (initial
 
 ## No-claim boundary
 None of the 52 new cases is credited as a passing guest test merely because it was authored or committed. No private cross-organization source transfers are approved by this ledger. `steps=[]` jobs remain runner-admission failures, not tests.
+
+## Exact-head CI observations (after second pass)
+The following GitHub workflow jobs were checked at their respective PR heads. Each finished with workflow conclusion `failure`, but the selected job returned **zero executed steps**; these are runner admission failures, not evidence of failing native tests.
+
+| Repository | Workflow run | Job ID | Executed steps |
+| --- | ---: | ---: | ---: |
+| `oreslang-source.java` | 41270774109 (stdlib boundary) | 124742913509 | 0 |
+| `oreslang-source.llvm` | 41270720218 (LLVM compiler/native execution) | 124742756805 | 0 |
+| `oreslang-source.net` | 41270725639 (.NET NativeAOT) | 124742771469 | 0 |
+| `oreslang-ssr` | 41270684368 (native SSR contracts) | 124742651765 | 0 |
+| `oreslang-otel` | 41270688948 (telemetry host contracts) | 124742664604 | 0 |
+
+None of those jobs supplies compiler-backed guest evidence. Recheck head identity, runner assignment, and executed step records on a permitted source-org runner before reviewing outcomes. A different organization with free minutes is **not** by itself permission to mirror private source.
