@@ -71,7 +71,7 @@ def main():
             wave_hashes = []
             for case_id, expression in WAVE_SCALARS:
                 wave_fixture = Path(td) / ("wave-" + case_id + ".ores")
-                wave_fixture.write_bytes(("pub fnc main(): int { return " + expression + "; }\\n".replace("\\n", "\n")).encode("utf-8"))
+                wave_fixture.write_bytes(("pub fnc main(): int { return " + expression + "; }\n").encode("utf-8"))
                 wave_hashes.append((case_id, hashlib.sha256(wave_fixture.read_bytes()).hexdigest()))
                 check = run([sys.executable, str(probe), str(wave_fixture)], root)
                 if check.returncode != 0 or check.stdout:
@@ -84,9 +84,9 @@ def main():
                 ("int-division", "7 / 2"),
             ):
                 negative = Path(td) / ("negative-" + name + ".ores")
-                negative.write_bytes(("pub fnc main(): int { return " + expression + "; }\\n".replace("\\n", "\n")).encode("utf-8"))
+                negative.write_bytes(("pub fnc main(): int { return " + expression + "; }\n").encode("utf-8"))
                 rejection = run([sys.executable, str(probe), str(negative)], root)
-                if rejection.returncode != 1 or rejection.stdout == b"" and rejection.stderr == b"":
+                if rejection.returncode != 1 or rejection.stdout or not rejection.stderr:
                     raise RuntimeError("JVM guest negative was not diagnosed: " + name)
             print("WAVE: eight JVM guest cases returned 42, two frontend negatives rejected; source SHA256=" +
                   repr(wave_hashes))
