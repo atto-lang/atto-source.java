@@ -235,6 +235,31 @@ final class StrictIntegerArithmeticTest {
     }
 
     @Test
+    void guestNamedArithmeticCompositionMatchesNativeAotAndCraneliftVectors() throws Exception {
+        // These exact expressions also appear in the .NET emitted-CIL
+        // conformance tests. They must run through the real Java guest parser,
+        // type checker and linked Oreslang runtime, not a host evaluator.
+        Path entry = temp.resolve("strict-named-compositions.ores");
+        Files.writeString(entry, """
+                pub routine main(): void {
+                  stdio.println(Integer.bitXor(Integer.mod(-9, 4), Integer.pow(2, 3)));
+                  stdio.println(Integer.rem(Integer.bitXor(5, 3), Integer.pow(2, 2)));
+                  stdio.println(Integer.pow(Integer.rem(-9, 4) + 3, 3));
+                  stdio.println(Integer.mod(Integer.pow(-2, 3), 5));
+                  stdio.println(Integer.pow(-2, 63));
+                  stdio.println(Integer.pow(-1, 9223372036854775807));
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals("11\\n2\\n8\\n2\\n-9223372036854775808\\n-1\\n",
+                out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void guestMathUnaryPreservesBinary64SignAndFractionSemantics() throws Exception {
         Path entry = temp.resolve("math-float.ores");
         Files.writeString(entry, """
