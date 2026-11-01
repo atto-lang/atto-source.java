@@ -134,6 +134,31 @@ public final class SharedReactorPoolCheck {
                 check(denied);
             }
         }
+        // Concurrent close must linearize with admission: all accepted work
+        // drains exactly once, and post-close submissions retain ownership.
+        try (Io io = new Io(); SharedReactorPool pool = new SharedReactorPool(io, 2, 2)) {
+            io.pool = pool;
+            AtomicInteger accepted = new AtomicInteger();
+            AtomicInteger finished = new AtomicInteger();
+            AtomicInteger entered = new AtomicInteger();
+            Thread[] racing = new Thread[4];
+            for (int p = 0; p < racing.length; ++p) {
+                racing[p] = new Thread(() -> {
+                    entered.incrementAndGet();
+                    for (int j = 0; j < 1000; ++j) {
+                        if (pool.try_submit(finished::incrementAndGet)) accepted.incrementAndGet();
+                        else Thread.yield();
+                    }
+                });
+                racing[p].start();
+            }
+            until(() -> entered.get() == 4 && accepted.get() > 0);
+            pool.close();
+            for (Thread t : racing) t.join();
+            check(accepted.get() == finished.get());
+            check(!pool.try_submit(finished::incrementAndGet));
+            check(io.active.get() == 0);
+        }
         System.out.println("shared-reactor host: default-two, single-poller, real Pipe readiness, shared execution, "
                 + "bounded queue, 8000 concurrent submissions, growth cap, self-join denial, drain PASS");
     }
