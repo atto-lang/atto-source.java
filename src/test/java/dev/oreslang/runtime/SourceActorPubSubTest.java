@@ -159,4 +159,71 @@ final class SourceActorPubSubTest {
                     () -> group.topic("bad-capacity", "reliable", 0));
         }
     }
+    @Test
+    void closingDirectoryRevokesBothGroupsWithoutStoppingIndependentActor()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Group a = pubsub.group("a");
+            SourceActorPubSub.Group b = pubsub.group("b");
+            a.topic("events", "latest", 1);
+            b.topic("events", "latest", 1);
+            CountDownLatch received = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        if ("still-alive".equals(message)) received.countDown();
+                    });
+
+            a.join(actor);
+            b.join(actor);
+            assertTrue(a.contains(actor));
+            assertTrue(b.contains(actor));
+
+            pubsub.close();
+            pubsub.close(); // Idempotent: never closes a group twice.
+            assertFalse(a.contains(actor), "closing A must retire its membership");
+            assertFalse(b.contains(actor), "closing B must retire its membership");
+            assertThrows(IllegalStateException.class, () -> pubsub.group("a"));
+            assertThrows(IllegalStateException.class, () -> a.topic("events"));
+            assertThrows(IllegalStateException.class, () -> b.topic("events"));
+            assertTrue(actor.isAlive(),
+                    "cooperation membership must not imply actor lifecycle ownership");
+
+            actor.send("still-alive");
+            assertTrue(received.await(5, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void memberActorCannotCloseTheRuntimePubSubDirectory() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Group group = pubsub.group("owned-by-host");
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        try {
+                            assertThrows(SecurityException.class, pubsub::close);
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+
+            group.join(actor);
+            actor.send("attempt-close");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertSame(group, pubsub.group("owned-by-host"),
+                    "unauthorized close must not retire the directory");
+            assertTrue(group.contains(actor));
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
