@@ -228,6 +228,26 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void lineCommentEndingsPreserveModelBlueprintAndConfiguredIdentity() {
+        var original = ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(PRICE_MODEL))
+                .find("PriceEstimate");
+        for (String ending : java.util.List.of("\r", "\r\n", "\n")) {
+            String variant = PRICE_MODEL.replace(
+                    "pub define model PriceEstimate(",
+                    "// ignored source model declaration" + ending
+                            + "pub define model PriceEstimate(");
+            var parsed = ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(variant))
+                    .find("PriceEstimate");
+            assertEquals(original.graphDigest(), parsed.graphDigest(),
+                    "comment line ending must not alter blueprint identity");
+            assertEquals(
+                    original.configuredGraphDigest(original.bindConfiguration(java.util.List.of())),
+                    parsed.configuredGraphDigest(parsed.bindConfiguration(java.util.List.of())),
+                    "comment line ending must not alter configured graph identity");
+        }
+    }
+
+    @Test
     void parserRejectsOversizedModelDeclarationsBeforeCompilerAdmission() {
         // Only parse here: unknown operation names are permitted in the AST
         // and resolved later. These are strict parser allocation boundaries.
