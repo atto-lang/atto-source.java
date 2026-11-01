@@ -11466,7 +11466,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Number
                     || value instanceof Boolean
                     || value instanceof Character
-                    || value instanceof OresSymbol) {
+                    || value instanceof dev.oreslang.runtime.OresSymbol) {
                 return false;
             }
             if (seen.put(value, Boolean.TRUE) != null) return false;
