@@ -516,6 +516,56 @@ final class SelectorTransportConnectionTest {
         }
     }
 
+    @Test
+    void malformedTlsHandshakeRetiresSocketAndCannotReturnItToAPool()
+            throws Exception {
+        AtomicReference<Throwable> peerFailure = new AtomicReference<>();
+        try (ServerSocket server = new ServerSocket(
+                0, 50, InetAddress.getLoopbackAddress())) {
+            Thread peer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    // Consume some ClientHello bytes so the peer is not
+                    // allowed to report a successful TLS negotiation.
+                    socket.setSoTimeout(2000);
+                    byte[] header = new byte[5];
+                    int received = socket.getInputStream().read(header);
+                    if (received <= 0) {
+                        throw new AssertionError("ClientHello was not sent");
+                    }
+                    socket.getOutputStream().write(
+                            "HTTP/1.1 400 Bad Request\\r\\n\\r\\n"
+                                .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                    socket.getOutputStream().flush();
+                } catch (Throwable failure) {
+                    peerFailure.set(failure);
+                }
+            });
+            try (SelectorTransportConnection connection =
+                    SelectorTransportConnection.open(
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(6))) {
+                connection.connect(new InetSocketAddress(
+                        InetAddress.getLoopbackAddress(), server.getLocalPort()),
+                        Duration.ofSeconds(2));
+                assertThrows(IOException.class,
+                        () -> connection.startTls(
+                                SSLContext.getDefault(), "localhost",
+                                server.getLocalPort(), false,
+                                Duration.ofSeconds(3)));
+                assertFalse(claimOf(connection).get(),
+                        "failed TLS handshake must release selector claim");
+                assertThrows(ClosedChannelException.class,
+                        () -> connection.input().read(new byte[1]),
+                        "TLS handshake failure must poison the physical connection");
+                assertThrows(ClosedChannelException.class,
+                        () -> connection.output().write(new byte[] { 1 }));
+            } finally {
+                peer.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(peer.isAlive());
+            }
+            assertNull(peerFailure.get());
+        }
+    }
+
     private static AtomicBoolean claimOf(SelectorTransportConnection connection)
             throws ReflectiveOperationException {
         Field field = SelectorTransportConnection.class
