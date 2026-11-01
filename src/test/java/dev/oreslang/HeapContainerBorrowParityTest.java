@@ -218,7 +218,7 @@ final class HeapContainerBorrowParityTest {
     void guestVectorPushPopAndReserveProduceNativeCollectionResults() throws Exception {
         String program = """
                 pub routine main(): void {
-                  val Vector<int> values = new Vector<int>();
+                  let mut Vector<int> values = new Vector<int>();
                   values.reserve(3);
                   values.push(21);
                   values.add(21);
@@ -244,7 +244,7 @@ final class HeapContainerBorrowParityTest {
     void guestVectorRuntimeGrowthEnforcesDeclaredMaximum() throws Exception {
         String program = """
                 pub routine main(): void {
-                  val Vector<max_capacity=2>[int] values =
+                  let mut Vector<max_capacity=2>[int] values =
                       new Vector<max_capacity=2>[int]();
                   values.push(21);
                   values.push(21);
@@ -287,6 +287,27 @@ final class HeapContainerBorrowParityTest {
                       return;
                     }
                     """.formatted(operation));
+        }
+    }
+
+    @Test
+    void vectorLiteralBindingCannotLoseCapacityQuota() throws Exception {
+        String program = """
+                pub routine main(): void {
+                  let mut Vector<max_capacity=2>[int] values = [21, 21];
+                  values.push(1);
+                  return;
+                }
+                """;
+        accepts(program);
+        Source source = Source.newBuilder(OresLanguage.ID, program, "bounded-vector-literal.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("max_capacity"),
+                    "literal must retain declared bound: " + failure.getMessage());
         }
     }
 }
