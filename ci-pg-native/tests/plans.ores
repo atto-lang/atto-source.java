@@ -1,0 +1,441 @@
+import module pg from '../src/pg';
+pub routine main(): void {
+  if pg.ident("x\";DROP TABLE runs;--") != "\"x\"\";DROP TABLE runs;--\"" then panic("identifier escape"); fi
+  if !pg.column("x", "text; DROP TABLE runs", false).is_err() then panic("type injection"); fi
+  if pg.column("optional", "jsonb", true).unwrap() != "\"optional\" jsonb" then panic("nullable column"); fi
+  if pg.column("required", "uuid", false).unwrap() != "\"required\" uuid NOT NULL" then panic("required column"); fi
+  val query = pg.find_in_workspace("runs", "hostile' OR true--", "id");
+  if query.params.get(0) != "hostile' OR true--" then panic("bound params"); fi
+  if query.sql != "SELECT * FROM \"runs\" WHERE workspace_id = $1::uuid AND id = $2::uuid" then panic("query SQL"); fi
+  if !pg.column("", "text", false).is_err() then panic("empty column identifier admitted"); fi
+  if !pg.invalid_identifier_surface("line\nbreak") then panic("LF identifier surface admitted"); fi
+  if !pg.invalid_identifier_surface("line\rbreak") then panic("CR identifier surface admitted"); fi
+  if !pg.invalid_identifier_surface("line\tbreak") then panic("TAB identifier surface admitted"); fi
+  // Independent C0/DEL input catalog: reject every ASCII control byte.
+  for (val control of arr["\u0000", "\u0001", "\u0002", "\u0003", "\u0004", "\u0005", "\u0006", "\u0007", "\u0008", "\t", "\n", "\u000b", "\u000c", "\r", "\u000e", "\u000f", "\u0010", "\u0011", "\u0012", "\u0013", "\u0014", "\u0015", "\u0016", "\u0017", "\u0018", "\u0019", "\u001a", "\u001b", "\u001c", "\u001d", "\u001e", "\u001f", "\u007f"]) {
+    if !pg.invalid_identifier_surface("name" + control + "suffix") then
+      panic("legacy identifier admitted ASCII control byte");
+    fi
+    if !pg.column("name" + control + "suffix", "uuid", false).is_err() then
+      panic("legacy column admitted ASCII control byte");
+    fi
+  }
+  if pg.invalid_identifier_surface("safe_identifier_09") then
+    panic("legacy identifier unexpectedly rejects safe ASCII");
+  fi
+  if !pg.column("line\nbreak", "text", false).is_err() then panic("LF column identifier admitted"); fi
+  if !pg.column("line\tbreak", "uuid", false).is_err() then panic("TAB column identifier admitted"); fi
+  if !pg.table_typed_pk("unsafe\rname", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"]).is_err() then panic("CR table identifier admitted"); fi
+  if pg.column("payload", "bytea", false).unwrap() != "\"payload\" bytea NOT NULL" then panic("bytea allowlist"); fi
+  val ddl = pg.table("safe\"name", arr[
+    pg.column("x", "bytea", false).unwrap()
+  ], arr["PRIMARY KEY (\"x\")"]);
+  if ddl != "CREATE TABLE \"safe\"\"name\" (\n  \"x\" bytea NOT NULL,\n  PRIMARY KEY (\"x\")\n);\n" then panic("DDL identifier quoting"); fi
+  val hostile_table = pg.find_in_workspace("runs\" JOIN secret ON true --", "w", "i");
+  if hostile_table.sql != "SELECT * FROM \"runs\"\" JOIN secret ON true --\" WHERE workspace_id = $1::uuid AND id = $2::uuid" then panic("query table quoting"); fi
+  if hostile_table.params.get(0) != "w" then panic("workspace bind/SQL separation"); fi
+  if hostile_table.params.get(1) != "i" then panic("id bind/SQL separation"); fi
+  val typed = pg.table_typed_pk("workflows", arr[
+    pg.column_spec("workspace_id", "uuid", false),
+    pg.column_spec("id", "uuid", false),
+    pg.column_spec("payload", "jsonb", true)
+  ], arr["workspace_id", "id"]);
+  if typed.is_err() then panic("typed DDL rejected admitted schema"); fi
+  if typed.unwrap() != "CREATE TABLE \"workflows\" (\n  \"workspace_id\" uuid NOT NULL,\n  \"id\" uuid NOT NULL,\n  \"payload\" jsonb,\n  PRIMARY KEY (\"workspace_id\", \"id\")\n);\n" then panic("typed DDL canonical SQL"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id", "text); DROP TABLE runs;--", false)
+  ], arr["id"]).is_err() then panic("typed DDL type injection"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["missing"]).is_err() then panic("undeclared primary-key column"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id", "uuid", true)
+  ], arr["id"]).is_err() then panic("nullable primary-key column admitted"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr[]).is_err() then panic("missing primary key admitted"); fi
+  if !pg.table_typed_pk("runs", arr[], arr["id"]).is_err() then panic("empty typed columns admitted"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id", "uuid", false), pg.column_spec("id", "uuid", false)
+  ], arr["id"]).is_err() then panic("duplicate typed columns"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id", "id"]).is_err() then panic("duplicate primary-key columns"); fi
+  if !pg.table_typed_pk("", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"]).is_err() then panic("empty table admitted"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("", "uuid", false)
+  ], arr[""]).is_err() then panic("empty typed column admitted"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr[""]).is_err() then panic("empty primary-key identifier admitted"); fi
+  // Checked DDL deliberately admits only simple ASCII identifiers.
+  if !pg.admitted_identifier("select") then panic("reserved word safe when quoted"); fi
+  if !pg.admitted_identifier("_Mixed09") then panic("safe mixed case identifier"); fi
+  if !pg.admitted_identifier("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") then panic("63-byte identifier rejected"); fi
+  if pg.table_typed_pk("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"]).is_err() then panic("63-byte typed table rejected"); fi
+  if pg.table_typed_pk("runs", arr[
+    pg.column_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "uuid", false)
+  ], arr["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]).is_err() then panic("63-byte typed column rejected"); fi
+  if pg.admitted_identifier("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") then panic("64-byte identifier admitted"); fi
+  if pg.admitted_identifier("runs\"; --") then panic("quote identifier admitted"); fi
+  if pg.admitted_identifier("schema.runs") then panic("qualified identifier admitted"); fi
+  if pg.admitted_identifier("é") then panic("unicode identifier admitted"); fi
+  if pg.admitted_identifier("nameé") then panic("unicode suffix admitted"); fi
+  if pg.admitted_identifier("Ωname") then panic("unicode prefix admitted"); fi
+  if pg.admitted_identifier("name|other") then panic("separator confusion admitted"); fi
+  if !pg.table_typed_pk("docsé", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"]).is_err() then panic("Unicode typed table identifier admitted"); fi
+  if !pg.find_in_workspace_plan_checked("runsé", "tenant-a", "record-1").is_err() then
+    panic("Unicode query table identifier admitted");
+  fi
+  if pg.admitted_identifier("\u0000") then panic("NUL identifier admitted"); fi
+  if pg.admitted_identifier("line\nbreak") then panic("LF identifier admitted"); fi
+  if pg.admitted_identifier("line\rbreak") then panic("CR identifier admitted"); fi
+  if pg.admitted_identifier("line\tbreak") then panic("TAB identifier admitted"); fi
+  if !pg.table_typed_pk("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"]).is_err() then panic("long typed table admitted"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "uuid", false)
+  ], arr["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]).is_err() then panic("long typed column admitted"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["schema.id"]).is_err() then panic("qualified typed key admitted"); fi
+  if !pg.table_typed_pk("runs\"; --", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"]).is_err() then panic("quoted typed table admitted"); fi
+  if !pg.table_typed_pk("runs", arr[
+    pg.column_spec("id\"", "uuid", false)
+  ], arr["id\""]).is_err() then panic("quoted typed column admitted"); fi
+  val checked_query = pg.find_in_workspace_checked("runs", "hostile' OR true--", "id");
+  if checked_query.is_err() then panic("safe workspace query table rejected"); fi
+  if checked_query.unwrap().sql != "SELECT * FROM \"runs\" WHERE workspace_id = $1::uuid AND id = $2::uuid" then panic("safe workspace query SQL"); fi
+  if checked_query.unwrap().params.get(0) != "hostile' OR true--" then panic("checked query value interpolation"); fi
+  if !pg.find_in_workspace_checked("schema.runs", "w", "i").is_err() then panic("qualified query table admitted"); fi
+  if !pg.find_in_workspace_checked("runs\"; --", "w", "i").is_err() then panic("quoted query table admitted"); fi
+  if !pg.find_in_workspace_checked("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "w", "i").is_err() then panic("long query table admitted"); fi
+  // Typed UNIQUE and FOREIGN KEY extensions never admit source SQL fragments.
+  val constrained = pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("workspace_id", "uuid", false),
+    pg.column_spec("id", "uuid", false),
+    pg.column_spec("external_id", "text", false)
+  ], arr["workspace_id", "id"], arr[
+    pg.constraint_unique(arr["workspace_id", "external_id"]),
+    pg.constraint_foreign_key(arr["workspace_id"], "workspaces", arr["id"])
+  ]);
+  if constrained.is_err() then panic("valid typed UNIQUE/FK rejected"); fi
+  if constrained.unwrap() != "CREATE TABLE \"docs\" (\n  \"workspace_id\" uuid NOT NULL,\n  \"id\" uuid NOT NULL,\n  \"external_id\" text NOT NULL,\n  PRIMARY KEY (\"workspace_id\", \"id\"),\n  UNIQUE (\"workspace_id\", \"external_id\"),\n  FOREIGN KEY (\"workspace_id\") REFERENCES \"workspaces\" (\"id\")\n);\n" then
+    panic("typed UNIQUE/FK golden SQL mismatch");
+  fi
+  val no_extras = pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[]);
+  val plain_pk = pg.table_typed_pk("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"]);
+  if no_extras.is_err() || plain_pk.is_err() then panic("empty constraint list rejected"); fi
+  if no_extras.unwrap() != plain_pk.unwrap() then panic("empty constraints changed PK SQL"); fi
+  if !pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[
+    pg.constraint_unique(arr["missing"])
+  ]).is_err() then panic("unknown UNIQUE local column admitted"); fi
+  if !pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[
+    pg.constraint_unique(arr["id", "id"])
+  ]).is_err() then panic("duplicate UNIQUE columns admitted"); fi
+  if !pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[
+    pg.constraint_unique(arr[])
+  ]).is_err() then panic("empty UNIQUE admitted"); fi
+  if !pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[
+    pg.constraint_unique(arr["id"]),
+    pg.constraint_unique(arr["id"])
+  ]).is_err() then panic("duplicate UNIQUE constraint admitted"); fi
+  if !pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[
+    pg.constraint_foreign_key(arr["id"], "workspaces", arr["id", "other"])
+  ]).is_err() then panic("foreign key arity mismatch admitted"); fi
+  if !pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[
+    pg.constraint_foreign_key(arr["id"], "workspaces; DROP TABLE docs;--", arr["id"])
+  ]).is_err() then panic("foreign key target SQL injection admitted"); fi
+  if !pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[
+    pg.constraint_foreign_key(arr["id"], "workspaces", arr["schema.id"])
+  ]).is_err() then panic("qualified FK referenced column admitted"); fi
+
+  // The renderer must distinguish different legal clauses and preserve order.
+  val distinct_rules = pg.table_typed_pk_constraints("records", arr[
+    pg.column_spec("workspace_id", "uuid", false),
+    pg.column_spec("id", "uuid", false),
+    pg.column_spec("code", "text", false)
+  ], arr["id"], arr[
+    pg.constraint_unique(arr["code"]),
+    pg.constraint_unique(arr["workspace_id", "code"]),
+    pg.constraint_foreign_key(arr["workspace_id"], "workspaces", arr["id"])
+  ]);
+  if distinct_rules.is_err() then panic("distinct constraint clauses incorrectly deduplicated"); fi
+  if distinct_rules.unwrap() != "CREATE TABLE \"records\" (\n  \"workspace_id\" uuid NOT NULL,\n  \"id\" uuid NOT NULL,\n  \"code\" text NOT NULL,\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"code\"),\n  UNIQUE (\"workspace_id\", \"code\"),\n  FOREIGN KEY (\"workspace_id\") REFERENCES \"workspaces\" (\"id\")\n);\n" then
+    panic("distinct constraint ordering or direct rendering changed");
+  fi
+  if !pg.table_typed_pk_constraints("records", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[
+    pg.constraint_foreign_key(arr["id"], "workspaces", arr["id", "id"])
+  ]).is_err() then panic("mismatched repeated reference targets admitted"); fi
+  if !pg.table_typed_pk_constraints("records", arr[
+    pg.column_spec("id", "uuid", false),
+    pg.column_spec("code", "text", false)
+  ], arr["id"], arr[
+    pg.constraint_foreign_key(arr["id", "code"], "workspaces", arr["id", "id"])
+  ]).is_err() then panic("duplicate foreign referenced columns admitted"); fi
+
+  // ConstraintSpec snapshots caller arrays before typed schema planning.
+  let mut Array<string> unique_names = arr["code"];
+  val unique_snapshot = pg.constraint_unique_borrowed(rt borrow unique_names);
+  unique_names.set(0, "not_declared");
+  // A returned accessor array is also a defensive copy, not the internal store.
+  val returned_unique_names = unique_snapshot.local_columns();
+  returned_unique_names.set(0, "also_not_declared");
+  val snap_unique_ddl = pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false),
+    pg.column_spec("code", "text", false)
+  ], arr["id"], arr[unique_snapshot]);
+  if snap_unique_ddl.is_err() then panic("UNIQUE constraint source-array mutation leaked"); fi
+  if snap_unique_ddl.unwrap() != "CREATE TABLE \"docs\" (\n  \"id\" uuid NOT NULL,\n  \"code\" text NOT NULL,\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"code\")\n);\n" then
+    panic("UNIQUE constraint source-array snapshot changed");
+  fi
+  let mut Array<string> local_fk_names = arr["id"];
+  let mut Array<string> remote_fk_names = arr["id"];
+  val fk_snapshot = pg.constraint_foreign_key_borrowed(rt borrow local_fk_names, "workspaces", rt borrow remote_fk_names);
+  local_fk_names.set(0, "other_local");
+  remote_fk_names.set(0, "other_remote");
+  val returned_fk_local = fk_snapshot.local_columns();
+  val returned_fk_remote = fk_snapshot.referenced_columns();
+  returned_fk_local.set(0, "returned_local_tamper");
+  returned_fk_remote.set(0, "returned_remote_tamper");
+  val snap_fk_ddl = pg.table_typed_pk_constraints("docs", arr[
+    pg.column_spec("id", "uuid", false)
+  ], arr["id"], arr[fk_snapshot]);
+  if snap_fk_ddl.is_err() then panic("FOREIGN KEY constraint source-array mutation leaked"); fi
+  if snap_fk_ddl.unwrap() != "CREATE TABLE \"docs\" (\n  \"id\" uuid NOT NULL,\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"id\") REFERENCES \"workspaces\" (\"id\")\n);\n" then
+    panic("FOREIGN KEY source-array snapshot changed");
+  fi
+  // QueryPlan hides its copied Array and exposes only typed scalar reads.
+  val checked_plan = pg.find_in_workspace_plan_checked("runs", "tenant-a", "run-1");
+  if checked_plan.is_err() then panic("checked plan rejected admitted table"); fi
+  if checked_plan.unwrap().sql != "SELECT * FROM \"runs\" WHERE workspace_id = $1::uuid AND id = $2::uuid" then
+    panic("checked plan SQL changed");
+  fi
+  if checked_plan.unwrap().param_count() != 2 then panic("checked plan parameter count"); fi
+  if checked_plan.unwrap().param_at(0).unwrap() != "tenant-a" then panic("checked plan tenant bind"); fi
+  if checked_plan.unwrap().param_at(1).unwrap() != "run-1" then panic("checked plan record bind"); fi
+  if !checked_plan.unwrap().param_at(-1).is_err() then panic("negative parameter index admitted"); fi
+  if !checked_plan.unwrap().param_at(2).is_err() then panic("out-of-range parameter index admitted"); fi
+  if !pg.find_in_workspace_plan_checked("schema.runs", "w", "i").is_err() then
+    panic("unchecked qualified table admitted to QueryPlan");
+  fi
+  // Prove actual copy-on-admission: changing the legacy array cannot mutate
+  // the new plan's private parameter snapshot.
+  let mut Array<string> legacy_params = arr["original-workspace", "record-1"];
+  val owned_snapshot = pg.snapshot_query_params_borrowed(
+    "SELECT * FROM \"runs\" WHERE workspace_id = $1::uuid AND id = $2::uuid",
+    rt borrow legacy_params);
+  legacy_params.set(0, "tampered-workspace");
+  legacy_params.set(1, "tampered-record");
+  if owned_snapshot.param_at(0).unwrap() != "original-workspace" then
+    panic("QueryPlan tenant parameter aliased source array");
+  fi
+  if owned_snapshot.param_at(1).unwrap() != "record-1" then
+    panic("QueryPlan record parameter aliased source array");
+  fi
+  // Typed bind metadata is independent of SQL text and remains actor-local.
+  val typed_bind_plan = pg.find_in_workspace_typed_plan_checked(
+    "runs", "hostile' OR true--", "record-1");
+  if typed_bind_plan.is_err() then panic("typed bind plan rejected admitted table"); fi
+  if typed_bind_plan.unwrap().sql != "SELECT * FROM \"runs\" WHERE workspace_id = $1::uuid AND id = $2::uuid" then
+    panic("typed bind SQL template changed");
+  fi
+  if typed_bind_plan.unwrap().param_count() != 2 then panic("typed bind count"); fi
+  val workspace_bind = typed_bind_plan.unwrap().param_at(0);
+  if workspace_bind.is_err() then panic("missing workspace typed bind"); fi
+  if workspace_bind.unwrap().kind != "uuid" then panic("workspace bind type tag"); fi
+  if workspace_bind.unwrap().scalar != "hostile' OR true--" then panic("workspace value changed"); fi
+  if workspace_bind.unwrap().is_null then panic("workspace unexpectedly NULL"); fi
+  if typed_bind_plan.unwrap().param_at(1).unwrap().scalar != "record-1" then
+    panic("record typed bind value changed");
+  fi
+  if !typed_bind_plan.unwrap().param_at(-1).is_err() then panic("negative typed bind index"); fi
+  if !typed_bind_plan.unwrap().param_at(2).is_err() then panic("out-of-range typed bind index"); fi
+  if !pg.find_in_workspace_typed_plan_checked("schema.runs", "w", "i").is_err() then
+    panic("qualified typed bind table admitted");
+  fi
+  if !pg.find_in_workspace_typed_plan_checked("runsé", "w", "i").is_err() then
+    panic("unicode typed bind table admitted");
+  fi
+  if !pg.checked_db_value("uuid; DROP TABLE runs;--", "x", false).is_err() then
+    panic("arbitrary bind type tag admitted");
+  fi
+  if !pg.checked_db_value("text", "nonempty", true).is_err() then
+    panic("NULL bind payload admitted");
+  fi
+  val safe_text_bind = pg.checked_db_value("text", "'); DROP TABLE runs;--", false);
+  if safe_text_bind.is_err() then panic("text parameter improperly rejected"); fi
+  if safe_text_bind.unwrap().scalar != "'); DROP TABLE runs;--" then
+    panic("text bind value changed");
+  fi
+  if pg.checked_db_value("bytea", "", true).is_err() then
+    panic("typed NULL bytea rejected");
+  fi
+  if pg.checked_db_value("text", "", false).is_err() then
+    panic("empty non-NULL text parameter rejected");
+  fi
+  // Caller mutation must not alter a previously planned immutable snapshot.
+  val mutable_typed_binds = arr[
+    pg.checked_db_value("uuid", "original-workspace", false).unwrap(),
+    pg.checked_db_value("uuid", "original-record", false).unwrap()
+  ];
+  val typed_snapshot = pg.workspace_typed_values_borrowed_checked("runs", rt borrow mutable_typed_binds);
+  if typed_snapshot.is_err() then panic("admitted typed bind snapshot rejected"); fi
+  mutable_typed_binds.set(0, pg.checked_db_value("uuid", "modified-workspace", false).unwrap());
+  mutable_typed_binds.set(1, pg.checked_db_value("uuid", "modified-record", false).unwrap());
+  if typed_snapshot.unwrap().param_at(0).unwrap().scalar != "original-workspace" then
+    panic("typed workspace value aliased caller array");
+  fi
+  if typed_snapshot.unwrap().param_at(1).unwrap().scalar != "original-record" then
+    panic("typed record value aliased caller array");
+  fi
+  if !pg.workspace_typed_values_checked("runs", arr[]).is_err() then
+    panic("empty typed workspace binds admitted");
+  fi
+  if !pg.workspace_typed_values_checked("runs", arr[
+    pg.checked_db_value("uuid", "only-one", false).unwrap()
+  ]).is_err() then panic("one typed workspace bind admitted"); fi
+  if !pg.workspace_typed_values_checked("runs", arr[
+    pg.checked_db_value("text", "not-a-uuid-tag", false).unwrap(),
+    pg.checked_db_value("uuid", "record-id", false).unwrap()
+  ]).is_err() then panic("wrong typed bind tag admitted"); fi
+  if !pg.workspace_typed_values_checked("runs", arr[
+    pg.checked_db_value("uuid", "", true).unwrap(),
+    pg.checked_db_value("uuid", "record-id", false).unwrap()
+  ]).is_err() then panic("NULL typed workspace bind admitted"); fi
+  // Actor-owned connection lease / transaction fencing contract.
+  val acquired_lease = pg.acquire_connection_checked(
+    "conn_1", "actor-A", 3, 7, "tenant_a");
+  if acquired_lease.is_err() then panic("valid connection lease rejected"); fi
+  val acquired_state = acquired_lease.unwrap();
+  if !pg.same_connection_authority(rt borrow acquired_state, "actor-A", 3, 7) then
+    panic("valid connection authority rejected");
+  fi
+  if pg.same_connection_authority(rt borrow acquired_state, "actor-B", 3, 7) then
+    panic("foreign actor admitted to connection lease");
+  fi
+  if pg.same_connection_authority(rt borrow acquired_state, "actor-A", 2, 7) then
+    panic("stale actor generation admitted to connection lease");
+  fi
+  if pg.same_connection_authority(rt borrow acquired_state, "actor-A", 3, 6) then
+    panic("stale pool lease generation admitted");
+  fi
+  if !pg.acquire_connection_checked("conn_1", "actor-A", 3, 7, "tenant-a").is_err() then
+    panic("unadmitted PostgreSQL tenant role accepted");
+  fi
+
+  val active_txn = pg.begin_transaction_checked(
+    rt borrow acquired_state, "actor-A", 3, 7);
+  if active_txn.is_err() then panic("valid transaction begin rejected"); fi
+  val active_state = active_txn.unwrap();
+  if active_state.phase != "active" then panic("transaction did not become active"); fi
+  if !pg.begin_transaction_checked(
+    rt borrow active_state, "actor-A", 3, 7).is_err() then
+    panic("double transaction begin admitted");
+  fi
+  if !pg.release_connection_checked(
+    rt borrow active_state, "actor-A", 3, 7).is_err() then
+    panic("active transaction connection released");
+  fi
+
+  val abort_marked = pg.mark_actor_abort_checked(
+    rt borrow active_state, "actor-A", 3, 7);
+  if abort_marked.is_err() then panic("actor abort quarantine rejected"); fi
+  val rollback_required = abort_marked.unwrap();
+  if rollback_required.phase != "rollback_required" then
+    panic("actor abort did not require rollback");
+  fi
+  if !pg.release_connection_checked(
+    rt borrow rollback_required, "actor-A", 3, 7).is_err() then
+    panic("rollback-required connection released");
+  fi
+  if !pg.acknowledge_abort_rollback_checked(
+    rt borrow rollback_required, "actor-B", 3, 7).is_err() then
+    panic("foreign actor acknowledged rollback");
+  fi
+  val rolled_back = pg.acknowledge_abort_rollback_checked(
+    rt borrow rollback_required, "actor-A", 3, 7);
+  if rolled_back.is_err() then panic("rollback acknowledgement rejected"); fi
+  val rolled_back_state = rolled_back.unwrap();
+  if rolled_back_state.phase != "rolled_back" then panic("rollback phase mismatch"); fi
+
+  val released = pg.release_connection_checked(
+    rt borrow rolled_back_state, "actor-A", 3, 7);
+  if released.is_err() then panic("clean rolled-back connection release rejected"); fi
+  val released_state = released.unwrap();
+  if released_state.phase != "released" then panic("connection release phase mismatch"); fi
+  if pg.same_connection_authority(rt borrow released_state, "actor-A", 3, 7) then
+    panic("released connection retained execution authority");
+  fi
+  if !pg.reassign_released_connection_checked(
+    rt borrow released_state, "actor-B", 4, 7, "tenant_b").is_err() then
+    panic("non-monotone lease generation admitted");
+  fi
+  val reassigned = pg.reassign_released_connection_checked(
+    rt borrow released_state, "actor-B", 4, 8, "tenant_b");
+  if reassigned.is_err() then panic("monotone connection reassignment rejected"); fi
+  val reassigned_state = reassigned.unwrap();
+  if pg.same_lease_identity(rt borrow reassigned_state, rt borrow released_state) then
+    panic("stale released lease matched reassigned connection");
+  fi
+  if !pg.same_connection_authority(rt borrow reassigned_state, "actor-B", 4, 8) then
+    panic("new actor generation did not acquire reassigned connection");
+  fi
+  if pg.same_connection_authority(rt borrow reassigned_state, "actor-A", 3, 7) then
+    panic("old actor regained authority after pool reassignment");
+  fi
+
+  // Successful commit still requires an explicit transport acknowledgement
+  // before the connection may be released.
+  val commit_lease = pg.acquire_connection_checked(
+    "conn_2", "actor-C", 9, 20, "tenant_c").unwrap();
+  val commit_active = pg.begin_transaction_checked(
+    rt borrow commit_lease, "actor-C", 9, 20).unwrap();
+  if !pg.acknowledge_commit_checked(
+    rt borrow commit_lease, "actor-C", 9, 20).is_err() then
+    panic("commit acknowledged without active transaction");
+  fi
+  val committed = pg.acknowledge_commit_checked(
+    rt borrow commit_active, "actor-C", 9, 20);
+  if committed.is_err() then panic("active commit acknowledgement rejected"); fi
+  val committed_state = committed.unwrap();
+  if committed_state.phase != "committed" then panic("commit phase mismatch"); fi
+  if pg.release_connection_checked(
+    rt borrow committed_state, "actor-C", 9, 20).is_err() then
+    panic("committed connection release rejected");
+  fi
+
+  stdio.println("Postgres SQL planning contracts passed");
+  return;
+}
