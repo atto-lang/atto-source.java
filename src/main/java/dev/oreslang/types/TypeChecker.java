@@ -1699,6 +1699,11 @@ public final class TypeChecker {
         for (Ast.TypeRef interfaceRef : klass.interfaces()) {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             if (interfaceRef.name().equals("StreamOperator")) {
+                if (klass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "StreamOperator<I,O> is an actor-only implements marker; class '"
+                                    + klass.name() + "' cannot claim actor transport capabilities");
+                }
                 streamPortsForClass(klass, nominalClassType(klass));
                 continue;
             }
