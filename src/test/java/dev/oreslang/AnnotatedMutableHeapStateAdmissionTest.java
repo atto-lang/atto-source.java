@@ -46,6 +46,33 @@ final class AnnotatedMutableHeapStateAdmissionTest {
     }
 
     @Test
+    void angle_annotation_arguments_cannot_bypass_injected_state_gate() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        @Inject<MutableStateContainer()>
+                        define class Counter as
+                          let int value = 0;
+                        end
+                        """));
+        assertTrue(error.getMessage().contains("@Inject"), error::getMessage);
+        assertTrue(error.getMessage().contains("not implemented"), error::getMessage);
+    }
+
+    @Test
+    void injected_mutable_state_with_whitespace_still_rejects() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        @Inject (
+                          MutableStateContainer()
+                        )
+                        define class Counter as
+                          let int value = 0;
+                        end
+                        """));
+        assertTrue(error.getMessage().contains("@Inject"), error::getMessage);
+    }
+
+    @Test
     void borrowed_heap_object_cannot_be_written_through_another_alias() {
         String source = """
                 define class Inventory as
