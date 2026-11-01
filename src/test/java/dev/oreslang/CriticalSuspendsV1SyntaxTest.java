@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -44,16 +46,42 @@ final class CriticalSuspendsV1SyntaxTest {
                 "critical callable requires");
     }
 
-    @Test void unloweredCriticalBlockIsNotAnOrdinaryBlock() {
-        rejectsWith("pub suspends fnc work(): void { critical { return; } }",
-                "critical block requires");
-        rejectsWith("pub fnc work(): void { critical { return; } }",
-                "critical block requires");
+    @Test void criticalBlockHasDistinctAstAndCannotExecuteWithoutLowering() {
+        String async = "pub suspends fnc work(): void { critical { return; } }";
+        Ast.FunctionDecl parsed = (Ast.FunctionDecl) Parser.parse(async)
+                .modules().getFirst().declarations().getFirst();
+        Ast.CriticalStmt critical = assertInstanceOf(
+                Ast.CriticalStmt.class, parsed.body().getFirst());
+        assertEquals(1, critical.body().size());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(async));
+        assertTrue(failure.getMessage().contains(
+                "critical block awaits scheduler-owned gate admission"), failure::toString);
+
+        String sync = "pub fnc work(): void { critical { return; } }";
+        assertInstanceOf(Ast.CriticalStmt.class,
+                ((Ast.FunctionDecl) Parser.parse(sync).modules().getFirst()
+                        .declarations().getFirst()).body().getFirst());
+        failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(sync));
+        assertTrue(failure.getMessage().contains(
+                "critical block may suspend on entry"), failure::toString);
     }
 
-    @Test void unloweredTryCriticalIsNotATryStatementOrFunctionCall() {
-        rejectsWith("pub fnc work(): void { try critical { return; } else { return; } }",
-                "try critical requires");
+    @Test void tryCriticalIsDistinctFromTryCatchAndRequiresElse() {
+        String source = "pub fnc work(): void { try critical { return; } else { return; } }";
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) Parser.parse(source)
+                .modules().getFirst().declarations().getFirst();
+        Ast.TryCriticalStmt guarded = assertInstanceOf(
+                Ast.TryCriticalStmt.class, fn.body().getFirst());
+        assertEquals(1, guarded.body().size());
+        assertEquals(1, guarded.elseBody().size());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains(
+                "try critical requires immediate nonblocking ticket"), failure::toString);
+        rejectsWith("pub fnc work(): void { try critical { return; } }",
+                "try critical requires 'else");
     }
 
     @Test void CriticalWordsInCommentsDoNotChangeExecution() {
