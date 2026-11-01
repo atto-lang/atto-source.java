@@ -1575,10 +1575,20 @@ public final class Parser {
                 if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
                 visibilitySeen = true;
                 visibility = Ast.Visibility.PRIVATE;
-            } else if (match(ASYNC)) {
-                if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
-                asyncSeen = true;
-                async = true;
+            } else if (check(ASYNC)) {
+                // Critical/suspends v1: only 'suspends' expresses suspension.
+                // Reject rather than silently rewriting old Future semantics.
+                throw error(peek(), "'async' callable modifier is removed; use 'suspends' and explicitly migrate call/await semantics");
+            } else if (check(IDENT) && peek().lexeme().equals("critical")) {
+                // Do not admit a critical callable before scheduler-owned admission,
+                // release-on-trap and transitive no-suspension checks exist.
+                Token critical = peek();
+                if (suspends || (current + 1 < tokens.size()
+                        && (tokens.get(current + 1).type() == SUSPENDS
+                        || tokens.get(current + 1).lexeme().equals("suspend")))) {
+                    throw error(critical, "'critical suspends' is forbidden: critical bodies cannot suspend");
+                }
+                throw error(critical, "critical callable requires non-suspending body verification and scheduler-owned ticket lowering");
             } else if (match(SUSPENDS) || matchContextualSuspendModifier()) {
                 if (suspendsSeen) throw error(previous(), "duplicate 'suspends' modifier");
                 suspendsSeen = true;
@@ -2167,6 +2177,16 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        if (check(IDENT) && peek().lexeme().equals("critical") && checkNext(LBRACE)) {
+            // Do not parse a bare block or perform an unguarded mutation when
+            // the critical guard cannot be acquired by a suspended continuation.
+            throw error(peek(), "critical block requires scheduler-owned nonblocking admission, scoped release and no-suspension verification");
+        }
+        if (check(IDENT) && peek().lexeme().equals("try")
+                && current + 1 < tokens.size()
+                && tokens.get(current + 1).lexeme().equals("critical")) {
+            throw error(peek(), "try critical requires an immediate nonblocking guard-lowering implementation");
+        }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
