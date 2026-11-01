@@ -22,7 +22,7 @@ final class ActorIoIntrinsicTest {
     @Test
     void actorIoOutIsIntrinsicAndAwaitable() throws Exception {
         check("""
-                pub suspends actor fnc worker(string value) -> void {
+                pub suspends actor fnc worker(String value) -> void {
                   await io.out.write(value);
                   return;
                 }
@@ -42,7 +42,7 @@ final class ActorIoIntrinsicTest {
         }) {
             PolyglotException failure = assertThrows(PolyglotException.class, () ->
                     check("""
-                            pub actor fnc worker(string value) -> void {
+                            pub actor fnc worker(String value) -> void {
                               %s
                               return;
                             }
@@ -73,7 +73,7 @@ final class ActorIoIntrinsicTest {
     void unimplementedActorChannelsFailClosed() {
         PolyglotException failure = assertThrows(PolyglotException.class, () ->
                 check("""
-                        pub suspends actor fnc worker(string value) -> void {
+                        pub suspends actor fnc worker(String value) -> void {
                           await io.err.write(value);
                           return;
                         }
@@ -108,7 +108,7 @@ final class ActorIoIntrinsicTest {
     void actorIoOutWriteCannotBeCapturedOrDiscarded() {
         PolyglotException capture = assertThrows(PolyglotException.class, () ->
                 check("""
-                        pub actor fnc worker(string value) -> void {
+                        pub actor fnc worker(String value) -> void {
                           val writer = io.out.write;
                           return;
                         }
@@ -121,7 +121,7 @@ final class ActorIoIntrinsicTest {
 
         PolyglotException discarded = assertThrows(PolyglotException.class, () ->
                 check("""
-                        pub suspends actor fnc worker(string value) -> void {
+                        pub suspends actor fnc worker(String value) -> void {
                           io.out.write(value);
                           return;
                         }
@@ -144,7 +144,7 @@ final class ActorIoIntrinsicTest {
                           }
                         end
 
-                        pub suspends actor fnc worker(string value) -> void {
+                        pub suspends actor fnc worker(String value) -> void {
                           await io.out.write(spawn Child());
                           return;
                         }
