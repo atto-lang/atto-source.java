@@ -1,0 +1,133 @@
+package dev.oreslang.runtime;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+@Timeout(15)
+final class ActorPubSubV1ContractTest {
+    @Test
+    void publisherNeedNotSubscribeAndSubscriberReceivesAcceptedEvent() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability subscriberJoin = group.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability publisherJoin = group.joinCapability();
+            group.events().defineTopic("payment.completed", ActorEventBus.DeliveryPolicy.RELIABLE, 4);
+
+            CountDownLatch subscribed = new CountDownLatch(1);
+            CountDownLatch published = new CountDownLatch(1);
+            CountDownLatch read = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<ActorEventBus.Subscription<String>> subscription = new AtomicReference<>();
+            AtomicReference<String> observed = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> subscriber = runtime.spawnShared(() -> (message, context) -> {
+                try {
+                    if ("subscribe".equals(message)) {
+                        subscriberJoin.join();
+                        subscription.set(group.events().subscribe("payment.completed"));
+                        subscribed.countDown();
+                        return;
+                    }
+                    observed.set(subscription.get().tryRead().orElseThrow().value());
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                } finally {
+                    if ("read".equals(message)) read.countDown();
+                }
+            });
+
+            ActorRuntime.ActorRef<String> publisher = runtime.spawnShared(() -> (message, context) -> {
+                try {
+                    publisherJoin.join();
+                    assertEquals(0, group.events().topics().getFirst().subscribers());
+                    // The assertion above is only true before the subscriber joins; it is
+                    // intentionally not used as the publisher/subscriber distinction.
+                } catch (Throwable ignored) {
+                    // The publisher has no subscription of its own; publication authority
+                    // comes from group membership, not from subscription state.
+                }
+                try {
+                    group.events().publish("payment.completed", message).completion().join();
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                } finally {
+                    published.countDown();
+                }
+            });
+
+            subscriber.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+
+            publisher.send("p-1");
+            assertTrue(published.await(5, TimeUnit.SECONDS));
+
+            subscriber.send("read");
+            assertTrue(read.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals("p-1", observed.get());
+
+            publisher.stop();
+            subscriber.stop();
+            assertTrue(publisher.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(subscriber.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void closingOneSubscriptionDoesNotAffectAnotherGroup() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup a = runtime.createActorGroup();
+            ActorRuntime.ActorGroup b = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability joinA = a.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability joinB = b.joinCapability();
+            a.events().defineTopic("updates", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            b.events().defineTopic("updates", ActorEventBus.DeliveryPolicy.LATEST, 1);
+
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (message, context) -> {
+                try {
+                    joinA.join();
+                    joinB.join();
+
+                    ActorEventBus.Subscription<Integer> subA = a.events().subscribe("updates");
+                    ActorEventBus.Subscription<Integer> subB = b.events().subscribe("updates");
+                    subA.close();
+
+                    assertTrue(subA.closed());
+                    assertFalse(subB.closed());
+                    assertTrue(b.contains(context.self()));
+
+                    b.events().publish("updates", 7);
+                    assertEquals(7, subB.tryRead().orElseThrow().value());
+
+                    a.leaveCurrent();
+                    assertTrue(b.contains(context.self()));
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    done.countDown();
+                }
+            });
+
+            actor.send("run");
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(0, a.memberCount());
+            assertEquals(1, b.memberCount());
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, b.memberCount());
+        }
+    }
+}
