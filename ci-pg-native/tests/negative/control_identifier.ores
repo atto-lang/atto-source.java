@@ -1,0 +1,8 @@
+// Negative guest: C0 control bytes must fail before emitting any identifier SQL.
+import module pg from '../../src/pg';
+pub routine main(): void {
+  stdio.println("PG_NEGATIVE_CONTROL_IDENTIFIER_STARTED");
+  val sql = pg.ident("bad\u0001name");
+  stdio.println(sql);
+  return;
+}
