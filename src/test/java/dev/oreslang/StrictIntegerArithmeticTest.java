@@ -194,6 +194,47 @@ final class StrictIntegerArithmeticTest {
     }
 
     @Test
+    void guestRemainderAndModulusMatrixMatchesIndependentExactOracle() throws Exception {
+        // Cross-backend signed64 edge matrix: expected values come from
+        // BigInteger, not the StrictIntegerArithmetic production helper.
+        long[] numerators = {
+                Long.MIN_VALUE, Long.MIN_VALUE + 1, -9, -1, 0,
+                1, 9, Long.MAX_VALUE - 1, Long.MAX_VALUE
+        };
+        long[] denominators = {
+                Long.MIN_VALUE, -17, -4, -1, 1, 3, 17, Long.MAX_VALUE
+        };
+        StringBuilder source = new StringBuilder("pub routine main(): void {\n");
+        StringBuilder expected = new StringBuilder();
+        for (long numerator : numerators) {
+            for (long denominator : denominators) {
+                BigInteger exactRem = BigInteger.valueOf(numerator)
+                        .remainder(BigInteger.valueOf(denominator));
+                BigInteger exactMod = exactRem.signum() < 0
+                        ? exactRem.add(BigInteger.valueOf(denominator).abs())
+                        : exactRem;
+                source.append("stdio.println(Integer.rem(")
+                        .append(numerator).append(", ").append(denominator)
+                        .append("));\n");
+                source.append("stdio.println(Integer.mod(")
+                        .append(numerator).append(", ").append(denominator)
+                        .append("));\n");
+                expected.append(exactRem).append('\n');
+                expected.append(exactMod).append('\n');
+            }
+        }
+        source.append("return;\n}\n");
+        Path entry = temp.resolve("named-rem-mod-matrix.ores");
+        Files.writeString(entry, source.toString());
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals(expected.toString(), out.toString(StandardCharsets.UTF_8),
+                "guest rem/mod signed64 matrix must match the independent oracle");
+    }
+
+    @Test
     void guestMathUnaryPreservesBinary64SignAndFractionSemantics() throws Exception {
         Path entry = temp.resolve("math-float.ores");
         Files.writeString(entry, """
