@@ -223,6 +223,45 @@ final class ScalarCastInferenceParityTest {
         }
     }
 
+    @Test void immutableSnapshotsSurviveExplicitLetRebinding() {
+        // These six programs match the native LLVM, wasm32, .NET and
+        // independent Cranelift scalar SSA conformance candidates.
+        for (String body : new String[] {
+                "let x=7; x=x+1; x=x+34; const int result=x;",
+                "let x=7; const snap=x; x=42; const int result=snap+35;",
+                "let x=7; val snap=x; x=42; const int result=snap+35;",
+                "let x=7; const snap=x as int; x=42; const int result=snap+35;",
+                "let x=7 as int; x=(x+35) as int; const int result=x;",
+                "const base=7; let x=base; x=42; const int result=x;"
+        }) accepts(body);
+        rejects("let x=7; const snap=x; x=42; snap=8;");
+        rejects("let x=7; val snap=x; x=42; snap=8;");
+        rejects("let x=7 as int; x=true;");
+        rejects("const x=7; x=42 as int;");
+    }
+
+    @Test void graalGuestPreservesImmutableSnapshotAcrossLetWrite() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  let x = 7;
+                  const fixed = x as int;
+                  x = 42;
+                  stdio.println(fixed + 35);
+                  stdio.println(x);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = Source.newBuilder(OresLanguage.ID, source, "ssa-snapshot.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertDoesNotThrow(() -> context.eval(program));
+        }
+        String printed = output.toString(StandardCharsets.UTF_8);
+        assertTrue(printed.contains("42"), printed);
+    }
+
     @Test void bothFormsProduceTheSameGuestValue() throws Exception {
         String source = """
                 pub fnc main(): void {
