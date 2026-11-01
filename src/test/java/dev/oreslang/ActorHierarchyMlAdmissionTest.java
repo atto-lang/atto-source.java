@@ -4,6 +4,18 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.LinkedProgramRunner;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -12,7 +24,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * refuses to count parser success as runtime or ML/autograd support.
  * Review against actor protocol PR #185 and sealed-state PR #1804.
  */
+@Timeout(45)
 final class ActorHierarchyMlAdmissionTest {
+    @TempDir Path temporary;
     @Test
     void defineActorNormalizesToSharedNominalClassWithoutAmbientSuperpowers() {
         Ast.Program source = Parser.parse("""
@@ -91,5 +105,25 @@ final class ActorHierarchyMlAdmissionTest {
                     () -> TypeChecker.check(Parser.parse(source)),
                     "Staged actor-state/model grammar must not silently imply executable ownership");
         }
+    }
+
+    @Test
+    void identicalSharedScalarGradientSourceExecutesInActualGraalGuest() throws Exception {
+        byte[] bytes;
+        try (InputStream stream = getClass().getResourceAsStream(
+                "/parity/actor-ml-scalar-step.ores")) {
+            assertNotNull(stream, "shared source fixture must be packaged");
+            bytes = stream.readAllBytes();
+        }
+        assertEquals("37dfb0ba856762dc656b628a085684558e5ac1d0392ccd6947d6ccdc35ed7d8e",
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+                "identical guest source is mandatory across all five toolchains");
+        Path source = temporary.resolve("actor-ml-scalar-step.ores");
+        Files.write(source, bytes);
+        var result = LinkedProgramRunner.runWithExitStatus(
+                source, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(42, result.exitStatus(),
+                "real Java/Graal Oreslang guest must return the native scalar step 42");
     }
 }
