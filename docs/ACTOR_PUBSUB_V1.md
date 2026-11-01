@@ -4,7 +4,7 @@ Status: normative in-memory actor-runtime contract.
 
 Oreslang pub/sub is a capability of actors, not a new actor declaration kind. Do
 not add `define publisher` or `define subscriber`. The source model is built
-from `ActorGroup<T>`, `Topic<T>`, `Subscription<T>`, and
+from `ActorGroup`, `Topic<T>`, `Subscription<T>`, and
 `PublishReceipt`.
 
 ## Source model
@@ -17,37 +17,35 @@ A publisher does not need to subscribe. A subscriber must explicitly subscribe
 and must be an authorized member of the topic's scope. Leaving one group closes
 only subscriptions owned by that group.
 
-Target source spelling:
+Current v1 source spelling:
 
 ```ores
-const payments = ActorGroup.named("payments");
-const completed = payments.topic<PaymentCompleted>(
+val payments = actor.group("payments");
+val completed = payments.topic<String>(
   "payment.completed",
-  TopicPolicy.reliable(capacity: 64)
+  "reliable",
+  64
 );
 
-define isolated actor AuditWorker as
-  state seen: int = 0;
+// Root/supervisor authority explicitly admits an actor.
+val audit = spawn AuditWorker();
+await audit.get_ready();
+payments.join(audit);
 
-  handle_state on_payment(event: PaymentCompleted): void {
-    critical {
-      seen = seen + 1;
-    }
-  }
-end
+// Inside the already-admitted shared actor:
+val actorPayments = actor.group("payments");
+val subscription =
+  actorPayments.topic<String>("payment.completed").subscribe();
+val event = await subscription.next();
+subscription.close();
 
-const audit = spawn AuditWorker();
-await payments.join(audit);
-const sub = await completed.subscribe(audit, AuditWorker.on_payment);
-
-await completed.publish(PaymentCompleted {
-  payment_id: "p-1",
-  amount: 250
-});
-
-await sub.close();
-await payments.leave(audit);
+// Publishing is independent of subscribing.
+await completed.publish("p-1");
 ```
+
+`ActorGroup` is intentionally not generic: one cooperation group can own many
+independently typed topics. `Topic<T>` and `Subscription<T>` carry the payload
+type. A group name is discovery only and never grants membership.
 
 The exact parser/lowering spelling may evolve, but the semantic model above is
 normative. No compiler may reinterpret group membership as supervision.
