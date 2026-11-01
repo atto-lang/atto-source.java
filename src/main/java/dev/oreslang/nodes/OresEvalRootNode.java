@@ -1896,6 +1896,9 @@ public final class OresEvalRootNode extends RootNode {
         private boolean statementContainsPotentialSuspension(
                 Ast.Stmt stmt,
                 Set<Object> seen) {
+            // Critical admission may park even when its body is synchronous.
+            if (stmt instanceof Ast.CriticalStmt || stmt instanceof Ast.TryCriticalStmt)
+                return true;
             if (stmt instanceof Ast.SelectStmt select) {
                 return select.mode() != Ast.WaitMode.IMMEDIATE
                         || select.arms().stream()
@@ -2473,6 +2476,9 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.CriticalStmt || stmt instanceof Ast.TryCriticalStmt)
+                    throw new IllegalStateException(
+                            "critical source requires scheduler-owned admission and lexical guard unwind");
                 if (stmt instanceof Ast.UsingBorrowStmt) {
                     throw new IllegalStateException(
                             "using request.borrow() as view is not executable without checked loan cleanup");
@@ -6201,6 +6207,10 @@ public final class OresEvalRootNode extends RootNode {
             // Defense in depth: source can reach this evaluator through host
             // adapters that do not run the normal TypeChecker on every call.
             // Never silently ignore an unlowered scoped resource statement.
+            if (stmt instanceof Ast.CriticalStmt || stmt instanceof Ast.TryCriticalStmt) {
+                throw new IllegalStateException(
+                        "critical source requires scheduler-owned admission and lexical guard unwind");
+            }
             if (stmt instanceof Ast.UsingBorrowStmt) {
                 throw new IllegalStateException(
                         "using request.borrow() as view is not executable without checked loan cleanup");
