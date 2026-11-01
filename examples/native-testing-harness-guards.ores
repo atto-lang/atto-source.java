@@ -64,5 +64,30 @@ pub routine main(): void {
   if negative_tolerance.passed; do
     rt fail("negative tolerance incorrectly passed");
   fi
+  // Positive and negative boundary checks for typed native assertions.
+  if !expect_false(false, "false accepted").passed; do
+    rt fail("expect_false rejected false");
+  fi
+  if expect_false(true, "true rejected").passed; do
+    rt fail("expect_false accepted true");
+  fi
+  if !expect_equal_bool(false, false, "false equality").passed; do
+    rt fail("false equality rejected");
+  fi
+  if !expect_not_equal_int(-1, 0, "signed inequality").passed; do
+    rt fail("signed inequality rejected");
+  fi
+  if expect_not_equal_int(-1, -1, "signed identity").passed; do
+    rt fail("signed identity accepted as unequal");
+  fi
+  if !expect_not_equal_string("", "x", "empty vs nonempty").passed; do
+    rt fail("empty/nonempty strings treated as equal");
+  fi
+  if expect_not_equal_string("", "", "empty identity").passed; do
+    rt fail("two empty strings treated as unequal");
+  fi
+  if !expect_near_float(1.0, 1.0, 0.0, "exact zero tolerance").passed; do
+    rt fail("exact equality at zero tolerance rejected");
+  fi
   return;
 }
