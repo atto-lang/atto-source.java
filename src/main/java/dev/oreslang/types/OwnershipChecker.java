@@ -1691,11 +1691,21 @@ public final class OwnershipChecker {
                 if (actorSelf == null || !isActorConfinedBorrow(actorSelf)) {
                     throw error("self.handle_state is only available on an actor-owned self borrow");
                 }
-                if (call.arguments().size() != 1
-                        || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
-                    throw error("self.handle_state expects exactly one inline lexical lambda");
+                boolean mutableLoan = true; // legacy one-lambda compatibility is write.
+                Ast.LambdaExpr lambda;
+                if (call.arguments().size() == 2
+                        && call.arguments().getFirst() instanceof Ast.CriticalStateModeExpr mode
+                        && call.arguments().get(1) instanceof Ast.LambdaExpr scoped) {
+                    mutableLoan = mode.mode() == Ast.StateLoanMode.WRITE;
+                    lambda = scoped;
+                } else if (call.arguments().size() == 1
+                        && call.arguments().getFirst() instanceof Ast.LambdaExpr legacy) {
+                    lambda = legacy;
+                } else {
+                    throw error("self.handle_state requires critical[read] or critical[write] "
+                            + "and exactly one inline lexical lambda");
                 }
-                checkActorStateLoanLambda(lambda, scope);
+                checkActorStateLoanLambda(lambda, scope, mutableLoan);
                 return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
             }
 
@@ -2847,7 +2857,10 @@ public final class OwnershipChecker {
                 + "'; returned borrows must originate from an incoming borrowed parameter/receiver so they cannot outlive their owner");
     }
 
-    private void checkActorStateLoanLambda(Ast.LambdaExpr lambda, Scope outer) {
+    private void checkActorStateLoanLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            boolean mutableLoan) {
         if (lambda.nonLexical()) {
             throw error("self.handle_state callback must be lexical");
         }
@@ -2856,7 +2869,7 @@ public final class OwnershipChecker {
         }
         Ast.Param original = lambda.parameters().getFirst();
         Ast.Param loanParam = new Ast.Param(
-                Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), true),
+                Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), mutableLoan),
                 original.name(),
                 false,
                 false);
