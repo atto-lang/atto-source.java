@@ -31,7 +31,7 @@ if [[ "$common_status" -ne 42 || -s "$common_out" ]]; then
   exit 1
 fi
 rm -f "$common_out" "$common_err"
-printf 'SG_JAVA_COMMON_SCALAR_NATIVE_PASS blob=%s guest_exit=42 source_only=no\n' \\
+printf 'SG_JAVA_COMMON_SCALAR_NATIVE_PASS blob=%s guest_exit=42 source_only=no\n' \
   "$(git rev-parse "HEAD:$shared")"
 
 for name in scalar branch nominal; do
