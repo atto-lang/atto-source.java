@@ -2285,11 +2285,13 @@ public final class Parser {
             Ast.Expr initializer = parseExpression();
             consumeExpressionStatementTerminator(initializer,
                     "immutable type-first local should end with ';'");
-            // On Copy scalar values this is the same fixed readonly value
-            // and checked inference as a const-annotated binding. General
-            // mutable referents need a distinct normative ownership audit.
+            // Runtime readonly single-assignment, unlike explicit
+            // standalone const's compile-time-constant contract. VAL is
+            // fixed but normally grants mutable referent access; override
+            // that permission to false for these Copy scalar bindings.
+            // The general nominal/reference binding case remains gated.
             return new Ast.BindingStmt(
-                    Ast.BindingKind.CONST, type, name, initializer, false, null);
+                    Ast.BindingKind.VAL, type, name, initializer, false, null);
         }
         if (check(LBRACKET) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.SEQUENCE, null, false);
