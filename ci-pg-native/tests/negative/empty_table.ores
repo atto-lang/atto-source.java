@@ -1,0 +1,8 @@
+// Negative guest oracle: execution must fail rather than emit malformed DDL.
+import module pg from '../../src/pg';
+pub routine main(): void {
+  stdio.println("PG_NEGATIVE_EMPTY_TABLE_STARTED");
+  val sql = pg.table("no_columns", arr[], arr[]);
+  stdio.println(sql);
+  return;
+}
