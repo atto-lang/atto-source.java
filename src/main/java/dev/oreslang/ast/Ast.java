@@ -669,7 +669,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, CriticalStmt, TryCriticalStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     /**
@@ -759,6 +759,28 @@ public final class Ast {
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+    }
+
+    /**
+     * May suspend only while entering the scheduler-owned gate. Every statement
+     * in the body must be proved non-suspending (including indirect calls).
+     * This is NOT a BlockStmt: generic block execution must never lose the
+     * critical admission and lexical cleanup semantics.
+     */
+    public record CriticalStmt(List<Stmt> body) implements Stmt {
+        public CriticalStmt { body = List.copyOf(body); }
+    }
+
+    /**
+     * Immediate non-queuing critical attempt. If no ticket can be acquired,
+     * the else branch runs without ownership; neither branch may suspend.
+     * Requires a true scheduler ticket/guard and is not executable by default.
+     */
+    public record TryCriticalStmt(List<Stmt> body, List<Stmt> elseBody) implements Stmt {
+        public TryCriticalStmt {
+            body = List.copyOf(body);
+            elseBody = List.copyOf(elseBody);
+        }
     }
 
     /**
