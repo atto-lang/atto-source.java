@@ -23,6 +23,10 @@ final class TcpPoolLeaseLedger {
         private final long epoch;
         private final String partition;
         private boolean active;
+        // With no operation-scoped completion receipt, a lease can start
+        // exactly ONE physical exchange. Otherwise a late duplicate completion
+        // could finish a subsequent operation under the same lease token.
+        private boolean everBegun;
         private boolean revoked;
 
         private Lease(TcpPoolLeaseLedger owner, int slot, long generation,
@@ -89,7 +93,8 @@ final class TcpPoolLeaseLedger {
     boolean tryBegin(Lease token, ActorIdentity actor, long requestedEpoch) {
         if (!gate.tryLock()) return false;
         try {
-            if (!valid(token, actor, requestedEpoch) || token.active) return false;
+            if (!valid(token, actor, requestedEpoch) || token.everBegun) return false;
+            token.everBegun = true;
             token.active = true;
             return true;
         } finally {
