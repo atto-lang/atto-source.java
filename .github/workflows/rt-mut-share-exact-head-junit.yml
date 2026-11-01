@@ -1,0 +1,42 @@
+name: rt mut share exact-head JUnit
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/MutableShareCompilerTest.java'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/types/**'
+      - 'src/main/java/dev/oreslang/runtime/CapabilityChecker.java'
+      - '.github/workflows/rt-mut-share-exact-head-junit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guarded-sharing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify checked-out source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          echo "JAVA_GUARDED_SHARING_TREE=$(git rev-parse HEAD^{tree})"
+      - name: Configure GraalVM toolchain
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute exact-head compiler ownership and mutex JUnit tests
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=MutableShareCompilerTest,PointerlessFncOwnershipTest,InvocationMutableBorrowAliasTest,MutexLanguageTest \
+            test
