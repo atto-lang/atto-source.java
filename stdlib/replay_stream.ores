@@ -105,7 +105,7 @@ define module replay_stream as
       if count > available; do
         count = available;
       fi
-      let Array<int> result = new Array<int>();
+      let mut Array<int> result = new Array<int>();
       for (let int i = 0; i < count; i = i + 1) {
         result.add(self.slots.get((offset + i) % self.capacity));
       }
