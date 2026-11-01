@@ -1,5 +1,5 @@
 import class TestCase, TestSuite, TestOptions, TestOutcome, RunSummary from "../stdlib/testing";
-import fnc expect_true, expect_false, expect_equal_int, expect_equal_string, expect_near_float, check_int_cases, escape_machine_field, run_suite, require_success, fail from "../stdlib/testing";
+import fnc expect_true, expect_false, expect_equal_bool, expect_equal_int, expect_not_equal_int, expect_equal_string, expect_not_equal_string, expect_near_float, check_int_cases, escape_machine_field, run_suite, require_success, fail from "../stdlib/testing";
 fnc property_nonnegative(int value): TestOutcome {
   return expect_true(value >= 0, "unexpected negative property case");
 }
