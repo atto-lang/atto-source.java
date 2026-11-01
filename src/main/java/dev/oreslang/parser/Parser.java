@@ -1502,9 +1502,19 @@ public final class Parser {
             if (List.of("derive", "Derive", "repr", "Repr", "align",
                     "cfg", "Cfg", "inline", "Inline", "expand", "GenerateBuilder",
                     "GenerateSchema", "GenerateClient", "ActorMessage",
-                    "PipelineStage", "RequiresState", "Inject").contains(name)) {
+                    "PipelineStage", "RequiresState").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
+            }
+            // A mutable-state injection is a compiler effect, never inert
+            // annotation metadata. Reserve only this requested intrinsic;
+            // other annotation names keep their existing source behavior.
+            if (name.equals("Inject") && check(LPAREN)
+                    && current + 1 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 1).lexeme().equals("MutableStateContainer")) {
+                throw error(previous(), "@Inject(MutableStateContainer(...)) requires "
+                        + "compiler-checked private state-region lowering; not implemented");
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
