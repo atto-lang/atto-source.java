@@ -4,6 +4,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
+import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
@@ -102,12 +103,31 @@ final class SourceI64RuntimeConformanceTest {
             new Case("40", "-9223372036854775808 + 9223372036854775807 + 43", "42"),
             new Case("41", "2 * (3 + 4) * 3", "42"));
 
+    // SHA-256 of the exact Oreslang corpus files programs/34..41, including
+    // comments and LF. This rejects backend-specific source rewrites.
+    private static final List<String> WAVE_SOURCE_SHA256 = List.of(
+            "2d186d0c400c23c6fcdf1df963580351eacea82250097a1cd083a1cc308b40f5",
+            "73e5fc703df0b0d3af6898c156ff105ec28e8dfc639f2a02ccca0f1cd3c69dd8",
+            "2ca62fbe11d05cb219a4be255669842994c279e0e0a5208fbc3d3a0e4c047d29",
+            "efb740b31d72bfdc1eecc8a7eb87a7b84c8961f444fbbcc08a142ca54cf7c97b",
+            "391467d7baf7b84b339a63e55be2395d9a8a4d92b5719f249df428b34bac7ccd",
+            "d1fa2dc614cd61c442ab1bfa5683fac50cc9d72139e0dcdf0a67b3610d427bd6",
+            "0322dc2a7d48fed12d917aaaf2a50c025b77402a2b21fdbb87224fece59b44b0",
+            "3483cb15d4b2f2c24f90ba65e55e886b59eaea2190aa9c18f8ed10badba04e76");
+
     @TestFactory
     Stream<DynamicTest> sharedSignedI64WaveExecutesInRealGraalGuest() {
         return WAVE_SCALARS.stream().map(test -> DynamicTest.dynamicTest(
                 "parity-wave-" + test.id(), () -> {
-                    String program = "pub fnc main():void { stdio.stdout.write("
-                            + test.expression() + "); return; }\n";
+                    String program = "// " + test.id()
+                            + ": candidate source-identical checked-i64 scalar program.\\n"
+                            + "// Expected integer result 42; guest execution on each backend is unverified.\\n"
+                            + "pub fnc main(): int { return " + test.expression() + "; }\\n";
+                    String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                            .digest(program.getBytes(StandardCharsets.UTF_8)));
+                    int index = Integer.parseInt(test.id()) - 34;
+                    assertEquals(WAVE_SOURCE_SHA256.get(index), sha256,
+                            "Oreslang source bytes must equal the canonical parity fixture");
                     assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)),
                             "Graal source rejection: " + test.id());
                     ByteArrayOutputStream stdout = new ByteArrayOutputStream();
@@ -116,10 +136,14 @@ final class SourceI64RuntimeConformanceTest {
                             .mimeType(OresLanguage.MIME_TYPE).build();
                     try (Context context = Context.newBuilder(OresLanguage.ID)
                             .allowAllAccess(false).out(stdout).build()) {
-                        context.eval(compiled);
+                        Value result = context.eval(compiled);
+                        assertTrue(result.fitsInLong(),
+                                "real Graal guest must return a signed-i64 value");
+                        assertEquals(Long.parseLong(test.expected()), result.asLong(),
+                                "real Graal guest scalar mismatch: " + test.id());
                     }
-                    assertEquals(test.expected(), stdout.toString(StandardCharsets.UTF_8),
-                            "actual Graal guest scalar mismatch: " + test.id());
+                    assertEquals("", stdout.toString(StandardCharsets.UTF_8),
+                            "unexpected guest stdout from pure scalar program");
                 }));
     }
 
