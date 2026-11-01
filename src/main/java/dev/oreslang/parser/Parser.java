@@ -1554,6 +1554,22 @@ public final class Parser {
         boolean untrustedSeen = false;
 
         while (true) {
+            // Reserve the unified critical declaration grammar until an
+            // authenticated scheduler gate and no-suspension body lowering
+            // are actually wired. This is NOT a keyword-wide ban: an ordinary
+            // function named critical(...) remains a valid identifier.
+            if (check(IDENT) && peek().lexeme().equals("critical")) {
+                Token critical = peek();
+                Token.Type following = current + 1 < tokens.size()
+                        ? tokens.get(current + 1).type() : EOF;
+                if (suspends || following == SUSPENDS
+                        || (following == IDENT
+                            && tokens.get(current + 1).lexeme().equals("suspend"))) {
+                    throw error(critical, "E_CRITICAL_SUSPENDS_DECL: critical callable bodies cannot suspend");
+                }
+                throw error(critical, "E_CRITICAL_UNLOWERED: critical callable admission requires "
+                        + "a scheduler-owned logical gate and proven nonsuspending body");
+            }
             // These spellings are recognized but deliberately unavailable
             // until typed RW admission / actor pipeline source lowering is
             // implemented. Never admit them as ordinary method names or
@@ -2165,8 +2181,27 @@ public final class Parser {
         return body;
     }
 
+    private boolean looksLikeReservedCriticalBlock(int offset) {
+        int index = current + offset;
+        if (index >= tokens.size() || tokens.get(index).type() != IDENT
+                || !tokens.get(index).lexeme().equals("critical")) return false;
+        int next = index + 1;
+        return (next < tokens.size() && tokens.get(next).type() == LBRACE)
+                || (next + 1 < tokens.size() && tokens.get(next).type() == IDENT
+                    && tokens.get(next + 1).type() == LBRACE);
+    }
+
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // Reject reserved lexical critical forms before the generic expression
+        // or try/catch parser could reinterpret them as different constructs.
+        // Admit only after a no-yield AST, effect proof and physical-retirement
+        // gate have been implemented. Ordinary critical(...) calls survive.
+        if (looksLikeReservedCriticalBlock(0)
+                || (check(TRY) && looksLikeReservedCriticalBlock(1))) {
+            throw error(peek(), "E_CRITICAL_UNLOWERED: lexical critical/try critical "
+                    + "requires scheduler-owned admission and a nonsuspending protected body");
+        }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
