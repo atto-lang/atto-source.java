@@ -3,6 +3,10 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -63,6 +67,32 @@ final class ImmutableDefaultScalarLocalTest {
                 "int x; return 7;",
                 "int x = 7; return unknown_name;"
         }) rejected(body);
+    }
+
+    @Test void actualGraalGuestRunsImmutableDefaultBindings() throws Exception {
+        // Unlike check-only assertions, each case evaluates Oreslang guest
+        // source through the real Truffle language, capturing actual output.
+        for (String declaration : new String[] {
+                "int x = 7;",
+                "const x = 7;",
+                "const int x = 7;",
+                "const x: int = 7;",
+                "int x = 2 + 5;"
+        }) {
+            String source = "pub fnc main(): void { " + declaration
+                    + " stdio.println(x); return; }";
+            var program = Source.newBuilder(OresLanguage.ID, source,
+                    "immutable-default-guest.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(output).build()) {
+                assertDoesNotThrow(() -> context.eval(program), declaration);
+            }
+            assertEquals("7" + System.lineSeparator(),
+                    output.toString(StandardCharsets.UTF_8),
+                    "guest value mismatch for " + declaration);
+        }
     }
 
     @Test void explicitMutableLetSemanticsRemainSeparate() {
