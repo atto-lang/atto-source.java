@@ -191,6 +191,19 @@ final class InjectedOwnedStateV0Test {
     }
 
     @Test
+    void injection_marker_cannot_disappear_on_callables_or_actor_declarations() {
+        parseReject("""
+                @Inject(MutableStateContainer())
+                pub fnc main(): int { return 42; }
+                """, "only available on owned classes");
+        parseReject("""
+                @Inject(MutableStateContainer())
+                define actor Worker as
+                end
+                """, "only available on owned classes");
+    }
+
+    @Test
     void malformed_annotation_parameters_are_rejected() {
         parseReject("""
                 @Inject(MutableStateContainer(scope = #singleton))
