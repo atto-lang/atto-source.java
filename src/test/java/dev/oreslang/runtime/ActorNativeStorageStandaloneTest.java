@@ -421,5 +421,57 @@ final class ActorNativeStorageStandaloneTest {
         }
         assertEquals(0, charged.get());
     }
-}
 
+    @Test
+    void crossPageFillRefusesPartialMutationWhileSecondPageIsBorrowed() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        try (ActorNativeArena a = arena(256 * 1024, charged, owner)) {
+            ActorLinearMemory mem = a.linearMemory(2, 2);
+            long boundary = ActorLinearMemory.PAGE_BYTES - 8L;
+            mem.fill(boundary, 16, (byte) 19);
+            try (var lease = mem.leaseReadOnlyPage(1, 0, 8)) {
+                assertThrows(IllegalStateException.class,
+                        () -> mem.fill(boundary, 16, (byte) 42));
+                for (int i = 0; i < 16; i++) {
+                    assertEquals(19, mem.readUnsignedByte(boundary + i),
+                            "a borrowed page must prevent the entire multi-page fill");
+                }
+            }
+            mem.fill(boundary, 16, (byte) 42);
+            for (int i = 0; i < 16; i++) {
+                assertEquals(42, mem.readUnsignedByte(boundary + i));
+            }
+            a.retire();
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void crossPageOverlappingCopiesBehaveAsMemmoveWithoutCorruptingOtherBytes() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        try (ActorNativeArena a = arena(256 * 1024, charged, owner)) {
+            ActorLinearMemory mem = a.linearMemory(2, 2);
+            long start = ActorLinearMemory.PAGE_BYTES - 20L;
+            byte[] expected = new byte[40];
+            for (int i = 0; i < expected.length; i++) {
+                expected[i] = (byte) (i + 1);
+                mem.writeByte(start + i, expected[i]);
+            }
+
+            mem.copy(start + 4, start, 32);
+            System.arraycopy(expected, 0, expected, 4, 32);
+            for (int i = 0; i < expected.length; i++) {
+                assertEquals(Byte.toUnsignedInt(expected[i]), mem.readUnsignedByte(start + i));
+            }
+            mem.copy(start, start + 4, 32);
+            System.arraycopy(expected, 4, expected, 0, 32);
+            for (int i = 0; i < expected.length; i++) {
+                assertEquals(Byte.toUnsignedInt(expected[i]), mem.readUnsignedByte(start + i));
+            }
+            a.retire();
+        }
+        assertEquals(0, charged.get());
+    }
+}
