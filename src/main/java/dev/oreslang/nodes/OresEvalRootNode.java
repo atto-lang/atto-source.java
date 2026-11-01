@@ -2487,6 +2487,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
+         * This authority hook intentionally has no issuer yet. A future typed
+         * ownership pass must bind a proof to the exact checked AST and
+         * program epoch; do not turn this into a process property/CLI flag.
+         */
+        private boolean criticalGuestLoweringAdmitted(Ast.CriticalStmt critical) {
+            return false;
+        }
+
+        /**
          * Scheduler-facing lowering substrate for a bounded non-suspending
          * lexical critical body. The compiler intentionally does NOT admit
          * source critical blocks yet: actor-owned resource identity, transitive
@@ -2500,6 +2509,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CriticalStmt critical,
                 Env env,
                 SourceFlowCont continuation) {
+            // The parser is not an authorization capability. Host embeddings
+            // can supply an AST directly, so no guest critical executes until
+            // a separate identity-bound checked admission token exists.
+            if (!criticalGuestLoweringAdmitted(critical)) {
+                throw new IllegalStateException(
+                        "critical source requires checked resource-bound admission");
+            }
             CriticalEffectPreflight.verify(critical.body());
             CriticalGate gate = rootCriticalGate(critical);
             OresFuture<CriticalGate.Ticket> admission = gate.requestAwaitable();
@@ -2567,15 +2583,15 @@ public final class OresEvalRootNode extends RootNode {
                 CriticalGate gate, OresFuture<CriticalGate.Ticket> admission) {
             admission.cancel(false);
             if (admission.isDone() && !admission.isCancelled()) {
+                CriticalGate.Ticket ticket;
                 try {
-                    gate.release(admission.join());
-                } catch (RuntimeException failed) {
-                    // A failed/retired admission does not own the gate. A
-                    // successful ticket release is idempotent; do not disguise
-                    // a failed guest body as a successful protected mutation.
-                    if (gate.retired()) return;
-                    throw failed;
+                    ticket = admission.join();
+                } catch (RuntimeException failedAdmission) {
+                    // A failed/retired request owns no ticket. Its error is
+                    // delivered by the SourceTask await continuation.
+                    return;
                 }
+                gate.release(ticket);
             }
         }
 
