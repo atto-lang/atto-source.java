@@ -46,10 +46,18 @@ final class TcpPoolLeaseLedgerTest {
         assertFalse(table.tryBegin(lease, A, 7));
         assertTrue(table.tryComplete(lease));
         assertFalse(table.tryComplete(lease), "duplicate completion");
+        assertNull(table.tryAcquire(0, B, PARTITION, 7),
+                "retired socket cannot be reused before physical close ack");
+        assertFalse(table.tryConfirmPhysicalClose(0, lease.generation()),
+                "stale generation must not clear quarantine");
+        assertTrue(table.tryConfirmPhysicalClose(0, lease.generation() + 1),
+                "trusted close ack reopens the empty slot");
         var next = table.tryAcquire(0, B, PARTITION, 7);
         assertNotNull(next);
         assertTrue(next.generation() > lease.generation());
         assertFalse(table.tryRelease(lease, A, 7), "stale capability");
+        assertFalse(table.tryConfirmPhysicalClose(0, lease.generation() + 1),
+                "live slot cannot be rearmed again");
         assertTrue(table.tryRelease(next, B, 7));
     }
 
@@ -102,6 +110,9 @@ final class TcpPoolLeaseLedgerTest {
         assertNull(table.tryAcquire(0, B, PARTITION, 8));
         assertFalse(table.tryBegin(active, A, 7));
         assertTrue(table.tryComplete(active));
+        assertNull(table.tryAcquire(0, B, PARTITION, 8),
+                "policy rollover must fence old physical socket");
+        assertTrue(table.tryConfirmPhysicalClose(0, active.generation() + 1));
         var next = table.tryAcquire(0, B, PARTITION, 8);
         assertNotNull(next);
         assertFalse(table.tryComplete(active));
