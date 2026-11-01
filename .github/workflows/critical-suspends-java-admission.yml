@@ -1,0 +1,52 @@
+name: Critical suspends Java admission (no guest critical execution)
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/**'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/types/**'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/runtime/CriticalGate.java'
+      - 'src/test/java/dev/oreslang/Critical*Test.java'
+      - 'src/test/java/dev/oreslang/runtime/CriticalGateTest.java'
+      - '.github/workflows/critical-suspends-java-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-admission-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind tested Git tree to exact requested PR head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git diff --quiet
+          echo "SOURCE_COMMIT=$EXPECTED"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile and run critical AST/effects/gate unit tests
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=java \
+            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest \
+            test
+          test -s target/classes/dev/oreslang/compiler/OresCompiler.class
+          sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
+      - name: Mark evidence scope
+        run: |
+          echo "Source parser, conservative effects and host-ticket tests only."
+          echo "This is NOT scheduler-backed critical guest execution or cross-backend parity."
