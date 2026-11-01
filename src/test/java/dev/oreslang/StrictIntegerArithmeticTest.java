@@ -164,6 +164,36 @@ final class StrictIntegerArithmeticTest {
     }
 
     @Test
+    void guestNamedRemainderAndModulusMatchSigned64EdgeContract() throws Exception {
+        // Real guest source, not a host arithmetic oracle: share the edge
+        // expectations with the Cranelift narrow signed64 JIT profile.
+        Path entry = temp.resolve("named-rem-mod-edges.ores");
+        Files.writeString(entry, """
+                pub routine main(): void {
+                  stdio.println(Integer.rem(-9, 4));
+                  stdio.println(Integer.rem(9, -4));
+                  stdio.println(Integer.rem(-9223372036854775808, -1));
+                  stdio.println(Integer.rem(-9223372036854775808, 9223372036854775807));
+                  stdio.println(Integer.mod(-9, 4));
+                  stdio.println(Integer.mod(9, -4));
+                  stdio.println(Integer.mod(-9, -4));
+                  stdio.println(Integer.mod(-9223372036854775808, -1));
+                  stdio.println(Integer.mod(-1, -9223372036854775808));
+                  stdio.println(Integer.mod(-9223372036854775808, 9223372036854775807));
+                  stdio.println(Integer.bitXor(-9223372036854775808, 9223372036854775807));
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals("-1\n1\n0\n-1\n3\n1\n3\n0\n"
+                        + "9223372036854775807\n9223372036854775806\n-1\n",
+                out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void guestMathUnaryPreservesBinary64SignAndFractionSemantics() throws Exception {
         Path entry = temp.resolve("math-float.ores");
         Files.writeString(entry, """
