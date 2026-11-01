@@ -241,4 +241,62 @@ final class TcpPoolLeaseLedgerTest {
             assertFalse(holder.isAlive());
         }
     }
+    @Test
+    void realLoopbackSocketRetiresBeforeAnotherActorGetsTheSlot() throws Exception {
+        // Host-only physical-close integration witness: does not grant guest
+        // capabilities and does not imply safe generic TCP response demux.
+        var table = fresh();
+        try (var listener = java.nio.channels.ServerSocketChannel.open()) {
+            listener.bind(new java.net.InetSocketAddress(
+                    java.net.InetAddress.getLoopbackAddress(), 0));
+            var address = (java.net.InetSocketAddress) listener.getLocalAddress();
+            var original = acquire(table);
+            try (var first = java.nio.channels.SocketChannel.open(address);
+                 var peer = listener.accept()) {
+                assertTrue(table.tryBegin(original, A, 7));
+                var written = java.nio.ByteBuffer.wrap(new byte[] {11, 22, 33, 44});
+                while (written.hasRemaining()) first.write(written);
+                var received = java.nio.ByteBuffer.allocate(4);
+                while (received.hasRemaining()) {
+                    assertTrue(peer.read(received) > 0,
+                            "real loopback peer must receive the full frame");
+                }
+                assertArrayEquals(new byte[] {11, 22, 33, 44}, received.array());
+                assertTrue(table.tryRelease(original, A, 7),
+                        "actor release revokes admission while physical socket exists");
+                assertNull(table.tryAcquire(0, B, PARTITION, 7),
+                        "second actor cannot borrow still-live socket");
+                assertFalse(table.tryConfirmPhysicalClose(
+                        0, original.generation() + 1),
+                        "in-flight read/write cannot be cleared by a close acknowledgement");
+                assertTrue(table.tryComplete(original));
+                assertNull(table.tryAcquire(0, B, PARTITION, 7),
+                        "reactor completion alone is not physical close");
+                // Close both ends via AutoCloseable before trusted acknowledgment.
+            }
+            assertTrue(table.tryConfirmPhysicalClose(
+                    0, original.generation() + 1),
+                    "only host code after real channel close may acknowledge");
+            var next = table.tryAcquire(0, B, PARTITION, 7);
+            assertNotNull(next, "new incarnation can borrow only after close");
+            assertTrue(next.generation() > original.generation());
+            try (var second = java.nio.channels.SocketChannel.open(address);
+                 var peer = listener.accept()) {
+                assertTrue(table.tryBegin(next, B, 7));
+                var output = java.nio.ByteBuffer.wrap(new byte[] {55, 66});
+                while (output.hasRemaining()) second.write(output);
+                var input = java.nio.ByteBuffer.allocate(2);
+                while (input.hasRemaining()) assertTrue(peer.read(input) > 0);
+                assertArrayEquals(new byte[] {55, 66}, input.array());
+                assertFalse(table.tryBegin(original, A, 7),
+                        "old lease cannot access newly connected socket");
+                assertTrue(table.tryComplete(next));
+                assertTrue(table.tryRelease(next, B, 7));
+            }
+            assertTrue(table.tryConfirmPhysicalClose(
+                    0, next.generation() + 1));
+            assertTrue(table.tryStop());
+        }
+    }
+
 }
