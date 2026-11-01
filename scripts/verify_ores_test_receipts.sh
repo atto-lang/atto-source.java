@@ -16,7 +16,7 @@ LC_ALL=C awk -F '|' -v suite="$2" -v expected="$3" -v expected_file="${4:-}" '
         # lines, duplicates, delimiters, controls or leading/trailing spaces.
         if (id !~ /^[A-Za-z0-9][A-Za-z0-9._/-]*$/ ||
             allowed[prefix id]++) invalid_ids = 1
-        listed++
+        expected_at[++listed] = prefix id
       }
       if (result < 0 || listed != expected) invalid_ids = 1
       close(expected_file)
@@ -43,7 +43,7 @@ LC_ALL=C awk -F '|' -v suite="$2" -v expected="$3" -v expected_file="${4:-}" '
       bad = 1; next
     }
     if (seen[$3]++) bad = 1
-    if (expected_file != "" && !allowed[$3]) bad = 1
+    if (expected_file != "" && (!allowed[$3] || $3 != expected_at[pass_count + 1])) bad = 1
     pass_count++
   }
   END {
