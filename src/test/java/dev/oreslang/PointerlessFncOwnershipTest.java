@@ -782,6 +782,27 @@ final class PointerlessFncOwnershipTest {
         assertDoesNotThrow(() -> TypeChecker.check(parsed));
     }
 
+
+    @Test
+    void scopedHeapVectorBorrowReleasesBeforeRealGuestResize() throws Exception {
+        String source = """
+                pub routine main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  if true; do
+                    const view = rt borrow values[0];
+                  fi
+                  values.add(8);
+                  stdio.stdout.write(values.size);
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+        assertEquals("2", run(source),
+                "guest Array<T> must remain live and resizable after a scoped loan retires");
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
