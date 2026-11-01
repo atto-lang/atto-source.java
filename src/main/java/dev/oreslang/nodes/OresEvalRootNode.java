@@ -10,6 +10,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresVector;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -5662,6 +5663,31 @@ public final class OresEvalRootNode extends RootNode {
                     "unsupported assignment target");
         }
 
+        private static OresVector allocateGuestVector(Ast.TypeRef type) {
+            long max = OresVector.MAX_CAPACITY;
+            long inline = 0;
+            for (Ast.TypeRef argument : type.arguments()) {
+                if (!argument.isNamedParameter()) continue;
+                String key = argument.namedParameterName();
+                if (!key.equals("max_capacity") && !key.equals("inline_capacity")) continue;
+                Ast.TypeRef amount = argument.namedParameterValue();
+                if (!amount.isIntLiteral()) {
+                    throw new IllegalArgumentException("Vector " + key
+                            + " must be an integer compile-time constant");
+                }
+                long number = amount.intLiteralValue();
+                if (key.equals("max_capacity")) max = number;
+                else inline = number;
+            }
+            if (max < 0 || max > OresVector.MAX_CAPACITY
+                    || inline < 0 || inline > max) {
+                throw new IllegalArgumentException(
+                        "Vector capacity metadata violates supported max_capacity="
+                                + OresVector.MAX_CAPACITY);
+            }
+            return new OresVector((int) max, (int) inline);
+        }
+
         private Object instantiateEvaluated(
                 Ast.NewExpr created,
                 List<Object> args,
@@ -5680,6 +5706,13 @@ public final class OresEvalRootNode extends RootNode {
                                     + "<T> constructor takes no positional arguments");
                 }
                 return new ArrayList<>();
+            }
+            if (created.type().name().equals("Vector") && findClass("Vector") == null) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Vector[T] constructor takes no positional arguments");
+                }
+                return allocateGuestVector(created.type());
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
@@ -7562,6 +7595,13 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new ArrayList<>();
                 }
+                if (created.type().name().equals("Vector") && findClass("Vector") == null) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Vector[T] constructor takes no positional arguments");
+                    }
+                    return allocateGuestVector(created.type());
+                }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
                             "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
@@ -8427,6 +8467,37 @@ public final class OresEvalRootNode extends RootNode {
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
                         list.add(args.getFirst());
+                        return null;
+                    };
+                    case "push" -> (Invokable) args -> {
+                        requireOne(args, "Vector.push");
+                        @SuppressWarnings("unchecked")
+                        List<Object> list = (List<Object>) rawList;
+                        list.add(args.getFirst());
+                        return null;
+                    };
+                    case "pop" -> (Invokable) args -> {
+                        requireZero(args, "Vector.pop");
+                        if (rawList.isEmpty()) return new OptionValue(false, null);
+                        @SuppressWarnings("unchecked")
+                        List<Object> list = (List<Object>) rawList;
+                        return new OptionValue(true, list.remove(list.size() - 1));
+                    };
+                    case "reserve" -> (Invokable) args -> {
+                        requireOne(args, "Vector.reserve");
+                        int required = sequenceIndex(args.getFirst());
+                        if (required < 0 || required > OresVector.MAX_CAPACITY) {
+                            throw new IllegalArgumentException(
+                                    "Vector reserve capacity is outside supported range");
+                        }
+                        if (rawList instanceof OresVector vector) {
+                            vector.reserve(required);
+                        } else if (rawList instanceof ArrayList<?> array) {
+                            array.ensureCapacity(required);
+                        } else {
+                            throw new IllegalArgumentException(
+                                    "collection cannot reserve backing storage");
+                        }
                         return null;
                     };
                     case "set" -> (Invokable) args -> {
