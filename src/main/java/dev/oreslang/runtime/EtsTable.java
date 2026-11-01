@@ -160,7 +160,6 @@ public final class EtsTable<K, V> implements AutoCloseable {
     public boolean closed() { return closed.get(); }
 
     public int size() {
-        requireRead("read ETS size");
         lock.lock();
         try {
             requireRead("read ETS size");
@@ -173,7 +172,6 @@ public final class EtsTable<K, V> implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public Optional<V> get(K key) {
-        requireRead("read ETS table");
         ActorRuntime.FrozenActorGroupEventPayload frozenKey = freeze(key);
         try {
             lock.lock();
@@ -197,7 +195,6 @@ public final class EtsTable<K, V> implements AutoCloseable {
      * inserted and false when an existing key was replaced.
      */
     public boolean put(K key, V value) {
-        requireWrite("write ETS table");
         ActorRuntime.FrozenActorGroupEventPayload frozenKey = freeze(key);
         ActorRuntime.FrozenActorGroupEventPayload frozenValue;
         try {
@@ -241,7 +238,6 @@ public final class EtsTable<K, V> implements AutoCloseable {
      * Atomic insert-if-absent. Returns true only for the winning insertion.
      */
     public boolean putIfAbsent(K key, V value) {
-        requireWrite("insert into ETS table");
         ActorRuntime.FrozenActorGroupEventPayload frozenKey = freeze(key);
         ActorRuntime.FrozenActorGroupEventPayload frozenValue;
         try {
@@ -280,7 +276,6 @@ public final class EtsTable<K, V> implements AutoCloseable {
     }
 
     public boolean remove(K key) {
-        requireWrite("remove from ETS table");
         ActorRuntime.FrozenActorGroupEventPayload frozenKey = freeze(key);
         try {
             lock.lock();
@@ -303,7 +298,6 @@ public final class EtsTable<K, V> implements AutoCloseable {
      * Atomic value CAS using Oreslang frozen-value equality.
      */
     public boolean compareAndSet(K key, V expected, V replacement) {
-        requireWrite("compare-and-set ETS table");
         ActorRuntime.FrozenActorGroupEventPayload frozenKey = freeze(key);
         ActorRuntime.FrozenActorGroupEventPayload frozenExpected;
         ActorRuntime.FrozenActorGroupEventPayload frozenReplacement;
@@ -352,7 +346,6 @@ public final class EtsTable<K, V> implements AutoCloseable {
      */
     @SuppressWarnings("unchecked")
     public Map<K, V> snapshot() {
-        requireRead("snapshot ETS table");
         lock.lock();
         try {
             requireRead("snapshot ETS table");
