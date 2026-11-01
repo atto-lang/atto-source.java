@@ -7279,6 +7279,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                if (name.name().equals("crypto")) return CryptoFacade.INSTANCE;
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -7855,6 +7856,19 @@ public final class OresEvalRootNode extends RootNode {
                                 "fs." + name, () -> fs.mkdirAll(values));
                     };
                     default -> throw new IllegalArgumentException("unknown filesystem member " + name);
+                };
+            }
+            if (receiver instanceof CryptoFacade) {
+                return switch (name) {
+                    case "sha256" -> (Invokable) CryptoFacade::sha256;
+                    case "hmac_sha256" -> (Invokable) CryptoFacade::hmacSha256;
+                    case "pbkdf2_hmac_sha256" -> (Invokable) CryptoFacade::pbkdf2HmacSha256;
+                    case "base64_encode" -> (Invokable) CryptoFacade::base64Encode;
+                    case "base64_decode" -> (Invokable) CryptoFacade::base64Decode;
+                    case "secure_random_bytes" -> (Invokable) CryptoFacade::secureRandomBytes;
+                    case "constant_time_equals" -> (Invokable) CryptoFacade::constantTimeEquals;
+                    default -> throw new IllegalArgumentException(
+                            "unknown crypto member " + name);
                 };
             }
             if (receiver instanceof NetworkFacade network) {
@@ -11386,6 +11400,110 @@ public final class OresEvalRootNode extends RootNode {
         private Object mkdirAll(List<Object> args) {
             NativeIo.createDirectories(context, requireStringArg(args, "fs.mkdir_all"));
             return null;
+        }
+    }
+
+    private enum CryptoFacade {
+        INSTANCE;
+
+        private static Object sha256(List<Object> args) {
+            requireOne(args, "crypto.sha256");
+            return guestBytes(CryptoPrimitives.sha256(
+                    checkedByteList(args.getFirst(), "crypto.sha256 input", 16 * 1024 * 1024)));
+        }
+
+        private static Object hmacSha256(List<Object> args) {
+            requireTwo(args, "crypto.hmac_sha256");
+            byte[] key = checkedByteList(args.get(0), "crypto.hmac_sha256 key", 1024 * 1024);
+            byte[] message = checkedByteList(
+                    args.get(1), "crypto.hmac_sha256 message", 16 * 1024 * 1024);
+            return guestBytes(CryptoPrimitives.hmacSha256(key, message));
+        }
+
+        private static Object pbkdf2HmacSha256(List<Object> args) {
+            if (args.size() != 4) {
+                throw new IllegalArgumentException(
+                        "crypto.pbkdf2_hmac_sha256 expects password, salt, iterations, output_bytes");
+            }
+            byte[] password = checkedByteList(
+                    args.get(0), "crypto.pbkdf2_hmac_sha256 password", 1024 * 1024);
+            byte[] salt = checkedByteList(
+                    args.get(1), "crypto.pbkdf2_hmac_sha256 salt", 64 * 1024);
+            int iterations = checkedInt(
+                    args.get(2), "crypto.pbkdf2_hmac_sha256 iterations");
+            int outputBytes = checkedInt(
+                    args.get(3), "crypto.pbkdf2_hmac_sha256 output_bytes");
+            return guestBytes(CryptoPrimitives.pbkdf2HmacSha256(
+                    password, salt, iterations, outputBytes));
+        }
+
+        private static Object base64Encode(List<Object> args) {
+            requireOne(args, "crypto.base64_encode");
+            return CryptoPrimitives.base64Encode(checkedByteList(
+                    args.getFirst(), "crypto.base64_encode input", 16 * 1024 * 1024));
+        }
+
+        private static Object base64Decode(List<Object> args) {
+            requireOne(args, "crypto.base64_decode");
+            String value = requireString(
+                    args.getFirst(), "crypto.base64_decode input");
+            return guestBytes(CryptoPrimitives.base64Decode(value));
+        }
+
+        private static Object secureRandomBytes(List<Object> args) {
+            requireOne(args, "crypto.secure_random_bytes");
+            return guestBytes(CryptoPrimitives.secureRandomBytes(
+                    checkedInt(args.getFirst(), "crypto.secure_random_bytes count")));
+        }
+
+        private static Object constantTimeEquals(List<Object> args) {
+            requireTwo(args, "crypto.constant_time_equals");
+            byte[] left = checkedByteList(
+                    args.get(0), "crypto.constant_time_equals left", 16 * 1024 * 1024);
+            byte[] right = checkedByteList(
+                    args.get(1), "crypto.constant_time_equals right", 16 * 1024 * 1024);
+            return CryptoPrimitives.constantTimeEquals(left, right);
+        }
+
+        private static int checkedInt(Object value, String where) {
+            if (!(value instanceof Number number)
+                    || !isIntegral(number)
+                    || number.longValue() < Integer.MIN_VALUE
+                    || number.longValue() > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(where + " must be a 32-bit integer");
+            }
+            return number.intValue();
+        }
+
+        private static byte[] checkedByteList(
+                Object value, String where, int maximum) {
+            if (!(value instanceof List<?> raw)) {
+                throw new IllegalArgumentException(where + " must be List<int>");
+            }
+            if (raw.size() > maximum) {
+                throw new IllegalArgumentException(
+                        where + " exceeds " + maximum + " bytes");
+            }
+            byte[] bytes = new byte[raw.size()];
+            for (int i = 0; i < raw.size(); i++) {
+                Object item = raw.get(i);
+                if (!(item instanceof Number number)
+                        || !isIntegral(number)
+                        || number.longValue() < 0
+                        || number.longValue() > 255) {
+                    throw new IllegalArgumentException(
+                            where + " bytes must be integral values in 0..255");
+                }
+                bytes[i] = (byte) number.intValue();
+            }
+            return bytes;
+        }
+
+        private static ArrayList<Long> guestBytes(byte[] bytes) {
+            ArrayList<Long> out = new ArrayList<>(bytes.length);
+            for (byte value : bytes) out.add((long) (value & 0xff));
+            java.util.Arrays.fill(bytes, (byte) 0);
+            return out;
         }
     }
 
