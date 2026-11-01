@@ -1,5 +1,8 @@
 package dev.oreslang;
 
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -10,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
@@ -38,6 +42,16 @@ final class SourceActorLifecycleBaselineTest {
         assertEquals(EXACT_GIT_BLOB, HexFormat.of().formatHex(sha.digest()),
                 "the JVM guest source must exactly match the shared conformance fixture");
         return bytes;
+    }
+
+    @Test
+    void portableLifecycleMustPassStaticTypeAndOwnershipChecks() throws Exception {
+        String program = new String(pinnedSource(), StandardCharsets.UTF_8);
+        var parsed = assertDoesNotThrow(() -> Parser.parse(program));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed),
+                "portable actor source must type-check before guest execution");
+        assertDoesNotThrow(() -> OwnershipChecker.check(parsed),
+                "portable actor source must pass ownership admission");
     }
 
     @Test
