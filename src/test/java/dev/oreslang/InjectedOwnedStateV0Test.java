@@ -167,7 +167,7 @@ final class InjectedOwnedStateV0Test {
         parseReject("""
                 @Inject(MutableStateContainer())
                 define class Counter as
-                  state { values: Array<int> = new Array<int>(); }
+                  state { values: Array<int> = null; }
                 end
                 """, "initialized scalar");
     }
