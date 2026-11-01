@@ -139,6 +139,94 @@ final class CriticalGateTest {
         }
     }
 
+    @Test void schedulerAwaitableDoesNotBlockCarrierOrSkipFifo() {
+        CriticalGate gate = new CriticalGate();
+        var first = gate.requestAwaitable();
+        var second = gate.requestAwaitable();
+        var third = gate.requestAwaitable();
+        assertTrue(first.isDone(), "uncontended admission is immediately ready");
+        assertFalse(second.isDone(), "contended admission must be awaitable");
+        assertFalse(third.isDone());
+        assertEquals(2, gate.waiting());
+        var a = first.join();
+        assertTrue(gate.holds(a));
+        assertFalse(second.isDone());
+        gate.release(a);
+        assertTrue(second.isDone());
+        var b = second.join();
+        assertTrue(gate.holds(b));
+        assertFalse(third.isDone());
+        gate.release(b);
+        assertTrue(third.isDone());
+        var c = third.join();
+        assertTrue(gate.holds(c));
+        gate.release(c);
+        assertEquals(0, gate.waiting());
+    }
+
+    @Test void awaitingCancellationRetractsTicketWithoutLosingSuccessor() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.requestAwaitable().join();
+        var cancelled = gate.requestAwaitable();
+        var survivor = gate.requestAwaitable();
+        assertTrue(cancelled.cancel(false));
+        assertTrue(cancelled.isCancelled());
+        assertEquals(1, gate.waiting());
+        assertFalse(survivor.isDone());
+        gate.release(owner);
+        assertTrue(survivor.isDone());
+        assertTrue(gate.holds(survivor.join()));
+        gate.release(survivor.join());
+    }
+
+    @Test void awaitingCancellationRacingWithOwnerReleasePreservesLiveTicket()
+            throws InterruptedException {
+        for (int i = 0; i < 128; i++) {
+            CriticalGate gate = new CriticalGate();
+            var owner = gate.requestAwaitable().join();
+            var cancelled = gate.requestAwaitable();
+            var survivor = gate.requestAwaitable();
+            Thread releasing = Thread.ofPlatform().start(() -> gate.release(owner));
+            Thread cancelling = Thread.ofPlatform().start(() -> cancelled.cancel(false));
+            releasing.join();
+            cancelling.join();
+            assertTrue(survivor.isDone(), "survivor must never starve");
+            assertTrue(gate.holds(survivor.join()), "survivor not admitted");
+            assertFalse(gate.holds(owner), "old owner survived handoff");
+            gate.release(survivor.join());
+        }
+    }
+
+    @Test void retiringGateFailsPendingFutureAndRevokesOldTickets() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.requestAwaitable().join();
+        var pending = gate.requestAwaitable();
+        assertFalse(pending.isDone());
+        gate.retire();
+        assertTrue(pending.isDone());
+        assertThrows(RuntimeException.class, pending::join);
+        assertFalse(gate.holds(owner));
+        assertTrue(gate.requestAwaitable().isDone());
+        assertEquals(0, gate.waiting());
+    }
+
+    @Test void adversarialCancellationDuringRetirementDoesNotLeaveWaiters()
+            throws InterruptedException {
+        for (int i = 0; i < 128; i++) {
+            CriticalGate gate = new CriticalGate();
+            gate.requestAwaitable().join();
+            var waiter = gate.requestAwaitable();
+            Thread cancelling = Thread.ofPlatform().start(() -> waiter.cancel(false));
+            Thread retiring = Thread.ofPlatform().start(gate::retire);
+            cancelling.join();
+            retiring.join();
+            assertTrue(waiter.isDone());
+            assertEquals(0, gate.waiting());
+            assertTrue(gate.retired());
+            assertTrue(gate.tryEnter().isEmpty());
+        }
+    }
+
     @Test void logicalTicketCanBeReleasedOnAnotherCarrier() throws InterruptedException {
         CriticalGate gate = new CriticalGate();
         var owner = gate.request();
