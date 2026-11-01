@@ -90,7 +90,7 @@ final class ActorIoIntrinsicTest {
         for (String parameter : new String[] {"io", "stdio", "print"}) {
             PolyglotException failure = assertThrows(PolyglotException.class, () ->
                     check("""
-                            pub actor fnc worker(string %s) -> void {
+                            pub actor fnc worker(String %s) -> void {
                               return;
                             }
 
@@ -100,6 +100,26 @@ final class ActorIoIntrinsicTest {
                             """.formatted(parameter), "actor-io-shadow.ores"));
             assertTrue(
                     failure.getMessage().contains("reserved actor execution intrinsic"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
+    void actorIoCapabilityCannotBeAliasedIntoOrdinaryState() {
+        for (String initializer : new String[] {"io", "io.out", "[io]"}) {
+            PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                    check("""
+                            pub actor fnc worker(String value) -> void {
+                              val alias = %s;
+                              return;
+                            }
+
+                            pub routine main(): void {
+                              return;
+                            }
+                            """.formatted(initializer), "actor-io-alias.ores"));
+            assertTrue(
+                    failure.getMessage().contains("cannot store, alias, return, or assign"),
                     failure::getMessage);
         }
     }
