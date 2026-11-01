@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Reject malformed ORES_TEST receipts (source-free negative controls)
+        run: bash tests/test_ores_test_receipt_admission.sh
       - name: Verify read-only Actions triage unit tests
         run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
       - name: Set up GraalVM
@@ -44,23 +46,11 @@ jobs:
           grep -F "120:9:13" /tmp/oreslang-callables.out
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-harness-guards.ores"
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_regressions.ores" | tee /tmp/ores-harness-regressions-jit.out
-          grep -Fqx "ORES_TEST|SUMMARY|total=30|passed=30|failed=0|skipped=0|filtered=0" /tmp/ores-harness-regressions-jit.out
-          test "$(grep -c '^ORES_TEST|PASS|native-testing-core/' /tmp/ores-harness-regressions-jit.out)" -eq 30
-          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-harness-regressions-jit.out)" -eq 1
-          test "$(grep -c '^ORES_TEST|' /tmp/ores-harness-regressions-jit.out)" -eq 31
-          test "$(awk -F'|' '$1=="ORES_TEST" && $2=="PASS" && NF==4 {print $3}' /tmp/ores-harness-regressions-jit.out | sort -u | wc -l)" -eq 30
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-regressions-jit.out native-testing-core 30
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_scalar_parity_batch4.ores" | tee /tmp/ores-harness-scalar-jit.out
-          grep -Fqx "ORES_TEST|SUMMARY|total=24|passed=24|failed=0|skipped=0|filtered=0" /tmp/ores-harness-scalar-jit.out
-          test "$(grep -c '^ORES_TEST|PASS|compiler-scalar-parity-batch4/' /tmp/ores-harness-scalar-jit.out)" -eq 24
-          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-harness-scalar-jit.out)" -eq 1
-          test "$(grep -c '^ORES_TEST|' /tmp/ores-harness-scalar-jit.out)" -eq 25
-          test "$(awk -F'|' '$1=="ORES_TEST" && $2=="PASS" && NF==4 {print $3}' /tmp/ores-harness-scalar-jit.out | sort -u | wc -l)" -eq 24
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-jit.out compiler-scalar-parity-batch4 24
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_meta_batch4.ores" | tee /tmp/ores-harness-meta-jit.out
-          grep -Fqx "ORES_TEST|SUMMARY|total=12|passed=12|failed=0|skipped=0|filtered=0" /tmp/ores-harness-meta-jit.out
-          test "$(grep -c '^ORES_TEST|PASS|harness-meta-batch4/' /tmp/ores-harness-meta-jit.out)" -eq 12
-          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-harness-meta-jit.out)" -eq 1
-          test "$(grep -c '^ORES_TEST|' /tmp/ores-harness-meta-jit.out)" -eq 13
-          test "$(awk -F'|' '$1=="ORES_TEST" && $2=="PASS" && NF==4 {print $3}' /tmp/ores-harness-meta-jit.out | sort -u | wc -l)" -eq 12
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-jit.out harness-meta-batch4 12
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-fast-jit.out
           grep -Fqx "ORES_TEST|SUMMARY|total=40|passed=40|failed=0|skipped=0|filtered=0" /tmp/ores-regressions-40-fast-jit.out
           test "$(grep -c '^ORES_TEST|PASS|stdlib/' /tmp/ores-regressions-40-fast-jit.out)" -eq 40
