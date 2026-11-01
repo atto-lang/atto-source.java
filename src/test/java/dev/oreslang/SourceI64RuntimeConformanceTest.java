@@ -183,7 +183,7 @@ final class SourceI64RuntimeConformanceTest {
                         "(9223372036854775807 - 9223372036854775700) - 65", 42L),
                 new Vector("nonzero-execution-canary", "73", 73L))
                 .map(vector -> DynamicTest.dynamicTest("orestra-scalar/" + vector.name(), () -> {
-                    String program = "pub fnc main(): int { return " + vector.expression() + "; }\\n";
+                    String program = "pub fnc main(): int { return " + vector.expression() + "; }\n";
                     assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)), program);
                     ByteArrayOutputStream stdout = new ByteArrayOutputStream();
                     Source source = Source.newBuilder(OresLanguage.ID, program,
