@@ -119,6 +119,54 @@ final class StateBackedOwnedInstanceV1Test {
     }
 
     @Test
+    void stateBackingRejectsReferenceReachabilityAndOpaqueFieldStorage() {
+        for (Ast.TypeRef unsafe : new Ast.TypeRef[]{
+                Ast.TypeRef.simple("Pointer"),
+                new Ast.TypeRef("Pointer", java.util.List.of(Ast.TypeRef.simple("int")), false),
+                Ast.TypeRef.simple("Channel"),
+                Ast.TypeRef.simple("Inventory"),
+                Ast.TypeRef.borrowed(Ast.TypeRef.simple("int"), true),
+                Ast.TypeRef.inferred()
+        }) {
+            Ast.FieldDecl field = new Ast.FieldDecl(
+                    "slot", Ast.Visibility.PRIVATE, Ast.BindingKind.LET,
+                    unsafe, new Ast.LiteralExpr(1L));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> backedClass(java.util.List.of(), field));
+            assertTrue(error.getMessage().contains("scalar field"), error::getMessage);
+        }
+    }
+
+    @Test
+    void stateBackingRejectsUninitializedAndImmutableStorageAndGenericLayouts() {
+        Ast.FieldDecl mutable = new Ast.FieldDecl(
+                "slot", Ast.Visibility.PRIVATE, Ast.BindingKind.LET,
+                Ast.TypeRef.simple("int"), new Ast.LiteralExpr(1L));
+        assertThrows(IllegalArgumentException.class,
+                () -> backedClass(java.util.List.of("T"), mutable));
+        assertThrows(IllegalArgumentException.class,
+                () -> backedClass(java.util.List.of(),
+                        new Ast.FieldDecl("slot", Ast.Visibility.PRIVATE,
+                                Ast.BindingKind.LET, Ast.TypeRef.simple("int"), null)));
+        assertThrows(IllegalArgumentException.class,
+                () -> backedClass(java.util.List.of(),
+                        new Ast.FieldDecl("slot", Ast.Visibility.PRIVATE,
+                                Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
+                                new Ast.LiteralExpr(1L))));
+    }
+
+    private static Ast.ClassDecl backedClass(
+            java.util.List<String> generics, Ast.FieldDecl field) {
+        return new Ast.ClassDecl(
+                "Probe", Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
+                generics, java.util.List.of(), java.util.List.of(),
+                java.util.List.of(field), null, java.util.List.of(),
+                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC),
+                java.util.List.of(new Ast.Annotation("StateBacked",
+                        java.util.List.of(Ast.TypeRef.simple("$state_instance$")))));
+    }
+
+    @Test
     void unannotatedClassStillRetainsPreviousFrontendBehavior() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
                 "define class Plain as let int count = 0; end\n"));
