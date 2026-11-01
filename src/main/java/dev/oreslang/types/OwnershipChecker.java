@@ -4203,6 +4203,17 @@ public final class OwnershipChecker {
                     left.share() && right.share());
         }
 
+        // NioTcpConnection is an affine VM-owned transport handle. It may
+        // MOVE exactly once into an independently scheduled Task, whose
+        // continuation then becomes the sole guest owner. It is deliberately
+        // neither Copy, Sync nor Share, and actor-boundary checking still
+        // rejects sending it through a mailbox.
+        if (name.equals("NioTcpConnection")) {
+            return type.arguments().isEmpty()
+                    ? new AutoTraitRules.Capabilities(true, false, false)
+                    : none;
+        }
+
         if (name.equals("Future")) {
             if (type.arguments().size() != 1) return none;
             Ast.TypeRef payload = type.arguments().getFirst();
