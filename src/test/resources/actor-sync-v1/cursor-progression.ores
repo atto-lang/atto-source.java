@@ -1,0 +1,19 @@
+// AS01–AS24 prerequisite: identical pure .ores cursor algorithm.
+// This test is not an actor activation, persistence transaction or sync ABI.
+// Real backend parity additionally requires durable actor guest tests.
+import * as sync from "std/actor_sync";
+pub routine main(): void {
+  let writer=sync.commit_window(4,0);
+  let reader=sync.replica_cursor(4,0);
+  stdio.println(writer.begin(4,0,"p1"));
+  stdio.println(writer.outcome_unknown(4,"p1"));
+  stdio.println(writer.abort_known_failure(4,"p1"));
+  stdio.println(writer.acknowledge(4,"p1",1));
+  stdio.println(reader.apply_delta(4,1));
+  stdio.println(reader.apply_delta(4,3));
+  stdio.println(reader.needs_resync());
+  stdio.println(reader.apply_snapshot(5,3));
+  stdio.println(reader.applied());
+  stdio.println(reader.owner_epoch());
+  return;
+}
