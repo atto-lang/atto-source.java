@@ -78,21 +78,25 @@ def _purpose(name):
     return "other_execution"
 
 
-def _valid_execution_interval(step):
-    """Accept only parseable, timezone-aware timestamps in chronological order."""
+def _execution_interval(record):
+    """Return a verified UTC interval, or None for incomplete/invalid metadata."""
     stamps = []
     for field in ("started_at", "completed_at"):
-        raw = step.get(field)
+        raw = record.get(field)
         if not isinstance(raw, str) or not raw.strip():
-            return False
+            return None
         try:
             stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except (ValueError, OverflowError):
-            return False
+            return None
         if stamp.tzinfo is None or stamp.utcoffset() is None:
-            return False
+            return None
         stamps.append(stamp.astimezone(timezone.utc))
-    return stamps[0] <= stamps[1]
+    return tuple(stamps) if stamps[0] <= stamps[1] else None
+
+
+def _valid_execution_interval(step):
+    return _execution_interval(step) is not None
 
 
 def _classify_job(job, run, run_id=None):
@@ -158,6 +162,13 @@ def _classify_job(job, run, run_id=None):
     if not runner_observed:
         result["classification"] = "reported_steps_without_runner_evidence"
         return result
+    # Job bounds, when supplied by GitHub, must agree with every timestamped
+    # executed step. A forged out-of-window success cannot certify this job.
+    job_interval = None
+    if job.get("started_at") is not None or job.get("completed_at") is not None:
+        job_interval = _execution_interval(job)
+        if job_interval is None:
+            raise TriageError("invalid job execution interval")
     failed, substantive_success = [], False
     uncertain_failed_steps = 0
     for step in steps:
@@ -189,6 +200,13 @@ def _classify_job(job, run, run_id=None):
         # Completed step status and conclusion alone do not prove execution;
         # require an observable start and completion timestamp as well.
         timed_execution = step_status == "completed" and _valid_execution_interval(step)
+        if timed_execution and job_interval is not None:
+            step_interval = _execution_interval(step)
+            if (step_interval[0] < job_interval[0] or
+                    step_interval[1] > job_interval[1]):
+                raise TriageError("step outside job execution interval")
+        if step_conclusion == "success" and not timed_execution:
+            raise TriageError("successful step lacks verified execution interval")
         purpose = _purpose(step.get("name"))
         if step_status == "completed" and step_conclusion in ("failure", "timed_out"):
             if timed_execution:

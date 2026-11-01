@@ -373,6 +373,51 @@ class RunnerAdmissionTriageContract(unittest.TestCase):
         with self.assertRaisesRegex(triage.TriageError, "unfinished step has conclusion"):
             self.aggregate()
 
+    def test_untimed_success_cannot_hide_behind_timed_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        untimed = self.step(conclusion="success")
+        del untimed["completed_at"]
+        self.job["steps"] = [self.step(conclusion="success"), untimed]
+        with self.assertRaisesRegex(triage.TriageError, "lacks verified execution interval"):
+            self.aggregate()
+
+    def test_reverse_timed_success_cannot_hide_behind_valid_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step(conclusion="success"),
+            self.step(conclusion="success", started_at="2026-11-01T04:00:03Z"),
+        ]
+        with self.assertRaisesRegex(triage.TriageError, "lacks verified execution interval"):
+            self.aggregate()
+
+    def test_successful_step_outside_job_interval_is_rejected(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job.update(started_at="2026-11-01T04:00:01Z",
+                        completed_at="2026-11-01T04:00:03Z")
+        self.job["steps"] = [self.step(conclusion="success")]
+        with self.assertRaisesRegex(triage.TriageError, "outside job execution interval"):
+            self.aggregate()
+
+    def test_invalid_job_interval_cannot_certify_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job.update(started_at="2026-11-01T04:00:04Z",
+                        completed_at="2026-11-01T04:00:03Z")
+        self.job["steps"] = [self.step(conclusion="success")]
+        with self.assertRaisesRegex(triage.TriageError, "invalid job execution interval"):
+            self.aggregate()
+
+    def test_valid_bounded_success_retains_execution_classification(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job.update(started_at="2026-11-01T03:59:59Z",
+                        completed_at="2026-11-01T04:00:03Z")
+        self.job["steps"] = [self.step(conclusion="success")]
+        self.assertEqual(self.aggregate()["category"], "executed_success")
+
     def test_gh_access_is_get_only(self):
         with patch.object(triage.subprocess, "run",
                           return_value=SimpleNamespace(returncode=0, stdout='{"ok": true}')) as called:
