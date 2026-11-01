@@ -263,7 +263,7 @@ pub fnc run_suite(borrow TestSuite suite, borrow TestOptions options): RunSummar
   return summary;
 }
 
-pub fnc require_success(borrow RunSummary summary: void {
+pub fnc require_success(borrow RunSummary summary): void {
   // An empty/all-skipped/all-filtered suite must never be a green test receipt.
   // Keep this aligned with oreslang-test.cli's native receipt admission rule.
   let int executed_count = summary.passed + summary.failed;
