@@ -81,4 +81,28 @@ final class OresLlmExplicitOwnershipSyntaxTest {
                 }
                 """));
     }
+
+    @Test
+    void CStyleMutableReferenceParameterMustBeRejected() {
+        final String source = VALID.replace(
+            "borrow OresModelMeta cfg", "&mut OresModelMeta cfg");
+        assertNotEquals(source, VALID);
+        assertThrows(RuntimeException.class, () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void CStylePointerMemberAccessMustBeRejected() {
+        final String source = VALID.replace(
+            "cfg.hidden + cfg.heads", "cfg->hidden + cfg->heads");
+        assertNotEquals(source, VALID);
+        assertThrows(RuntimeException.class, () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void CStylePointerCastMustBeRejected() {
+        final String source = VALID.replace(
+            "rt borrow cfg", "(OresModelMeta*) cfg");
+        assertNotEquals(source, VALID);
+        assertThrows(RuntimeException.class, () -> OresCompiler.parseAndTypeCheck(source));
+    }
 }
