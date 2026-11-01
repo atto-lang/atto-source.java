@@ -181,6 +181,33 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void structurallyIdenticalModelsRemainNominallyDistinct() throws Exception {
+        String source = """
+                fnc Identity(int input): int { return input; }
+                define model x as
+                  Identity()
+                end
+                define model y as
+                  Identity()
+                end
+                pub fnc main(): int { return x().run(42); }
+                """;
+        var catalog = ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source));
+        var x = catalog.find("x");
+        var y = catalog.find("y");
+        assertNotEquals(x.modelTypeName(), y.modelTypeName());
+        assertNotEquals(x.graphDigest(), y.graphDigest(),
+                "nominal model identity must not collapse structurally identical graphs");
+        assertNotEquals(
+                x.configuredGraphDigest(x.bindConfiguration(java.util.List.of())),
+                y.configuredGraphDigest(y.bindConfiguration(java.util.List.of())),
+                "configured graph caches must never alias two nominal model types");
+        assertTrue(x.supportsPortableProfile(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1));
+        assertTrue(y.supportsPortableProfile(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1));
+        assertEquals(42L, evalLong(source));
+    }
+
+    @Test
     void publicModelVisibilitySpellingsPreserveGraphIdentity() {
         String canonical = PRICE_MODEL.replace(
                 "pub define model PriceEstimate(",
