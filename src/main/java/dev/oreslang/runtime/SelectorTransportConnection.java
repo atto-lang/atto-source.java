@@ -612,7 +612,7 @@ final class SelectorTransportConnection implements AutoCloseable {
                                 + " interrupted");
             }
             long remaining =
-                    deadlineNanos - System.nanoTime();
+                    saturatingRemaining(deadlineNanos, System.nanoTime());
             if (remaining <= 0) {
                 throw new SocketTimeoutException(
                         "pinned HTTP "
@@ -622,12 +622,11 @@ final class SelectorTransportConnection implements AutoCloseable {
 
             try {
                 key.interestOps(operation);
+                // Ceil without adding to a potentially MAX nanos value.
+                long roundedMillis = remaining / 1_000_000L
+                        + (remaining % 1_000_000L == 0 ? 0 : 1);
                 long millis = Math.max(
-                        1L,
-                        Math.min(
-                                Integer.MAX_VALUE,
-                                (remaining + 999_999L)
-                                        / 1_000_000L));
+                        1L, Math.min(Integer.MAX_VALUE, roundedMillis));
                 int ready = selector.select(millis);
                 if (Thread.currentThread().isInterrupted()) {
                     throw new IOException(
@@ -681,17 +680,33 @@ final class SelectorTransportConnection implements AutoCloseable {
         } catch (ArithmeticException overflow) {
             delta = Long.MAX_VALUE;
         }
-        long phaseDeadline =
-                delta == Long.MAX_VALUE
-                        || Long.MAX_VALUE - now < delta
-                        ? Long.MAX_VALUE
-                        : now + delta;
+        long phaseDeadline = saturatingDeadline(now, delta);
         if (overallDeadlineNanos == Long.MAX_VALUE) {
             return phaseDeadline;
         }
         return Math.min(
                 phaseDeadline,
                 overallDeadlineNanos);
+    }
+
+    // nanoTime() has an arbitrary signed origin. MAX-now overflows when
+    // now is negative; saturate using the non-overflowing MAX-delta bound.
+    static long saturatingDeadline(long now, long delta) {
+        if (delta < 0) throw new IllegalArgumentException("negative phase nanos");
+        return delta == Long.MAX_VALUE || now > Long.MAX_VALUE - delta
+                ? Long.MAX_VALUE : now + delta;
+    }
+
+    // A MAX deadline is intentionally unbounded. For finite deadlines,
+    // preserve the sign on subtraction overflow rather than falsely expiring
+    // a far-future selector or waiting on an already-expired deadline.
+    static long saturatingRemaining(long deadline, long now) {
+        if (deadline == Long.MAX_VALUE) return Long.MAX_VALUE;
+        try {
+            return Math.subtractExact(deadline, now);
+        } catch (ArithmeticException overflow) {
+            return deadline > now ? Long.MAX_VALUE : Long.MIN_VALUE;
+        }
     }
 
     /**
