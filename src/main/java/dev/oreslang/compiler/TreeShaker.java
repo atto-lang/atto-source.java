@@ -638,7 +638,9 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.actorConcurrency(),
+                        klass.annotations());
             }
             return declaration;
         }
