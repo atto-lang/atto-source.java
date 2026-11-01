@@ -2182,8 +2182,7 @@ public final class Parser {
             // the critical guard cannot be acquired by a suspended continuation.
             throw error(peek(), "critical block requires scheduler-owned nonblocking admission, scoped release and no-suspension verification");
         }
-        if (check(IDENT) && peek().lexeme().equals("try")
-                && current + 1 < tokens.size()
+        if (check(TRY) && current + 1 < tokens.size()
                 && tokens.get(current + 1).lexeme().equals("critical")) {
             throw error(peek(), "try critical requires an immediate nonblocking guard-lowering implementation");
         }
