@@ -155,6 +155,32 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void zeroFormalModelShorthandExecutesPortableNonMlGraph() throws Exception {
+        // The canonical no-parentheses declaration is not a class or ML-only syntax.
+        String source = """
+                fnc Identity(int input): int { return input; }
+                fnc AddDelta(int delta, int input): int { return input + delta; }
+                define model x as
+                  Identity()
+                  AddDelta(2)
+                end
+                pub fnc main(): int { return x().run(40); }
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        assertTrue(parsed.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ModelDecl.class::isInstance)
+                .map(Ast.ModelDecl.class::cast)
+                .anyMatch(model -> model.name().equals("x")
+                        && model.parameters().isEmpty()
+                        && model.operations().size() == 2));
+        var model = ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source))
+                .find("x");
+        assertTrue(model.supportsPortableProfile(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1));
+        assertEquals(42L, evalLong(source));
+    }
+
+    @Test
     void publicModelVisibilitySpellingsPreserveGraphIdentity() {
         String canonical = PRICE_MODEL.replace(
                 "pub define model PriceEstimate(",
