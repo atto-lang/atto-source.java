@@ -65,8 +65,24 @@ pub fnc expect_false(bool actual, String message): TestOutcome {
   fi
 }
 
+pub fnc expect_equal_bool(bool actual, bool expected, String message): TestOutcome {
+  if actual == expected; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
 pub fnc expect_equal_int(int actual, int expected, String message): TestOutcome {
   if actual == expected; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+pub fnc expect_not_equal_int(int actual, int unexpected, String message): TestOutcome {
+  if actual != unexpected; do
     return pass();
   else
     return fail(message);
@@ -83,6 +99,14 @@ pub fnc expect_equal_float(float actual, float expected, String message): TestOu
 
 pub fnc expect_equal_string(String actual, String expected, String message): TestOutcome {
   if actual == expected; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+pub fnc expect_not_equal_string(String actual, String unexpected, String message): TestOutcome {
+  if actual != unexpected; do
     return pass();
   else
     return fail(message);
@@ -240,6 +264,13 @@ pub fnc run_suite(borrow TestSuite suite, borrow TestOptions options): RunSummar
 }
 
 pub fnc require_success(borrow RunSummary summary): void {
+  // An empty/all-skipped/all-filtered suite must never be a green test receipt.
+  // Keep this aligned with oreslang-test.cli's native receipt admission rule.
+  let int executed_count = summary.passed + summary.failed;
+  if executed_count == 0; do
+    val Result<bool, String> empty = Err("no Oreslang test cases executed");
+    empty.expect("native Oreslang test suite was empty or only skipped/filtered");
+  fi
   let int failed_count = summary.failed;
   if failed_count > 0; do
     val Result<bool, String> failure = Err("one or more Oreslang tests failed");
@@ -255,7 +286,10 @@ pub fnc check_int_cases(
   List<int> cases,
   IntProperty property
 ): TestOutcome {
+  // A zero-input property check is a configuration error, not evidence of a pass.
+  let bool saw_case = false;
   for const value of cases do
+    saw_case = true;
     let TestOutcome outcome = property(value);
     if !outcome.passed; do
       if outcome.message == ""; do
@@ -266,6 +300,9 @@ pub fnc check_int_cases(
     fi
   done
 
+  if !saw_case; do
+    return fail("property has no cases: " + property_name);
+  fi
   return pass();
 }
 

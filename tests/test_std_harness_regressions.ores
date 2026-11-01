@@ -4,7 +4,10 @@ fnc property_nonnegative(int value): TestOutcome {
   return expect_true(value >= 0, "unexpected negative property case");
 }
 fnc deterministic_property_cases_pass(): TestOutcome {
-  return check_int_cases("nonnegative", arr[0, 1, 2, 100], property_nonnegative);
+  let TestOutcome nonempty = check_int_cases("nonnegative", arr[0, 1, 2, 100], property_nonnegative);
+  let TestOutcome empty = check_int_cases("empty-must-reject", arr[], property_nonnegative);
+  return expect_true(nonempty.passed && !empty.passed,
+    "nonempty property must pass and empty property must fail closed");
 }
 pub routine main(): void {
   val TestSuite suite = new TestSuite("native-testing-core", arr[
