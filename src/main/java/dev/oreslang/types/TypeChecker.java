@@ -7537,6 +7537,9 @@ public final class TypeChecker {
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
                         Primitive.VOID);
+                case "utf8_string" -> list.element() == Primitive.INT
+                        ? new Function(List.of(), Primitive.STRING)
+                        : null;
                 default -> null;
             };
         }
