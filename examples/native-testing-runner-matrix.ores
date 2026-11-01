@@ -1,0 +1,95 @@
+// Exercises the native suite runner itself. Intentionally uses human output
+// for nested runs: it must never manufacture nested ORES_TEST machine receipts.
+import class TestCase, TestSuite, TestOptions, TestOutcome, RunSummary from '../stdlib/testing';
+import fnc pass, fail, run_suite from '../stdlib/testing';
+
+fnc passes(): TestOutcome {
+  return pass();
+}
+
+fnc fails(): TestOutcome {
+  return fail("expected intentional failure");
+}
+
+fnc must_not_run(): TestOutcome {
+  return fail("skipped callback unexpectedly executed");
+}
+
+fnc check(
+  borrow RunSummary observed,
+  int total,
+  int passed_count,
+  int failed_count,
+  int skipped_count,
+  int filtered_count,
+  String label
+): void {
+  if observed.total != total |
+    observed.passed != passed_count |
+    observed.failed != failed_count |
+    observed.skipped != skipped_count |
+    observed.filtered != filtered_count; do
+    val Result<bool, String> error = Err("test runner accounting mismatch: " + label);
+    error.expect("native test runner matrix failed");
+  fi
+  return;
+}
+
+pub routine main(): void {
+  val TestSuite empty = new TestSuite("runner", arr[]);
+  val TestSuite all_skipped = new TestSuite(
+    "runner",
+    arr[new TestCase("skipped", must_not_run, true, "skip with reason")]
+  );
+  val TestSuite mixed = new TestSuite(
+    "runner",
+    arr[
+      new TestCase("pass", passes, false, ""),
+      new TestCase("fail", fails, false, ""),
+      new TestCase("skip", must_not_run, true, "skip with reason")
+    ]
+  );
+  val TestSuite deeper = new TestSuite(
+    "runner",
+    arr[
+      new TestCase("pass", passes, false, ""),
+      new TestCase("pass/child", passes, false, ""),
+      new TestCase("other", passes, false, "")
+    ]
+  );
+  val TestOptions all = new TestOptions("", false, false);
+  val TestOptions stop = new TestOptions("", true, false);
+  val TestOptions nothing = new TestOptions("runner/not-found", false, false);
+  val TestOptions only_pass = new TestOptions("runner/pass", false, false);
+  val TestOptions only_fail = new TestOptions("runner/fail", false, false);
+  val TestOptions only_skip = new TestOptions("runner/skip", false, false);
+  val TestOptions only_child = new TestOptions("runner/pass/child", false, false);
+
+  val RunSummary s1 = run_suite(rt borrow empty, rt borrow all);
+  check(rt borrow s1, 0, 0, 0, 0, 0, "empty");
+  val RunSummary s2 = run_suite(rt borrow all_skipped, rt borrow all);
+  check(rt borrow s2, 1, 0, 0, 1, 0, "all skipped");
+  val RunSummary s3 = run_suite(rt borrow mixed, rt borrow nothing);
+  check(rt borrow s3, 0, 0, 0, 0, 3, "all filtered");
+  val RunSummary s4 = run_suite(rt borrow mixed, rt borrow all);
+  check(rt borrow s4, 3, 1, 1, 1, 0, "full mixed suite");
+  val RunSummary s5 = run_suite(rt borrow mixed, rt borrow only_pass);
+  check(rt borrow s5, 1, 1, 0, 0, 2, "exact pass filter");
+  val RunSummary s6 = run_suite(rt borrow mixed, rt borrow only_fail);
+  check(rt borrow s6, 1, 0, 1, 0, 2, "exact fail filter");
+  val RunSummary s7 = run_suite(rt borrow mixed, rt borrow only_skip);
+  check(rt borrow s7, 1, 0, 0, 1, 2, "exact skip filter");
+  val RunSummary s8 = run_suite(rt borrow mixed, rt borrow stop);
+  check(rt borrow s8, 2, 1, 1, 0, 0, "fail fast counts attempted only");
+  val RunSummary s9 = run_suite(rt borrow deeper, rt borrow only_pass);
+  check(rt borrow s9, 1, 1, 0, 0, 2, "prefix must not match child");
+  val RunSummary s10 = run_suite(rt borrow deeper, rt borrow only_child);
+  check(rt borrow s10, 1, 1, 0, 0, 2, "nested hierarchical exact filter");
+  val RunSummary s11 = run_suite(rt borrow deeper, rt borrow all);
+  check(rt borrow s11, 3, 3, 0, 0, 0, "all nested names");
+  val RunSummary s12 = run_suite(rt borrow all_skipped, rt borrow nothing);
+  check(rt borrow s12, 0, 0, 0, 0, 1, "skip filtered out");
+
+  stdio.stdout.println("ORES_TEST_RUNNER_MATRIX_OK|cases=12");
+  return;
+}
