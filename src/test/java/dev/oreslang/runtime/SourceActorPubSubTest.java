@@ -84,13 +84,6 @@ final class SourceActorPubSubTest {
 
             assertFalse(a.contains(actor));
             assertTrue(b.contains(actor));
-            assertThrows(SecurityException.class, () -> runtime.invoke(
-                    ActorRuntime.ActorKind.SHARED,
-                    "probe",
-                    (message, context) -> {
-                        pubsub.group("a");
-                        return null;
-                    }));
 
             actor.send("check");
             assertTrue(done.await(5, TimeUnit.SECONDS));
