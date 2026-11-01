@@ -156,6 +156,74 @@ final class ActorNativeStorageStandaloneTest {
         assertEquals(0, charged.get());
     }
 
+
+    @Test
+    void retiredActorCannotReclaimOrCorruptSurvivingActorsPhysicalHeap() {
+        AtomicLong aCharge = new AtomicLong(), bCharge = new AtomicLong(), nextCharge = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        ActorNativeArena a = arena(256 * 1024, aCharge, owner);
+        ActorNativeArena b = arena(256 * 1024, bCharge, owner);
+        ActorLinearMemory am = a.linearMemory(1, 1);
+        ActorLinearMemory bm = b.linearMemory(1, 1);
+        am.writeLong(0, 111L);
+        bm.writeLong(0, 222L);
+        var borrowedA = am.leaseReadOnlyPage(0, 0, Long.BYTES);
+        a.retire();
+        assertThrows(IllegalStateException.class, a::close,
+                "CONTROL must not reclaim an actor heap with an outstanding read loan");
+        assertEquals(111L, borrowedA.readLong(0));
+        bm.writeLong(0, 223L);
+        assertEquals(223L, bm.readLong(0),
+                "B must make progress while A is retired but pinned");
+        borrowedA.close();
+        a.close();
+        assertEquals(0L, aCharge.get());
+        assertThrows(IllegalStateException.class, () -> am.readLong(0),
+                "stale A heap access must be revoked");
+        assertEquals(223L, bm.readLong(0), "A reclamation must not affect B");
+        ActorNativeArena replacement = arena(256 * 1024, nextCharge, owner);
+        ActorLinearMemory newMemory = replacement.linearMemory(1, 1);
+        assertEquals(0L, newMemory.readLong(0),
+                "new actor's offset zero must have fresh physical zero-filled storage");
+        newMemory.writeLong(0, 999L);
+        assertEquals(223L, bm.readLong(0),
+                "fresh actor offset zero must not alias survivor B");
+        assertEquals(999L, newMemory.readLong(0));
+        b.retire();
+        replacement.retire();
+        b.close();
+        replacement.close();
+        assertEquals(0L, bCharge.get());
+        assertEquals(0L, nextCharge.get());
+    }
+
+    @Test
+    void deniedActorHeapGrowthCannotMutateNeighborsQuotaOrStorage() {
+        AtomicLong aCharge = new AtomicLong(), bCharge = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        ActorNativeArena a = arena(256 * 1024, aCharge, owner);
+        ActorNativeArena b = arena(256 * 1024, bCharge, owner);
+        ActorLinearMemory am = a.linearMemory(1, 1);
+        ActorLinearMemory bm = b.linearMemory(1, 2);
+        am.writeLong(0, 71L);
+        bm.writeLong(0, 83L);
+        long beforeA = aCharge.get(), beforeB = bCharge.get();
+        assertThrows(IllegalArgumentException.class, () -> am.grow(1));
+        assertEquals(beforeA, aCharge.get());
+        assertEquals(beforeB, bCharge.get());
+        assertEquals(1, bm.grow(1));
+        assertEquals(2, bm.pages());
+        assertEquals(71L, am.readLong(0));
+        assertEquals(83L, bm.readLong(0));
+        a.retire();
+        b.retire();
+        a.close();
+        assertEquals(83L, bm.readLong(0));
+        b.close();
+        assertEquals(0L, aCharge.get());
+        assertEquals(0L, bCharge.get());
+    }
+
     private static ActorNativeArena arena(long maximum, AtomicLong charged, AtomicBoolean owner) {
         return new ActorNativeArena(maximum, () -> {
             if (!owner.get()) throw new SecurityException("native storage off actor turn");
