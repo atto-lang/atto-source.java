@@ -55,6 +55,7 @@ jobs:
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
       - name: Run native Oreslang test framework
         run: |
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-harness-guards.ores"
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee /tmp/ores-testing-jit.out
           grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-jit.out
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/ores-testing-semantics-jit.out
@@ -117,6 +118,7 @@ jobs:
           grep -F "0|0|0" /tmp/ores-aot-tail.out
       - name: Run native Oreslang tests under AOT
         run: |
+          ./target/ores-aot --mode=aot --platform=linux examples/native-testing-harness-guards.ores
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-aot.out
           grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-aot.out
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-aot.out
@@ -220,6 +222,7 @@ jobs:
           grep -F "0|0|0" /tmp/ores-hybrid-tail.out
       - name: Run native Oreslang tests under hybrid host
         run: |
+          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-harness-guards.ores
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-hybrid.out
           grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-hybrid.out
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-hybrid.out
