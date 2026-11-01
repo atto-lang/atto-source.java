@@ -1051,6 +1051,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
+            rejectActorIoCapabilityStorageValue(
+                    value,
+                    "actor-local binding '" + binding.name() + "'");
             Ast.ClassDecl view = staticClassView(binding.declaredType());
             if (view == null) view = staticClassView(binding.initializer(), env);
             env.define(binding.name(), value, binding.kind(), view);
@@ -1089,6 +1092,9 @@ public final class OresEvalRootNode extends RootNode {
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
                 Object value = args.get(i);
+                rejectActorIoCapabilityStorageValue(
+                        value,
+                        "call argument '" + param.name() + "'");
                 tuple.add(value);
                 env.define(
                         param.name(),
@@ -5636,6 +5642,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr target,
                 Object value,
                 Env env) {
+            rejectActorIoCapabilityStorageValue(value, "actor assignment");
             if (target instanceof Ast.NameExpr name) {
                 env.assign(name.name(), value);
                 return value;
@@ -7399,6 +7406,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AssignExpr assignment) {
                 Object value = eval(assignment.value(), env);
+                rejectActorIoCapabilityStorageValue(value, "actor assignment");
                 if (assignment.target() instanceof Ast.NameExpr target) {
                     env.assign(target.name(), value);
                     return value;
@@ -11420,6 +11428,74 @@ public final class OresEvalRootNode extends RootNode {
             return NativeIo.envHas(context, requireStringArg(args, "env.has"));
         }
     }
+
+        private static boolean containsActorIoCapabilityValue(Object value) {
+            return containsActorIoCapabilityValue(
+                    value,
+                    new IdentityHashMap<>());
+        }
+
+        private static boolean containsActorIoCapabilityValue(
+                Object value,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (value instanceof ActorIoFacade
+                    || value instanceof ActorIoOutFacade
+                    || value instanceof ReservedActorIoChannel) {
+                return true;
+            }
+            if (value == null
+                    || value instanceof String
+                    || value instanceof Number
+                    || value instanceof Boolean
+                    || value instanceof Character
+                    || value instanceof OresSymbol) {
+                return false;
+            }
+            if (seen.put(value, Boolean.TRUE) != null) return false;
+            try {
+                if (value instanceof OptionValue option) {
+                    return option.present()
+                            && containsActorIoCapabilityValue(option.value(), seen);
+                }
+                if (value instanceof ResultValue result) {
+                    return containsActorIoCapabilityValue(result.value(), seen);
+                }
+                if (value instanceof Map<?, ?> map) {
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        if (containsActorIoCapabilityValue(entry.getKey(), seen)
+                                || containsActorIoCapabilityValue(entry.getValue(), seen)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                if (value instanceof Iterable<?> iterable) {
+                    for (Object item : iterable) {
+                        if (containsActorIoCapabilityValue(item, seen)) return true;
+                    }
+                    return false;
+                }
+                if (value instanceof Object[] array) {
+                    for (Object item : array) {
+                        if (containsActorIoCapabilityValue(item, seen)) return true;
+                    }
+                }
+                return false;
+            } finally {
+                seen.remove(value);
+            }
+        }
+
+        private static void rejectActorIoCapabilityStorageValue(
+                Object value,
+                String where) {
+            if (ActorRuntime.inActorExecution()
+                    && containsActorIoCapabilityValue(value)) {
+                throw new SecurityException(
+                        where
+                                + " cannot store, alias, return, assign, or pass the implicit actor io capability");
+            }
+        }
 
     /**
      * Implicit actor-local I/O execution capability. It is not a field on self,
