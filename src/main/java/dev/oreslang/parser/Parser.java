@@ -746,6 +746,18 @@ public final class Parser {
      */
     private Ast.SupervisorDecl parseSupervisor(Ast.Visibility visibility) {
         String name = consume(IDENT, "expected supervisor name").lexeme();
+        // Supervisors are runtime-minted authority-bearing entities, not actors
+        // or classes. A syntactically accepted parent/interface/trait clause
+        // would be silently discarded by the dedicated SupervisorDecl AST.
+        // Explicitly deny composition until a checked supervisor-only contract
+        // and compiler-lowered CONTROL dispatch exist.
+        if (check(EXTENDS) || check(IMPLEMENTS) || check(IMPL)
+                || check(CONFORMS) || check(TRAIT) || check(INTERFACE)
+                || check(IS) || isContextualIdentifier("with")) {
+            throw error(peek(),
+                    "supervisor inheritance and interface/trait composition require "
+                            + "supervisor-specific type and CONTROL lowering");
+        }
         boolean braces = match(LBRACE);
         if (!braces) consume(AS, "expected 'as' after supervisor name");
         Token.Type end = braces ? RBRACE : END;
@@ -770,9 +782,18 @@ public final class Parser {
             if (!names.add(hook.name())) {
                 throw error(previous(), "duplicate supervisor hook '" + hook.name() + "'");
             }
-            if (!java.util.Set.of("on_start", "on_throw", "on_raise", "on_panic", "tear_down")
+            if (!java.util.Set.of("on_start", "on_panic", "tear_down")
                     .contains(hook.name())) {
-                throw error(previous(), "unknown supervisor lifecycle hook '" + hook.name() + "'");
+                // on_throw/on_raise are actor-local effects. Supervisor CONTROL
+                // observes terminal failures only, through typed on_panic.
+                throw error(previous(), "unsupported supervisor lifecycle hook '" + hook.name()
+                        + "'; terminal failures use on_panic(Failure)");
+            }
+            for (Ast.Annotation annotation : hook.annotations()) {
+                if (!annotation.name().equals("Implements") || !annotation.arguments().isEmpty()) {
+                    throw error(previous(), "supervisor hook annotations require "
+                            + "supervisor-specific CONTROL lowering");
+                }
             }
             if (hook.isStatic() || hook.isAbstract() || !hook.genericParameters().isEmpty()
                     || hook.explicitReceiverType() != null || hook.structural()) {
@@ -781,11 +802,13 @@ public final class Parser {
             if (hook.name().equals("on_panic")) {
                 if (hook.arity() != 1
                         || !hook.parameters().getFirst().type().name().equals("Failure")
-                        || !hook.parameters().getFirst().type().arguments().isEmpty()) {
-                    throw error(previous(), "on_panic requires exactly one typed Failure parameter");
+                        || !hook.parameters().getFirst().type().arguments().isEmpty()
+                        || hook.parameters().getFirst().mutable()
+                        || hook.parameters().getFirst().structural()
+                        || hook.parameters().getFirst().name().equals("self")) {
+                    throw error(previous(), "on_panic requires one immutable, nominal Failure parameter");
                 }
-            } else if (hook.arity() != 0 && !hook.name().equals("on_raise")
-                    && !hook.name().equals("on_throw")) {
+            } else if (hook.arity() != 0) {
                 throw error(previous(), "supervisor lifecycle hook '" + hook.name() + "' takes no arguments");
             }
             if (!hook.returnType().name().equals("void")) {
