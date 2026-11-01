@@ -148,7 +148,8 @@ fnc case_33(): TestOutcome {
 }
 
 fnc case_34(): TestOutcome {
-  return rejected(check_int_cases("empty", arr[], prop_below_three), "property has no cases: empty");
+  val List<int> empty_values = arr[];
+  return rejected(check_int_cases("empty", empty_values, prop_below_three), "property has no cases: empty");
 }
 
 fnc case_35(): TestOutcome {
