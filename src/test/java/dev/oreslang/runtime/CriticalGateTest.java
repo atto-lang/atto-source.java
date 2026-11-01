@@ -120,6 +120,25 @@ final class CriticalGateTest {
         assertEquals(0, gate.waiting());
     }
 
+    @Test void cancellingWhileOwnerReleasesAlwaysAdmitsNextLiveTicket()
+            throws InterruptedException {
+        for (int iteration = 0; iteration < 128; iteration++) {
+            CriticalGate gate = new CriticalGate();
+            var root = gate.request();
+            var cancelled = gate.request();
+            var surviving = gate.request();
+            Thread releaser = Thread.ofPlatform().start(
+                    () -> gate.release(root.ticket()));
+            Thread canceller = Thread.ofPlatform().start(
+                    () -> gate.release(cancelled.ticket()));
+            releaser.join();
+            canceller.join();
+            assertFalse(gate.holds(cancelled.ticket()), "cancelled ticket held gate");
+            assertTrue(gate.holds(surviving.ticket()), "live successor lost during race");
+            assertTrue(gate.release(surviving.ticket()).isEmpty());
+        }
+    }
+
     @Test void logicalTicketCanBeReleasedOnAnotherCarrier() throws InterruptedException {
         CriticalGate gate = new CriticalGate();
         var owner = gate.request();
