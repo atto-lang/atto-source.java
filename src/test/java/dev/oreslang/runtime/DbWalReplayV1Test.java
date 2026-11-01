@@ -29,6 +29,52 @@ final class DbWalReplayV1Test {
         u16(b,27,a); u16(b,29,c);
         return b;
     }
+    @Test void incompleteTailRequiresValidHeaderPrefixAndOwner() throws Exception {
+        byte[] a = frame(1, 41), b = frame(2, 42), c = frame(3, 43);
+        Path p = root.resolve("partial.odb");
+        try (var file = FileChannel.open(p, StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            file.write(ByteBuffer.wrap(a), 0);
+            file.write(ByteBuffer.wrap(b), 31);
+            for (int prefix = 1; prefix < c.length; prefix++) {
+                file.truncate(62);
+                file.write(ByteBuffer.wrap(c, 0, prefix), 62);
+                var tail = DbWalReplayV1.scan(file, 7, 4);
+                assertEquals(2, tail.records());
+                assertEquals(62, tail.validBytes());
+                assertTrue(tail.incompleteTail(), "valid prefix " + prefix);
+                assertEquals(62 + prefix, file.size(),
+                        "scanner never repairs/truncates in place");
+            }
+            file.truncate(62);
+            file.write(ByteBuffer.wrap(new byte[]{0}), 62);
+            assertThrows(IOException.class, () -> DbWalReplayV1.scan(file, 7, 4),
+                    "one corrupt magic byte is not a repairable torn tail");
+
+            for (int field : new int[]{0, 4, 5, 6, 10, 14, 18, 22, 24}) {
+                byte[] damaged = c.clone();
+                switch (field) {
+                    case 0 -> damaged[0] = 0;
+                    case 4 -> damaged[4] = 0;
+                    case 5 -> damaged[5] = 3;
+                    case 6 -> u32(damaged, 6, 8);
+                    case 10 -> u32(damaged, 10, 5);
+                    case 14 -> u32(damaged, 14, 4);
+                    case 18 -> u32(damaged, 18, 42);
+                    case 22 -> u16(damaged, 22, 0);
+                    case 24 -> u16(damaged, 24, 65535);
+                    default -> throw new AssertionError(field);
+                }
+                file.truncate(62);
+                file.write(ByteBuffer.wrap(damaged, 0, 26), 62);
+                assertThrows(IOException.class,
+                        () -> DbWalReplayV1.scan(file, 7, 4),
+                        "a malformed incomplete header must fail: " + field);
+                assertEquals(88, file.size(), "replay is always read-only");
+            }
+        }
+    }
+
     @Test void reopenTailCorruptionAndDuplicateDetection() throws Exception {
         Path p = root.resolve("wal.odb");
         byte[] a=frame(1,41), b=frame(2,42), c=frame(3,43);

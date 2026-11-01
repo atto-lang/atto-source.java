@@ -1,5 +1,22 @@
 # Native DB durable WAL: Java/GraalVM physical host substrate
 
+## Stage 1.8 — partial WAL header validation (host-only)
+
+Recovery now checks every available prefix byte of ODB1 magic/version,
+tenant, generation and next sequence, and validates the complete kind,
+operation ID, key length and value length whenever each is present.
+A valid torn final frame is still reported as `incompleteTail`; a malformed
+short/header-only tail is a hard failure instead of a repair invitation.
+In particular, a full 26-byte header with the wrong owner or out-of-order
+operation can no longer become an apparently benign truncated payload.
+
+The read-only Java regression iterates all 30 valid truncated frame
+prefix lengths, exercises nine malformed truncated headers, and asserts
+that scanner failure never changes file length. This is **source-authored**;
+it requires executing exact HEAD JUnit, native compiler and crash recovery
+gates before promotion.
+
+
 ## Parent-directory entry sync (stage 1.7, host-only)
 
 After taking the exclusive WAL file lock, `openHostOnly` now opens the
