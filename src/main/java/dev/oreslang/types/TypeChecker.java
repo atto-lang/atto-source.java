@@ -732,6 +732,26 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    private static void rejectActorExecutionIntrinsicBinding(
+            String name,
+            String where) {
+        if (name.equals("io") || name.equals("stdio") || name.equals("print")) {
+            throw new IllegalArgumentException(
+                    where + " '" + name
+                            + "' conflicts with a reserved actor execution intrinsic");
+        }
+    }
+
+    private static boolean isActorIoOutWriteCall(Ast.Expr expression) {
+        return expression instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr ioWrite
+                && ioWrite.member().equals("write")
+                && ioWrite.receiver() instanceof Ast.MemberExpr ioOut
+                && ioOut.member().equals("out")
+                && ioOut.receiver() instanceof Ast.NameExpr ioName
+                && ioName.name().equals("io");
+    }
+
     private void requireSuspendableCall(boolean suspends, String label) {
         if (suspends && !currentMaySuspend)
             throw new IllegalArgumentException(
@@ -798,6 +818,10 @@ public final class TypeChecker {
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        param.name(), "actor callable parameter");
+            }
             Type parameterType = resolveParam(param, generics, null);
             argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
@@ -1623,6 +1647,10 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
             for (Ast.Param param : method.parameters()) {
+                if (!method.isStatic() && klass.actorKind() != Ast.ActorKind.NONE) {
+                    rejectActorExecutionIntrinsicBinding(
+                            param.name(), "actor method parameter");
+                }
                 Type parameterType = resolveParam(param, generics, callableSelf);
                 methodArgumentTypes.add(parameterType);
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
@@ -1857,6 +1885,19 @@ public final class TypeChecker {
             // remain pre-reserved because their name is stated explicitly and
             // must reject forward use before initialization.
             for (Ast.Stmt stmt : body) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    if (stmt instanceof Ast.BindingStmt binding) {
+                        rejectActorExecutionIntrinsicBinding(
+                                binding.name(), "actor-local binding");
+                    } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                        for (Ast.DestructureBinding binding : destructure.bindings()) {
+                            if (!binding.isDiscard()) {
+                                rejectActorExecutionIntrinsicBinding(
+                                        binding.name(), "actor-local destructure binding");
+                            }
+                        }
+                    }
+                }
                 if (stmt instanceof Ast.BindingStmt binding
                         && isShortNamedAggregateInference(binding, env, generics)) {
                     String name = binding.declaredType().name();
@@ -2151,7 +2192,15 @@ public final class TypeChecker {
             }
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            typeOf(expression.expression(), env, generics, self);
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && isActorIoOutWriteCall(expression.expression())) {
+                throw new IllegalArgumentException(
+                        "io.out.write returns Future<void>; await it or explicitly retain the Future");
+            }
+            return;
+        }
         if (stmt instanceof Ast.DeferStmt defer) {
             if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -2232,6 +2281,10 @@ public final class TypeChecker {
 
             env.restoreInitialization(before);
             Env caught = new Env(env);
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        attempted.errorName(), "actor catch binding");
+            }
             caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
             checkBlock(attempted.catchBody(), caught, generics, expectedReturn, self);
             Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
@@ -2291,6 +2344,10 @@ public final class TypeChecker {
                         requireMutableReferentCompatible(
                                 bound, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
+                        if (currentActorKind != Ast.ActorKind.NONE) {
+                            rejectActorExecutionIntrinsicBinding(
+                                    arm.bindingName(), "actor select binding");
+                        }
                         armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
@@ -2351,6 +2408,10 @@ public final class TypeChecker {
             requireMutableReferentCompatible(
                     element, loop.mutableReferent(),
                     "for-of binding '" + loop.bindingName() + "'");
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        loop.bindingName(), "actor for-of binding");
+            }
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             env.restoreInitialization(afterIterable);
@@ -2411,6 +2472,15 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
+            if (currentActorKind != Ast.ActorKind.NONE && name.name().equals("io")) {
+                return new Named("$ActorIO", List.of());
+            }
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && (name.name().equals("stdio") || name.name().equals("print"))) {
+                throw new IllegalArgumentException(
+                        "'" + name.name()
+                                + "' is process-level I/O and is unavailable inside actors; use io.*");
+            }
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
@@ -2859,6 +2929,22 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && isActorIoOutWriteCall(call)) {
+                if (call.typeArgumentsPresent()
+                        || call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "io.out.write expects exactly one non-spread value and no type arguments");
+                }
+                Type payload = typeOf(
+                        call.arguments().getFirst(), env, generics, self);
+                validateActorOutputDataType(
+                        payload,
+                        currentActorKind,
+                        "io.out.write payload");
+                return new Named("Future", List.of(Primitive.VOID));
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -2869,7 +2955,8 @@ public final class TypeChecker {
                             env, generics, self);
                 }
             }
-            if (call.callee() instanceof Ast.MemberExpr console
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && call.callee() instanceof Ast.MemberExpr console
                     && console.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("stdio") && env.lookup("stdio") == null
                     && (console.member().equals("print") || console.member().equals("println"))) {
@@ -2886,7 +2973,8 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "log", env)) {
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -2899,7 +2987,8 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "logList", env)) {
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && isBuiltinStdoutCall(call, "logList", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.logList does not accept call-site type arguments");
                 }
@@ -3244,10 +3333,9 @@ public final class TypeChecker {
                                     "self.send expects exactly one outbound value");
                         }
                         Type payload = typeOf(call.arguments().getFirst(), env, generics, self);
-                        validateActorCallableBoundaryType(
+                        validateActorOutputDataType(
                                 payload,
                                 currentActorKind,
-                                false,
                                 "self.send outbound value");
                         if (currentClassOwner != null) {
                             StreamPorts ports = streamPortsForClass(
@@ -3819,7 +3907,8 @@ public final class TypeChecker {
                     && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
                 return new Function(List.of(), Primitive.INT);
             }
-            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
@@ -5160,6 +5249,10 @@ public final class TypeChecker {
         requireMutableReferentCompatible(
                 type, binding.mutableReferent(),
                 "destructure binding '" + binding.name() + "'");
+        if (currentActorKind != Ast.ActorKind.NONE) {
+            rejectActorExecutionIntrinsicBinding(
+                    binding.name(), "actor destructure binding");
+        }
         env.define(binding.name(), type, binding.kind());
     }
 
@@ -5578,6 +5671,35 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+
+        if (named.name().equals("$ActorIO")) {
+            return switch (name) {
+                case "out" -> new Named("$ActorIOOut", List.of());
+                case "in" -> new Named("$ActorIOIn", List.of());
+                case "err" -> new Named("$ActorIOErr", List.of());
+                case "events" -> new Named("$ActorIOEvents", List.of());
+                case "meta" -> new Named("$ActorIOMeta", List.of());
+                default -> throw new IllegalArgumentException(
+                        "unknown actor io member '" + name + "'");
+            };
+        }
+        if (named.name().equals("$ActorIOOut")) {
+            if (name.equals("write")) {
+                throw new IllegalArgumentException(
+                        "io.out.write is an actor execution intrinsic; invoke it directly with one data value");
+            }
+            throw new IllegalArgumentException(
+                    "unknown io.out member '" + name + "'");
+        }
+        if (named.name().equals("$ActorIOIn")
+                || named.name().equals("$ActorIOErr")
+                || named.name().equals("$ActorIOEvents")
+                || named.name().equals("$ActorIOMeta")) {
+            throw new IllegalArgumentException(
+                    "actor-local "
+                            + named.name().substring("$ActorIO".length()).toLowerCase()
+                            + " channel is reserved but not implemented on this backend yet");
+        }
         if (named.name().equals("env")) {
             switch (name) {
                 case "get": return new Function(List.of(Primitive.STRING),
@@ -5829,6 +5951,61 @@ public final class TypeChecker {
                 || !isSendSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+        }
+    }
+
+    private void validateActorOutputDataType(
+            Type type,
+            Ast.ActorKind actorKind,
+            String where) {
+        validateActorCallableBoundaryType(type, actorKind, false, where);
+        rejectActorOutputCapabilities(type, where);
+    }
+
+    private void rejectActorOutputCapabilities(Type type, String where) {
+        type = deref(type);
+        if (type instanceof ListType list) {
+            rejectActorOutputCapabilities(list.element(), where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                rejectActorOutputCapabilities(
+                        tuple.elements().get(i), where + " tuple element " + i);
+            }
+            return;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                rejectActorOutputCapabilities(option, where + " union member");
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Map.Entry<String, Type> member : record.members().entrySet()) {
+                rejectActorOutputCapabilities(
+                        member.getValue(), where + " field '" + member.getKey() + "'");
+            }
+            return;
+        }
+        if (!(type instanceof Named named)) return;
+
+        if (named.name().startsWith("$ActorIO")
+                || Set.of(
+                        "ActorRef",
+                        "ActorGroupJoinCapability",
+                        "Shared",
+                        "SyncCell",
+                        "SharedMutex",
+                        "Mutex",
+                        "MutexGuard")
+                        .contains(named.name())) {
+            throw new IllegalArgumentException(
+                    where + " is data-only and cannot contain live capability "
+                            + named.name());
+        }
+        for (Type argument : named.arguments()) {
+            rejectActorOutputCapabilities(argument, where + " type argument");
         }
     }
 
@@ -6284,6 +6461,10 @@ public final class TypeChecker {
             Ast.Pattern pattern, Type subject, Env bindings, Set<String> generics, Type self) {
         if (pattern instanceof Ast.WildcardPattern) return;
         if (pattern instanceof Ast.BindingPattern binding) {
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                rejectActorExecutionIntrinsicBinding(
+                        binding.name(), "actor pattern binding");
+            }
             bindings.define(binding.name(), subject, Ast.BindingKind.VAL);
             return;
         }
@@ -6306,6 +6487,10 @@ public final class TypeChecker {
                 if (typed.binding() != null) {
                     // A negative test does not prove a concrete positive
                     // nominal type; retain the subject's static capabilities.
+                    if (currentActorKind != Ast.ActorKind.NONE) {
+                        rejectActorExecutionIntrinsicBinding(
+                                typed.binding(), "actor type-pattern binding");
+                    }
                     bindings.define(typed.binding(), subject, Ast.BindingKind.VAL);
                 }
                 return;
@@ -6315,6 +6500,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
             if (typed.binding() != null) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    rejectActorExecutionIntrinsicBinding(
+                            typed.binding(), "actor type-pattern binding");
+                }
                 bindings.define(
                         typed.binding(),
                         overlayReadonlyCapabilities(subject, target),
@@ -6332,6 +6521,10 @@ public final class TypeChecker {
                                 + " cannot satisfy " + structural.target());
             }
             if (structural.binding() != null) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    rejectActorExecutionIntrinsicBinding(
+                            structural.binding(), "actor structural-pattern binding");
+                }
                 // Structural pattern matching proves shape only, NEVER
                 // mutable field authority. Keep the current-main structural
                 // CONTRACT kind, including public method slots, rather than
