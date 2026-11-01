@@ -294,11 +294,22 @@ final class ScalarCastInferenceParityTest {
         }
     }
 
-    @Test void byteIdenticalFiveBackendFixtureTypechecks() throws Exception {
+    @Test void byteIdenticalFiveBackendFixtureExecutesAsFortyTwo() throws Exception {
         String source = Files.readString(
                 Path.of("tests", "scalar-cast-inference-five-backend.ores"),
                 StandardCharsets.UTF_8);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        Source guest = Source.newBuilder(
+                        OresLanguage.ID, source, "scalar-cast-inference-five-backend.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            var result = context.eval(guest);
+            assertTrue(result.fitsInLong(), "five-backend fixture must return an i64-compatible value");
+            assertEquals(42L, result.asLong(), "five-backend fixture guest result");
+        }
     }
 
     @Test void bothFormsProduceTheSameGuestValue() throws Exception {
