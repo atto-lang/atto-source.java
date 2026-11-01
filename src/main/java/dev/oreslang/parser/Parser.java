@@ -771,15 +771,24 @@ public final class Parser {
                 throw error(peek(), "supervisors declare lifecycle hooks, not actor fields or nested types");
             }
             validateActorMethodModifiers(mods);
-            if (mods.isStatic || mods.isAbstract || mods.async || mods.suspends
+            if (mods.isStatic || mods.isAbstract || mods.suspends
                     || mods.generator || mods.structural || mods.trapped
                     || mods.nonLexical || mods.shared || mods.untrusted) {
-                throw error(peek(), "supervisor hooks cannot use async, suspends, static, abstract, generator, trap or actor modifiers");
+                throw error(peek(), "supervisor hooks cannot use suspends, static, abstract, generator, trap or actor modifiers");
             }
             if (match(FNC)) {
                 throw error(previous(), "supervisor hooks omit 'fnc'; declare the lifecycle method name");
             }
             Ast.MethodDecl hook = parseMethod(annotations, mods);
+            // STOP-only source lowering supports exactly one restricted
+            // async on_panic(Failure) that awaits a host-owned STOP receipt.
+            // Other supervisor hooks must not acquire unchecked async turns.
+            // The restricted lowering separately validates the precise await
+            // expression and authoritative STOP acknowledgment.
+            if (hook.async() && !hook.name().equals("on_panic")) {
+                throw error(previous(),
+                        "async supervisor hooks are restricted to checked on_panic STOP acknowledgment");
+            }
             if (!names.add(hook.name())) {
                 throw error(previous(), "duplicate supervisor hook '" + hook.name() + "'");
             }
