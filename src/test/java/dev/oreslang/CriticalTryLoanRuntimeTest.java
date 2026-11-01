@@ -111,6 +111,52 @@ final class CriticalTryLoanRuntimeTest {
     }
 
     @Test
+    void cancellationRacingWithGrantReleasesAtMostOneOwnerAndPreservesSuccessor() throws Exception {
+        for (int iteration = 0; iteration < 64; ++iteration) {
+            try (var arbiter = new ActorStateLoans(2)) {
+                var held = arbiter.tryAcquire(new Object()).orElseThrow();
+                var candidate = arbiter.acquireAsync(new Object());
+                Object nextIdentity = new Object();
+                var survivor = arbiter.acquireAsync(nextIdentity);
+                var start = new CountDownLatch(1);
+                var error = new AtomicReference<Throwable>();
+                Thread cancel = new Thread(() -> {
+                    try {
+                        if (!start.await(2, TimeUnit.SECONDS))
+                            throw new AssertionError("race start timed out");
+                        candidate.cancel(false);
+                    } catch (Throwable problem) { error.compareAndSet(null, problem); }
+                }, "critical-cancel-race");
+                Thread grant = new Thread(() -> {
+                    try {
+                        if (!start.await(2, TimeUnit.SECONDS))
+                            throw new AssertionError("race start timed out");
+                        held.close();
+                    } catch (Throwable problem) { error.compareAndSet(null, problem); }
+                }, "critical-grant-race");
+                cancel.start();
+                grant.start();
+                start.countDown();
+                cancel.join(3000);
+                grant.join(3000);
+                assertFalse(cancel.isAlive(), "cancel thread failed to terminate");
+                assertFalse(grant.isAlive(), "grant thread failed to terminate");
+                assertNull(error.get(), "race callback failure");
+                if (!candidate.isCancelled()) {
+                    var granted = candidate.get(2, TimeUnit.SECONDS);
+                    assertEquals(1, arbiter.activeCount());
+                    granted.close();
+                }
+                var successor = survivor.get(2, TimeUnit.SECONDS);
+                assertTrue(successor.heldBy(nextIdentity));
+                successor.close();
+                assertEquals(0, arbiter.activeCount());
+                assertEquals(0, arbiter.pendingCount());
+            }
+        }
+    }
+
+    @Test
     void zeroQueueCapacityStillSupportsImmediateNonParkingTry() {
         try (var arbiter = new ActorStateLoans(0)) {
             Object holder = new Object();
