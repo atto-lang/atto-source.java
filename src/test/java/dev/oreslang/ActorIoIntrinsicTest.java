@@ -125,6 +125,32 @@ final class ActorIoIntrinsicTest {
     }
 
     @Test
+    void actorIoCapabilityCannotBeErasedIntoBroadMethodParameters() {
+        PolyglotException failure = assertThrows(PolyglotException.class, () ->
+                check("""
+                        define actor Worker as
+                          consume(Object value): void {
+                            return;
+                          }
+
+                          receive(ActorMail<String> mail): void {
+                            self.consume(io);
+                            return;
+                          }
+                        end
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-io-object-erasure.ores"));
+        assertTrue(
+                failure.getMessage().contains("$ActorIO")
+                        || failure.getMessage().contains("assign")
+                        || failure.getMessage().contains("actor io capability"),
+                failure::getMessage);
+    }
+
+    @Test
     void nestedActorBindingsCannotShadowIo() {
         PolyglotException lambda = assertThrows(PolyglotException.class, () ->
                 check("""
