@@ -1,0 +1,228 @@
+// 40 independent native Oreslang test cases for stdlib/testing.ores.
+// All negative assertion cases deliberately verify the failing TestOutcome;
+// the outer test case must still PASS. No host mocks or fake test receipts.
+import class TestCase, TestSuite, TestOptions, TestOutcome, RunSummary from '../stdlib/testing';
+import fnc pass, fail, expect_true, expect_false, expect_equal_bool, expect_equal_int, expect_not_equal_int, expect_equal_float, expect_equal_string, expect_not_equal_string, expect_near_float, check_int_cases, run_suite, require_success from '../stdlib/testing';
+
+fnc rejected(TestOutcome observed, String expected_message): TestOutcome {
+  if observed.passed; do
+    return fail("assertion should have rejected input");
+  fi
+  return expect_equal_string(observed.message, expected_message, "rejection detail was not preserved");
+}
+
+fnc prop_below_three(int value): TestOutcome {
+  return expect_true(value < 3, "integer too large");
+}
+
+fnc case_01(): TestOutcome {
+  return expect_true(true, "true must be true");
+}
+
+fnc case_02(): TestOutcome {
+  return expect_false(false, "false must be false");
+}
+
+fnc case_03(): TestOutcome {
+  return rejected(expect_true(false, "false is not true"), "false is not true");
+}
+
+fnc case_04(): TestOutcome {
+  return rejected(expect_false(true, "true is not false"), "true is not false");
+}
+
+fnc case_05(): TestOutcome {
+  return expect_equal_bool(true, true, "true equals true");
+}
+
+fnc case_06(): TestOutcome {
+  return expect_equal_bool(false, false, "false equals false");
+}
+
+fnc case_07(): TestOutcome {
+  return rejected(expect_equal_bool(true, false, "bool mismatch A"), "bool mismatch A");
+}
+
+fnc case_08(): TestOutcome {
+  return rejected(expect_equal_bool(false, true, "bool mismatch B"), "bool mismatch B");
+}
+
+fnc case_09(): TestOutcome {
+  return expect_equal_int(0, 0, "int zero equality");
+}
+
+fnc case_10(): TestOutcome {
+  return expect_equal_int(-120, -120, "int negative equality");
+}
+
+fnc case_11(): TestOutcome {
+  return expect_equal_int(2147483647, 2147483647, "int large equality");
+}
+
+fnc case_12(): TestOutcome {
+  return rejected(expect_equal_int(12, 21, "int inequality"), "int inequality");
+}
+
+fnc case_13(): TestOutcome {
+  return expect_not_equal_int(1, 2, "int unequal positive");
+}
+
+fnc case_14(): TestOutcome {
+  return expect_not_equal_int(-1, 1, "int unequal negative");
+}
+
+fnc case_15(): TestOutcome {
+  return rejected(expect_not_equal_int(0, 0, "int equal zero"), "int equal zero");
+}
+
+fnc case_16(): TestOutcome {
+  return rejected(expect_not_equal_int(-3, -3, "int equal negative"), "int equal negative");
+}
+
+fnc case_17(): TestOutcome {
+  return expect_equal_string("", "", "empty string equality");
+}
+
+fnc case_18(): TestOutcome {
+  return expect_equal_string("hello", "hello", "ascii equality");
+}
+
+fnc case_19(): TestOutcome {
+  return rejected(expect_equal_string("hello", "world", "string mismatch"), "string mismatch");
+}
+
+fnc case_20(): TestOutcome {
+  return rejected(expect_equal_string("A", "a", "string case mismatch"), "string case mismatch");
+}
+
+fnc case_21(): TestOutcome {
+  return expect_not_equal_string("abc", "xyz", "distinct strings");
+}
+
+fnc case_22(): TestOutcome {
+  return expect_not_equal_string("", "text", "empty versus nonempty");
+}
+
+fnc case_23(): TestOutcome {
+  return rejected(expect_not_equal_string("same", "same", "same strings"), "same strings");
+}
+
+fnc case_24(): TestOutcome {
+  return expect_not_equal_string("X", "x", "case-sensitive inequality");
+}
+
+fnc case_25(): TestOutcome {
+  return expect_equal_float(0.0, 0.0, "float zero equality");
+}
+
+fnc case_26(): TestOutcome {
+  return expect_equal_float(-2.5, -2.5, "float negative equality");
+}
+
+fnc case_27(): TestOutcome {
+  return rejected(expect_equal_float(1.0, 2.0, "float unequal"), "float unequal");
+}
+
+fnc case_28(): TestOutcome {
+  return expect_equal_float(0.5, 0.5, "binary exact fraction");
+}
+
+fnc case_29(): TestOutcome {
+  return expect_near_float(1.0, 1.0, 0.0, "near exact");
+}
+
+fnc case_30(): TestOutcome {
+  return expect_near_float(1.001, 1.0, 0.01, "within tolerance");
+}
+
+fnc case_31(): TestOutcome {
+  return rejected(expect_near_float(1.2, 1.0, 0.01, "outside tolerance"), "outside tolerance");
+}
+
+fnc case_32(): TestOutcome {
+  return rejected(expect_near_float(1.0, 1.0, -0.001, "negative tolerance"), "negative tolerance");
+}
+
+fnc case_33(): TestOutcome {
+  return check_int_cases("nonempty", arr[0, 1, 2], prop_below_three);
+}
+
+fnc case_34(): TestOutcome {
+  return rejected(check_int_cases("empty", arr[], prop_below_three), "property has no cases: empty");
+}
+
+fnc case_35(): TestOutcome {
+  return rejected(check_int_cases("middle", arr[0, 3, 1], prop_below_three), "integer too large");
+}
+
+fnc case_36(): TestOutcome {
+  return rejected(check_int_cases("first", arr[3, 0, 1], prop_below_three), "integer too large");
+}
+
+fnc case_37(): TestOutcome {
+  val TestOutcome result = pass(); return expect_equal_bool(result.passed, true, "pass flag must be true");
+}
+
+fnc case_38(): TestOutcome {
+  val TestOutcome result = pass(); return expect_equal_string(result.message, "", "pass has empty message");
+}
+
+fnc case_39(): TestOutcome {
+  val TestOutcome result = fail("failure"); return expect_equal_bool(result.passed, false, "fail flag must be false");
+}
+
+fnc case_40(): TestOutcome {
+  val TestOutcome result = fail("failure"); return expect_equal_string(result.message, "failure", "fail message preserved");
+}
+
+pub routine main(): void {
+  val TestSuite suite = new TestSuite(
+    "stdlib",
+    arr[
+      new TestCase("truth/true-accept", case_01, false, ""),
+      new TestCase("truth/false-accept", case_02, false, ""),
+      new TestCase("truth/true-reject", case_03, false, ""),
+      new TestCase("truth/false-reject", case_04, false, ""),
+      new TestCase("bool/true-equal", case_05, false, ""),
+      new TestCase("bool/false-equal", case_06, false, ""),
+      new TestCase("bool/true-false-reject", case_07, false, ""),
+      new TestCase("bool/false-true-reject", case_08, false, ""),
+      new TestCase("int/equal-zero", case_09, false, ""),
+      new TestCase("int/equal-negative", case_10, false, ""),
+      new TestCase("int/equal-large", case_11, false, ""),
+      new TestCase("int/equal-reject", case_12, false, ""),
+      new TestCase("int/not-equal-positive", case_13, false, ""),
+      new TestCase("int/not-equal-negative", case_14, false, ""),
+      new TestCase("int/not-equal-zero-reject", case_15, false, ""),
+      new TestCase("int/not-equal-negative-reject", case_16, false, ""),
+      new TestCase("string/equal-empty", case_17, false, ""),
+      new TestCase("string/equal-ascii", case_18, false, ""),
+      new TestCase("string/equal-reject", case_19, false, ""),
+      new TestCase("string/equal-case-reject", case_20, false, ""),
+      new TestCase("string/not-equal-basic", case_21, false, ""),
+      new TestCase("string/not-equal-empty", case_22, false, ""),
+      new TestCase("string/not-equal-reject", case_23, false, ""),
+      new TestCase("string/not-equal-case", case_24, false, ""),
+      new TestCase("float/equal-zero", case_25, false, ""),
+      new TestCase("float/equal-negative", case_26, false, ""),
+      new TestCase("float/equal-reject", case_27, false, ""),
+      new TestCase("float/equal-fraction", case_28, false, ""),
+      new TestCase("float/near-exact", case_29, false, ""),
+      new TestCase("float/near-within", case_30, false, ""),
+      new TestCase("float/near-outside", case_31, false, ""),
+      new TestCase("float/near-negative-tolerance", case_32, false, ""),
+      new TestCase("property/nonempty-pass", case_33, false, ""),
+      new TestCase("property/empty-reject", case_34, false, ""),
+      new TestCase("property/fail-middle", case_35, false, ""),
+      new TestCase("property/fail-first", case_36, false, ""),
+      new TestCase("outcome/pass-flag", case_37, false, ""),
+      new TestCase("outcome/pass-message", case_38, false, ""),
+      new TestCase("outcome/fail-flag", case_39, false, ""),
+      new TestCase("outcome/fail-message", case_40, false, "")
+    ]
+  );
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary summary = run_suite(rt borrow suite, rt borrow options);
+  require_success(rt borrow summary);
+  return;
+}
