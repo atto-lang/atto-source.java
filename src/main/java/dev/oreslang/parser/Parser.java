@@ -1502,7 +1502,13 @@ public final class Parser {
             if (List.of("derive", "Derive", "repr", "Repr", "align",
                     "cfg", "Cfg", "inline", "Inline", "expand", "GenerateBuilder",
                     "GenerateSchema", "GenerateClient", "ActorMessage",
-                    "PipelineStage", "RequiresState").contains(name)) {
+                    "PipelineStage", "RequiresState",
+                    // An injected state handle is a capability, not inert metadata.
+                    // Reject before parsing nested arguments such as
+                    // @Inject(MutableStateContainer()) to avoid parse-error
+                    // misclassification and, more importantly, silent admission.
+                    "Inject", "StateBacked", "MutableStateContainer",
+                    "StateContainer").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
