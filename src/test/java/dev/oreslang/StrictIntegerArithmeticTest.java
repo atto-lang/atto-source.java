@@ -255,7 +255,7 @@ final class StrictIntegerArithmeticTest {
         LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
                 new ByteArrayOutputStream());
-        assertEquals("11\\n2\\n8\\n2\\n-9223372036854775808\\n-1\\n",
+        assertEquals("11\n2\n8\n2\n-9223372036854775808\n-1\n",
                 out.toString(StandardCharsets.UTF_8));
     }
 
