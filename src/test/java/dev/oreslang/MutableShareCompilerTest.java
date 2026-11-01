@@ -452,4 +452,70 @@ final class MutableShareCompilerTest {
                 () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
         assertTrue(denial.getMessage().contains("rt mut share"), denial.getMessage());
     }
+
+    @Test
+    void nestedSynchronizedHandleExpressionsRetainTheOriginalAllocation() throws Exception {
+        String program = COUNTER + """
+                pub routine main(): void {
+                  val owner = SharedMutex.new(new Counter());
+                  val alias = rt mut share (rt mut share owner);
+                  val guard = alias.lock();
+                  guard.value = 17;
+                  guard.release();
+                  val observed = owner.lock();
+                  stdio.stdout.write(observed.value);
+                  observed.release();
+                  return;
+                }
+                """;
+        checked(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores")
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder("ores", program, "rt-mut-share-nested.ores").build());
+        }
+        assertEquals("17", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void inlineExclusiveBorrowCannotBeUpgradedToGuardedSharedHandle() {
+        rejected(COUNTER + """
+                fnc bad(): void {
+                  val owner = SharedMutex.new(new Counter());
+                  val alias = rt mut share (rt mut borrow owner);
+                  return;
+                }
+                """, "rt mut share requires");
+    }
+
+    @Test
+    void nestedFunctionArgumentCannotBypassSharedMemoryCapability() {
+        Ast.Program program = Parser.parse("""
+                fnc consume(int value): void { return; }
+                fnc bad(): void {
+                  consume(rt mut share handle);
+                  return;
+                }
+                """);
+        SecurityException denial = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertTrue(denial.getMessage().contains("rt mut share"), denial.getMessage());
+    }
+
+    @Test
+    void sharedMemoryAdmissionRejectsBeforeEvaluatingRestrictedOperand() {
+        Ast.Program program = Parser.parse("""
+                fnc bad(): void {
+                  val alias = rt mut share (process.exit(1));
+                  return;
+                }
+                """);
+        SecurityException denial = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertTrue(denial.getMessage().contains("rt mut share"), denial.getMessage());
+    }
 }
