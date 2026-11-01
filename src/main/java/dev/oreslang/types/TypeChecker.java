@@ -9996,6 +9996,14 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // ActorIO is an implicit execution capability, never a general value.
+        // Do not allow Object/Unknown/generic compatibility to erase that
+        // boundary and turn io into a storable/passable capability.
+        if (containsActorIoCapability(actual)
+                || containsActorIoCapability(expected)) {
+            return false;
+        }
+
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
