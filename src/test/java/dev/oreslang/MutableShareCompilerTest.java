@@ -332,4 +332,70 @@ final class MutableShareCompilerTest {
                     """.formatted(expression)), expression);
         }
     }
+
+    @Test
+    void parenthesizedOwnedMutexHandleRemainsGuarded() {
+        checked(COUNTER + """
+                fnc good(): void {
+                  val owner = SharedMutex.new(new Counter());
+                  val alias = rt mut share (owner);
+                  val guard = alias.lock();
+                  guard.value = 11;
+                  guard.release();
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void independentMutexOwnersCanBeGuardedSeparately() {
+        checked(COUNTER + """
+                fnc good(): void {
+                  val left = SharedMutex.new(new Counter());
+                  val right = SharedMutex.new(new Counter());
+                  val a = rt mut share left;
+                  val b = rt mut share right;
+                  val first = a.lock();
+                  first.value = 10;
+                  first.release();
+                  val second = b.lock();
+                  second.value = 20;
+                  second.release();
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void unreleasedGuardCannotBeUsedToExposeUnguardedFields() {
+        rejected(COUNTER + """
+                fnc bad(): void {
+                  val owner = SharedMutex.new(new Counter());
+                  val alias = rt mut share owner;
+                  val guard = alias.lock();
+                  alias.value = 123;
+                  guard.release();
+                  return;
+                }
+                """, "value");
+    }
+
+    @Test
+    void canonicalMutableBorrowSpellingIsAcceptedButLegacySpellingRejected() {
+        checked(COUNTER + """
+                fnc good(): void {
+                  val owner = new Counter();
+                  val loan = rt mut borrow owner;
+                  loan.value = 3;
+                  return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(COUNTER + """
+                fnc bad(): void {
+                  val owner = new Counter();
+                  val loan = rt borrow mut owner;
+                  return;
+                }
+                """));
+    }
 }
