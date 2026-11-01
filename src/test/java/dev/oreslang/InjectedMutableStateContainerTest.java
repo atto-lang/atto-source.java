@@ -125,6 +125,50 @@ final class InjectedMutableStateContainerTest {
     }
 
     @Test
+    void two_concurrent_mutable_argument_loans_of_same_container_are_rejected() {
+        String source = INVENTORY + """
+                fnc read_pair(borrow mut InventoryState left,
+                              borrow mut InventoryState right): int {
+                  return left.available_count() + right.available_count();
+                }
+
+                pub fnc main(): int {
+                  let mut InventoryState state = new InventoryState();
+                  return read_pair(rt mut borrow state, rt mut borrow state);
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> dev.oreslang.parser.Parser.parse(source),
+                "two mutable argument loans must parse before ownership admission");
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.analyze(parsed),
+                "two mutable receiver aliases must never pass the borrow checker");
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure::getMessage);
+    }
+
+    @Test
+    void moving_a_container_prevents_subsequent_owner_method_calls() {
+        String source = INVENTORY + """
+                fnc drain(InventoryState owner): int {
+                  return owner.available_count();
+                }
+
+                pub fnc main(): int {
+                  let mut InventoryState state = new InventoryState();
+                  const int before = state.available_count();
+                  const int drained = drain(rt take state);
+                  return before + drained + state.available_count();
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> dev.oreslang.parser.Parser.parse(source),
+                "rt take must parse so that ownership semantics, not syntax, deny use-after-move");
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.analyze(parsed));
+        assertTrue(failure.getMessage().toLowerCase().matches(
+                "(?s).*(take|taken|move|moved|owner).*"), failure::getMessage);
+    }
+
+    @Test
     void repository_native_state_container_example_executes_without_java_state_helpers()
             throws Exception {
         String source = Files.readString(Path.of("examples", "state-container-injection.ores"));
