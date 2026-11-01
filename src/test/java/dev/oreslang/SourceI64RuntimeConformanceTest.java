@@ -107,7 +107,7 @@ final class SourceI64RuntimeConformanceTest {
         return WAVE_SCALARS.stream().map(test -> DynamicTest.dynamicTest(
                 "parity-wave-" + test.id(), () -> {
                     String program = "pub fnc main():void { stdio.stdout.write("
-                            + test.expression() + "); return; }\\n".replace("\\n", "\n");
+                            + test.expression() + "); return; }\n";
                     assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)),
                             "Graal source rejection: " + test.id());
                     ByteArrayOutputStream stdout = new ByteArrayOutputStream();
