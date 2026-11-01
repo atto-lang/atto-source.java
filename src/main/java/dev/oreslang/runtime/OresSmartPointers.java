@@ -96,7 +96,15 @@ public final class OresSmartPointers {
         }
     }
 
-    /** Atomic shared ownership. Individual Arc handles are linear resources. */
+    /**
+     * Atomic shared ownership. Individual Arc handles are linear resources.
+     *
+     * <p>The per-handle monitor linearizes retain/downgrade/value against close
+     * on that same handle. Without it a concurrent close can retire the last
+     * strong reference between the live check and count increment, producing
+     * a refcount resurrection or returning an already-dropped referent.
+     * Atomic CAS still arbitrates operations on different Arc/Weak handles.</p>
+     */
     public static final class Arc<T> implements AutoCloseable {
         private final ArcControl<T> control;
         private final AtomicBoolean closed = new AtomicBoolean();
@@ -109,7 +117,7 @@ public final class OresSmartPointers {
             }
         }
 
-        public T value() {
+        public synchronized T value() {
             requireLiveHandle();
             T value = control.value.get();
             if (value == null || control.strong.get() <= 0) {
@@ -119,25 +127,25 @@ public final class OresSmartPointers {
         }
 
         /** Explicit Arc clone. */
-        public Arc<T> retain() {
+        public synchronized Arc<T> retain() {
             requireLiveHandle();
             incrementAtomic(control.strong, "Arc<T> strong count");
             return new Arc<>(control, true);
         }
 
-        public Weak<T> downgrade() {
+        public synchronized Weak<T> downgrade() {
             requireLiveHandle();
             incrementAtomic(control.weak, "Arc<T> weak count");
             return new Weak<>(control);
         }
 
-        public long strongCount() {
+        public synchronized long strongCount() {
             requireLiveHandle();
             return control.strong.get();
         }
 
         /** Number of explicit weak handles; excludes the implicit weak ref. */
-        public long weakCount() {
+        public synchronized long weakCount() {
             requireLiveHandle();
             long strong = control.strong.get();
             long weak = control.weak.get();
@@ -153,7 +161,7 @@ public final class OresSmartPointers {
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             if (!closed.compareAndSet(false, true)) return;
             long remaining = decrementAtomic(control.strong, "Arc<T> strong count");
             if (remaining == 0) {
@@ -169,7 +177,10 @@ public final class OresSmartPointers {
         }
     }
 
-    /** Non-owning atomic Arc edge. */
+    /**
+     * Non-owning atomic Arc edge. A single Weak handle's upgrade/close race
+     * is also serialized; the shared control block uses CAS for other handles.
+     */
     public static final class Weak<T> implements AutoCloseable {
         private final ArcControl<T> control;
         private final AtomicBoolean closed = new AtomicBoolean();
@@ -178,7 +189,7 @@ public final class OresSmartPointers {
             this.control = Objects.requireNonNull(control, "control");
         }
 
-        public Optional<Arc<T>> upgrade() {
+        public synchronized Optional<Arc<T>> upgrade() {
             requireLiveHandle();
             while (true) {
                 long strong = control.strong.get();
@@ -192,12 +203,12 @@ public final class OresSmartPointers {
             }
         }
 
-        public long strongCount() {
+        public synchronized long strongCount() {
             requireLiveHandle();
             return control.strong.get();
         }
 
-        public long weakCount() {
+        public synchronized long weakCount() {
             requireLiveHandle();
             long strong = control.strong.get();
             long weak = control.weak.get();
@@ -209,7 +220,7 @@ public final class OresSmartPointers {
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             if (!closed.compareAndSet(false, true)) return;
             decrementAtomic(control.weak, "Arc<T> weak count");
         }
