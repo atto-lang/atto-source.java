@@ -170,6 +170,22 @@ def _classify_job(job, run, run_id=None):
             raise TriageError("invalid step status")
         if step_conclusion is not None and not isinstance(step_conclusion, str):
             raise TriageError("invalid step conclusion")
+        # An unknown, missing, or inconsistent step result must never be
+        # ignored while another timestamped step promotes executed_success.
+        # A completed job cannot contain an unfinished step in a coherent
+        # final GitHub API snapshot; treat it as inconclusive, not proof.
+        valid_step_conclusions = {
+            "success", "failure", "timed_out", "cancelled", "skipped",
+            "neutral", "action_required", "stale",
+        }
+        if step_conclusion is not None and step_conclusion not in valid_step_conclusions:
+            raise TriageError("unrecognized step conclusion")
+        if step_status == "completed" and step_conclusion is None:
+            raise TriageError("completed step missing conclusion")
+        if step_status != "completed" and step_conclusion is not None:
+            raise TriageError("unfinished step has conclusion")
+        if status == "completed" and step_status != "completed":
+            raise TriageError("completed job contains unfinished step")
         # Completed step status and conclusion alone do not prove execution;
         # require an observable start and completion timestamp as well.
         timed_execution = step_status == "completed" and _valid_execution_interval(step)

@@ -326,6 +326,53 @@ class RunnerAdmissionTriageContract(unittest.TestCase):
         self.assertFalse(report["pr_head_verified"])
         self.assertEqual(report["category"], "observed_no_step_failure")
 
+    def test_unknown_completed_step_result_cannot_hide_behind_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step(conclusion="success"),
+            self.step(conclusion="success_typo"),
+        ]
+        with self.assertRaisesRegex(triage.TriageError, "unrecognized step conclusion"):
+            self.aggregate()
+
+    def test_completed_step_without_conclusion_cannot_hide_behind_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [self.step(conclusion="success"), self.step(conclusion=None)]
+        with self.assertRaisesRegex(triage.TriageError, "completed step missing conclusion"):
+            self.aggregate()
+
+    def test_pending_step_with_success_conclusion_is_inconclusive(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step(conclusion="success"),
+            self.step(status="in_progress", conclusion="success"),
+        ]
+        with self.assertRaisesRegex(triage.TriageError, "unfinished step has conclusion"):
+            self.aggregate()
+
+    def test_completed_job_with_pending_step_is_inconclusive(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step(conclusion="success"),
+            self.step(status="in_progress", conclusion=None),
+        ]
+        with self.assertRaisesRegex(triage.TriageError, "completed job contains unfinished step"):
+            self.aggregate()
+
+    def test_missing_step_status_with_success_conclusion_is_inconclusive(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step(conclusion="success"),
+            self.step(status=None, conclusion="success"),
+        ]
+        with self.assertRaisesRegex(triage.TriageError, "unfinished step has conclusion"):
+            self.aggregate()
+
     def test_gh_access_is_get_only(self):
         with patch.object(triage.subprocess, "run",
                           return_value=SimpleNamespace(returncode=0, stdout='{"ok": true}')) as called:
