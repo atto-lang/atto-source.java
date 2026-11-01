@@ -94,8 +94,8 @@ public final class CriticalEffectPreflight {
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             expression(conditional.condition(), depth + 1);
-            expression(conditional.thenBranch(), depth + 1);
-            expression(conditional.elseBranch(), depth + 1);
+            expression(conditional.whenTrue(), depth + 1);
+            expression(conditional.whenFalse(), depth + 1);
             return;
         }
         // The deliberate default covers await, channel/select, Task launch,
