@@ -120,9 +120,9 @@ final class SourceI64RuntimeConformanceTest {
         return WAVE_SCALARS.stream().map(test -> DynamicTest.dynamicTest(
                 "parity-wave-" + test.id(), () -> {
                     String program = "// " + test.id()
-                            + ": candidate source-identical checked-i64 scalar program.\\n"
-                            + "// Expected integer result 42; guest execution on each backend is unverified.\\n"
-                            + "pub fnc main(): int { return " + test.expression() + "; }\\n";
+                            + ": candidate source-identical checked-i64 scalar program.\n"
+                            + "// Expected integer result 42; guest execution on each backend is unverified.\n"
+                            + "pub fnc main(): int { return " + test.expression() + "; }\n";
                     String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                             .digest(program.getBytes(StandardCharsets.UTF_8)));
                     int index = Integer.parseInt(test.id()) - 34;
