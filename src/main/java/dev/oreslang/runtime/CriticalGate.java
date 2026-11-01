@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
+import java.util.IdentityHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
@@ -44,6 +47,8 @@ public final class CriticalGate {
 
     private final ReentrantLock metadata = new ReentrantLock();
     private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
+    // Only runtime-owned futures. Notifications always happen outside metadata.
+    private final IdentityHashMap<Ticket, OresFuture<Ticket>> admissions = new IdentityHashMap<>();
     private Ticket owner;
     private long issued;
     private boolean retired;
@@ -86,6 +91,39 @@ public final class CriticalGate {
     }
 
     /**
+     * Reserve a gate ticket and expose it as a scheduler-awaitable Future.
+     * A pending waiter never blocks its current carrier. Cancelling its Future
+     * retracts the ticket; an already published owner must instead be released
+     * by its SourceTask lexical cleanup frame.
+     */
+    public OresFuture<Ticket> requestAwaitable() {
+        metadata.lock();
+        try {
+            if (retired) return OresFuture.failed(
+                    new IllegalStateException("critical gate retired"));
+            boolean immediate = owner == null && waiters.isEmpty();
+            if (!immediate && waiters.size() >= MAX_WAITERS) {
+                return OresFuture.failed(
+                        new IllegalStateException("critical waiter limit exceeded"));
+            }
+            Ticket ticket = nextTicket();
+            OresFuture<Ticket> future = new OresFuture<>(
+                    () -> release(ticket));
+            if (immediate) {
+                owner = ticket;
+                // No observer can see this new Future until this call returns.
+                future.completeFromRuntime(ticket);
+            } else {
+                admissions.put(ticket, future);
+                waiters.addLast(ticket);
+            }
+            return future;
+        } finally {
+            metadata.unlock();
+        }
+    }
+
+    /**
      * Either releases the owner and returns the FIFO successor, or retracts a
      * queued waiter. A stale or duplicate release has no effect.
      *
@@ -93,19 +131,27 @@ public final class CriticalGate {
      * this call; a returned ticket cannot by itself execute a continuation.
      */
     public Optional<Ticket> release(Ticket ticket) {
+        Ticket successor;
+        OresFuture<Ticket> readiness;
         metadata.lock();
         try {
             validate(ticket);
             if (retired) return Optional.empty();
             if (owner != ticket) {
                 waiters.remove(ticket);
+                admissions.remove(ticket);
                 return Optional.empty();
             }
             owner = waiters.pollFirst();
-            return Optional.ofNullable(owner);
+            successor = owner;
+            readiness = successor == null ? null : admissions.remove(successor);
         } finally {
             metadata.unlock();
         }
+        // A Future may synchronously notify host subscribers. Never settle
+        // one while holding the short gate metadata lock or execute guest code.
+        if (readiness != null) readiness.completeFromRuntime(successor);
+        return Optional.ofNullable(successor);
     }
 
     /** Recheck before entering the body; revalidate actor generation outside. */
@@ -133,13 +179,22 @@ public final class CriticalGate {
      * revocation does not preempt arbitrary mutations or provide rollback.
      */
     public void retire() {
+        List<OresFuture<Ticket>> pending;
         metadata.lock();
         try {
+            if (retired) return;
             retired = true;
             owner = null;
             waiters.clear();
+            pending = new ArrayList<>(admissions.values());
+            admissions.clear();
         } finally {
             metadata.unlock();
+        }
+        // Retire never calls guest code or scheduler continuations under lock.
+        for (OresFuture<Ticket> future : pending) {
+            future.failFromRuntime(
+                    new IllegalStateException("critical gate retired"));
         }
     }
 
