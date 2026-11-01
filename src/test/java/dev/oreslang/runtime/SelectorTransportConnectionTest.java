@@ -4,6 +4,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.nio.channels.ClosedChannelException;
+import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.List;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -12,9 +16,11 @@ import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import javax.net.ssl.SSLContext;
 
 @Timeout(15)
 final class SelectorTransportConnectionTest {
@@ -236,6 +242,47 @@ final class SelectorTransportConnectionTest {
                         () -> connection.connect(address, Duration.ofSeconds(1)));
                 assertTrue(competingConnect.getMessage().contains("exclusive transport lease"));
                 assertTrue(claimed.get(), "failed claims must not release another operation");
+
+                IOException competingTls = assertThrows(IOException.class,
+                        () -> connection.startTls(
+                                SSLContext.getDefault(), "localhost",
+                                server.getLocalPort(), false, Duration.ofSeconds(1)));
+                assertTrue(competingTls.getMessage().contains("exclusive transport lease"));
+                assertFalse(connection.tls(), "competing TLS must not install an engine");
+
+                List<Thread> contenders = new ArrayList<>();
+                AtomicInteger denied = new AtomicInteger();
+                AtomicReference<Throwable> unexpected = new AtomicReference<>();
+                CountDownLatch raceStart = new CountDownLatch(1);
+                for (int iteration = 0; iteration < 32; iteration++) {
+                    final boolean read = (iteration & 1) == 0;
+                    contenders.add(Thread.ofVirtual().start(() -> {
+                        try {
+                            raceStart.await();
+                            if (read) connection.input().read(new byte[1]);
+                            else connection.output().write(new byte[] { 7 });
+                            unexpected.compareAndSet(null,
+                                    new AssertionError("overlapping I/O admitted"));
+                        } catch (IOException io) {
+                            if (io.getMessage() != null
+                                    && io.getMessage().contains("exclusive transport lease")) {
+                                denied.incrementAndGet();
+                            } else {
+                                unexpected.compareAndSet(null, io);
+                            }
+                        } catch (Throwable failure) {
+                            unexpected.compareAndSet(null, failure);
+                        }
+                    }));
+                }
+                raceStart.countDown();
+                for (Thread contender : contenders) {
+                    contender.join(TimeUnit.SECONDS.toMillis(2));
+                    assertFalse(contender.isAlive(), "contenders must fail promptly");
+                }
+                assertNull(unexpected.get(), "no concurrent caller may enter");
+                assertEquals(32, denied.get(), "each contender must fail closed");
+                assertTrue(claimed.get(), "contenders must not steal owner claim");
                 connection.close();
                 owner.join(TimeUnit.SECONDS.toMillis(2));
                 assertFalse(owner.isAlive(), "close must wake active selector owner");
@@ -277,5 +324,132 @@ final class SelectorTransportConnectionTest {
                 assertFalse(peer.isAlive());
             }
         }
+    }
+
+    @Test
+    void readTimeoutReleasesExclusiveClaimForNextOperation()
+            throws Exception {
+        CountDownLatch peerMayWrite = new CountDownLatch(1);
+        try (ServerSocket server = new ServerSocket(
+                0, 50, InetAddress.getLoopbackAddress())) {
+            AtomicReference<Throwable> peerFailure = new AtomicReference<>();
+            Thread peer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    peerMayWrite.await();
+                    socket.getOutputStream().write(42);
+                } catch (Throwable failure) {
+                    peerFailure.set(failure);
+                }
+            });
+            try (SelectorTransportConnection connection =
+                    SelectorTransportConnection.open(
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(5))) {
+                connection.connect(new InetSocketAddress(
+                        InetAddress.getLoopbackAddress(), server.getLocalPort()),
+                        Duration.ofSeconds(2));
+                connection.setReadTimeout(Duration.ofMillis(30));
+                assertThrows(SocketTimeoutException.class,
+                        () -> connection.input().read(new byte[1]));
+                assertFalse(claimOf(connection).get(),
+                        "read timeout must release exclusive claim");
+                connection.setReadTimeout(Duration.ofSeconds(2));
+                peerMayWrite.countDown();
+                assertEquals(42, connection.input().read(),
+                        "new read can proceed after prior read times out");
+            } finally {
+                peerMayWrite.countDown();
+                peer.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(peer.isAlive());
+            }
+            assertNull(peerFailure.get());
+        }
+    }
+
+    @Test
+    void closeRejectsNewOperationsWithoutResurrectingExclusiveClaim()
+            throws Exception {
+        SelectorTransportConnection connection =
+                SelectorTransportConnection.open(
+                        System.nanoTime() + TimeUnit.SECONDS.toNanos(5));
+        connection.close();
+        connection.close();
+        assertThrows(ClosedChannelException.class,
+                () -> connection.input().read(new byte[1]));
+        assertThrows(ClosedChannelException.class,
+                () -> connection.output().write(new byte[] { 1 }));
+        assertThrows(ClosedChannelException.class,
+                () -> connection.connect(
+                        new InetSocketAddress(InetAddress.getLoopbackAddress(), 1),
+                        Duration.ofSeconds(1)));
+        assertThrows(ClosedChannelException.class,
+                () -> connection.startTls(
+                        SSLContext.getDefault(), "localhost", 443,
+                        false, Duration.ofSeconds(1)));
+        assertFalse(claimOf(connection).get());
+    }
+
+    @Test
+    void tlsHandshakeCannotExposeConcurrentReadOrWriteAndCloseRevokesIt()
+            throws Exception {
+        CountDownLatch releasePeer = new CountDownLatch(1);
+        try (ServerSocket server = new ServerSocket(
+                0, 50, InetAddress.getLoopbackAddress())) {
+            Thread peer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    releasePeer.await();
+                } catch (Exception ignored) {
+                    // Closing the transport revokes the pending TLS handshake.
+                }
+            });
+            SelectorTransportConnection connection =
+                    SelectorTransportConnection.open(
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(5));
+            Thread handshaker = null;
+            try {
+                connection.connect(new InetSocketAddress(
+                        InetAddress.getLoopbackAddress(), server.getLocalPort()),
+                        Duration.ofSeconds(2));
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                handshaker = Thread.ofVirtual().start(() -> {
+                    try {
+                        connection.startTls(SSLContext.getDefault(),
+                                "localhost", server.getLocalPort(),
+                                false, Duration.ofSeconds(4));
+                    } catch (Throwable error) {
+                        failure.set(error);
+                    }
+                });
+                AtomicBoolean claimed = claimOf(connection);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (!claimed.get() && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertTrue(claimed.get(), "TLS handshake must own connection state");
+                IOException competingRead = assertThrows(IOException.class,
+                        () -> connection.input().read(new byte[1]));
+                assertTrue(competingRead.getMessage().contains("exclusive transport lease"));
+                IOException competingWrite = assertThrows(IOException.class,
+                        () -> connection.output().write(new byte[] { 42 }));
+                assertTrue(competingWrite.getMessage().contains("exclusive transport lease"));
+                connection.close();
+                handshaker.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(handshaker.isAlive(), "close must terminate TLS handshake");
+                assertInstanceOf(IOException.class, failure.get());
+                assertFalse(claimed.get(), "failed TLS handshake must release admission");
+            } finally {
+                connection.close();
+                releasePeer.countDown();
+                if (handshaker != null) handshaker.join(TimeUnit.SECONDS.toMillis(2));
+                peer.join(TimeUnit.SECONDS.toMillis(2));
+            }
+        }
+    }
+
+    private static AtomicBoolean claimOf(SelectorTransportConnection connection)
+            throws ReflectiveOperationException {
+        Field field = SelectorTransportConnection.class
+                .getDeclaredField("operationClaimed");
+        field.setAccessible(true);
+        return (AtomicBoolean) field.get(connection);
     }
 }
