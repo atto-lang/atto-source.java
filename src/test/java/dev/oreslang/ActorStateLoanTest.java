@@ -57,6 +57,28 @@ final class ActorStateLoanTest {
     }
 
     @Test
+    void sealedStateRejectsCompositeCapabilitiesUntilRevocableViewsExist() {
+        for (String field : java.util.List.of(
+                "queue: List<int> = [1, 2, 3];",
+                "commands: Channel<int> = new Channel<int>(8);")) {
+            String program = """
+                    define actor Probe as
+                      state { %s }
+                      receive(ActorMail<String> mail): void {
+                        self.end();
+                        return;
+                      }
+                    end
+                    """.formatted(field);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(program));
+            assertTrue(failure.getMessage().contains("must be scalar"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
     void handleStateMutatesAndReadsSealedActorState() throws Exception {
         String program = """
                 define actor Counter as

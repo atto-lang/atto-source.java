@@ -11111,6 +11111,21 @@ public final class OresEvalRootNode extends RootNode {
             return new ActorStateLoanView(object, fields, writable);
         }
 
+        private static boolean isCurrentActorStateScalarValue(Object value) {
+            return value == null
+                    || value instanceof String
+                    || value instanceof Boolean
+                    || value instanceof Character
+                    || value instanceof Byte
+                    || value instanceof Short
+                    || value instanceof Integer
+                    || value instanceof Long
+                    || value instanceof Float
+                    || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal;
+        }
+
         private void requireActive() {
             if (!active) {
                 throw new IllegalStateException(
@@ -11141,18 +11156,13 @@ public final class OresEvalRootNode extends RootNode {
                         "actor state field '" + object.klass.name() + "." + name
                                 + "' is read before initialization");
             }
-            if (!writable && value != null
-                    && !(value instanceof String || value instanceof Boolean
-                        || value instanceof Character || value instanceof Byte
-                        || value instanceof Short || value instanceof Integer
-                        || value instanceof Long || value instanceof Float
-                        || value instanceof Double
-                        || value instanceof java.math.BigInteger
-                        || value instanceof java.math.BigDecimal)) {
-                // Composite values may contain mutable aliases. Fail closed
-                // until a provably immutable/snapshot view is implemented.
+            if (!isCurrentActorStateScalarValue(value)) {
+                // Composite values may contain mutable aliases. Reject in both
+                // read and write mode until a revocable composite view exists;
+                // returning the raw object from critical[write] would let a
+                // Channel/List/object capability escape after loan revocation.
                 throw new IllegalArgumentException(
-                        "critical[read] state loan only supports scalar state values");
+                        "sealed actor state loans currently support scalar state values only");
             }
             return value;
         }
@@ -11167,6 +11177,11 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "actor state field '" + object.klass.name() + "." + name
                                 + "' is immutable");
+            }
+            if (!isCurrentActorStateScalarValue(value)) {
+                throw new IllegalArgumentException(
+                        "sealed actor state assignment requires a scalar value until "
+                                + "revocable composite state views are implemented");
             }
             object.fields.put(name, value);
         }
