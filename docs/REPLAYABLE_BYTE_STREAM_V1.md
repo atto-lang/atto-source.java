@@ -43,7 +43,7 @@ Implementation: `stdlib/replay_stream.ores`; guest fixture: `examples/native-rep
 
 ## Memory and durability limits
 
-This first implementation uses an `Array<int>` fixed-length slot ring. **2 MiB means a maximum of 2 MiB of logical payload bytes, NOT 2 MiB of resident process memory.** The integer array, allocator, per-actor heap, copied replay reads and transport queues can cost significantly more. Native byte-addressed `ByteBuffer`/u8 storage, quotas across actor groups/tenants, admission and measured RSS are separate required milestones. The current constructor performs O(capacity) initialization. No zero-copy, SIMD, hardware acceleration or throughput claims are made.
+This first implementation uses an `Array<int>` ring with a fixed maximum logical capacity and lazy slot growth. **2 MiB means a maximum of 2 MiB of logical payload bytes, NOT 2 MiB of resident process memory.** The integer array, allocator, per-actor heap, copied replay reads and transport queues can cost significantly more. Native byte-addressed `ByteBuffer`/u8 storage, quotas across actor groups/tenants, admission and measured RSS are separate required milestones. The ring grows lazily to at most capacity logical byte slots; construction does not prefill 2 MiB. No zero-copy, SIMD, hardware acceleration or throughput claims are made.
 
 The in-memory window survives a temporary network disconnection only if the actor and process remain alive. Actor/process crash recovery needs a **durable or replicated segment store** plus metadata. Use `stdlib/actor_persistence.ores` as a starting watermark contract; preserve the difference between an accepted I/O write, receiver commit and durable write. Treat unknown storage outcomes as ambiguous until reconciled by idempotency key.
 
