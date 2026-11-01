@@ -114,11 +114,19 @@ def _classify_job(job, run, run_id=None):
         raise TriageError("invalid job status")
     if conclusion is not None and not isinstance(conclusion, str):
         raise TriageError("invalid job conclusion")
+    runner_id, runner_name = job.get("runner_id"), job.get("runner_name")
+    if runner_id is not None and (type(runner_id) is not int or runner_id < 0):
+        raise TriageError("invalid runner ID")
+    if runner_name is not None and not isinstance(runner_name, str):
+        raise TriageError("invalid runner name")
+    runner_observed = (_positive_int(runner_id) and isinstance(runner_name, str)
+                       and bool(runner_name.strip()))
     result = {"job_id": job.get("id") if _positive_int(job.get("id")) else None,
               "classification": None, "steps_observed": None,
               "completed_failing_steps": 0, "completed_build_test_failures": 0,
               "reported_failures_without_timing": 0,
-              "purpose_confidence": "HEURISTIC_ONLY"}
+              "purpose_confidence": "HEURISTIC_ONLY",
+              "runner_assignment_observed": runner_observed}
     if status in PENDING_STATES:
         result["classification"] = "pending"
         return result
@@ -141,6 +149,12 @@ def _classify_job(job, run, run_id=None):
     if not steps:
         result["classification"] = ("observed_no_step_failure" if conclusion == "failure"
                                     else "success_without_step_evidence")
+        return result
+    # A populated or timestamped step array is not sufficient evidence of an
+    # assigned runner. Without an observed positive runner identity, do not
+    # promote a synthetic/test-name payload to executed success or test failure.
+    if not runner_observed:
+        result["classification"] = "reported_steps_without_runner_evidence"
         return result
     failed, substantive_success = [], False
     uncertain_failed_steps = 0
@@ -223,6 +237,8 @@ def assess(run, jobs, expected_head_sha, run_id=None):
         category = "executed_step_failure_unclassified"
     elif "failed_step_purpose_unknown" in kinds:
         category = "failed_step_purpose_unknown"
+    elif "reported_steps_without_runner_evidence" in kinds:
+        category = "reported_steps_without_runner_evidence"
     elif "unobserved_failure" in kinds or "unobserved_job_status" in kinds:
         category = "unobserved_failure" if run["conclusion"] == "failure" else "unobserved_success"
     elif "setup_only_failure" in kinds:
