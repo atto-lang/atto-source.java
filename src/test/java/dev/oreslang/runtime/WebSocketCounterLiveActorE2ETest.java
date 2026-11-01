@@ -137,7 +137,11 @@ final class WebSocketCounterLiveActorE2ETest {
                     }
                     assertEquals(1, count.get(), "duplicate event may not mutate actor state");
                     assertEquals(2, delivered.get(), "each frame gets one mailbox turn");
-                    assertEquals(0, conn.pendingActorTicketCount());
+                    long ticketDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                    while (conn.pendingActorTicketCount() != 0
+                            && System.nanoTime() < ticketDeadline) Thread.sleep(5);
+                    assertEquals(0, conn.pendingActorTicketCount(),
+                            "delivery tickets must be released after mailbox turns");
                     assertTrue(actor.cancel());
                     long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
                     while (listener.activeConnectionCount() != 0
