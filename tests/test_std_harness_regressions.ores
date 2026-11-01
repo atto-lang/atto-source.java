@@ -9,9 +9,15 @@ fnc deterministic_property_cases_pass(): TestOutcome {
   return expect_true(nonempty.passed && !empty.passed,
     "nonempty property must pass and empty property must fail closed");
 }
+fnc negative_property_case_is_failure(): TestOutcome {
+  val TestOutcome rejected = check_int_cases("negative", arr[-2], property_nonnegative);
+  return expect_true(!rejected.passed && rejected.message != "",
+    "a failing property must return an informative failing outcome");
+}
 pub routine main(): void {
   val TestSuite suite = new TestSuite("native-testing-core", arr[
-    new TestCase("deterministic_property_cases_pass", deterministic_property_cases_pass, false, "")
+    new TestCase("deterministic_property_cases_pass", deterministic_property_cases_pass, false, ""),
+    new TestCase("negative_property_case_is_failure", negative_property_case_is_failure, false, "")
   ]);
   val TestOptions options = new TestOptions("", false, true);
   val RunSummary summary = run_suite(rt borrow suite, rt borrow options);
