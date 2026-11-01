@@ -114,7 +114,8 @@ public final class TypeAutoTraits {
                 yield Optional.of(new Capabilities(
                         child.send(), child.send(), child.send()));
             }
-            case "Channel", "Future", "Iterator", "AsyncIterator",
+            case "ActorGroup", "Topic", "Subscription",
+                    "Channel", "Future", "Iterator", "AsyncIterator",
                     "MutexGuard", "SelectCase", "SelectSet", "SelectResult",
                     "TcpConnection", "HttpExchange", "HttpServer",
                     "HttpHandler", "HttpResponse", "HttpResponseDraft" ->
