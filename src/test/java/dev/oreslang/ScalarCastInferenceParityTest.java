@@ -71,6 +71,70 @@ final class ScalarCastInferenceParityTest {
         rejects("const int x = 7; x = 8;");
     }
 
+    @Test void checkedCastsDoNotMaskTypeInferenceInComposedExpressions() {
+        for (String body : new String[] {
+                "const x = 7; const y = x as int; const int z = y + 35;",
+                "const x = (2 * 3 + 1) as int; const int y = x;",
+                "const x = 7 as int as int; const int y = x;",
+                "const yes = true; const bool same = yes as bool;",
+                "const no = false as bool; const bool same = no;",
+                "const answer = (7 + 35) as int; const int same = answer;",
+                "const x = true ? 7 : 8; const y = x as int; const int z = y;",
+                "const x = true ? true : false; const bool y = x as bool;",
+                "const x = tuple (7, true); const int y = x[0] as int;",
+                "const x = tuple (7, true); const bool y = x[1] as bool;",
+                "const x = infer struct { number: 7 }; const int y = x.number as int;",
+                "const x = infer struct { flag: true }; const bool y = x.flag as bool;",
+                "val x = 7; const int y = x as int;",
+                "let x = 7; x = 8; const int y = x as int;",
+                "const x = 7 as? int; const Option<int> value = x;"
+        }) accepts(body);
+    }
+
+    @Test void unrelatedAndUnsupportedConversionsCannotBeSilentlyInferred() {
+        for (String body : new String[] {
+                "const x = 7 as bool as int;",
+                "const x = false as int as bool;",
+                "const x = true as string;",
+                "const x = \"false\" as bool;",
+                "const int x = false as bool;",
+                "const bool x = 7 as int;",
+                "const x = true; const int y = x;",
+                "const x = 7; const bool y = x;",
+                "const x = 7; const string y = x;",
+                "const x = 7 as int; const bool y = x;",
+                "const x = 7 as? int; const int y = x;",
+                "const x = 7 as? int; const bool y = x;",
+                "const x = true as? int;",
+                "const x = \"7\" as? int;",
+                "let x = true; x = 7;"
+        }) rejects(body);
+    }
+
+    @Test void aTypeAnnotationAndCastMustAgreeAtFunctionBoundaries() {
+        String accepted = """
+                fnc increment(int value): int { return value + 1; }
+                pub fnc main(): int {
+                  const int first = increment(6);
+                  const second = increment(6) as int;
+                  const inferred = increment(6);
+                  const int result = first + second + inferred;
+                  return result;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(accepted)));
+        String rejected = """
+                fnc increment(int value): int { return value + 1; }
+                pub fnc main(): int {
+                  const inferred = increment(6);
+                  const bool wrong = inferred as bool;
+                  return 0;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(rejected)));
+    }
+
     @Test void bothFormsProduceTheSameGuestValue() throws Exception {
         String source = """
                 pub fnc main(): void {
