@@ -68,6 +68,61 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void actorMayJoinMultipleGroupsAndLeavingOnePreservesTheOther() throws Exception {
+        String program = """
+                define actor MultiSubscriber as
+                  suspends receive(ActorMail<String> mail): void {
+                    val group = actor.group("room-b");
+                    val topic = group.topic<String>("events");
+                    val subscription = topic.subscribe();
+
+                    self.send("ready-b");
+                    val value = await subscription.next();
+                    self.send(value);
+
+                    subscription.close();
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val a = actor.group("room-a");
+                  val b = actor.group("room-b");
+                  a.topic<String>("events", "latest", 1);
+                  val topicB = b.topic<String>("events", "reliable", 4);
+
+                  val subscriber = spawn MultiSubscriber();
+                  await subscriber.get_ready();
+
+                  a.join(subscriber);
+                  b.join(subscriber);
+                  b.join(subscriber);
+                  a.leave(subscriber);
+
+                  subscriber.send("start");
+                  val ready = (await subscriber.outputs.next()).value.unwrap();
+                  stdio.stdout.write(ready.value);
+                  stdio.stdout.write("|");
+
+                  await topicB.publish("b-still-live");
+                  val value = (await subscriber.outputs.next()).value.unwrap();
+                  stdio.stdout.write(value.value);
+
+                  await subscriber.get_done();
+                  b.leave(subscriber);
+                  a.close();
+                  b.close();
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "ready-b|b-still-live",
+                run(program, "source-actor-pubsub-multi-group.ores"));
+    }
+
+    @Test
     void topicPayloadTypeMismatchFailsBeforeExecution() {
         String program = """
                 pub async routine main(): void {
@@ -82,6 +137,38 @@ final class SourceActorPubSubExecutionTest {
                 PolyglotException.class,
                 () -> run(program, "source-actor-pubsub-type-mismatch.ores"));
         assertTrue(error.getMessage().contains("Topic.publish value"), error.getMessage());
+    }
+
+    @Test
+    void actorCannotDefineTopicOrGrantMembershipAuthority() {
+        String program = """
+                define actor BadAuthority as
+                  receive(ActorMail<String> mail): void {
+                    val group = actor.group("authority");
+                    group.topic<String>("new-topic", "reliable", 4);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val group = actor.group("authority");
+                  val actorRef = spawn BadAuthority();
+                  await actorRef.get_ready();
+                  group.join(actorRef);
+                  actorRef.send("run");
+                  await actorRef.get_done();
+                  group.close();
+                  return;
+                }
+                """;
+
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(program, "source-pubsub-actor-authority-rejected.ores"));
+        assertTrue(
+                error.getMessage().contains("actor code may resolve an existing Topic<T> but cannot define one"),
+                error.getMessage());
     }
 
     @Test
