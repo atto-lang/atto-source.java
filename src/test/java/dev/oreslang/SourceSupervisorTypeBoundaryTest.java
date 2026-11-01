@@ -84,20 +84,31 @@ final class SourceSupervisorTypeBoundaryTest {
     }
 
     @Test
-    void controlHooksCannotSuspendOrBecomeAsync() {
-        // A supervisor CONTROL turn is synchronous and bounded; no
-        // scheduling/suspension modifier may be silently accepted as a hook.
-        for (String modifier : new String[] { "async", "suspends", "async suspends" }) {
-            for (String hook : new String[] {
-                    "on_panic(f: Failure)", "on_start()", "tear_down()"
-            }) {
-                String source = "define supervisor S1 as " + HOOK + " "
-                        + modifier + " " + hook + ": void { return; } end";
-                IllegalArgumentException denied = assertThrows(
-                        IllegalArgumentException.class, () -> Parser.parse(source), source);
-                assertTrue(denied.getMessage().contains("supervisor hooks cannot use"), source);
-            }
+    void controlHooksRejectSuspensionButPreserveCheckedAsyncStopAcknowledgment() {
+        // 'suspends' is unlowered for every hook, including on_panic.
+        for (String hook : new String[] { "on_panic(f: Failure)", "on_start()", "tear_down()" }) {
+            String source = "define supervisor S1 as " + HOOK
+                    + " suspends " + hook + ": void { return; } end";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
         }
+        // Startup and teardown have no async CONTROL continuation lowering.
+        for (String hook : new String[] { "on_start()", "tear_down()" }) {
+            String source = "define supervisor S1 as " + HOOK
+                    + " async " + hook + ": void { return; } end";
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertTrue(denied.getMessage().contains("async supervisor hooks are restricted"), source);
+        }
+        // Preserve existing STOP-only guest source: the exact await body is
+        // compiled into a host-owned, acknowledgment-fenced CONTROL plan.
+        String allowed = "define supervisor S1 as async on_panic(f: Failure): void "
+                + "{ await self.stop(f); return; } end";
+        assertInstanceOf(Ast.SupervisorDecl.class,
+                Parser.parse(allowed).modules().getFirst().declarations().getFirst());
+        assertTrue(OresCompiler.compileStopOnlySupervisor(allowed).awaitsStopAcknowledgment());
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compileStopOnlySupervisor(
+                        allowed.replace("await self.stop(f)", "self.stop(f)")));
     }
 
     @Test
