@@ -146,6 +146,8 @@ def _classify_job(job, run, run_id=None):
     if not isinstance(steps, list):
         raise TriageError("invalid steps collection")
     result["steps_observed"] = len(steps)
+    if any(not isinstance(step, dict) for step in steps):
+        raise TriageError("invalid step metadata")
     if not steps:
         result["classification"] = ("observed_no_step_failure" if conclusion == "failure"
                                     else "success_without_step_evidence")
