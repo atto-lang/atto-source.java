@@ -136,11 +136,20 @@ public final class SourceActorPubSub implements AutoCloseable {
         }
 
         public boolean contains(ActorRuntime.ActorRef<?> actor) {
+            requireActorMembershipIfExecuting("inspect ActorGroup membership");
             return raw.contains(Objects.requireNonNull(actor, "actor"));
         }
 
         public int memberCount() {
+            requireActorMembershipIfExecuting("inspect ActorGroup membership");
             return raw.memberCount();
+        }
+
+        private void requireActorMembershipIfExecuting(String operation) {
+            if (ActorRuntime.currentActorId().isPresent()) {
+                requireCurrentRuntime(operation);
+                raw.requireCurrentMember(operation);
+            }
         }
 
         /** Define a topic. This remains manager-only in ActorRuntime. */
@@ -159,6 +168,7 @@ public final class SourceActorPubSub implements AutoCloseable {
 
         /** Resolve an already-defined topic. Membership is checked by events(). */
         public Topic topic(String topicName) {
+            requireActorMembershipIfExecuting("resolve an ActorGroup topic");
             String normalized = normalizeName(topicName, "Topic");
             ActorEventBus.Topic<Object> topic =
                     raw.events().topic(normalized);
