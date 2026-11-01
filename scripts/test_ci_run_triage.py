@@ -467,6 +467,54 @@ class RunnerAdmissionTriageContract(unittest.TestCase):
         self.assertEqual(triage.assess(self.run, [self.job], self.sha)["category"],
                          "executed_success")
 
+    def test_duplicate_step_number_cannot_promote_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step("Set up job", conclusion="success", number=1),
+            self.step("Run unit tests", conclusion="success", number=1),
+        ]
+        with self.assertRaises(triage.TriageError):
+            self.aggregate()
+
+    def test_reversed_step_numbers_cannot_promote_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step("Set up job", conclusion="success", number=3),
+            self.step("Run unit tests", conclusion="success", number=2),
+        ]
+        with self.assertRaises(triage.TriageError):
+            self.aggregate()
+
+    def test_malformed_step_number_cannot_promote_success(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        for number in (None, True, 0, -1, "1", 1.5):
+            with self.subTest(number=number):
+                self.job["steps"] = [self.step(conclusion="success", number=number)]
+                with self.assertRaises(triage.TriageError):
+                    self.aggregate()
+
+    def test_mixed_numbered_and_unnumbered_steps_rejected(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step("Set up job", conclusion="success", number=1),
+            self.step("Run unit tests", conclusion="success"),
+        ]
+        with self.assertRaises(triage.TriageError):
+            self.aggregate()
+
+    def test_increasing_step_numbers_preserve_executed_step_classification(self):
+        self.admitted()
+        self.run["conclusion"] = self.job["conclusion"] = "success"
+        self.job["steps"] = [
+            self.step("Set up job", conclusion="success", number=1),
+            self.step("Run unit tests", conclusion="success", number=2),
+        ]
+        self.assertEqual(self.aggregate()["category"], "executed_success")
+
     def test_gh_access_is_get_only(self):
         with patch.object(triage.subprocess, "run",
                           return_value=SimpleNamespace(returncode=0, stdout='{"ok": true}')) as called:

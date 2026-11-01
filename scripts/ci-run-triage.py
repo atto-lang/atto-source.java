@@ -178,9 +178,19 @@ def _classify_job(job, run, run_id=None):
             raise TriageError("invalid job execution interval")
     failed, substantive_success = [], False
     uncertain_failed_steps = 0
+    # GitHub supplies step ordinals. Reject duplicate, reordered, malformed, or
+    # partially omitted ordinals instead of accepting a fabricated success.
+    last_step_number = 0
+    numbered_steps = 0
     for step in steps:
         if not isinstance(step, dict):
             raise TriageError("invalid step metadata")
+        if "number" in step:
+            number = step["number"]
+            if not _positive_int(number) or number <= last_step_number:
+                raise TriageError("invalid or non-increasing step number")
+            last_step_number = number
+            numbered_steps += 1
         step_status, step_conclusion = step.get("status"), step.get("conclusion")
         if step_status is not None and not isinstance(step_status, str):
             raise TriageError("invalid step status")
@@ -222,6 +232,8 @@ def _classify_job(job, run, run_id=None):
                 uncertain_failed_steps += 1
         if timed_execution and step_conclusion == "success" and purpose != "housekeeping":
             substantive_success = True
+    if numbered_steps not in (0, len(steps)):
+        raise TriageError("partially missing step numbers")
     result["completed_failing_steps"] = len(failed)
     result["completed_build_test_failures"] = failed.count("build_test")
     result["reported_failures_without_timing"] = uncertain_failed_steps
