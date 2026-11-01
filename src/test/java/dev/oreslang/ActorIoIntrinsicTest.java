@@ -105,6 +105,43 @@ final class ActorIoIntrinsicTest {
     }
 
     @Test
+    void nestedActorBindingsCannotShadowIo() {
+        PolyglotException lambda = assertThrows(PolyglotException.class, () ->
+                check("""
+                        pub actor fnc worker(String value) -> void {
+                          val callback = |String io| -> { return; };
+                          return;
+                        }
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-io-lambda-shadow.ores"));
+        assertTrue(
+                lambda.getMessage().contains("actor lambda parameter")
+                        && lambda.getMessage().contains("reserved actor execution intrinsic"),
+                lambda::getMessage);
+
+        PolyglotException refinement = assertThrows(PolyglotException.class, () ->
+                check("""
+                        pub actor fnc worker(String value) -> void {
+                          if value is type String io then
+                            return;
+                          fi
+                          return;
+                        }
+
+                        pub routine main(): void {
+                          return;
+                        }
+                        """, "actor-io-refinement-shadow.ores"));
+        assertTrue(
+                refinement.getMessage().contains("actor type-test binding")
+                        && refinement.getMessage().contains("reserved actor execution intrinsic"),
+                refinement::getMessage);
+    }
+
+    @Test
     void actorIoOutWriteCannotBeCapturedOrDiscarded() {
         PolyglotException capture = assertThrows(PolyglotException.class, () ->
                 check("""
