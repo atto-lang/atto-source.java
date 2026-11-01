@@ -123,6 +123,16 @@ fnc machine_empty_field_stays_empty(): TestOutcome {
     "empty receipt field must not gain bytes");
 }
 
+fnc machine_safe_ascii_is_unchanged(): TestOutcome {
+  return expect_equal_string(escape_machine_field("suite/case_01"),
+    "suite/case_01", "safe machine IDs must not be rewritten");
+}
+
+fnc machine_multiple_newlines_are_escaped(): TestOutcome {
+  return expect_equal_string(escape_machine_field("a\nb\nc"),
+    "a\\nb\\nc", "multiple line separators cannot create extra machine records");
+}
+
 pub routine main(): void {
   val TestSuite suite = new TestSuite("native-testing-core", arr[
     new TestCase("empty_property_reports_its_name", empty_property_reports_its_name, false, ""),
@@ -152,7 +162,9 @@ pub routine main(): void {
     new TestCase("failing_property_retains_first_error", failing_property_retains_first_error, false, ""),
     new TestCase("repeated_property_inputs_are_not_an_empty_vacuous_pass", repeated_property_inputs_are_not_an_empty_vacuous_pass, false, ""),
     new TestCase("negative_i64_boundary_is_exact", negative_i64_boundary_is_exact, false, ""),
-    new TestCase("i64_above_binary64_mantissa_is_exact", i64_above_binary64_mantissa_is_exact, false, "")
+    new TestCase("i64_above_binary64_mantissa_is_exact", i64_above_binary64_mantissa_is_exact, false, ""),
+    new TestCase("machine_safe_ascii_is_unchanged", machine_safe_ascii_is_unchanged, false, ""),
+    new TestCase("machine_multiple_newlines_are_escaped", machine_multiple_newlines_are_escaped, false, "")
   ]);
   val TestOptions options = new TestOptions("", false, true);
   val RunSummary summary = run_suite(rt borrow suite, rt borrow options);
