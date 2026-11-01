@@ -1,0 +1,8 @@
+// Negative guest oracle: execution must fail before handing SQL to a driver.
+import module pg from '../../src/pg';
+pub routine main(): void {
+  stdio.println("PG_NEGATIVE_EMPTY_IDENTIFIER_STARTED");
+  val sql = pg.find_in_workspace("", "tenant-a", "record-a");
+  stdio.println(sql.sql);
+  return;
+}
