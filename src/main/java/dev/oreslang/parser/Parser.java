@@ -195,7 +195,7 @@ public final class Parser {
                     rootDeclarations.add(parseClass(
                             modifiers.visibility,
                             modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                            modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
