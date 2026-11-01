@@ -1,5 +1,5 @@
 # Native Oreslang test harness rollout — 2026-10-31
-Test cases: **132 authored native Oreslang `TestCase` registrations in 20 repositories** at this snapshot, including 40 new cases from the 2026-11-01 incremental batch. One `tests/test_std_harness_regressions.ores` per repository.
+Test cases: **216 authored native Oreslang `TestCase` registrations in 20 repositories** at this snapshot, including 40 new cases from the 2026-11-01 incremental batch. Each repository has a native harness regression suite; the three compiler repositories also contain additional batch-4 suites.
 
 | Repository | Draft PR | Added cases |
 | --- | --- | ---: |
@@ -19,9 +19,9 @@ Test cases: **132 authored native Oreslang `TestCase` registrations in 20 reposi
 | `oreslang-forward-proxy-demo.ores` | [#32](https://github.com/ores-truffle-oreslang/oreslang-forward-proxy-demo.ores/pull/32) | 4 |
 | `oreslang-reverse-proxy-demo.ores` | [#34](https://github.com/ores-truffle-oreslang/oreslang-reverse-proxy-demo.ores/pull/34) | 4 |
 | `oreslang-platform-conformance` | [#269](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/269) | 4 |
-| `oreslang-source.java` | [#2395](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2395) | 30 |
-| `oreslang-source.llvm` | [#1252](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1252) | 12 |
-| `oreslang-source.net` | [#279](https://github.com/ores-truffle-oreslang/oreslang-source.net/pull/279) | 12 |
+| `oreslang-source.java` | [#2395](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2395) | 66 |
+| `oreslang-source.llvm` | [#1252](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1252) | 36 |
+| `oreslang-source.net` | [#279](https://github.com/ores-truffle-oreslang/oreslang-source.net/pull/279) | 36 |
 | `oreslang-compilers-parity-testing` | [#15](https://github.com/ores-truffle-oreslang/oreslang-compilers-parity-testing/pull/15) | 4 |
 
 ## Contract
@@ -64,7 +64,7 @@ Test cases: **132 authored native Oreslang `TestCase` registrations in 20 reposi
 - `oreslang-compilers-parity-testing`: explicit Option fallback.
 
 ## No-claim boundary
-None of the 92 authored cases is credited as a passing guest test merely because it was authored or committed. No private cross-organization source transfers are approved by this ledger. `steps=[]` jobs remain runner-admission failures, not tests.
+None of the 216 authored cases is credited as a passing guest test merely because it was authored or committed. No private cross-organization source transfers are approved by this ledger. `steps=[]` jobs remain runner-admission failures, not tests.
 
 ## Exact-head CI observations (after second pass)
 The following GitHub workflow jobs were checked at their respective PR heads. Each finished with workflow conclusion `failure`, but the selected job returned **zero executed steps**; these are runner admission failures, not evidence of failing native tests.
@@ -90,13 +90,29 @@ None of those jobs supplies compiler-backed guest evidence. Recheck head identit
 - Java/Graal compiler repository [#2395](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2395): 14 additional native Oreslang harness meta/semantic cases. Covers equality/inequality, inclusive and exclusive float tolerance, first-failure property diagnostics, deterministic repeated table inputs, CR/tab and pipe machine escaping, and signed i64 boundaries. The local test imports added assertion functions explicitly.
 - LLVM compiler repository [#1252](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1252): 8 additional native Oreslang signed64/precedence regression cases.
 - .NET compiler repository [#279](https://github.com/ores-truffle-oreslang/oreslang-source.net/pull/279): the matching 8 signed64/precedence guest cases. Both suites must compile and run with their own compiler; matching source alone is not parity proof.
-- Rust compiler [#21](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/21): 15 Rust `#[test]` compiler-admission cases and 8 additional Rust `#[test]` cases that compile, link and execute real Oreslang scalar guests under Linux. These 23 Rust integration tests **are not Oreslang `TestCase` registrations** and must not inflate the 132 total.
+- Rust compiler [#21](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/21): 15 Rust `#[test]` compiler-admission cases and 8 additional Rust `#[test]` cases that compile, link and execute real Oreslang scalar guests under Linux. These 23 Rust integration tests **are not Oreslang `TestCase` registrations** and must not inflate the native Oreslang total.
 - Cranelift compiler [#20](https://github.com/ores-truffle-oreslang/oreslang-source.cranelift/pull/20): 5 Rust `#[test]` functions with 33 native JIT guest vectors. These also **are not Oreslang `TestCase` registrations**.
 
 Exact-head source compilation, stdout receipts, error exits, LLVM/.NET backend module import support and peer review remain pending. The Rust scalar-only compiler intentionally does not import the canonical standard-library harness, so its Rust tests and the native Oreslang `TestCase` suite are separate evidence lanes.
 
-**Correct accounting:** 132 native Oreslang `TestCase` registrations across 20 repositories; 28 separate Rust `#[test]` functions across two Rust compiler repositories. A test registration is not an executed test receipt.
+**Current accounting:** 216 native Oreslang `TestCase` registrations across 20 repositories; 55 separate Rust `#[test]` functions across two Rust compiler repositories. Earlier batch counts below remain historical. A test registration is not an executed test receipt.
 
 ## New incremental batch (2026-11-01)
 
-Added 40 native Oreslang tests (2 per repository), with exact case names and PR links in [NATIVE_TEST_INCREMENT_40_20261101.md](NATIVE_TEST_INCREMENT_40_20261101.md). Across the 20 tracked suites there are now **132 authored TestCase registrations**, separate from Rust host/compiler tests. The `ore.std/testing` import spelling is **not** used; the public hosted namespace is `ores.std/testing`.
+Added 40 native Oreslang tests (2 per repository), with exact case names and PR links in [NATIVE_TEST_INCREMENT_40_20261101.md](NATIVE_TEST_INCREMENT_40_20261101.md). After the subsequent compiler batch, the 20 tracked repositories now have **216 authored TestCase registrations**, separate from Rust host/compiler tests. The `ore.std/testing` import spelling is **not** used; the public hosted namespace is `ores.std/testing`.
+
+## Compiler regression continuation — batch 4 (2026-11-01)
+
+This batch adds **84 new Oreslang-native `TestCase` registrations**, all in new `.ores` files on existing draft compiler PRs. This is in addition to the earlier 132 registrations, yielding **216 authored registrations across 20 repositories**.
+
+| Compiler PR | New native Oreslang cases | Batch-4 files | Current compiler-repo registrations |
+| --- | ---: | --- | ---: |
+| [Java/Graal #2395](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2395) | 36 | `tests/test_std_harness_scalar_parity_batch4.ores` (24); `tests/test_std_harness_meta_batch4.ores` (12) | 66 |
+| [LLVM #1252](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1252) | 24 | `tests/test_std_harness_scalar_parity_batch4.ores` | 36 |
+| [.NET #279](https://github.com/ores-truffle-oreslang/oreslang-source.net/pull/279) | 24 | `tests/test_std_harness_scalar_parity_batch4.ores` | 36 |
+
+The 24-case common matrix tests exact signed64 boundaries, adjacent values beyond binary64 integer precision, algebraic precedence and association, booleans, floating tolerances, string comparisons, and machine-field escaping. The 12 Java-only harness meta-cases test exact-name filtering, skip accounting, fail-fast, and zero-executed suite summaries. The inner meta-suites use human-readable output so their events do not masquerade as the outer machine receipt stream.
+
+**Additional Rust tests (separate lane, not native `TestCase` registrations):** [source.rs #21](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/21) gained 12 new Rust numeric-separator admission tests and 8 additional Rust tests that compile, link, and execute real scalar Oreslang guests. The source.rs parser now rejects malformed decimal separators like `1__0`, `1_`, and their negative counterparts. [source.cranelift #20](https://github.com/ores-truffle-oreslang/oreslang-source.cranelift/pull/20) gained 7 Rust JIT/CLI integration functions with multiple positive/negative vectors. Totals are **43 Rust functions in source.rs** and **12 in source.cranelift** within the rollout PRs (55 combined).
+
+**Evidence separation:** these are committed, source-backed tests; no exact-head compiler-backed guest pass has been confirmed for this batch. Any CI job with `steps=[]` remains an admission failure. The Java harness PR #2393 overlaps #2395 and requires canonical reconciliation. Do not mirror private source across organizations while the transfer hold remains active; use source-free canaries only for runner admission, then run exact-head compiler-backed checks in an authorized environment.
