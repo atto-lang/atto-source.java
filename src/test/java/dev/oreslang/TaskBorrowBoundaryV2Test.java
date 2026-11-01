@@ -273,6 +273,63 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void nioTcpConnectionMayMoveOnceIntoIndependentTask() throws Exception {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  val NioTcpConnection socket =
+                      await network.connect_async("127.0.0.1", 5432);
+                  let Future<void> transport = task {
+                    val int sent = await socket.write_bytes_async([83, 0, 0, 0, 4]);
+                    await socket.close_async();
+                    return;
+                  };
+                  await transport;
+                  return;
+                }
+                """));
+
+        var moved = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async fnc main(): void {
+                          val NioTcpConnection socket =
+                              await network.connect_async("127.0.0.1", 5432);
+                          let Future<void> transport = task {
+                            await socket.close_async();
+                            return;
+                          };
+                          await socket.close_async();
+                          await transport;
+                          return;
+                        }
+                        """));
+        assertTrue(moved.getMessage().contains("moved")
+                        || moved.getMessage().contains("capture"),
+                moved::getMessage);
+    }
+
+    @Test
+    void nioTcpConnectionTaskCapabilityIsSendButNeverCopy() throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+
+        var send = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        send.setAccessible(true);
+        var copy = OwnershipChecker.class.getDeclaredMethod(
+                "isCopyType", dev.oreslang.ast.Ast.TypeRef.class);
+        copy.setAccessible(true);
+
+        var socket = dev.oreslang.ast.Ast.TypeRef.simple("NioTcpConnection");
+        assertFalse((Boolean) send.invoke(checker, socket),
+                "affine NIO connection may MOVE into a Task");
+        assertFalse((Boolean) copy.invoke(checker, socket),
+                "NIO connection must never become Copy");
+    }
+
+    @Test
     void uniquelyOwnedMutexMayMoveWhenPayloadIsSend() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
