@@ -43,6 +43,9 @@ final class SelectorTransportConnection implements AutoCloseable {
     private final SelectionKey key;
     private final long overallDeadlineNanos;
     private final AtomicBoolean closed = new AtomicBoolean();
+    // This per-connection selector and its TLS buffers are NOT duplex-safe.
+    // A real shared pool must arbitrate protocol operations before entry.
+    private final AtomicBoolean operationClaimed = new AtomicBoolean();
     private final Input input = new Input();
     private final Output output = new Output();
 
@@ -108,9 +111,10 @@ final class SelectorTransportConnection implements AutoCloseable {
             throws IOException {
         Objects.requireNonNull(address, "address");
         Objects.requireNonNull(connectTimeout, "connectTimeout");
-        requireOpen();
-        long connectDeadline =
-                phaseDeadline(connectTimeout);
+        enterOperation();
+        try {
+            long connectDeadline =
+                    phaseDeadline(connectTimeout);
         if (!channel.connect(address)) {
             while (!channel.finishConnect()) {
                 waitForUntil(
@@ -119,7 +123,10 @@ final class SelectorTransportConnection implements AutoCloseable {
                         "connect");
             }
         }
-        clearInterestOpsAfterConnect();
+            clearInterestOpsAfterConnect();
+        } finally {
+            leaveOperation();
+        }
     }
 
     void startTls(
@@ -132,11 +139,12 @@ final class SelectorTransportConnection implements AutoCloseable {
         Objects.requireNonNull(sslContext, "sslContext");
         Objects.requireNonNull(host, "host");
         Objects.requireNonNull(handshakeTimeout, "handshakeTimeout");
-        requireOpen();
-        if (engine != null) {
-            throw new IllegalStateException(
-                    "TLS already initialized");
-        }
+        enterOperation();
+        try {
+            if (engine != null) {
+                throw new IllegalStateException(
+                        "TLS already initialized");
+            }
 
         SSLEngine created = sslContext.createSSLEngine(host, port);
         created.setUseClientMode(true);
@@ -155,9 +163,12 @@ final class SelectorTransportConnection implements AutoCloseable {
         engine = created;
 
         created.beginHandshake();
-        driveHandshake(
-                created.getHandshakeStatus(),
-                phaseDeadline(handshakeTimeout));
+            driveHandshake(
+                    created.getHandshakeStatus(),
+                    phaseDeadline(handshakeTimeout));
+        } finally {
+            leaveOperation();
+        }
     }
 
     InputStream input() {
@@ -217,14 +228,18 @@ final class SelectorTransportConnection implements AutoCloseable {
                 throws IOException {
             Objects.checkFromIndexSize(offset, length, target.length);
             if (length == 0) return 0;
-            requireOpen();
-            ByteBuffer destination =
-                    ByteBuffer.wrap(target, offset, length);
-            long deadline = phaseDeadline(readTimeout);
-            if (engine == null) {
-                return readPlain(destination, deadline);
+            enterOperation();
+            try {
+                ByteBuffer destination =
+                        ByteBuffer.wrap(target, offset, length);
+                long deadline = phaseDeadline(readTimeout);
+                if (engine == null) {
+                    return readPlain(destination, deadline);
+                }
+                return readTls(destination, deadline);
+            } finally {
+                leaveOperation();
             }
-            return readTls(destination, deadline);
         }
     }
 
@@ -243,14 +258,18 @@ final class SelectorTransportConnection implements AutoCloseable {
                 throws IOException {
             Objects.checkFromIndexSize(offset, length, source.length);
             if (length == 0) return;
-            requireOpen();
-            ByteBuffer input =
-                    ByteBuffer.wrap(source, offset, length);
-            long deadline = phaseDeadline(writeTimeout);
-            if (engine == null) {
-                writeNetFully(input, deadline, "request write");
-            } else {
-                writeTls(input, deadline);
+            enterOperation();
+            try {
+                ByteBuffer input =
+                        ByteBuffer.wrap(source, offset, length);
+                long deadline = phaseDeadline(writeTimeout);
+                if (engine == null) {
+                    writeNetFully(input, deadline, "request write");
+                } else {
+                    writeTls(input, deadline);
+                }
+            } finally {
+                leaveOperation();
             }
         }
     }
@@ -662,6 +681,29 @@ final class SelectorTransportConnection implements AutoCloseable {
         return Math.min(
                 phaseDeadline,
                 overallDeadlineNanos);
+    }
+
+    /**
+     * Fail closed if callers share this request-local selector state machine.
+     * This does not implement a connection pool or an asynchronous duplex
+     * protocol: close() may still revoke a pending operation concurrently.
+     */
+    private void enterOperation() throws IOException {
+        requireOpen();
+        if (!operationClaimed.compareAndSet(false, true)) {
+            throw new IOException(
+                    "concurrent TCP I/O requires an exclusive transport lease");
+        }
+        try {
+            requireOpen();
+        } catch (IOException failure) {
+            operationClaimed.set(false);
+            throw failure;
+        }
+    }
+
+    private void leaveOperation() {
+        operationClaimed.set(false);
     }
 
     private void requireOpen()
