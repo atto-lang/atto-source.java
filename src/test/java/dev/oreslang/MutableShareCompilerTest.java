@@ -245,6 +245,56 @@ final class MutableShareCompilerTest {
     }
 
     @Test
+    void releasesGuardBeforeReacquiringThroughOriginalOwner() {
+        checked(COUNTER + """
+                fnc good(): void {
+                  val owner = SharedMutex.new(new Counter());
+                  val alias = rt mut share owner;
+                  val first = alias.lock();
+                  first.value = 4;
+                  first.release();
+                  val next = owner.lock();
+                  next.value = 5;
+                  next.release();
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void cannotReturnMutexGuardFromItsLexicalScope() {
+        rejected(COUNTER + """
+                fnc bad(): MutexGuard<Counter> {
+                  val mutex = SharedMutex.new(new Counter());
+                  val guard = mutex.lock();
+                  return guard;
+                }
+                """, "MutexGuard");
+    }
+
+    @Test
+    void cannotPlaceBorrowedPayloadInsideSharedMutex() {
+        rejected(COUNTER + """
+                fnc bad(): void {
+                  val payload = new Counter();
+                  val loan = rt borrow payload;
+                  val mutex = SharedMutex.new(loan);
+                  return;
+                }
+                """, "SharedMutex<T> requires owned data");
+    }
+
+    @Test
+    void cannotPlaceUnresolvedGenericPayloadInsideSharedMutex() {
+        rejected("""
+                fnc bad<T>(T payload): void {
+                  val mutex = SharedMutex.new(payload);
+                  return;
+                }
+                """, "SharedMutex<T> requires shared-safe owned data");
+    }
+
+    @Test
     void developerPolicyAdmitsGuardedMutableShareOperation() {
         Ast.Program program = Parser.parse("""
                 fnc ok(): void {
