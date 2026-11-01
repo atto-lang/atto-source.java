@@ -84,6 +84,51 @@ final class StringTransformTest {
     }
 
     @Test
+    void strictUtf8BytesExposeExactUnsignedWireValues() {
+        assertEquals("ok", run("""
+                pub routine main(): void {
+                  val List<int> ascii = "A\u0000z".utf8_bytes();
+                  if ascii.size != 3
+                    || ascii.get(0) != 65
+                    || ascii.get(1) != 0
+                    || ascii.get(2) != 122 then
+                    panic("ASCII UTF-8 bytes mismatch");
+                  fi
+
+                  val List<int> unicode = "é😀".utf8_bytes();
+                  if unicode.size != 6
+                    || unicode.get(0) != 195
+                    || unicode.get(1) != 169
+                    || unicode.get(2) != 240
+                    || unicode.get(3) != 159
+                    || unicode.get(4) != 152
+                    || unicode.get(5) != 128 then
+                    panic("Unicode UTF-8 bytes mismatch");
+                  fi
+                  stdio.stdout.write("ok");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void utf8BytesHasCheckedZeroArgumentSignature() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub routine main(): void {
+                  val List<int> bytes = "abc".utf8_bytes();
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          val bytes = "abc".utf8_bytes(1);
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
     void emptyNeedleIsRejected() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""
