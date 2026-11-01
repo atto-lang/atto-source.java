@@ -1,28 +1,28 @@
 # Native Oreslang test harness rollout — 2026-10-31
-Test cases: **92 authored `TestCase` registrations in 20 repositories** (initial batch 30, second batch 20, plus two canonical stdlib meta-cases), one `tests/test_std_harness_regressions.ores` per repository, authored in Oreslang alone.
+Test cases: **132 authored native Oreslang `TestCase` registrations in 20 repositories** at this snapshot, including 40 new cases from the 2026-11-01 incremental batch. One `tests/test_std_harness_regressions.ores` per repository.
 
 | Repository | Draft PR | Added cases |
 | --- | --- | ---: |
-| `oreslang-http-routing` | [#31](https://github.com/ores-truffle-oreslang/oreslang-http-routing/pull/31) | 3 |
-| `oreslang-linked-queue` | [#15](https://github.com/ores-truffle-oreslang/oreslang-linked-queue/pull/15) | 3 |
-| `oreslang-otel` | [#15](https://github.com/ores-truffle-oreslang/oreslang-otel/pull/15) | 3 |
-| `oreslang-rpc` | [#17](https://github.com/ores-truffle-oreslang/oreslang-rpc/pull/17) | 3 |
-| `oreslang-ssr` | [#25](https://github.com/ores-truffle-oreslang/oreslang-ssr/pull/25) | 3 |
-| `postgres-orm.ores` | [#14](https://github.com/ores-truffle-oreslang/postgres-orm.ores/pull/14) | 3 |
-| `oreslang-web-browser.ores` | [#14](https://github.com/ores-truffle-oreslang/oreslang-web-browser.ores/pull/14) | 3 |
-| `oreslang-sg-stategraph.ores` | [#7](https://github.com/ores-truffle-oreslang/oreslang-sg-stategraph.ores/pull/7) | 3 |
-| `oreslang-data-science` | [#21](https://github.com/ores-truffle-oreslang/oreslang-data-science/pull/21) | 3 |
-| `oreslang-logic.ores` | [#5](https://github.com/ores-truffle-oreslang/oreslang-logic.ores/pull/5) | 3 |
-| `oreslang-hpc-finance` | [#19](https://github.com/ores-truffle-oreslang/oreslang-hpc-finance/pull/19) | 2 |
-| `oreslang-serialization-and-validation` | [#48](https://github.com/ores-truffle-oreslang/oreslang-serialization-and-validation/pull/48) | 2 |
-| `oreslang-orie-ieor` | [#4](https://github.com/ores-truffle-oreslang/oreslang-orie-ieor/pull/4) | 2 |
-| `oreslang-forward-proxy-demo.ores` | [#32](https://github.com/ores-truffle-oreslang/oreslang-forward-proxy-demo.ores/pull/32) | 2 |
-| `oreslang-reverse-proxy-demo.ores` | [#34](https://github.com/ores-truffle-oreslang/oreslang-reverse-proxy-demo.ores/pull/34) | 2 |
-| `oreslang-platform-conformance` | [#269](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/269) | 2 |
-| `oreslang-source.java` | [#2395](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2395) | 28 |
-| `oreslang-source.llvm` | [#1252](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1252) | 10 |
-| `oreslang-source.net` | [#279](https://github.com/ores-truffle-oreslang/oreslang-source.net/pull/279) | 10 |
-| `oreslang-compilers-parity-testing` | [#15](https://github.com/ores-truffle-oreslang/oreslang-compilers-parity-testing/pull/15) | 2 |
+| `oreslang-http-routing` | [#31](https://github.com/ores-truffle-oreslang/oreslang-http-routing/pull/31) | 5 |
+| `oreslang-linked-queue` | [#15](https://github.com/ores-truffle-oreslang/oreslang-linked-queue/pull/15) | 5 |
+| `oreslang-otel` | [#15](https://github.com/ores-truffle-oreslang/oreslang-otel/pull/15) | 5 |
+| `oreslang-rpc` | [#17](https://github.com/ores-truffle-oreslang/oreslang-rpc/pull/17) | 5 |
+| `oreslang-ssr` | [#25](https://github.com/ores-truffle-oreslang/oreslang-ssr/pull/25) | 5 |
+| `postgres-orm.ores` | [#14](https://github.com/ores-truffle-oreslang/postgres-orm.ores/pull/14) | 5 |
+| `oreslang-web-browser.ores` | [#14](https://github.com/ores-truffle-oreslang/oreslang-web-browser.ores/pull/14) | 5 |
+| `oreslang-sg-stategraph.ores` | [#7](https://github.com/ores-truffle-oreslang/oreslang-sg-stategraph.ores/pull/7) | 5 |
+| `oreslang-data-science` | [#21](https://github.com/ores-truffle-oreslang/oreslang-data-science/pull/21) | 5 |
+| `oreslang-logic.ores` | [#5](https://github.com/ores-truffle-oreslang/oreslang-logic.ores/pull/5) | 5 |
+| `oreslang-hpc-finance` | [#19](https://github.com/ores-truffle-oreslang/oreslang-hpc-finance/pull/19) | 4 |
+| `oreslang-serialization-and-validation` | [#48](https://github.com/ores-truffle-oreslang/oreslang-serialization-and-validation/pull/48) | 4 |
+| `oreslang-orie-ieor` | [#4](https://github.com/ores-truffle-oreslang/oreslang-orie-ieor/pull/4) | 4 |
+| `oreslang-forward-proxy-demo.ores` | [#32](https://github.com/ores-truffle-oreslang/oreslang-forward-proxy-demo.ores/pull/32) | 4 |
+| `oreslang-reverse-proxy-demo.ores` | [#34](https://github.com/ores-truffle-oreslang/oreslang-reverse-proxy-demo.ores/pull/34) | 4 |
+| `oreslang-platform-conformance` | [#269](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/269) | 4 |
+| `oreslang-source.java` | [#2395](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2395) | 30 |
+| `oreslang-source.llvm` | [#1252](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1252) | 12 |
+| `oreslang-source.net` | [#279](https://github.com/ores-truffle-oreslang/oreslang-source.net/pull/279) | 12 |
+| `oreslang-compilers-parity-testing` | [#15](https://github.com/ores-truffle-oreslang/oreslang-compilers-parity-testing/pull/15) | 4 |
 
 ## Contract
 - The 19 consumer suites now import the canonical hosted `ores.std/testing` module (the Java compiler repository's own tests import `../stdlib/testing` for local branch testing). `CoreLibrarySources.java` includes `testing.ores` in its explicit `STD_SOURCES` registry and recognizes `ores.std/`; `pom.xml` packages `stdlib/**/*.ores` to `dev/oreslang/std`. This is source-level evidence of the intended Java/Graal packaging path, **not** compiler-backed import execution or cross-backend parity.
@@ -90,9 +90,13 @@ None of those jobs supplies compiler-backed guest evidence. Recheck head identit
 - Java/Graal compiler repository [#2395](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2395): 14 additional native Oreslang harness meta/semantic cases. Covers equality/inequality, inclusive and exclusive float tolerance, first-failure property diagnostics, deterministic repeated table inputs, CR/tab and pipe machine escaping, and signed i64 boundaries. The local test imports added assertion functions explicitly.
 - LLVM compiler repository [#1252](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1252): 8 additional native Oreslang signed64/precedence regression cases.
 - .NET compiler repository [#279](https://github.com/ores-truffle-oreslang/oreslang-source.net/pull/279): the matching 8 signed64/precedence guest cases. Both suites must compile and run with their own compiler; matching source alone is not parity proof.
-- Rust compiler [#21](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/21): 15 Rust `#[test]` compiler-admission cases and 8 additional Rust `#[test]` cases that compile, link and execute real Oreslang scalar guests under Linux. These 23 Rust integration tests **are not Oreslang `TestCase` registrations** and must not inflate the 92 total.
+- Rust compiler [#21](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/21): 15 Rust `#[test]` compiler-admission cases and 8 additional Rust `#[test]` cases that compile, link and execute real Oreslang scalar guests under Linux. These 23 Rust integration tests **are not Oreslang `TestCase` registrations** and must not inflate the 132 total.
 - Cranelift compiler [#20](https://github.com/ores-truffle-oreslang/oreslang-source.cranelift/pull/20): 5 Rust `#[test]` functions with 33 native JIT guest vectors. These also **are not Oreslang `TestCase` registrations**.
 
 Exact-head source compilation, stdout receipts, error exits, LLVM/.NET backend module import support and peer review remain pending. The Rust scalar-only compiler intentionally does not import the canonical standard-library harness, so its Rust tests and the native Oreslang `TestCase` suite are separate evidence lanes.
 
-**Correct accounting:** 92 native Oreslang `TestCase` registrations across 20 repositories; 28 separate Rust `#[test]` functions across two Rust compiler repositories. A test registration is not an executed test receipt.
+**Correct accounting:** 132 native Oreslang `TestCase` registrations across 20 repositories; 28 separate Rust `#[test]` functions across two Rust compiler repositories. A test registration is not an executed test receipt.
+
+## New incremental batch (2026-11-01)
+
+Added 40 native Oreslang tests (2 per repository), with exact case names and PR links in [NATIVE_TEST_INCREMENT_40_20261101.md](NATIVE_TEST_INCREMENT_40_20261101.md). Across the 20 tracked suites there are now **132 authored TestCase registrations**, separate from Rust host/compiler tests. The `ore.std/testing` import spelling is **not** used; the public hosted namespace is `ores.std/testing`.
