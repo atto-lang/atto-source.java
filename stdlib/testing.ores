@@ -161,7 +161,7 @@ fnc emit_status(String status, String full_name, String detail, bool machine): v
   return;
 }
 
-fnc emit_summary(&RunSummary summary, bool machine): void {
+fnc emit_summary(borrow RunSummary summary, bool machine): void {
   let int total = summary.total;
   let int passed_count = summary.passed;
   let int failed_count = summary.failed;
@@ -200,7 +200,7 @@ fnc emit_summary(&RunSummary summary, bool machine): void {
   return;
 }
 
-pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
+pub fnc run_suite(borrow TestSuite suite, borrow TestOptions options): RunSummary {
   let int total = 0;
   let int passed_count = 0;
   let int failed_count = 0;
@@ -246,7 +246,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
           skipped_count,
           filtered_count
         );
-        emit_summary(&early, machine);
+        emit_summary(rt borrow early, machine);
         return early;
       fi
     fi
@@ -259,11 +259,11 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
     skipped_count,
     filtered_count
   );
-  emit_summary(&summary, machine);
+  emit_summary(rt borrow summary, machine);
   return summary;
 }
 
-pub fnc require_success(&RunSummary summary): void {
+pub fnc require_success(borrow RunSummary summary: void {
   // An empty/all-skipped/all-filtered suite must never be a green test receipt.
   // Keep this aligned with oreslang-test.cli's native receipt admission rule.
   let int executed_count = summary.passed + summary.failed;
