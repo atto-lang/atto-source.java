@@ -38,6 +38,7 @@ public final class OresContext implements AutoCloseable {
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
+    private final SourceActorPubSub actorPubSub;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
@@ -153,6 +154,7 @@ public final class OresContext implements AutoCloseable {
 
             this.vm = vm;
             this.actors = actors;
+            this.actorPubSub = new SourceActorPubSub(actors);
             this.asyncRuntime = async;
             this.garbageCollector = gc;
         } catch (RuntimeException | Error failure) {
@@ -178,6 +180,7 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+    public SourceActorPubSub actorPubSub() { return actorPubSub; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -548,6 +551,7 @@ public final class OresContext implements AutoCloseable {
             linkedImportResolutions.clear();
             sharedCodeImages.close();
         }
+        actorPubSub.close();
         garbageCollector.close();
         output.flush();
         QUARANTINED_CONTEXTS.remove(this);
