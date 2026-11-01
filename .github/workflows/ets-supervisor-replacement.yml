@@ -4,6 +4,7 @@ on:
     paths:
       - '.github/workflows/ets-supervisor-replacement.yml'
       - 'src/test/java/dev/oreslang/runtime/EtsSupervisedReplacementLifecycleTest.java'
+      - 'src/test/java/dev/oreslang/runtime/EtsHeirHandoffRuntimeTest.java'
       - 'src/main/java/dev/oreslang/runtime/EtsTable.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
   workflow_dispatch:
@@ -41,8 +42,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=EtsSupervisedReplacementLifecycleTest -DfailIfNoTests=true test
-      - name: Verify exactly three JUnit tests ran
+          mvn -B -ntp '-Dtest=EtsSupervisedReplacementLifecycleTest,EtsHeirHandoffRuntimeTest' -DfailIfNoTests=true test
+      - name: Verify exactly eight real runtime-backed JUnit tests ran
         shell: bash
         run: |
           set -euo pipefail
@@ -52,6 +53,12 @@ jobs:
           grep -q 'errors="0"' "$report"
           grep -q 'failures="0"' "$report"
           grep -q 'skipped="0"' "$report"
+          heir=target/surefire-reports/TEST-dev.oreslang.runtime.EtsHeirHandoffRuntimeTest.xml
+          test -s "$heir"
+          grep -q 'tests="5"' "$heir"
+          grep -q 'errors="0"' "$heir"
+          grep -q 'failures="0"' "$heir"
+          grep -q 'skipped="0"' "$heir"
           git rev-parse HEAD
           git rev-parse 'HEAD^{tree}'
       - name: Upload runtime-only XML
@@ -59,6 +66,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ets-runtime-replacement-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/surefire-reports/TEST-dev.oreslang.runtime.EtsSupervisedReplacementLifecycleTest.xml
+          path: |
+            target/surefire-reports/TEST-dev.oreslang.runtime.EtsSupervisedReplacementLifecycleTest.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.EtsHeirHandoffRuntimeTest.xml
           if-no-files-found: error
           retention-days: 7
