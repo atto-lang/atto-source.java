@@ -1,0 +1,64 @@
+name: ETS supervisor-owned replacement lifecycle (runtime-backed, not guest upgrade)
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ets-supervisor-replacement.yml'
+      - 'src/test/java/dev/oreslang/runtime/EtsSupervisedReplacementLifecycleTest.java'
+      - 'src/main/java/dev/oreslang/runtime/EtsTable.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ets-runtime-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check SHA, tree and tracked test
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -n "$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test -s src/test/java/dev/oreslang/runtime/EtsSupervisedReplacementLifecycleTest.java
+          git hash-object src/test/java/dev/oreslang/runtime/EtsSupervisedReplacementLifecycleTest.java
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run real ActorRuntime + ETS lifecycle JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=EtsSupervisedReplacementLifecycleTest -DfailIfNoTests=true test
+      - name: Verify exactly three JUnit tests ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=target/surefire-reports/TEST-dev.oreslang.runtime.EtsSupervisedReplacementLifecycleTest.xml
+          test -s "$report"
+          grep -q 'tests="3"' "$report"
+          grep -q 'errors="0"' "$report"
+          grep -q 'failures="0"' "$report"
+          grep -q 'skipped="0"' "$report"
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+      - name: Upload runtime-only XML
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ets-runtime-replacement-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/surefire-reports/TEST-dev.oreslang.runtime.EtsSupervisedReplacementLifecycleTest.xml
+          if-no-files-found: error
+          retention-days: 7
