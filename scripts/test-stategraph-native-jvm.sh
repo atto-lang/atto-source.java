@@ -10,6 +10,30 @@ test ! -L contracts/v1/java_probe.py
 printf 'JAVA_STATEGRAPH_GUEST_BEGIN head=%s tree=%s launcher_sha256=%s\n' \
   "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" \
   "$(sha256sum target/classes/dev/oreslang/launcher/OresMain.class | cut -d' ' -f1)"
+# Canonical byte-identical scalar source, shared with LLVM/Wasm/Cranelift/.NET.
+shared=contracts/stategraph-portability/shared-scalar.ores
+[[ "$(git hash-object "$shared")" = "ec1cb5e6cc38c26842d724ccacb0df028b702c3f" ]] || {
+  echo 'SG_JAVA_SHARED_SCALAR_SOURCE_MISMATCH' >&2; exit 1;
+}
+git ls-files --error-unmatch -- "$shared" >/dev/null
+[[ -f "$shared" && ! -L "$shared" ]]
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$shared"
+common_out="$(mktemp)"
+common_err="$(mktemp)"
+set +e
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$shared" --execute >"$common_out" 2>"$common_err"
+common_status=$?
+set -e
+if [[ "$common_status" -ne 42 || -s "$common_out" ]]; then
+  cat "$common_err" >&2
+  rm -f "$common_out" "$common_err"
+  echo "SG_JAVA_COMMON_SCALAR_NOT_ACCEPTED status=$common_status" >&2
+  exit 1
+fi
+rm -f "$common_out" "$common_err"
+printf 'SG_JAVA_COMMON_SCALAR_NATIVE_PASS blob=%s guest_exit=42 source_only=no\n' \\
+  "$(git rev-parse "HEAD:$shared")"
+
 for name in scalar branch nominal; do
   file="tests/stategraph-portability/$name.ores"
   git ls-files --error-unmatch -- "$file" >/dev/null
