@@ -250,7 +250,18 @@ final class DbWalReplayV1Test {
                 u16(changed, changed.length - 4, a);
                 u16(changed, changed.length - 2, b);
                 file.truncate(first.length);
-                file.write(ByteBuffer.wrap(changed), first.length);
+                ByteBuffer complete = ByteBuffer.wrap(changed);
+                long physicalOffset = first.length;
+                while (complete.hasRemaining()) {
+                    int written = file.write(complete, physicalOffset);
+                    if (written <= 0)
+                        throw new IOException("forged test fixture write stalled");
+                    physicalOffset += written;
+                }
+                // A partially written frame could be (correctly) reported
+                // as a torn tail. Never confuse that with structural rejection.
+                assertEquals(first.length + changed.length, file.size(),
+                        "test setup must write a FULL malformed frame");
                 assertThrows(Exception.class, () -> DbWalReplayV1.scan(file, 7, 4),
                         "a checksummed but malformed header must fail: " + attempt);
                 assertEquals(first.length + changed.length, file.size(),
