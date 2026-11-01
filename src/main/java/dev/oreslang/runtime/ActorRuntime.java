@@ -468,6 +468,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     /** Runtime-owned ETS tables; table storage is never actor-private heap state. */
     private final Set<EtsTable<?, ?>> etsTables = ConcurrentHashMap.newKeySet();
+    /**
+     * Serializes ETS reverse indexing, owner retirement, and trusted
+     * supervisor heir admission. Never execute user callbacks under this
+     * lock. Lock ordering: actor lifecycle -> etsOwnershipLock -> table.lock.
+     */
+    private final Object etsOwnershipLock = new Object();
     /** Owner-linked ETS tables close when their creating actor retires. */
     private final Map<ActorId, Set<EtsTable<?, ?>>> etsTablesByOwner =
             new ConcurrentHashMap<>();
@@ -4989,51 +4995,159 @@ public final class ActorRuntime implements AutoCloseable {
      * intentionally implements SET only and fails closed for future kinds.
      */
     public <K, V> EtsTable<K, V> createEtsTable(
-            int capacity,
-            EtsTable.Access access) {
+            int capacity, EtsTable.Access access) {
         requireCallerRuntimeAffinity("create an ETS table");
-        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        synchronized (etsOwnershipLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            ActorId owner = currentActorId().orElse(null);
+            ActorCell<?> ownerCell = owner == null ? null : actors.get(owner);
+            if (owner != null && (ownerCell == null || ownerCell.stopped.get()))
+                throw new IllegalStateException("ETS owner actor is no longer alive");
 
-        ActorId owner = currentActorId().orElse(null);
-        ActorCell<?> ownerCell = owner == null ? null : actors.get(owner);
-        if (owner != null && (ownerCell == null || ownerCell.stopped.get())) {
-            throw new IllegalStateException("ETS owner actor is no longer alive");
-        }
-
-        EtsTable<K, V> table = new EtsTable<>(this, owner, capacity, access);
-        etsTables.add(table);
-        if (owner != null) {
-            etsTablesByOwner.computeIfAbsent(
-                    owner, ignored -> ConcurrentHashMap.newKeySet()).add(table);
-            // If retirement won the race before owner indexing completed,
-            // unregisterActor either observed the set or this recheck closes it.
-            if (ownerCell.stopped.get() || !actors.containsKey(owner)) {
-                table.closeFromRuntime();
-                throw new IllegalStateException("ETS owner stopped during table creation");
+            EtsTable<K, V> table = new EtsTable<>(this, owner, capacity, access);
+            etsTables.add(table);
+            if (owner != null) {
+                etsTablesByOwner.computeIfAbsent(
+                        owner, ignored -> ConcurrentHashMap.newKeySet()).add(table);
+                if (ownerCell.stopped.get() || !actors.containsKey(owner)) {
+                    table.closeFromRuntime();
+                    throw new IllegalStateException("ETS owner stopped during table creation");
+                }
             }
+            if (closed.get()) {
+                table.closeFromRuntime();
+                throw new IllegalStateException("actor runtime closed during ETS creation");
+            }
+            return table;
         }
-        if (closed.get()) {
-            table.closeFromRuntime();
-            throw new IllegalStateException("actor runtime closed during ETS creation");
-        }
-        return table;
     }
 
     void unregisterEtsTable(EtsTable<?, ?> table) {
-        etsTables.remove(table);
-        table.ownerId().ifPresent(owner -> {
-            Set<EtsTable<?, ?>> owned = etsTablesByOwner.get(owner);
-            if (owned == null) return;
-            owned.remove(table);
-            if (owned.isEmpty()) etsTablesByOwner.remove(owner, owned);
-        });
+        synchronized (etsOwnershipLock) {
+            etsTables.remove(table);
+            table.ownerId().ifPresent(owner -> {
+                Set<EtsTable<?, ?>> owned = etsTablesByOwner.get(owner);
+                if (owned == null) return;
+                owned.remove(table);
+                if (owned.isEmpty()) etsTablesByOwner.remove(owner, owned);
+            });
+        }
     }
 
     private void closeOwnedEtsTables(ActorId owner) {
-        Set<EtsTable<?, ?>> owned = etsTablesByOwner.remove(owner);
-        if (owned == null) return;
-        for (EtsTable<?, ?> table : List.copyOf(owned)) {
-            table.closeFromRuntime();
+        synchronized (etsOwnershipLock) {
+            Set<EtsTable<?, ?>> owned = etsTablesByOwner.remove(owner);
+            if (owned == null) return;
+            for (EtsTable<?, ?> table : List.copyOf(owned)) {
+                // Pending single-use heir receipts remain fenced until a
+                // verified successor is active or CONTROL abandons them.
+                // No DATA access is allowed between death and acknowledgement.
+                if (!table.retainForPendingHeir(owner)) table.closeFromRuntime();
+            }
+        }
+    }
+
+    /**
+     * Opaque source-local CONTROL receipt. An actor may not construct or
+     * observe it through a source-level ETS capability.
+     */
+    record EtsHeirHandoff(
+            EtsTable<?, ?> table, EtsTable.HeirReceipt receipt,
+            ActorId previousOwner, ActorId nextOwner) { }
+
+    /**
+     * Prepare a table owned by a live SHARED worker for retirement handoff
+     * to a distinct, already initialized SHARED successor. This is a TRUSTED
+     * HOST/CONTROL primitive, not the full UHL-1 route/code publication.
+     */
+    EtsHeirHandoff prepareEtsHeir(
+            EtsTable<?, ?> table, ActorRef<?> previous, ActorRef<?> successor) {
+        requireSupervisorContext("prepare supervised ETS heir");
+        Objects.requireNonNull(table, "ETS table");
+        Objects.requireNonNull(previous, "old ActorRef");
+        Objects.requireNonNull(successor, "new ActorRef");
+        synchronized (etsOwnershipLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime closed");
+            if (!table.belongsTo(this) || !previous.ownedBy(this)
+                    || !successor.ownedBy(this))
+                throw new SecurityException("ETS heir cannot cross runtime boundaries");
+            if (previous.id().equals(successor.id())
+                    || previous.kind() != ActorKind.SHARED
+                    || successor.kind() != ActorKind.SHARED)
+                throw new SecurityException(
+                        "ETS owner transfer requires distinct trusted SHARED actors");
+            ActorCell<?> oldCell = actors.get(previous.id());
+            ActorCell<?> nextCell = actors.get(successor.id());
+            if (oldCell == null || nextCell == null
+                    || oldCell.stopped.get() || nextCell.stopped.get()
+                    || !successor.readyFuture.isDone()
+                    || successor.failure().isPresent())
+                throw new IllegalStateException(
+                        "ETS handoff requires live owner and ready successor");
+            Set<EtsTable<?, ?>> owned = etsTablesByOwner.get(previous.id());
+            if (owned == null || !owned.contains(table))
+                throw new SecurityException("ETS owner index does not match ActorRef");
+            var receipt = table.prepareHeir(previous.id(), successor.id());
+            return new EtsHeirHandoff(
+                    table, receipt, previous.id(), successor.id());
+        }
+    }
+
+    /**
+     * Ownership ACK is accepted only AFTER old actor finalization removed
+     * its registry entry. Concurrent heir retirement shares the same ETS
+     * ownership lock and cannot miss a newly linked table.
+     */
+    boolean acknowledgeEtsHeir(EtsHeirHandoff handoff) {
+        requireSupervisorContext("acknowledge supervised ETS heir");
+        Objects.requireNonNull(handoff, "ETS heir receipt");
+        synchronized (etsOwnershipLock) {
+            if (closed.get() || !handoff.table().belongsTo(this)
+                    || !handoff.table().pendingHeirMatches(handoff.receipt())
+                    || !handoff.previousOwner().equals(handoff.receipt().oldOwner())
+                    || !handoff.nextOwner().equals(handoff.receipt().newOwner()))
+                return false;
+            // No dual-writer window: old physical actor must be completely
+            // absent before any successor can access preserved table rows.
+            if (actors.containsKey(handoff.previousOwner())) return false;
+            ActorCell<?> nextCell = actors.get(handoff.nextOwner());
+            if (nextCell == null || nextCell.stopped.get()
+                    || !nextCell.ref.readyFuture.isDone()
+                    || nextCell.ref.failure().isPresent()) {
+                handoff.table().closeFromRuntime(); // failed handoff is terminal
+                return false;
+            }
+            if (!handoff.table().acknowledgeHeir(handoff.receipt())) return false;
+            etsTablesByOwner.computeIfAbsent(
+                    handoff.nextOwner(), ignored -> ConcurrentHashMap.newKeySet())
+                    .add(handoff.table());
+            // A terminal heir raced with acknowledgment. Never leave an
+            // orphan table even if the new actor has already departed.
+            if (nextCell.stopped.get() || !actors.containsKey(handoff.nextOwner())) {
+                handoff.table().closeFromRuntime();
+                return false;
+            }
+            return true;
+        }
+    }
+
+    /**
+     * Precommit rollback is permitted only while the original physical
+     * owner remains alive. Otherwise an expired transfer closes the table.
+     */
+    boolean rollbackEtsHeir(EtsHeirHandoff handoff) {
+        requireSupervisorContext("roll back supervised ETS heir");
+        Objects.requireNonNull(handoff, "ETS heir receipt");
+        synchronized (etsOwnershipLock) {
+            if (!handoff.table().belongsTo(this)
+                    || !handoff.table().pendingHeirMatches(handoff.receipt()))
+                return false;
+            ActorCell<?> old = actors.get(handoff.previousOwner());
+            if (old == null || old.stopped.get() || closed.get()) {
+                handoff.table().closeFromRuntime();
+                return false;
+            }
+            return handoff.table().rollbackHeir(handoff.receipt());
         }
     }
 
