@@ -126,12 +126,12 @@ public final class Parser {
                 if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                validateStateBackedClassAnnotations(annotations);
                 validateClassModifiers(modifiers);
                 rootDeclarations.add(parseClass(
                         modifiers.visibility,
                         modifiers.isAbstract,
-                        modifiers.visibility != Ast.Visibility.PUBLIC));
+                        modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
                 continue;
             }
 
@@ -190,7 +190,7 @@ public final class Parser {
                 if (match(CLASS)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
-                    rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                    validateStateBackedClassAnnotations(annotations);
                     validateClassModifiers(modifiers);
                     rootDeclarations.add(parseClass(
                             modifiers.visibility,
@@ -354,9 +354,9 @@ public final class Parser {
             if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
             modifiers = mergeModifiers(modifiers, parseModifiers());
             rejectCallableStructuralAnnotation(annotations, "class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+            validateStateBackedClassAnnotations(annotations);
             validateClassModifiers(modifiers);
-            return parseClass(modifiers.visibility, modifiers.isAbstract, false);
+            return parseClass(modifiers.visibility, modifiers.isAbstract, false, annotations);
         }
 
         if (check(CONTRACT) && defineFollowsAfterVisibilityModifiers()) {
@@ -401,10 +401,10 @@ public final class Parser {
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                validateStateBackedClassAnnotations(annotations);
                 validateClassModifiers(modifiers);
                 return parseClass(modifiers.visibility,
-                        modifiers.isAbstract, false);
+                        modifiers.isAbstract, false, annotations);
             }
             if (match(INTERFACE, TRAIT)) {
                 Token.Type declarationKind = previous().type();
@@ -586,7 +586,8 @@ public final class Parser {
     private Ast.ClassDecl parseClass(
             Ast.Visibility visibility,
             boolean isAbstract,
-            boolean filePrivateScope) {
+            boolean filePrivateScope,
+            List<Ast.Annotation> classAnnotations) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -684,7 +685,9 @@ public final class Parser {
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, fields, constructor, methods,
+                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC),
+                classAnnotations);
     }
 
     private Ast.ConstructorDecl parseConstructor(
@@ -1507,10 +1510,31 @@ public final class Parser {
                     // Reject before parsing nested arguments such as
                     // @Inject(MutableStateContainer()) to avoid parse-error
                     // misclassification and, more importantly, silent admission.
-                    "Inject", "StateBacked", "MutableStateContainer",
+                    "Inject", "MutableStateContainer",
                     "StateContainer").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
+            }
+            if (name.equals("StateBacked")) {
+                // Exactly one supported runtime lowering in this incremental
+                // compiler slice: one uniquely owned, class-local instance.
+                // The class's ordinary private fields ARE the backing region;
+                // no shared lock, injectable provider, or actor region exists.
+                consume(LPAREN, "@StateBacked requires MutableStateContainer(scope = #instance)");
+                consumeContextualIdentifier("MutableStateContainer",
+                        "expected MutableStateContainer in @StateBacked");
+                consume(LPAREN, "expected '(' for MutableStateContainer scope");
+                consumeContextualIdentifier("scope", "state container requires named scope");
+                consume(EQUAL, "state container scope requires '='");
+                Token scope = consume(SYMBOL_LITERAL, "state container scope must be #instance");
+                if (!scope.lexeme().equals("instance")) {
+                    throw error(scope, "only #instance owned state is supported; shared/actor/task storage needs runtime authority");
+                }
+                consume(RPAREN, "expected ')' after state container scope");
+                consume(RPAREN, "expected ')' after @StateBacked");
+                result.add(new Ast.Annotation(name,
+                        List.of(Ast.TypeRef.simple("$state_instance$"))));
+                continue;
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
@@ -4542,6 +4566,15 @@ public final class Parser {
      * Silently dropping metadata can bypass compile-time macro, ABI and safety contracts.
      * Module, function, method and field annotations have AST storage and are unaffected.
      */
+    private void validateStateBackedClassAnnotations(List<Ast.Annotation> annotations) {
+        if (annotations.isEmpty()) return;
+        if (annotations.size() != 1 || !annotations.getFirst().name().equals("StateBacked")
+                || annotations.getFirst().arguments().size() != 1
+                || !annotations.getFirst().arguments().getFirst().name().equals("$state_instance$")) {
+            throw error(previous(), "only one typed @StateBacked instance annotation is allowed on a class");
+        }
+    }
+
     private void rejectDiscardedDeclarationAnnotations(List<Ast.Annotation> annotations, String target) {
         if (!annotations.isEmpty()) {
             throw error(previous(), "@" + annotations.getFirst().name() + " on " + target
