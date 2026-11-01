@@ -177,6 +177,40 @@ final class TcpPoolLeaseLedgerTest {
     }
 
     @Test
+    void idleSocketsAreQuarantinedByPolicyEpochRollover() {
+        var table = fresh();
+        assertTrue(table.tryRevokeEpoch(8));
+        assertNull(table.tryAcquire(0, B, PARTITION, 8),
+                "idle preconnected socket may carry old TLS credentials");
+        assertFalse(table.tryConfirmPhysicalClose(0, 0));
+        assertTrue(table.tryConfirmPhysicalClose(0, 1));
+        assertNotNull(table.tryAcquire(0, B, PARTITION, 8));
+    }
+
+    @Test
+    void thousandRetirementsNeverReissueStaleLease() {
+        var table = fresh();
+        TcpPoolLeaseLedger.Lease last = null;
+        for (int iteration = 0; iteration < 1024; iteration++) {
+            var current = acquire(table);
+            if (last != null) assertFalse(table.tryBegin(last, A, 7));
+            if ((iteration & 1) == 0) {
+                assertTrue(table.tryBegin(current, A, 7));
+                assertTrue(table.tryRelease(current, A, 7));
+                assertFalse(table.tryConfirmPhysicalClose(0, current.generation() + 1),
+                        "pending reactor operation is not quiescence");
+                assertTrue(table.tryComplete(current));
+            } else {
+                assertTrue(table.tryRelease(current, A, 7));
+            }
+            assertNull(table.tryAcquire(0, A, PARTITION, 7));
+            assertTrue(table.tryConfirmPhysicalClose(0, current.generation() + 1));
+            last = current;
+        }
+        assertTrue(table.tryStop());
+    }
+
+    @Test
     void admissionIsNonparkingWhenAnotherThreadOwnsHostGate() throws Exception {
         var table = fresh();
         Field field = TcpPoolLeaseLedger.class.getDeclaredField("gate");
