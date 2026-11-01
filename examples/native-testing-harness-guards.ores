@@ -151,5 +151,40 @@ pub routine main(): void {
   if equal_inequality.passed || equal_inequality.message != "same strings"; do
     rt fail("string inequality diagnostic lost");
   fi
+
+  // Adversarial machine-field checks: guest values must not create or
+  // collide with ORES_TEST record delimiters or literal escape sequences.
+  val String nul_field = escape_machine_field("\u0000");
+  if nul_field != "\\u0000"; do
+    rt fail("NUL machine-field encoding changed");
+  fi
+  if nul_field == escape_machine_field("\\u0000"); do
+    rt fail("NUL collided with literal backslash-u escape");
+  fi
+  val String crlf_field = escape_machine_field("\r\n");
+  if crlf_field != "\\r\\n"; do
+    rt fail("CRLF machine-field encoding changed");
+  fi
+  if crlf_field == escape_machine_field("\\r\\n"); do
+    rt fail("CRLF collided with literal backslash-r-n");
+  fi
+  if escape_machine_field("\\") != "\\\\"; do
+    rt fail("single backslash was not doubled");
+  fi
+  if escape_machine_field("\\") == escape_machine_field("\\\\"); do
+    rt fail("single and double backslashes collided");
+  fi
+  if escape_machine_field("|\n") != "\\u007c\\n"; do
+    rt fail("pipe plus newline escaped in wrong order");
+  fi
+  if escape_machine_field("\t\t") != "\\t\\t"; do
+    rt fail("repeated tab encoding changed");
+  fi
+  if escape_machine_field("\r") == escape_machine_field("\\r"); do
+    rt fail("raw CR collided with literal backslash-r");
+  fi
+  if escape_machine_field("\t") == escape_machine_field("\\t"); do
+    rt fail("raw tab collided with literal backslash-t");
+  fi
   return;
 }
