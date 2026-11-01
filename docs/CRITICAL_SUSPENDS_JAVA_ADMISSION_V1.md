@@ -23,9 +23,9 @@ rejects both AST nodes. Both the synchronous evaluator and suspension-aware
 SourceTask evaluator reject them explicitly, so skipping normal type
 checking cannot silently turn a critical body into unguarded execution.
 
-Host runtime `dev.oreslang.runtime.CriticalGate` has immediate try-enter,
-FIFO bounded logical tickets, cancellation of queued tickets, stale
-generation rejection and retirement. It is **not wired** to the evaluator.
+Host runtime `dev.oreslang.runtime.CriticalGate` now has `requestAwaitable()` returning a runtime-owned `OresFuture<Ticket>` in addition to immediate try-enter, FIFO bounded logical tickets, cancellation, stale-generation checks and retirement. It settles the next ticket **only after unlocking** its bookkeeping mutex.
+
+The suspension-aware `SourceTask` evaluator now contains a staged critical lowering path that would await that future through `OresScheduler`, register heap-owned cancellation cleanup, and release the ticket on body completion/return/failure. The path is **not guest-authorized**: `criticalGuestLoweringAdmitted(...)` deliberately returns false, as the type and ownership passes have not issued identity-bound proof of safe protected resource/actor ownership. Host AST embeddings must also fail closed.
 Critically, the scheduler must never run callbacks/guest code from
 `CriticalGate.release`; it must validate task, actor, tenant and generation
 identity before dispatch.
@@ -33,16 +33,20 @@ identity before dispatch.
 ## Required before enabling execution
 
 1. Establish stable gate identity per protected resource/instance/module and
-   tenant/isolate, rather than global AST text or JVM-global locks.
-2. Implement scheduler `OresFuture` completion with cancellation/queue
-   retraction and fair wakeups; contended critical entry suspends its source
-   continuation but does not block a carrier thread.
+   tenant/isolate, rather than global AST text or JVM-global locks. The
+   current staged nonactor path uses per-evaluator lexical-site identity,
+   which is insufficient to authorize arbitrary shared state. Actor contexts
+   are explicitly denied until an actor-owned incarnation fence is wired.
+2. Verify the now-authored scheduler `OresFuture` bridge, cancellation/queue
+   retraction and fair wakeups under actual JUnit and guest workloads; ensure
+   no Task cancellation can leak an already-granted ticket.
 3. Prove body calls transitively non-suspending across function values,
    overloads, generic calls, virtual dispatch and native/host FFI.
 4. Implement a lexical guard that releases on return, break, continue,
    trap, cancellation and actor teardown; test return-flow continuation.
 5. Prevent reentrant actor handler admission while suspended without holding
-   a physical mutex across await.
+   a physical mutex across await; bind each gate to actor-generation state
+   and issue a checked, nonforgeable AST admission proof before enabling guest execution.
 6. Run executable source cases with an exact-head compiler hash and recorded
    GitHub Actions steps. Source parsing and host tests are not guest evidence.
 7. Migrate legacy Java `async` tests and source semantics deliberately.
