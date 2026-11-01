@@ -445,6 +445,77 @@ final class SelectorTransportConnectionTest {
         }
     }
 
+
+    @Test
+    void slowConnectionCannotBlockIndependentConnectionAdmission()
+            throws Exception {
+        CountDownLatch releaseSlowPeer = new CountDownLatch(1);
+        try (ServerSocket slowServer = new ServerSocket(
+                0, 50, InetAddress.getLoopbackAddress());
+             ServerSocket fastServer = new ServerSocket(
+                0, 50, InetAddress.getLoopbackAddress())) {
+            Thread slowPeer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = slowServer.accept()) {
+                    releaseSlowPeer.await();
+                } catch (Exception ignored) {
+                    // Shutdown may close the slow connection.
+                }
+            });
+            AtomicReference<Throwable> fastFailure = new AtomicReference<>();
+            Thread fastPeer = Thread.ofVirtual().start(() -> {
+                try (Socket socket = fastServer.accept()) {
+                    int input = socket.getInputStream().read();
+                    if (input != 13) throw new AssertionError("unexpected request");
+                    socket.getOutputStream().write(42);
+                } catch (Throwable failure) {
+                    fastFailure.set(failure);
+                }
+            });
+            Thread slowReader = null;
+            try (SelectorTransportConnection slow =
+                    SelectorTransportConnection.open(
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(5));
+                 SelectorTransportConnection fast =
+                    SelectorTransportConnection.open(
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(5))) {
+                slow.connect(new InetSocketAddress(
+                        InetAddress.getLoopbackAddress(), slowServer.getLocalPort()),
+                        Duration.ofSeconds(2));
+                fast.connect(new InetSocketAddress(
+                        InetAddress.getLoopbackAddress(), fastServer.getLocalPort()),
+                        Duration.ofSeconds(2));
+                slow.setReadTimeout(Duration.ofSeconds(4));
+                AtomicReference<Throwable> slowFailure = new AtomicReference<>();
+                slowReader = Thread.ofVirtual().start(() -> {
+                    try { slow.input().read(); }
+                    catch (Throwable error) { slowFailure.set(error); }
+                });
+                AtomicBoolean claimed = claimOf(slow);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (!claimed.get() && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertTrue(claimed.get(), "slow socket must hold its own claim");
+                fast.output().write(13);
+                assertEquals(42, fast.input().read(),
+                        "separate socket must not wait on slow socket's gate");
+                assertTrue(claimed.get(), "independent socket did not steal slow claim");
+                slow.close();
+                slowReader.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(slowReader.isAlive());
+                assertInstanceOf(IOException.class, slowFailure.get());
+            } finally {
+                releaseSlowPeer.countDown();
+                if (slowReader != null) slowReader.join(TimeUnit.SECONDS.toMillis(2));
+                slowPeer.join(TimeUnit.SECONDS.toMillis(2));
+                fastPeer.join(TimeUnit.SECONDS.toMillis(2));
+                assertFalse(slowPeer.isAlive());
+                assertFalse(fastPeer.isAlive());
+            }
+            assertNull(fastFailure.get(), "fast peer completed without I/O failures");
+        }
+    }
+
     private static AtomicBoolean claimOf(SelectorTransportConnection connection)
             throws ReflectiveOperationException {
         Field field = SelectorTransportConnection.class
