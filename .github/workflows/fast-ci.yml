@@ -36,6 +36,8 @@ jobs:
         run: bash tests/test_fast_ci_exact_head_contract.sh
       - name: Reject malformed ORES_TEST receipts (source-free negative controls)
         run: bash tests/test_ores_test_receipt_admission.sh
+      - name: Validate canonical receipt escapes (source-free)
+        run: bash tests/test_ores_test_escape_canonicality.sh
       - name: Verify read-only Actions triage unit tests
         run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
       - name: Set up GraalVM
@@ -65,6 +67,8 @@ jobs:
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-jit.out compiler-scalar-parity-batch4 24
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_meta_batch4.ores" | tee /tmp/ores-harness-meta-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-jit.out harness-meta-batch4 12
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_accounting_batch5.ores" | tee /tmp/ores-accounting-batch5-fast.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-fast.out harness-accounting-batch5 16
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-fast-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-fast-jit.out stdlib 40
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.ores" | tee /tmp/ores-runner-matrix-fast-jit.out

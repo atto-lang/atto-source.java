@@ -1,0 +1,172 @@
+// Native guest v1 accounting/identity tests, authored only until exact-head compiler run.
+// Nested runs use human output so machine receipts come only from the outer suite.
+import class TestCase, TestSuite, TestOptions, TestOutcome, RunSummary from "../stdlib/testing";
+import fnc pass, fail, expect_true, escape_machine_field, check_int_cases, run_suite, require_success from "../stdlib/testing";
+fnc succeeds(): TestOutcome { return pass(); }
+fnc fails(): TestOutcome { return fail("intentional failure"); }
+fnc fails_for_zero(int value): TestOutcome {
+  if value == 0; do
+    return fail("zero rejected");
+  fi
+  return pass();
+}
+fnc always_succeeds(int value): TestOutcome { return pass(); }
+
+fnc mixed_counts(): TestOutcome {
+  val TestSuite nested = new TestSuite("mixed", arr[
+    new TestCase("pass", succeeds, false, ""),
+    new TestCase("skip", fails, true, "skip"),
+    new TestCase("fail", fails, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("", false, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 3 && result.passed == 1 && result.skipped == 1 && result.failed == 1 && result.filtered == 0, "mixed_counts failed");
+}
+
+fnc nested_exact_filter(): TestOutcome {
+  val TestSuite nested = new TestSuite("root", arr[
+    new TestCase("item", fails, false, ""),
+    new TestCase("item/child", succeeds, false, ""),
+    new TestCase("item/children", fails, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("root/item/child", false, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 1 && result.passed == 1 && result.filtered == 2 && result.failed == 0, "nested_exact_filter failed");
+}
+
+fnc nested_prefix_rejected(): TestOutcome {
+  val TestSuite nested = new TestSuite("root", arr[
+    new TestCase("item/child", fails, false, ""),
+    new TestCase("item/children", fails, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("root/item/chi", false, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 0 && result.filtered == 2 && result.failed == 0, "nested_prefix_rejected failed");
+}
+
+fnc case_sensitive_filter(): TestOutcome {
+  val TestSuite nested = new TestSuite("Case", arr[
+    new TestCase("Alpha", succeeds, false, ""),
+    new TestCase("alpha", fails, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("Case/Alpha", false, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 1 && result.passed == 1 && result.filtered == 1, "case_sensitive_filter failed");
+}
+
+fnc filtered_skip_not_counted(): TestOutcome {
+  val TestSuite nested = new TestSuite("skip", arr[
+    new TestCase("disabled", fails, true, "skip"),
+    new TestCase("enabled", succeeds, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("skip/enabled", false, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 1 && result.passed == 1 && result.skipped == 0 && result.filtered == 1, "filtered_skip_not_counted failed");
+}
+
+fnc selected_skip_not_executed(): TestOutcome {
+  val TestSuite nested = new TestSuite("skip", arr[
+    new TestCase("disabled", fails, true, "skip"),
+    new TestCase("enabled", fails, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("skip/disabled", false, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 1 && result.skipped == 1 && result.failed == 0 && result.filtered == 1, "selected_skip_not_executed failed");
+}
+
+fnc fail_fast_excludes_trailing_skip(): TestOutcome {
+  val TestSuite nested = new TestSuite("fast", arr[
+    new TestCase("fail", fails, false, ""),
+    new TestCase("skip", succeeds, true, "skip"),
+    new TestCase("pass", succeeds, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("", true, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 1 && result.failed == 1 && result.skipped == 0 && result.passed == 0, "fail_fast_excludes_trailing_skip failed");
+}
+
+fnc fail_fast_after_pass(): TestOutcome {
+  val TestSuite nested = new TestSuite("fast", arr[
+    new TestCase("first", succeeds, false, ""),
+    new TestCase("second", fails, false, ""),
+    new TestCase("third", succeeds, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("", true, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 2 && result.passed == 1 && result.failed == 1, "fail_fast_after_pass failed");
+}
+
+fnc nonfast_continues(): TestOutcome {
+  val TestSuite nested = new TestSuite("slow", arr[
+    new TestCase("first", fails, false, ""),
+    new TestCase("second", succeeds, false, ""),
+    new TestCase("third", succeeds, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("", false, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 3 && result.passed == 2 && result.failed == 1, "nonfast_continues failed");
+}
+
+fnc skip_then_failure_stops(): TestOutcome {
+  val TestSuite nested = new TestSuite("fast", arr[
+    new TestCase("skip", fails, true, "skip"),
+    new TestCase("fail", fails, false, ""),
+    new TestCase("later", succeeds, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("", true, false);
+  val RunSummary result = run_suite(rt borrow nested, rt borrow opts);
+  return expect_true(result.total == 2 && result.skipped == 1 && result.failed == 1 && result.passed == 0, "skip_then_failure_stops failed");
+}
+
+fnc empty_property_diagnostic(): TestOutcome {
+  val TestOutcome result = check_int_cases("empty-batch5", arr[], always_succeeds);
+  return expect_true(!result.passed && result.message == "property has no cases: empty-batch5", "empty property accepted");
+}
+
+fnc property_first_failure(): TestOutcome {
+  val TestOutcome result = check_int_cases("zero", arr[1, 0, 2], fails_for_zero);
+  return expect_true(!result.passed && result.message == "zero rejected", "property diagnostic changed");
+}
+
+fnc singleton_property(): TestOutcome {
+  val TestOutcome result = check_int_cases("single", arr[7], always_succeeds);
+  return expect_true(result.passed && result.message == "", "singleton property failed");
+}
+
+fnc pipe_vs_literal_escape(): TestOutcome {
+  return expect_true(escape_machine_field("|") == "\\u007c" &&
+    escape_machine_field("|") != escape_machine_field("\\u007c"), "pipe escape collision");
+}
+
+fnc nul_vs_literal_escape(): TestOutcome {
+  return expect_true(escape_machine_field("\u0000") == "\\u0000" &&
+    escape_machine_field("\u0000") != escape_machine_field("\\u0000"), "NUL escape collision");
+}
+
+fnc mixed_escape_order(): TestOutcome {
+  return expect_true(escape_machine_field("\\|\r\n\t") == "\\\\\\u007c\\r\\n\\t", "escape order mismatch");
+}
+pub routine main(): void {
+  val TestSuite suite = new TestSuite("harness-accounting-batch5", arr[
+    new TestCase("mixed_counts", mixed_counts, false, ""),
+    new TestCase("nested_exact_filter", nested_exact_filter, false, ""),
+    new TestCase("nested_prefix_rejected", nested_prefix_rejected, false, ""),
+    new TestCase("case_sensitive_filter", case_sensitive_filter, false, ""),
+    new TestCase("filtered_skip_not_counted", filtered_skip_not_counted, false, ""),
+    new TestCase("selected_skip_not_executed", selected_skip_not_executed, false, ""),
+    new TestCase("fail_fast_excludes_trailing_skip", fail_fast_excludes_trailing_skip, false, ""),
+    new TestCase("fail_fast_after_pass", fail_fast_after_pass, false, ""),
+    new TestCase("nonfast_continues", nonfast_continues, false, ""),
+    new TestCase("skip_then_failure_stops", skip_then_failure_stops, false, ""),
+    new TestCase("empty_property_diagnostic", empty_property_diagnostic, false, ""),
+    new TestCase("property_first_failure", property_first_failure, false, ""),
+    new TestCase("singleton_property", singleton_property, false, ""),
+    new TestCase("pipe_vs_literal_escape", pipe_vs_literal_escape, false, ""),
+    new TestCase("nul_vs_literal_escape", nul_vs_literal_escape, false, ""),
+    new TestCase("mixed_escape_order", mixed_escape_order, false, "")
+  ]);
+  val TestOptions opts = new TestOptions("", false, true);
+  val RunSummary result = run_suite(rt borrow suite, rt borrow opts);
+  require_success(rt borrow result);
+  return;
+}

@@ -31,6 +31,8 @@ jobs:
           git diff --quiet --exit-code
           test -z "$(git ls-files --others --exclude-standard)"
           echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Validate canonical receipt escapes (source-free)
+        run: bash tests/test_ores_test_escape_canonicality.sh
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
@@ -63,6 +65,8 @@ jobs:
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-jit.out compiler-scalar-parity-batch4 24
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_meta_batch4.ores" | tee /tmp/ores-harness-meta-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-jit.out harness-meta-batch4 12
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_accounting_batch5.ores" | tee /tmp/ores-accounting-batch5-jit.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-jit.out harness-accounting-batch5 16
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-jit.out stdlib 40
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.ores" | tee /tmp/ores-runner-matrix-jit.out
@@ -170,6 +174,8 @@ jobs:
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-aot.out compiler-scalar-parity-batch4 24
           timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_meta_batch4.ores | tee /tmp/ores-harness-meta-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-aot.out harness-meta-batch4 12
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_accounting_batch5.ores | tee /tmp/ores-accounting-batch5-aot.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-aot.out harness-accounting-batch5 16
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-aot.out stdlib 40
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-aot.out
@@ -288,6 +294,8 @@ jobs:
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-hybrid.out compiler-scalar-parity-batch4 24
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_meta_batch4.ores | tee /tmp/ores-harness-meta-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-hybrid.out harness-meta-batch4 12
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_accounting_batch5.ores | tee /tmp/ores-accounting-batch5-hybrid.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-hybrid.out harness-accounting-batch5 16
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-hybrid.out stdlib 40
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-hybrid.out
