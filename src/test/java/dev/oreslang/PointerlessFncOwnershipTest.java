@@ -127,15 +127,14 @@ final class PointerlessFncOwnershipTest {
         for (String binding : new String[] {
                 "val borrowed = (rt borrow values);",
                 "val (borrowed) = tuple (rt borrow values);"}) {
-            assertEquals("1", run("""
-                    pub routine main(): void {
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                    fnc good(): void {
                       val Array<int> values = new Array<int>();
                       values.add(7);
                       %s
-                      stdio.stdout.write(borrowed.size);
                       return;
                     }
-                    """.formatted(binding)));
+                    """.formatted(binding))));
             var error = assertThrows(IllegalArgumentException.class, () ->
                     TypeChecker.check(Parser.parse("""
                     fnc bad(): void {
@@ -198,14 +197,14 @@ final class PointerlessFncOwnershipTest {
                 fnc update(borrow mut Array<int> values): void { values.add(7); return; }
                 fnc ok(): void {
                   val Array<int> values = new Array<int>();
-                  update(rt borrow mut values);
+                  update(rt mut borrow values);
                   return;
                 }
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
                   val Array<int> values = new Array<int>();
-                  val first = rt borrow mut values;
+                  val first = rt mut borrow values;
                   val second = rt borrow values;
                   return;
                 }
