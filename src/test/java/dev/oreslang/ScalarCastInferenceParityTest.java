@@ -261,7 +261,8 @@ final class ScalarCastInferenceParityTest {
             assertDoesNotThrow(() -> context.eval(program));
         }
         String printed = output.toString(StandardCharsets.UTF_8);
-        assertTrue(printed.contains("42"), printed);
+        assertEquals("42\n42", printed.replace("\r\n", "\n").trim(),
+                "snapshot read must be independent of later let rebinding");
     }
 
     @Test void exactFiveBackendCheckedCastSourcesMatchGitBlobs() throws Exception {
@@ -321,8 +322,7 @@ final class ScalarCastInferenceParityTest {
             assertDoesNotThrow(() -> context.eval(program));
         }
         String printed = output.toString(StandardCharsets.UTF_8);
-        assertTrue(printed.contains("14"), printed);
-        assertTrue(printed.contains("true"), printed);
-        assertTrue(printed.contains("ok"), printed);
+        assertEquals("14\ntrue\nok", printed.replace("\r\n", "\n").trim(),
+                "checked casts must produce exact guest values in lexical order");
     }
 }
