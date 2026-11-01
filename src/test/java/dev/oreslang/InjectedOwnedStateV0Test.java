@@ -53,25 +53,24 @@ final class InjectedOwnedStateV0Test {
     @Test
     void two_private_owned_instances_execute_independently_as_real_guest()
             throws Exception {
-        String source = COUNTER + """
-                pub routine main(): void {
-                  let mut Counter first = new Counter();
-                  let mut Counter second = new Counter();
-                  first.increment();
-                  second.increment();
-                  second.increment();
-                  stdio.stdout.write(first.get_count());
-                  stdio.stdout.write("|");
-                  stdio.stdout.write(second.get_count());
-                  return;
-                }
-                """;
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("examples", "injected-owned-state-v0.ores"));
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         var out = new ByteArrayOutputStream();
         try (var context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
             context.eval(Source.newBuilder("ores", source, "injected-owned-state-v0.ores").build());
         }
         assertEquals("1|2", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void boolean_private_state_uses_the_same_checked_lexical_lowering() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                @Inject(MutableStateContainer())
+                define class Flag as
+                  state { ready: bool = false; }
+                end
+                """));
     }
 
     @Test
