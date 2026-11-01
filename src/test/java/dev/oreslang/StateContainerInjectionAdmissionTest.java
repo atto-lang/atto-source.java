@@ -19,7 +19,6 @@ final class StateContainerInjectionAdmissionTest {
         String[][] candidates = {
                 {"@Inject(MutableStateContainer())", "Inject"},
                 {"@Inject(MutableStateContainer(scope = #instance))", "Inject"},
-                {"@StateBacked(MutableStateContainer(scope = #shared))", "StateBacked"},
                 {"@MutableStateContainer()", "MutableStateContainer"},
                 {"@StateContainer()", "StateContainer"},
                 {"@Inject", "Inject"}
@@ -37,11 +36,36 @@ final class StateContainerInjectionAdmissionTest {
                 "@Inject(SessionState)\nfnc get_state(): int { return 1; }\n",
                 "define module M as\n@Inject(MutableStateContainer())\n"
                         + "define class Foo as\nend\nend\n",
-                "@StateBacked(MutableStateContainer())\ndefine class Foo as\n"
-                        + "let int count = 0;\nend\n"
+
         };
         for (String source : examples) {
-            assertUnsupported(source, source.contains("@StateBacked") ? "StateBacked" : "Inject");
+            assertUnsupported(source, "Inject");
+        }
+    }
+
+    @Test
+    void invalidStateBackedScopesAreNotSilentlyTreatedAsOwnedInstances() {
+        for (String scope : new String[]{"#shared", "#actor", "#task", "#singleton"}) {
+            String source = "@StateBacked(MutableStateContainer(scope = " + scope + "))\n"
+                    + "define class Foo as\nlet int count = 0;\nend\n";
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source));
+            assertTrue(error.getMessage().contains("only #instance"), error::getMessage);
+        }
+    }
+
+    @Test
+    void stateBackedOnlyAppliesToConcreteClassesWithPrivateOwnedStorage() {
+        String annotation = "@StateBacked(MutableStateContainer(scope = #instance))\n";
+        for (String source : new String[]{
+                annotation + "define class Foo as\nend\n",
+                annotation + "define abstract class Foo as\nlet int count = 0;\nend\n",
+                annotation + "define class Foo as\npub let int count = 0;\nend\n",
+                annotation + "fnc foo(): int { return 42; }\n",
+                annotation + "define module Foo as\nend\n"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source),
+                    "StateBacked cannot silently downgrade: " + source);
         }
     }
 
