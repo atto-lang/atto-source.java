@@ -958,7 +958,7 @@ final class MutexLanguageTest {
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
                     val guard = mutex.lock();
-                    val hidden = new Box<>(&guard);
+                    val hidden = new Box<>(rt borrow guard);
                     stdio.println(hidden);
                     return;
                   }
@@ -1004,7 +1004,7 @@ final class MutexLanguageTest {
                         define module app
                           fnc bad(): void {
                             val data = arr[1, 2, 3];
-                            val mutex = Mutex.new(&data);
+                            val mutex = Mutex.new(rt borrow data);
                             stdio.println(mutex);
                             return;
                           }
@@ -1023,7 +1023,7 @@ final class MutexLanguageTest {
                         end
 
                         define module app
-                          fnc bad(Mutex<&Counter> value): void {
+                          fnc bad(Mutex<borrow Counter> value): void {
                             return;
                           }
                         end
