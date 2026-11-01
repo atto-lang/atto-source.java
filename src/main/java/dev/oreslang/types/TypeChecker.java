@@ -1431,6 +1431,13 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            if (isActorStateSchemaField(field)
+                    && !isCurrentActorStateScalarType(fieldType)) {
+                throw new IllegalArgumentException(
+                        "sealed actor state field '" + klass.name() + "." + field.name()
+                                + "' must be scalar until revocable composite state views are implemented; "
+                                + "Channel/List/Array/Map/object capabilities cannot escape critical[write] loans");
+            }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -5833,6 +5840,14 @@ public final class TypeChecker {
             };
             default -> null;
         };
+    }
+
+    private static boolean isCurrentActorStateScalarType(Type type) {
+        return type == Primitive.INT
+                || type == Primitive.FLOAT
+                || type == Primitive.DECIMAL
+                || type == Primitive.BOOL
+                || type == Primitive.STRING;
     }
 
     private static boolean isActorStateSchemaField(Ast.FieldDecl field) {
