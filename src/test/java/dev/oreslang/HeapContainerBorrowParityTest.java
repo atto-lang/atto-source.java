@@ -152,4 +152,65 @@ final class HeapContainerBorrowParityTest {
         }
         assertEquals("42", output.toString(StandardCharsets.UTF_8));
     }
+
+    @Test
+    void resizableVectorLiteralMustRespectDeclaredMaxCapacity() {
+        var overflow = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val values: Vector<max_capacity=1>[int] = [21, 21];
+                          return;
+                        }
+                        """)));
+        assertTrue(overflow.getMessage().contains("max_capacity"),
+                overflow.getMessage());
+
+        var zero = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val values: Vector<max_capacity=0>[int] = [1];
+                          return;
+                        }
+                        """)));
+        assertTrue(zero.getMessage().contains("max_capacity"), zero.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val values: Vector<max_capacity=2>[int] = [21, 21];
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void inconsistentResizableCapacityMetadataIsRejected() {
+        for (String family : new String[]{"Vector", "List", "Array"}) {
+            String code = """
+                    pub fnc main(): void {
+                      val values: %s<inline_capacity=3,max_capacity=2>[int] = [1];
+                      return;
+                    }
+                    """.formatted(family);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(code)));
+            assertTrue(failure.getMessage().contains("inline_capacity")
+                            && failure.getMessage().contains("max_capacity"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void resizableListArrayAndVectorLiteralQuotaIsTypechecked() {
+        for (String family : new String[]{"Vector", "List", "Array"}) {
+            String code = """
+                    pub fnc main(): void {
+                      val values: %s<max_capacity=1>[int] = [1, 2];
+                      return;
+                    }
+                    """.formatted(family);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(code)));
+            assertTrue(failure.getMessage().contains("max_capacity"), failure.getMessage());
+        }
+    }
 }
