@@ -31,4 +31,4 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
       - name: Execute Oreslang compiler admission tests (NOT OresLLM exact guest)
-        run: mvn -B -ntp -Dtest=OresLlmExplicitOwnershipSyntaxTest test
+        run: mvn -B -ntp -Dtest=OresLlmExplicitOwnershipSyntaxTest,SharedScalarFiftySourceTest test
