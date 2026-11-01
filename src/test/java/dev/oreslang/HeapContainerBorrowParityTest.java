@@ -213,4 +213,80 @@ final class HeapContainerBorrowParityTest {
             assertTrue(failure.getMessage().contains("max_capacity"), failure.getMessage());
         }
     }
+
+    @Test
+    void guestVectorPushPopAndReserveProduceNativeCollectionResults() throws Exception {
+        String program = """
+                pub routine main(): void {
+                  val Vector<int> values = new Vector<int>();
+                  values.reserve(3);
+                  values.push(21);
+                  values.add(21);
+                  stdio.stdout.write(values.get(0) + values.get(1));
+                  values.pop();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(values.size);
+                  return;
+                }
+                """;
+        accepts(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "native-vector.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42|1", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void guestVectorRuntimeGrowthEnforcesDeclaredMaximum() throws Exception {
+        String program = """
+                pub routine main(): void {
+                  val Vector<max_capacity=2>[int] values =
+                      new Vector<max_capacity=2>[int]();
+                  values.push(21);
+                  values.push(21);
+                  values.push(1);
+                  return;
+                }
+                """;
+        accepts(program);
+        Source source = Source.newBuilder(OresLanguage.ID, program, "bounded-vector.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("max_capacity"),
+                    "runtime growth must enforce max_capacity: " + failure.getMessage());
+        }
+    }
+
+    @Test
+    void vectorProjectedBorrowRejectsReallocationAndMutation() {
+        String header = """
+                define class Item as
+                  pub val int number;
+                end
+                define class Holder as
+                  pub let mut Vector<Item> items;
+                end
+                """;
+        for (String operation : new String[]{
+                "holder.items.reserve(64);",
+                "holder.items.push(new Item(3));",
+                "holder.items.pop();"
+        }) {
+            rejectsBorrow(header + """
+                    fnc invalid(Holder mut holder): void {
+                      val borrow Item view = rt borrow holder.items[0];
+                      %s
+                      stdio.stdout.write(view.number);
+                      return;
+                    }
+                    """.formatted(operation));
+        }
+    }
 }
