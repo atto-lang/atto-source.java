@@ -855,6 +855,26 @@ public final class Parser {
             }
             return;
         }
+        // These are proposed *nominal* source kinds, not synonyms for class/actor.
+        // Keep the spellings contextual so unrelated identifiers remain valid.
+        if (name.equals("state") && current + 1 < tokens.size()
+                && tokens.get(current + 1).lexeme().equals("container")) {
+            throw error(peek(), "source state container declarations require "
+                    + "compiler-checked private mutable storage, scoped state loans "
+                    + "and cross-backend lowering; not yet enabled");
+        }
+        if (name.equals("grain")) {
+            throw error(peek(), "source grain declarations require stable keyed identity, "
+                    + "activation/passivation fencing and actor isolation; not yet enabled");
+        }
+        if (name.equals("model")) {
+            throw error(peek(), "source model declarations require typed ModelGraph "
+                    + "admission and verified code generation; not yet enabled");
+        }
+        if (name.equals("enum")) {
+            throw error(peek(), "source enum declarations require nominal ADT case "
+                    + "typing, layout and match lowering; not yet enabled");
+        }
         if (!name.equals("supervisor") && !name.equals("mailman")
                 && !name.equals("scheduler") && !name.equals("proxy")
                 && !name.equals("pipe")) return;
