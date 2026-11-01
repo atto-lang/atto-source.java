@@ -1509,7 +1509,7 @@ public final class Parser {
             // A mutable-state injection is a compiler effect, never inert
             // annotation metadata. Reserve only this requested intrinsic;
             // other annotation names keep their existing source behavior.
-            if (name.equals("Inject") && check(LPAREN)
+            if (name.equals("Inject") && (check(LPAREN) || check(LT))
                     && current + 1 < tokens.size()
                     && tokens.get(current + 1).type() == IDENT
                     && tokens.get(current + 1).lexeme().equals("MutableStateContainer")) {
