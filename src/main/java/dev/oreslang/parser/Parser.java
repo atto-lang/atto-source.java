@@ -2271,6 +2271,26 @@ public final class Parser {
                     inheritedMutableReferent);
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
+        // Immutable-by-default source admission, first safe scalar slice.
+        // A type-first statement is a declaration ONLY in a typed-name '='
+        // context, never an arbitrary bare identifier or function call.
+        // Preserve existing const/val/let grammar and their existing ABI.
+        if (check(IDENT) &&
+                (peek().lexeme().equals("int") || peek().lexeme().equals("bool")) &&
+                checkNext(IDENT) && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == EQUAL) {
+            Ast.TypeRef type = parseTypeRef();
+            String name = consume(IDENT, "expected immutable local name").lexeme();
+            consume(EQUAL, "immutable type-first local requires initializer");
+            Ast.Expr initializer = parseExpression();
+            consumeExpressionStatementTerminator(initializer,
+                    "immutable type-first local should end with ';'");
+            // On Copy scalar values this is the same fixed readonly value
+            // and checked inference as a const-annotated binding. General
+            // mutable referents need a distinct normative ownership audit.
+            return new Ast.BindingStmt(
+                    Ast.BindingKind.CONST, type, name, initializer, false, null);
+        }
         if (check(LBRACKET) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.SEQUENCE, null, false);
         }
