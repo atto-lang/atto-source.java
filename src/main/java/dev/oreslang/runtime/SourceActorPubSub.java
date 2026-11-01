@@ -1,10 +1,12 @@
 package dev.oreslang.runtime;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Source-language facade for the in-memory ActorGroup pub/sub runtime.
@@ -19,6 +21,7 @@ public final class SourceActorPubSub implements AutoCloseable {
 
     private final ActorRuntime runtime;
     private final Map<String, Group> groups = new ConcurrentHashMap<>();
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     public SourceActorPubSub(ActorRuntime runtime) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -29,6 +32,7 @@ public final class SourceActorPubSub implements AutoCloseable {
      * existing group to which the current actor already belongs.
      */
     public Group group(String name) {
+        requireOpen();
         String normalized = normalizeName(name, "ActorGroup");
         ActorRuntime.ActorId current = ActorRuntime.currentActorId().orElse(null);
         if (current != null) {
@@ -46,6 +50,7 @@ public final class SourceActorPubSub implements AutoCloseable {
         }
 
         synchronized (groups) {
+            requireOpen();
             Group existing = groups.get(normalized);
             if (existing != null && !existing.raw.closed()) return existing;
             if (existing != null) groups.remove(normalized, existing);
@@ -57,6 +62,12 @@ public final class SourceActorPubSub implements AutoCloseable {
                     raw.joinCapability());
             groups.put(normalized, created);
             return created;
+        }
+    }
+
+    private void requireOpen() {
+        if (closed.get()) {
+            throw new IllegalStateException("SourceActorPubSub is closed");
         }
     }
 
@@ -263,8 +274,37 @@ public final class SourceActorPubSub implements AutoCloseable {
         return mapped;
     }
 
+    /**
+     * Revocation must close the actual group lifetimes, not merely remove
+     * their names from the directory: cached handles and queued event leases
+     * otherwise remain usable after the facade has been closed.
+     *
+     * <p>Mark/claim under the registry monitor, but close each ActorGroup
+     * outside it because channel completion may invoke runtime callbacks.
+     * Attempt every close even if one fails.</p>
+     */
     @Override
     public void close() {
-        groups.clear();
+        requireCurrentRuntime("close actor PubSub");
+        if (ActorRuntime.currentActorId().isPresent()) {
+            throw new SecurityException("actors cannot close the runtime PubSub directory");
+        }
+        final List<Group> retired;
+        synchronized (groups) {
+            if (!closed.compareAndSet(false, true)) return;
+            retired = List.copyOf(groups.values());
+            groups.clear();
+        }
+
+        RuntimeException failure = null;
+        for (Group group : retired) {
+            try {
+                group.raw.close();
+            } catch (RuntimeException problem) {
+                if (failure == null) failure = problem;
+                else failure.addSuppressed(problem);
+            }
+        }
+        if (failure != null) throw failure;
     }
 }
