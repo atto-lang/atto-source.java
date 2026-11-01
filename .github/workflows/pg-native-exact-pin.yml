@@ -1,5 +1,8 @@
 name: PostgreSQL ORM native guests at pinned compiler
 on:
+  push:
+    branches:
+      - ci/pg-native-87a52-fixtures-20261031
   pull_request:
     branches:
       - ci-base/pg-native-87a52-20261031
