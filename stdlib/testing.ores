@@ -139,14 +139,24 @@ fnc selected(String full_name, String only): bool {
   return full_name == only;
 }
 
+// Delimiter- and line-safe fields for the ORES_TEST machine protocol.
+// Escape backslashes first so distinct raw names cannot collapse to one ID.
+pub fnc escape_machine_field(String value): String {
+  let String escaped = value.replace_literal("\\", "\\\\");
+  escaped = escaped.replace_literal("|", "\\u007c");
+  escaped = escaped.replace_literal("\r", "\\r");
+  escaped = escaped.replace_literal("\n", "\\n");
+  escaped = escaped.replace_literal("\t", "\\t");
+  escaped = escaped.replace_literal("\u0000", "\\u0000");
+  return escaped;
+}
+
 fnc emit_status(String status, String full_name, String detail, bool machine): void {
   if machine; do
-    stdio.stdout.write("ORES_TEST|");
-    stdio.stdout.write(status);
-    stdio.stdout.write("|");
-    stdio.stdout.write(full_name);
-    stdio.stdout.write("|");
-    stdio.stdout.println(detail);
+    // One stdio call per event avoids splitting an event across guest writes.
+    // This does not authenticate the process or guarantee cross-process atomicity.
+    stdio.stdout.println("ORES_TEST|" + status + "|" +
+      escape_machine_field(full_name) + "|" + escape_machine_field(detail));
     return;
   fi
 
