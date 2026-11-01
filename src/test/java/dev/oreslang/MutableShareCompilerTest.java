@@ -518,4 +518,43 @@ final class MutableShareCompilerTest {
                 () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
         assertTrue(denial.getMessage().contains("rt mut share"), denial.getMessage());
     }
+    @Test
+    void commentSeparatedMutableSharingKeepsGuardedOperation() {
+        for (String expression : new String[] {
+                "rt /* space */ mut /* guard */ share mutex",
+                "rt\nmut\nshare mutex",
+                "rt // comment\nmut // another comment\nshare mutex"
+        }) {
+            Ast.Program program = Parser.parse("""
+                    fnc inspect(): void {
+                      val alias = %s;
+                      return;
+                    }
+                    """.formatted(expression));
+            var function = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+            var alias = (Ast.BindingStmt) function.body().getFirst();
+            var operation = assertInstanceOf(Ast.RuntimeCallExpr.class, alias.initializer());
+            assertEquals("mut_share", operation.operation(),
+                    "comments/newlines cannot desugar mutable sharing into an unrestricted borrow");
+        }
+    }
+
+    @Test
+    void ownershipWordsInsideCommentsAreNotMutableSharingOperations() {
+        Ast.Program program = Parser.parse("""
+                fnc inspect(): int {
+                  // rt mut share not an operation
+                  /* rt mut share also inert */
+                  return 42;
+                }
+                """);
+        var function = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(TypeChecker.check(program)));
+        assertFalse(function.body().stream()
+                .anyMatch(statement -> statement instanceof Ast.BindingStmt binding
+                        && binding.initializer() instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("mut_share")));
+    }
+
 }
