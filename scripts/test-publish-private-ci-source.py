@@ -603,6 +603,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             collect.assert_not_called()
             api.assert_not_called()
 
+    def test_quarantined_ores_llm_carrier_denied_before_source_or_network(self):
+        # This is metadata-only admission coverage for external incident #29.
+        # A mixed-case spelling must not bypass source-free preflight denial.
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            for slug in (
+                "ores-llm/ores-llm-ml-conformance-tests",
+                "ORES-LLM/ORES-LLM-ML-CONFORMANCE-TESTS",
+            ):
+                with self.subTest(slug=slug):
+                    with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                        ORIGINAL_REQUIRE_PREFLIGHT(slug, self.root)
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
+
     def test_quarantined_recovery_carrier_rejected_before_any_source_access(self):
         with (
             patch.object(pub, "require_resolved_blocking_incidents") as incidents,
@@ -1695,6 +1718,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             1324139596,
             1350751074,
             1346492776,
+            1441272675,
         }
         self.assertEqual(set(pub.QUARANTINED_DESTINATION_IDS), expected_ids)
         for repository_id in sorted(expected_ids):
@@ -1726,6 +1750,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "led-dynamo/leddy-e2e",
             "claimgraph-test/claimgraph-e2e",
             "honeypot-r-us-test/hnpt-e2e",
+            "ores-llm/ores-llm-ml-conformance-tests",
         }
         self.assertEqual(
             {item.casefold() for item in pub.QUARANTINED_DESTINATIONS},
