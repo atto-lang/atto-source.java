@@ -220,4 +220,42 @@ final class DbWalReplayV1Test {
             assertThrows(SecurityException.class, () -> owner.scanRecovery(7, 5));
         }
     }
+
+    // Seven malformed complete ODB1 frames with freshly computed checksums.
+    // Structural validation MUST reject even when Adler32 is correct.
+    @Test void rejectsRechecksummedMalformedCompleteHeadersWithoutMutation() throws Exception {
+        byte[] first = boundaryFrame(1, 1, 41, 1, 0);
+        byte[] valid = boundaryFrame(1, 2, 42, 1, 1);
+        Path path = root.resolve("forged-header.odb");
+        try (var file = FileChannel.open(path, StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            file.write(ByteBuffer.wrap(first), 0);
+            for (int attempt = 0; attempt < 7; attempt++) {
+                byte[] changed = valid.clone();
+                switch (attempt) {
+                    case 0 -> changed[4] = 2;                // wrong version
+                    case 1 -> changed[5] = 2;                // DELETE cannot carry value
+                    case 2 -> changed[21] = (byte) 128;      // signed-u32 high bit
+                    case 3 -> changed[22] = 0;               // zero key length
+                    case 4 -> changed[22] = 65;              // key length > 64
+                    case 5 -> { changed[24] = 1; changed[25] = 4; } // value=1025
+                    case 6 -> changed[0] = 80;               // wrong magic
+                    default -> throw new AssertionError(attempt);
+                }
+                int a = 1, b = 0;
+                for (int i = 0; i < changed.length - 4; i++) {
+                    a = (a + (changed[i] & 255)) % 65521;
+                    b = (b + a) % 65521;
+                }
+                u16(changed, changed.length - 4, a);
+                u16(changed, changed.length - 2, b);
+                file.truncate(first.length);
+                file.write(ByteBuffer.wrap(changed), first.length);
+                assertThrows(Exception.class, () -> DbWalReplayV1.scan(file, 7, 4),
+                        "a checksummed but malformed header must fail: " + attempt);
+                assertEquals(first.length + changed.length, file.size(),
+                        "scanner must never truncate a malformed complete frame");
+            }
+        }
+    }
 }
