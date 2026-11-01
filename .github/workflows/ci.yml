@@ -55,12 +55,15 @@ jobs:
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
       - name: Run native Oreslang test framework
         run: |
+          set -euo pipefail
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-harness-guards.ores"
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee /tmp/ores-testing-jit.out
-          grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-jit.out
+          grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-jit.out
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-jit.out)" -eq 1
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/ores-testing-semantics-jit.out
-          grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-jit.out
-          grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-jit.out
+          grep -Fx "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-jit.out
+          grep -Fx "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-jit.out
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-semantics-jit.out)" -eq 2
       - name: Run Orestra integration smoke under JVM/JIT
         run: |
           set -euo pipefail
@@ -118,12 +121,15 @@ jobs:
           grep -F "0|0|0" /tmp/ores-aot-tail.out
       - name: Run native Oreslang tests under AOT
         run: |
+          set -euo pipefail
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing-harness-guards.ores
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-aot.out
-          grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-aot.out
+          grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-aot.out
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-aot.out)" -eq 1
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-aot.out
-          grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-aot.out
-          grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-aot.out
+          grep -Fx "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-aot.out
+          grep -Fx "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-aot.out
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-semantics-aot.out)" -eq 2
       - name: Run Orestra integration smoke under native AOT
         run: |
           set -euo pipefail
@@ -222,12 +228,15 @@ jobs:
           grep -F "0|0|0" /tmp/ores-hybrid-tail.out
       - name: Run native Oreslang tests under hybrid host
         run: |
+          set -euo pipefail
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-harness-guards.ores
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-hybrid.out
-          grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-hybrid.out
+          grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-hybrid.out
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-hybrid.out)" -eq 1
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-hybrid.out
-          grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-hybrid.out
-          grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-hybrid.out
+          grep -Fx "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-hybrid.out
+          grep -Fx "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-hybrid.out
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-semantics-hybrid.out)" -eq 2
       - name: Run Orestra integration smoke under native hybrid
         run: |
           set -euo pipefail
