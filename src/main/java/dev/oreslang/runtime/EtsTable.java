@@ -1,9 +1,12 @@
 package dev.oreslang.runtime;
 
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -49,7 +52,20 @@ public final class EtsTable<K, V> implements AutoCloseable {
     }
 
     private final ActorRuntime runtime;
-    private final ActorRuntime.ActorId owner;
+    private ActorRuntime.ActorId owner;
+    private long ownerEpoch = 1;
+    private static final int MAX_RETIRED_OWNERS = 64;
+    private final Set<ActorRuntime.ActorId> retiredOwners = new HashSet<>();
+    private HeirReceipt pendingHeir;
+
+    /**
+     * Runtime-minted single-use trusted-host receipt. Not a guest token or
+     * remote credential. ActorRuntime must authenticate every participant.
+     */
+    record HeirReceipt(
+            UUID nonce, ActorRuntime.ActorId oldOwner,
+            ActorRuntime.ActorId newOwner, long nextEpoch) { }
+
     private final int capacity;
     private final Access access;
     private final ReentrantLock lock = new ReentrantLock();
@@ -71,13 +87,83 @@ public final class EtsTable<K, V> implements AutoCloseable {
     public Kind kind() { return Kind.SET; }
     public Access access() { return access; }
     public int capacity() { return capacity; }
-    public Optional<ActorRuntime.ActorId> ownerId() { return Optional.ofNullable(owner); }
+    public Optional<ActorRuntime.ActorId> ownerId() {
+        lock.lock();
+        try { return Optional.ofNullable(owner); }
+        finally { lock.unlock(); }
+    }
+    public long ownerEpoch() {
+        lock.lock();
+        try { return ownerEpoch; }
+        finally { lock.unlock(); }
+    }
+
+    // CONTROL-only primitives. ActorRuntime owns physical actor retirement,
+    // supervisor context and the ETS reverse-index serialization lock.
+    HeirReceipt prepareHeir(ActorRuntime.ActorId oldOwner,
+                            ActorRuntime.ActorId heir) {
+        lock.lock();
+        try {
+            requireOpen();
+            if (pendingHeir != null || owner == null || !owner.equals(oldOwner)
+                    || oldOwner.equals(heir) || retiredOwners.contains(heir)
+                    || retiredOwners.size() >= MAX_RETIRED_OWNERS
+                    || ownerEpoch == Long.MAX_VALUE)
+                throw new IllegalStateException("ETS owner/heir generation cannot be prepared");
+            pendingHeir = new HeirReceipt(
+                    UUID.randomUUID(), oldOwner, heir, ownerEpoch + 1);
+            return pendingHeir;
+        } finally { lock.unlock(); }
+    }
+
+    /** Pending table is fenced, including PUBLIC readers and writers. */
+    boolean retainForPendingHeir(ActorRuntime.ActorId deceasedOwner) {
+        lock.lock();
+        try {
+            return !closed.get() && pendingHeir != null
+                    && deceasedOwner.equals(owner)
+                    && deceasedOwner.equals(pendingHeir.oldOwner());
+        } finally { lock.unlock(); }
+    }
+
+    boolean acknowledgeHeir(HeirReceipt receipt) {
+        lock.lock();
+        try {
+            if (closed.get() || !Objects.equals(pendingHeir, receipt))
+                return false;
+            retiredOwners.add(owner);
+            owner = receipt.newOwner();
+            ownerEpoch = receipt.nextEpoch();
+            pendingHeir = null;
+            return true;
+        } finally { lock.unlock(); }
+    }
+
+    boolean rollbackHeir(HeirReceipt receipt) {
+        lock.lock();
+        try {
+            if (closed.get() || !Objects.equals(pendingHeir, receipt))
+                return false;
+            pendingHeir = null; // only ActorRuntime may prove original owner live
+            return true;
+        } finally { lock.unlock(); }
+    }
+
+    boolean pendingHeirMatches(HeirReceipt receipt) {
+        lock.lock();
+        try { return !closed.get() && Objects.equals(pendingHeir, receipt); }
+        finally { lock.unlock(); }
+    }
+
+    boolean belongsTo(ActorRuntime candidate) { return runtime == candidate; }
+
     public boolean closed() { return closed.get(); }
 
     public int size() {
         requireRead("read ETS size");
         lock.lock();
         try {
+            requireRead("read ETS size");
             requireOpen();
             return entries.size();
         } finally {
@@ -92,6 +178,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
         try {
             lock.lock();
             try {
+                requireRead("read ETS table");
                 requireOpen();
                 StoredEntry entry = entries.get(frozenKey.value());
                 return entry == null
@@ -122,6 +209,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
 
         lock.lock();
         try {
+            requireWrite("write ETS table");
             requireOpen();
             StoredEntry existing = entries.get(frozenKey.value());
             if (existing != null) {
@@ -165,6 +253,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
 
         lock.lock();
         try {
+            requireWrite("insert into ETS table");
             requireOpen();
             if (entries.containsKey(frozenKey.value())) {
                 frozenKey.reservation().close();
@@ -196,6 +285,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
         try {
             lock.lock();
             try {
+                requireWrite("remove from ETS table");
                 requireOpen();
                 StoredEntry removed = entries.remove(frozenKey.value());
                 if (removed == null) return false;
@@ -233,6 +323,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
         try {
             lock.lock();
             try {
+                requireWrite("compare-and-set ETS table");
                 requireOpen();
                 StoredEntry entry = entries.get(frozenKey.value());
                 if (entry == null || !Objects.equals(
@@ -264,6 +355,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
         requireRead("snapshot ETS table");
         lock.lock();
         try {
+            requireRead("snapshot ETS table");
             requireOpen();
             LinkedHashMap<K, V> copy = new LinkedHashMap<>(entries.size());
             for (StoredEntry entry : entries.values()) {
@@ -279,14 +371,23 @@ public final class EtsTable<K, V> implements AutoCloseable {
 
     @Override
     public void close() {
-        requireOwner("close ETS table");
-        closeFromRuntime();
+        lock.lock();
+        try {
+            requireOwner("close ETS table");
+            if (closed.get()) return;
+            closed.set(true);
+            pendingHeir = null;
+            for (StoredEntry entry : entries.values()) entry.close();
+            entries.clear();
+        } finally { lock.unlock(); }
+        runtime.unregisterEtsTable(this);
     }
 
     void closeFromRuntime() {
         lock.lock();
         try {
             if (!closed.compareAndSet(false, true)) return;
+            pendingHeir = null;
             for (StoredEntry entry : entries.values()) entry.close();
             entries.clear();
         } finally {
@@ -303,7 +404,9 @@ public final class EtsTable<K, V> implements AutoCloseable {
     private void requireRead(String operation) {
         requireRuntimeAffinity(operation);
         ActorRuntime.ActorId caller = ActorRuntime.currentActorId().orElse(null);
-        if (caller == null) return; // host/supervisor
+        if (caller == null) return; // trusted host/supervisor
+        if (pendingHeir != null || retiredOwners.contains(caller))
+            throw new SecurityException(operation + " denied by ETS transfer fence");
         if (access == Access.PRIVATE && !caller.equals(owner)) {
             throw new SecurityException(operation + " requires the ETS owner");
         }
@@ -312,7 +415,9 @@ public final class EtsTable<K, V> implements AutoCloseable {
     private void requireWrite(String operation) {
         requireRuntimeAffinity(operation);
         ActorRuntime.ActorId caller = ActorRuntime.currentActorId().orElse(null);
-        if (caller == null) return; // host/supervisor
+        if (caller == null) return; // trusted host/supervisor
+        if (pendingHeir != null || retiredOwners.contains(caller))
+            throw new SecurityException(operation + " denied by ETS transfer fence");
         if (access != Access.PUBLIC && !caller.equals(owner)) {
             throw new SecurityException(operation + " requires the ETS owner");
         }
@@ -322,6 +427,8 @@ public final class EtsTable<K, V> implements AutoCloseable {
         requireRuntimeAffinity(operation);
         ActorRuntime.ActorId caller = ActorRuntime.currentActorId().orElse(null);
         if (caller == null) return;
+        if (pendingHeir != null || retiredOwners.contains(caller))
+            throw new SecurityException(operation + " denied by ETS transfer fence");
         if (!caller.equals(owner)) {
             throw new SecurityException(operation + " requires the ETS owner");
         }
