@@ -396,6 +396,17 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (stmt instanceof Ast.CriticalStmt critical) {
+            CriticalEffectPreflight.verify(critical.body());
+            throw new IllegalArgumentException(
+                    "critical block has no authenticated scheduler ticket or scoped ownership admission");
+        }
+        if (stmt instanceof Ast.TryCriticalStmt attempted) {
+            CriticalEffectPreflight.verify(attempted.body());
+            CriticalEffectPreflight.verify(attempted.elseBody());
+            throw new IllegalArgumentException(
+                    "try critical requires verified immediate guard ownership and fallback lowering");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
