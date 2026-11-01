@@ -65,6 +65,7 @@ jobs:
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores" | tee /tmp/oreslang-callables.out
           grep -F "120:9:13" /tmp/oreslang-callables.out
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-harness-guards.ores"
+          bash scripts/native_scalar_zero_java_smoke.sh
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_regressions.ores" | tee /tmp/ores-harness-regressions-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-regressions-jit.out native-testing-core 30
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_scalar_parity_batch4.ores" | tee /tmp/ores-harness-scalar-jit.out
