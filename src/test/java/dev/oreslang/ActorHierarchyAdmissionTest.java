@@ -43,6 +43,50 @@ final class ActorHierarchyAdmissionTest {
     }
 
     @Test
+    void actorCannotImplementCallableInterfaceAsDirectRpcSurface() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface Callable as
+                          fnc ping(): int;
+                        end
+                        define actor A1 implements Callable as
+                          pub ping(): int { return 1; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("marker traits/interfaces"),
+                error.getMessage());
+    }
+
+    @Test
+    void actorCannotImplementCallableTraitAsDirectRpcSurface() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define trait CallableTrait as
+                          fnc ping(): int;
+                        end
+                        define actor A1 implements CallableTrait as
+                          pub ping(): int { return 1; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("marker traits/interfaces"),
+                error.getMessage());
+    }
+
+    @Test
+    void actorCannotImplementInterfaceWithStoredFields() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface HasField as
+                          value: int;
+                        end
+                        define actor A1 implements HasField as
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("marker traits/interfaces"),
+                error.getMessage());
+    }
+
+    @Test
     void multipleActorSuperclassesAreRejectedEvenWithDistinctNames() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
