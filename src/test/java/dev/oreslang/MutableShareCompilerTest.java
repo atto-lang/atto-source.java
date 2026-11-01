@@ -398,4 +398,58 @@ final class MutableShareCompilerTest {
                 }
                 """));
     }
+
+    @Test
+    void ordinaryShareOfCopyableMutexHandleCanStillBeGuarded() {
+        checked(COUNTER + """
+                fnc good(): void {
+                  val owner = SharedMutex.new(new Counter());
+                  val copied = rt share owner;
+                  val guarded = rt mut share copied;
+                  val lock = guarded.lock();
+                  lock.value = 12;
+                  lock.release();
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void exclusiveBorrowOfSharedMutexHandleCannotBeUpgradedToSharedMutation() {
+        rejected(COUNTER + """
+                fnc bad(): void {
+                  val owner = SharedMutex.new(new Counter());
+                  val loan = rt mut borrow owner;
+                  val alias = rt mut share loan;
+                  return;
+                }
+                """, "rt mut share requires");
+    }
+
+    @Test
+    void nestedOrdinarySharingCannotLaunderBorrowedHandle() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OwnershipChecker.check(TypeChecker.check(Parser.parse(COUNTER + """
+                        fnc bad(): void {
+                          val owner = SharedMutex.new(new Counter());
+                          val loan = rt borrow owner;
+                          val alias = rt mut share (rt share loan);
+                          return;
+                        }
+                        """))));
+    }
+
+    @Test
+    void nestedGuardedSharingCannotBypassStaticIsolatePermission() {
+        Ast.Program program = Parser.parse("""
+                fnc bad(): void {
+                  val alias = rt share (rt mut share handle);
+                  return;
+                }
+                """);
+        SecurityException denial = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertTrue(denial.getMessage().contains("rt mut share"), denial.getMessage());
+    }
 }
