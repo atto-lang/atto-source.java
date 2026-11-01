@@ -32,6 +32,28 @@ public final class FrozenTcpSlabHostSmoke {
         } catch (IllegalArgumentException expected) {
             // Bounded publication.
         }
+        // A new publication can be pinned after its predecessor is retired;
+        // no reference to the predecessor's byte storage should be required.
+        if (slab.size() != 5) throw new AssertionError("size metadata disappeared");
+        FrozenTcpSlab empty = new FrozenTcpSlab(new byte[0]);
+        empty.retire();
+        if (!empty.freed()) throw new AssertionError("empty slab never retired");
+        try {
+            empty.pin();
+            throw new AssertionError("retired slab admitted new pin");
+        } catch (IllegalStateException expected) {
+            // Retirement is terminal for pin admission.
+        }
+        FrozenTcpSlab future = new FrozenTcpSlab(new byte[]{22});
+        FrozenTcpSlab.Pin early = future.pin();
+        future.releasePin(early);
+        if (future.freed()) throw new AssertionError("storage freed before retirement");
+        FrozenTcpSlab.Pin retained = future.pin();
+        future.retire();
+        if (future.freed() || future.readByte(retained,0) != 22)
+            throw new AssertionError("live reader lost storage");
+        future.releasePin(retained);
+        if (!future.freed()) throw new AssertionError("final pin did not retire backing");
         System.out.println("JAVA_FROZEN_TCP_SLAB_HOST_SMOKE_PASS");
     }
 }
