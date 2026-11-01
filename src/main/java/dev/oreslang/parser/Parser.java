@@ -2271,6 +2271,9 @@ public final class Parser {
                     inheritedMutableReferent);
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
+        if (looksLikePrimitiveTypeFirstImmutableBinding()) {
+            return parsePrimitiveTypeFirstImmutableBinding();
+        }
         if (check(LBRACKET) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.SEQUENCE, null, false);
         }
@@ -2921,6 +2924,27 @@ public final class Parser {
 
     private boolean isBareDoneDelimiter() {
         return check(DONE) && !reservedCallableNameFollowedByInvocation(current);
+    }
+
+    private boolean looksLikePrimitiveTypeFirstImmutableBinding() {
+        if (!check(IDENT) || current + 2 >= tokens.size()) return false;
+        String type = peek().lexeme();
+        if (!(type.equals("int") || type.equals("bool")
+                || type.equals("string") || type.equals("String"))) return false;
+        return tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == EQUAL;
+    }
+
+    private Ast.BindingStmt parsePrimitiveTypeFirstImmutableBinding() {
+        Ast.TypeRef type = parseTypeRef();
+        String name = consume(IDENT,
+                "expected binding name after immutable-default local type").lexeme();
+        consume(EQUAL, "immutable-default local binding requires initializer");
+        Ast.Expr initializer = parseExpression();
+        consumeExpressionStatementTerminator(
+                initializer, "immutable-default binding should end with ';'");
+        return new Ast.BindingStmt(
+                Ast.BindingKind.CONST, type, name, initializer, false, null);
     }
 
     private Ast.BindingStmt parseBindingStatement() {

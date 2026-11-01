@@ -51,6 +51,25 @@ final class ScalarCastInferenceParityTest {
         }) accepts(body);
     }
 
+    @Test void typeFirstLocalsAreImmutableByDefault() {
+        for (String body : new String[] {
+                "int x = 7; const y = x; const int z = y as int;",
+                "bool flag = true; const bool same = flag as bool;",
+                "string text = \"ok\"; const string same = text as string;",
+                "int x = (2 + 5) as int; const int y = x;",
+                "int x = 7; const y = x as int; const int z = y;"
+        }) accepts(body);
+
+        for (String body : new String[] {
+                "int x = 7; x = 8;",
+                "bool flag = true; flag = false;",
+                "string text = \"a\"; text = \"b\";",
+                "int x = true;",
+                "bool flag = 7;",
+                "string text = 7;"
+        }) rejects(body);
+    }
+
     @Test void invalidCastsAndIncompatibleInferredBindingsAreRejected() {
         for (String body : new String[] {
                 "const x = 7 as bool;",
