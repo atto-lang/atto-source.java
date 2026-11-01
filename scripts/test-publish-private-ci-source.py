@@ -111,7 +111,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def incident_comments_api(
             self, reviewer_id=None, reviewer_login=None,
             missing=None, body_overrides=None, full_page=None,
-            timestamp_overrides=None, later_bodies=None):
+            timestamp_overrides=None, later_bodies=None,
+            page_two=None, saturated=None):
         reviewer_id = (
             pub.INCIDENT_DISPOSITION_REVIEWER_ID
             if reviewer_id is None else reviewer_id
@@ -127,15 +128,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {} if timestamp_overrides is None else dict(timestamp_overrides)
         )
         later_bodies = {} if later_bodies is None else dict(later_bodies)
+        page_two = {} if page_two is None else dict(page_two)
+        saturated = set() if saturated is None else set(saturated)
 
         def api(route):
             prefix = (
                 "repos/" + pub.BLOCKING_INCIDENT_REPO + "/issues/"
             )
-            suffix = "/comments?per_page=100"
-            if not route.startswith(prefix) or not route.endswith(suffix):
+            suffix = "/comments?per_page=100&page="
+            if not route.startswith(prefix) or suffix not in route:
                 raise AssertionError(route)
-            number = int(route[len(prefix):-len(suffix)])
+            issue_key, page_number = route[len(prefix):].split(suffix, 1)
+            if not page_number.isdecimal() or int(page_number) < 1:
+                raise AssertionError(route)
+            number = int(issue_key)
+            page = int(page_number)
             if number in missing:
                 return []
             marker = (
@@ -157,6 +164,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
+            if page > 1:
+                if number in saturated:
+                    return [dict(comment, id=number * 100000 + page * 1000 + index)
+                            for index in range(100)]
+                return [dict(item) for item in page_two.get(number, [])]
             if number in full_page:
                 return [dict(comment, id=number * 1000 + index)
                         for index in range(100)]
@@ -325,7 +337,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
         def edited_old_approval(route):
             comments = comments_api(route)
-            if route.endswith("/issues/22/comments?per_page=100"):
+            if route.endswith("/issues/22/comments?per_page=100&page=1"):
                 comments[0]["updated_at"] = "2026-10-30T04:07:00Z"
             return comments
 
@@ -444,7 +456,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             ):
                 ORIGINAL_REQUIRE_RESOLVED()
 
-    def test_blocking_p0_incidents_fail_closed_on_full_comment_page(self):
+    def test_blocking_incident_accepts_complete_pagination_after_full_first_page(self):
+        # Exactly 100 comments is not a proof that all pages were retrieved.
         with (
             patch.object(pub, "gh_api", side_effect=self.incident_api()),
             patch.object(
@@ -452,8 +465,56 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 side_effect=self.incident_comments_api(full_page={22}),
             ),
         ):
+            ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_incident_second_page_can_revoke_earlier_approval(self):
+        revocation = {
+            "id": 229999,
+            "user": {
+                "id": pub.INCIDENT_DISPOSITION_REVIEWER_ID,
+                "login": pub.INCIDENT_DISPOSITION_REVIEWER,
+            },
+            "body": "PRIVATE_CI_INCIDENT_DISPOSITION_REVOKED",
+            "created_at": "2026-10-30T04:06:00Z",
+            "updated_at": "2026-10-30T04:06:00Z",
+        }
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    full_page={22}, page_two={22: [revocation]}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "absent or revoked"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_incident_later_comment_page_failure_stays_closed(self):
+        comments_api = self.incident_comments_api(full_page={22})
+        def api(route):
+            if route.endswith("/issues/22/comments?per_page=100&page=2"):
+                raise pub.Denied("page two unavailable")
+            return comments_api(route)
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(pub, "gh_api_list", side_effect=api),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "page two unavailable"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_incident_denies_unbounded_saturated_comment_pages(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    full_page={22}, saturated={22}
+                ),
+            ),
+        ):
             with self.assertRaisesRegex(
-                pub.Denied, "comments exceed single-page audit bound"
+                pub.Denied, "comments exceed bounded audit pages"
             ):
                 ORIGINAL_REQUIRE_RESOLVED()
 
