@@ -148,10 +148,13 @@ The restricted actor-only critical candidate now requires a **successful
 independent TypeChecker proof** in addition to the ownership epoch and exact
 critical AST / Program identity. The typing ledger uses weak identity keys,
 not value-based Program equality: a parsed clone never inherits admission.
-Failed/restarted/superseded type checks invalidate the older proof; the
-ledger publishes a success token only after the complete type-analysis
-diagnostic result is constructed. Linked-metadata type checking follows
-the same rule.
+Every published critical permission also records the exact successful
+typing generation alongside its ownership epoch. A new *successful* type
+analysis cannot resurrect an older ownership permit: a new ownership pass
+must explicitly reauthorize the retyped Program. Failed/restarted/superseded
+type checks revoke the older proof; the ledger publishes success only after
+the complete type-analysis diagnostic result is constructed. Linked-metadata
+type checking follows the same rule.
 
 A public direct ownership check can inspect an untyped AST, but if it sees
 critical nodes it now refuses to publish the shared Task ownership epoch
@@ -164,10 +167,11 @@ critical AST set through the public publishing method. This is JVM API-level
 hardening, not a sandbox against malicious reflection or native access.
 
 Ownership-only checks on programs **without** critical statements remain
-supported and do not need a new typing proof. Six authored regression
+supported and do not need a new typing proof. Seven authored regression
 cases cover untyped ownership-only admission, equivalent untyped ASTs,
-ordinary typing failures, failed linked-metadata rechecks, ordinary
-noncritical ownership compatibility, and nonconstructible publisher tokens.
+ordinary typing failures, failed linked-metadata rechecks, successful
+rechecks with stale ownership epochs, ordinary noncritical ownership
+compatibility, and nonconstructible publisher tokens.
 These tests have **not** run in stepful exact-head CI; critical source
 remains a draft feature.
 
