@@ -124,6 +124,22 @@ The existing source branch is left unchanged until this merge can be compiled
 under an admitted source-local runner or separately approved private carrier.
 
 
+## Latest metadata-regression test update — 2026-11-02 20:23 UTC
+
+Java PR #2049 has advanced to exact head `681ad0d6cd8f6af51e7e96cd985b087d7dfb107b`, root tree `0a4459a7a69d7f5a10843482d1254e226f202010`.
+
+`MacroUnquoteIdentityIsolationTest` now has six JUnit cases. Besides the four identity/provenance tests, two tests verify the central checker metadata survives cloning:
+- `CheckedClassView` and `CheckedStructuralFieldDomain` remain available on the copied index receiver;
+- `CheckedOptionDepth` remains available on the copied call identity.
+
+Exact-head source-org admission still prevented all execution:
+- fast-ci run `41518551747`, job `125528323738`, `steps=null`;
+- Rust-only run `41518551761`, job `125528323680`, `steps=null`;
+- native CLI run `41518551825`, job `125528323937`, `steps=null`;
+- CI run `41518551820`, jobs `125528324220`, `125528324674`, `125528324711`, `125528324727`, `125528324736`, each `steps=null`.
+
+The alternate private Scintilla carrier separately passed source-free Node contract (73/73), JDK 25 Maven/JUnit (3/3), and GraalVM 25 Native Image compile+execute. None of these included the AttoLang source. Therefore all six new Java JUnit cases remain NOT_EXECUTED. No source transfer is approved; do not mirror compiler blobs to the carrier. Both PRs remain draft pending live branch protection, independent exact destination/snapshot approval, and actual source-head execution.
+
 ## Exact-head follow-up: bounded composite unquote copier (2026-11-02 20:22 UTC)
 
 Java macro PR #2049 has progressed to `c97fd5e093059ffcc56ac4fa50b4c1d74fe1c9cc`, root tree `7138e283c1daa49f94741a767041a251aea01cf0`.
