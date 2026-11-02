@@ -23,15 +23,18 @@ final class VirtualActorActivationRegistryTest {
         registry.publish(initializing);
         assertTrue(racing.active());
         assertThrows(IllegalStateException.class, () -> registry.publish(initializing));
-        try (var admission1 = registry.tryAdmit(initializing);
-             var admission2 = registry.tryAdmit(racing)) {
-            assertNotNull(admission1);
-            assertNotNull(admission2);
-            assertNull(registry.tryAdmit(initializing), "mailbox credit is bounded");
-            assertEquals(2, registry.outstanding(same));
-            assertThrows(IllegalStateException.class, () -> registry.deactivate(initializing));
-            assertThrows(IllegalStateException.class, registry::close);
-        }
+        var admission1 = registry.tryAdmit(initializing);
+        var admission2 = registry.tryAdmit(racing);
+        assertNotNull(admission1);
+        assertNotNull(admission2);
+        assertNull(registry.tryAdmit(initializing), "mailbox credit is bounded");
+        assertEquals(2, registry.outstanding(same));
+        assertThrows(IllegalStateException.class, () -> registry.deactivate(initializing));
+        assertThrows(IllegalStateException.class, registry::close);
+        admission1.settle(VirtualActorActivationRegistry.Disposition.PROCESSED);
+        admission2.settle(VirtualActorActivationRegistry.Disposition.FAILED_CONTROL_NOTIFIED);
+        assertThrows(IllegalStateException.class,
+                () -> admission1.settle(VirtualActorActivationRegistry.Disposition.CANCELLED_NOTIFIED));
         assertEquals(0, registry.outstanding(first));
         registry.deactivate(initializing);
         assertFalse(racing.active());
@@ -90,8 +93,8 @@ final class VirtualActorActivationRegistryTest {
         var ticket = registry.tryAdmit(activation);
         assertNotNull(ticket);
         assertNull(registry.tryAdmit(activation));
-        ticket.finish();
-        ticket.finish();
+        ticket.settle(VirtualActorActivationRegistry.Disposition.PROCESSED);
+        ticket.settle(VirtualActorActivationRegistry.Disposition.PROCESSED);
         assertEquals(0, registry.outstanding(first));
         registry.deactivate(activation);
     }
