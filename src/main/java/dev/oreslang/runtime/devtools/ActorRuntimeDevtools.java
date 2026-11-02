@@ -53,7 +53,7 @@ public final class ActorRuntimeDevtools {
                                 "task_id", info.taskId(), "lifecycle", info.lifecycle()))
                         .toList();
                 return Map.of("tasks", pending, "consistency", "WEAKLY_CONSISTENT",
-                        "truncated", pending.size() == limit);
+                        "at_limit", pending.size() == limit);
             }
 
             @Override public Map<String, Object> listActors(int limit) {
