@@ -63,3 +63,8 @@ Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).
 Implement tooling previously written in Python in **Rust** instead. Preserve behavior and test coverage while migrating; use `cargo fmt`, `cargo clippy`, and `cargo test` for Rust code. Existing Python must be inventoried and ported, not merely deleted if it implements required behavior. Changes introducing Python must be rejected in review and CI. References discussing the prohibition are allowed in documentation; they are not an authorization to execute Python.
 
 This rule applies across all repositories, including compiler backends, examples, benchmarks, workflows, and documentation. Language implementations written in Java, LLVM/other native languages, .NET, etc. remain in their existing implementation languages; **the Python-to-Rust mandate applies to Python tooling and Python implementations**.
+
+
+## Canonical AttoLang source files
+
+New AttoLang modules, tests and examples use the `.atto` extension. The Java frontend accepts `.atto` as native Ores-language source while retaining `.ores` as a legacy compatibility extension. Extensionless imports prefer `.atto` before `.ores`. See [the source-extension contract](docs/ATTO_SOURCE_EXTENSION.md).

@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -255,9 +256,10 @@ public final class OresProjectConfig {
     private static Optional<Path> existingSource(Path candidate) {
         Path normalized = candidate.toAbsolutePath().normalize();
         String filename = normalized.getFileName().toString();
+        String lowerFilename = filename.toLowerCase(Locale.ROOT);
         // Explicit foreign-source paths must never pass through this resolver.
         // Preserve existing .ores and Java interop while admitting canonical .atto.
-        if (filename.endsWith(".atto") || filename.endsWith(".ores") || filename.endsWith(".java")) {
+        if (lowerFilename.endsWith(".atto") || lowerFilename.endsWith(".ores") || lowerFilename.endsWith(".java")) {
             return Files.isRegularFile(normalized) ? Optional.of(normalized) : Optional.empty();
         }
         if (filename.contains(".")) return Optional.empty();

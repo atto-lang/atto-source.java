@@ -217,8 +217,7 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
-        String directOresSource = (filename.endsWith(".atto") || filename.endsWith(".ores"))
-                ? readBoundedOresSource(path) : null;
+        String directOresSource = isGuestSourceFile(filename) ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
             formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
@@ -249,8 +248,8 @@ public final class OresMain {
         }
 
         if (buildAnalysis) {
-            if (!filename.endsWith(".atto") && !filename.endsWith(".ores")) {
-                throw new UsageException("--build-analysis requires a .atto or legacy .ores source file");
+            if (!isGuestSourceFile(filename)) {
+                throw new UsageException("--build-analysis requires a .atto or .ores source file");
             }
             String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
@@ -318,6 +317,13 @@ public final class OresMain {
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
+    }
+
+    // Preserve legacy .ores while admitting new AttoLang .atto with the same
+    // bounded UTF-8 reader, warnings, compiler gates, and permission checks.
+    private static boolean isGuestSourceFile(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".ores") || lower.endsWith(".atto");
     }
 
     // Share admission policy with the linked-unit loader, including imports.

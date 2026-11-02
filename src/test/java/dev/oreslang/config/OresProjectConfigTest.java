@@ -126,6 +126,11 @@ final class OresProjectConfigTest {
         assertEquals(canonical.toAbsolutePath().normalize(),
                 config.resolveImport(importer, "./pkg/value.atto").orElseThrow());
 
+        Path uppercase = pkg.resolve("upper.ATTO");
+        Files.writeString(uppercase, "pub fnc value(): int { return 3; }");
+        assertEquals(uppercase.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/upper.ATTO").orElseThrow());
+
         Files.delete(canonical);
         assertEquals(legacy.toAbsolutePath().normalize(),
                 config.resolveImport(importer, "./pkg/value").orElseThrow());
