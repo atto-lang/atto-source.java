@@ -77,6 +77,12 @@ final class VirtualActorActivationRegistryTest {
         var registry = new VirtualActorActivationRegistry("local", 1, 1);
         assertThrows(IllegalArgumentException.class,
                 () -> registry.resolve("Worker", "k".repeat(257)));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.resolve("Worker", "\uD800"));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.resolve("Worker", "bad\nkey"));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.resolve("\uDC00", "key"));
         var first = registry.resolve("Worker", "1");
         assertThrows(IllegalStateException.class, () -> registry.resolve("Worker", "2"));
         var activation = registry.activate(first);
