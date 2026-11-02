@@ -34,7 +34,7 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
 
     private static void admit(Object value) throws Throwable {
         try {
-            ADMIT.invoke(null, value);
+            ADMIT.invoke(null, new Object[] {value});
         } catch (InvocationTargetException error) {
             throw error.getCause();
         }
