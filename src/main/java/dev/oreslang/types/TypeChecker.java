@@ -135,6 +135,79 @@ public final class TypeChecker {
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
 
+    /*
+     * A critical AST node needs a successful, exact-Program type proof in
+     * addition to the independent ownership epoch. Public ownership-check
+     * entry points cannot mint typing authority from a parsed/untyped AST.
+     *
+     * Weak identity keys are deliberate: Program is a record with value
+     * equality, which must never authorize a distinct but equal AST.
+     * Negative tokens denote in-progress/failed rechecks. The success
+     * transition is conditional so an older concurrent check cannot
+     * resurrect proof after a later check began.
+     */
+    private static final java.lang.ref.ReferenceQueue<Ast.Program> CRITICAL_TYPES_CLEARED =
+            new java.lang.ref.ReferenceQueue<>();
+    private static final java.util.Map<CriticalTypeProofKey, Long> CRITICAL_TYPE_PROOFS =
+            new java.util.HashMap<>();
+    private static long criticalTypeSequence;
+
+    private static final class CriticalTypeProofKey
+            extends java.lang.ref.WeakReference<Ast.Program> {
+        private final int hash;
+
+        CriticalTypeProofKey(Ast.Program program, boolean track) {
+            super(java.util.Objects.requireNonNull(program, "critical type Program"),
+                    track ? CRITICAL_TYPES_CLEARED : null);
+            hash = System.identityHashCode(program);
+        }
+
+        @Override public int hashCode() { return hash; }
+
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            return other instanceof CriticalTypeProofKey key
+                    && get() != null && get() == key.get();
+        }
+    }
+
+    private static synchronized void expungeCriticalTypeProofs() {
+        java.lang.ref.Reference<? extends Ast.Program> cleared;
+        while ((cleared = CRITICAL_TYPES_CLEARED.poll()) != null) {
+            CRITICAL_TYPE_PROOFS.remove(cleared);
+        }
+    }
+
+    private static synchronized long beginCriticalTypeCheck(Ast.Program program) {
+        expungeCriticalTypeProofs();
+        if (criticalTypeSequence == Long.MAX_VALUE) {
+            throw new IllegalStateException("critical type proof sequence exhausted");
+        }
+        long token = ++criticalTypeSequence;
+        CRITICAL_TYPE_PROOFS.put(new CriticalTypeProofKey(program, true), -token);
+        return token;
+    }
+
+    private static synchronized void finishCriticalTypeCheck(Ast.Program program, long token) {
+        expungeCriticalTypeProofs();
+        CriticalTypeProofKey key = new CriticalTypeProofKey(program, false);
+        Long pending = CRITICAL_TYPE_PROOFS.get(key);
+        if (pending == null || pending.longValue() != -token) {
+            throw new IllegalStateException("critical typing was superseded during analysis");
+        }
+        CRITICAL_TYPE_PROOFS.put(key, token);
+    }
+
+    /** Validate typing independently of the ownership epoch and AST identity. */
+    public static synchronized void requireCriticalTypeProof(Ast.Program program) {
+        expungeCriticalTypeProofs();
+        Long proof = CRITICAL_TYPE_PROOFS.get(new CriticalTypeProofKey(program, false));
+        if (proof == null || proof <= 0) {
+            throw new IllegalStateException(
+                    "critical execution requires successfully type-checked exact Program");
+        }
+    }
+
     public static Ast.Program check(Ast.Program program) {
         TypeCheckResult checked = checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
@@ -193,8 +266,13 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        long criticalTypingToken = beginCriticalTypeCheck(program);
         rejectUnloweredCheckedEffects(program);
-        program = AnnotationExpander.expand(program);
+        Ast.Program expanded = AnnotationExpander.expand(program);
+        if (expanded != program) {
+            criticalTypingToken = beginCriticalTypeCheck(expanded);
+        }
+        program = expanded;
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
@@ -203,6 +281,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        finishCriticalTypeCheck(program, criticalTypingToken);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -232,6 +311,7 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        long criticalTypingToken = beginCriticalTypeCheck(program);
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -245,7 +325,11 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
-        program = AnnotationExpander.expand(program);
+        Ast.Program expanded = AnnotationExpander.expand(program);
+        if (expanded != program) {
+            criticalTypingToken = beginCriticalTypeCheck(expanded);
+        }
+        program = expanded;
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
@@ -318,6 +402,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        finishCriticalTypeCheck(program, criticalTypingToken);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
