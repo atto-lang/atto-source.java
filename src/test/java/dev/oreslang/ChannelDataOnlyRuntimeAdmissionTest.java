@@ -228,6 +228,43 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
     }
 
     @Test
+    void rejectsCustomHostListBeforeExecutingAnyOverriddenMethods() {
+        java.util.concurrent.atomic.AtomicInteger calls =
+                new java.util.concurrent.atomic.AtomicInteger();
+        List<Object> hostile = new java.util.AbstractList<>() {
+            @Override public int size() { calls.incrementAndGet(); return 1; }
+            @Override public Object get(int index) {
+                calls.incrementAndGet();
+                throw new AssertionError("guest admission executed hostile host list");
+            }
+        };
+        reject(hostile);
+        assertEquals(0, calls.get(), "custom host container must be rejected before traversal");
+    }
+
+    @Test
+    void rejectsCustomHostMapBeforeExecutingEntrySet() {
+        java.util.concurrent.atomic.AtomicInteger calls =
+                new java.util.concurrent.atomic.AtomicInteger();
+        Map<Object, Object> hostile = new java.util.AbstractMap<>() {
+            @Override public Set<Entry<Object, Object>> entrySet() {
+                calls.incrementAndGet();
+                throw new AssertionError("guest admission executed hostile map entrySet");
+            }
+        };
+        reject(hostile);
+        assertEquals(0, calls.get(), "custom host map must not get an entrySet callback");
+    }
+
+    @Test
+    void permitsKnownJdkImmutableDataContainers() {
+        assertDoesNotThrow(() -> admit(List.of("data", 42L)));
+        assertDoesNotThrow(() -> admit(Map.of("items", List.of(1L, 2L))));
+        assertDoesNotThrow(() -> admit(Set.of("a", "b")));
+        assertDoesNotThrow(() -> admit(java.util.Arrays.asList(1L, 2L)));
+    }
+
+    @Test
     void dynamicSelectCopiesRawWriteCasesBeforeArmingAndKeepsFairCursor() throws Throwable {
         ChannelRuntime.Channel<Object> channel = new ChannelRuntime.Channel<>(1);
         ArrayList<Object> producer = new ArrayList<>(List.of(7L));
