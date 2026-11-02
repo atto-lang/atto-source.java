@@ -422,28 +422,34 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                     inspected++;
                     continue;
                 }
-                while (domainInspected < domainBudget && domainInspected < available) {
-                    TrackedCleanup entry = nextDomainEntry(retired);
-                    if (entry == null) break;
-                    inspected++;
-                    domainInspected++;
-                    try {
-                        if (entry.tryClean()) {
-                            cleanedCount++;
-                            removeTracked(entry);
-                        } else if (!entry.cleaned.get()) {
+                try {
+                    while (domainInspected < domainBudget && domainInspected < available) {
+                        TrackedCleanup entry = nextDomainEntry(retired);
+                        if (entry == null) break;
+                        inspected++;
+                        domainInspected++;
+                        try {
+                            if (entry.tryClean()) {
+                                cleanedCount++;
+                                removeTracked(entry);
+                            } else if (!entry.cleaned.get()) {
+                                retainRetry(entry);
+                            }
+                        } catch (VirtualMachineError | ThreadDeath fatal) {
+                            throw fatal;
+                        } catch (Throwable cleanupFailure) {
                             retainRetry(entry);
+                            cleanupFailures++;
                         }
-                    } catch (VirtualMachineError | ThreadDeath fatal) {
-                        throw fatal;
-                    } catch (Throwable cleanupFailure) {
-                        retainRetry(entry);
-                        cleanupFailures++;
                     }
-                }
-                synchronized (lifecycleLock) {
-                    if (retiredDomains.contains(retired)) {
-                        retiredDomainQueue.add(retired);
+                } finally {
+                    // A fatal cleanup error must not silently consume this domain's
+                    // sole maintenance ticket. The domain remains quarantined
+                    // and retryable until every registered owner has retired.
+                    synchronized (lifecycleLock) {
+                        if (retiredDomains.contains(retired)) {
+                            retiredDomainQueue.add(retired);
+                        }
                     }
                 }
             }
