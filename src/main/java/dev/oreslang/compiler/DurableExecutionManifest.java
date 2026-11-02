@@ -60,6 +60,7 @@ public final class DurableExecutionManifest {
         }
         methods.sort(Comparator.naturalOrder());
         return "{\"id\":" + quote(module + "." + activity.name())
+                + ",\"visibility\":" + quote(activity.visibility().name().toLowerCase(java.util.Locale.ROOT))
                 + ",\"version\":1,\"operations\":[" + String.join(",", methods) + "]}";
     }
 
@@ -79,6 +80,7 @@ public final class DurableExecutionManifest {
         }
         queries.sort(Comparator.naturalOrder());
         return "{\"id\":" + quote(module + "." + workflow.name())
+                + ",\"visibility\":" + quote(workflow.visibility().name().toLowerCase(java.util.Locale.ROOT))
                 + ",\"version\":1,\"state\":[],\"members\":["
                 + String.join(",", methods) + "],\"commands\":["
                 + String.join(",", commands) + "],\"queries\":["
@@ -95,10 +97,15 @@ public final class DurableExecutionManifest {
         return "{\"name\":" + quote(method.name())
                 + ",\"visibility\":" + quote(method.visibility().name().toLowerCase(java.util.Locale.ROOT))
                 + ",\"static\":" + method.isStatic()
+                + ",\"abstract\":" + method.isAbstract()
+                + ",\"async\":" + method.async()
+                + ",\"suspends\":" + method.suspends()
+                + ",\"structural\":" + method.structural()
+                + ",\"generics\":[" + String.join(",", method.genericParameters().stream()
+                        .map(DurableExecutionManifest::quote).toList()) + "]"
                 + ",\"arity\":" + method.parameters().size()
                 + ",\"parameters\":[" + String.join(",", parameterNames) + "]"
-                + ",\"returns\":" + quote(typeName(method.returnType()))
-                + ",\"suspends\":" + method.suspends() + "}";
+                + ",\"returns\":" + quote(typeName(method.returnType())) + "}";
     }
 
     private static String queryJson(Ast.QueryCommand query) {
