@@ -85,3 +85,42 @@ already-granted ownership winning over late cancellation.
 **Evidence remains unverified**: GitHub Actions jobs have reported zero
 executed steps. Source guest execution is still held closed pending exact-AST
 checked ownership/effect admission and non-suspending-body native proofs.
+
+## Restricted actor critical source lowering — candidate (2026-11-01)
+
+The source compiler now admits only `critical { ... }` within a
+`suspends` **actor instance method**, and only after all these checks:
+
+1. `CriticalEffectPreflight` proves the body is in the restricted lexical
+   scalar subset (no calls, host/FFI, await, task, channel, member getter or
+   setter, dynamic dispatch, nested critical, defer or unknown effects).
+2. `TypeChecker` checks every nested body statement and expression against
+   the enclosing actor method's types and return contract.
+3. `OwnershipChecker` checks the body and stages the exact critical AST node
+   only while analyzing a suspending actor method. Detached Tasks and
+   escaping lambdas explicitly do **not** inherit that authorization.
+4. After the complete ownership pass succeeds, it publishes an
+   `Ast.CheckedCriticalBlocks` permit keyed by exact Program identity,
+   exact AST node identity and the current `CheckedTaskCaptures` epoch.
+   A recheck, reconstructed/rewritten critical AST or failed ownership check
+   cannot reuse old permission.
+5. `SourceTask` requires that permit, then acquires the actor incarnation's
+   gate, awaits through the scheduler if queued, revalidates actor/runtime
+   incarnation after resumption, and releases the ticket on lexical completion
+   or authenticated cancellation cleanup.
+
+The candidate native Oreslang guest source is
+`examples/critical-actor-checked-v1.ores`; it must emit `42` under the
+`CriticalActorGuestExecutionTest` JVM/Graal test.
+
+**Not admitted:** non-actor/free-function critical, critical declaration
+modifiers, `try critical`, direct actor-state field mutation and any
+effectful calls or FFI inside critical. These remain separate contract
+milestones; this first scalar-only gate primarily proves scheduler and
+compiler mechanics, not full protected actor-state semantics.
+
+**Not verified:** GitHub Actions continues to show runner-admission
+`steps=null`. The candidate source implementation and guest test have been
+pushed, but neither compilation nor actual runtime results are established.
+Do not mark this as a portable feature or merge without exact-head
+stepful Java guest evidence, then LLVM/.NET/Wasm/Cranelift parity.
