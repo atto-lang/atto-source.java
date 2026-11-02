@@ -167,7 +167,7 @@ public final class OresMain {
                 } else if (arg.startsWith("--")) {
                     throw new UsageException("unknown option: " + arg);
                 } else if (filename == null) filename = arg;
-                else throw new UsageException("only one .ores or .java source file may be supplied");
+                else throw new UsageException("only one .atto, .ores or .java source file may be supplied");
             } catch (IllegalArgumentException invalidOption) {
                 throw new UsageException(invalidOption.getMessage());
             }
@@ -217,7 +217,8 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
-        boolean nativeAttoSource = filename.endsWith(".atto") || filename.endsWith(".ores");
+        String lowerFilename = filename.toLowerCase(Locale.ROOT);
+        boolean nativeAttoSource = lowerFilename.endsWith(".atto") || lowerFilename.endsWith(".ores");
         String directOresSource = nativeAttoSource ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
