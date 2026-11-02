@@ -54,6 +54,18 @@
       "fixture": "contracts/v1/fixtures/actor-pubsub-reject-async-capability.ores",
       "expect": "compile-reject",
       "diagnostic_contains": "must be concrete owned task-safe data"
+    },
+    {
+      "id": "actor-ref-topic-capability-rejected",
+      "fixture": "contracts/v1/fixtures/actor-pubsub-reject-actor-ref-topic.ores",
+      "expect": "compile-reject",
+      "diagnostic_contains": "requires MessageData"
+    },
+    {
+      "id": "shared-mutex-topic-capability-rejected",
+      "fixture": "contracts/v1/fixtures/actor-pubsub-reject-synchronized-topic.ores",
+      "expect": "compile-reject",
+      "diagnostic_contains": "requires MessageData"
     }
   ]
 }
