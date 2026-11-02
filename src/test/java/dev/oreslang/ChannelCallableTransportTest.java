@@ -165,6 +165,17 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
+    void nominalGuestFixtureIsRejectedByTheCompiler() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("contracts", "v1", "fixtures",
+                        "channel-reject-nominal-payload.ores"));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("requires MessageData"),
+                error.getMessage());
+    }
+
+    @Test
     void actorRefCapabilityExceptionRequiresAConcreteActorTarget() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
