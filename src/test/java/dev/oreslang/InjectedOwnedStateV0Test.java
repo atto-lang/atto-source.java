@@ -182,6 +182,38 @@ final class InjectedOwnedStateV0Test {
     }
 
     @Test
+    void owned_state_cannot_run_calls_or_depend_on_self_before_publication() {
+        for (String expression : new String[] {
+                "1 + 2",
+                "make_count()",
+                "self.count"
+        }) {
+            parseReject("""
+                    @Inject(MutableStateContainer())
+                    define class Counter as
+                      state { count: int = %s; }
+                    end
+                    """.formatted(expression), "literal int/bool initializers");
+        }
+    }
+
+    @Test
+    void owned_state_literal_type_must_match_declared_field() {
+        parseReject("""
+                @Inject(MutableStateContainer())
+                define class Counter as
+                  state { count: int = true; }
+                end
+                """, "literal int/bool initializers");
+        parseReject("""
+                @Inject(MutableStateContainer())
+                define class Counter as
+                  state { ready: bool = 1; }
+                end
+                """, "literal int/bool initializers");
+    }
+
+    @Test
     void no_uninitialized_or_unproved_nested_heap_fields() {
         parseReject("""
                 @Inject(MutableStateContainer())
