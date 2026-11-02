@@ -194,6 +194,21 @@ final class ActorSyncStdlibTest {
 
 
     @Test
+    void canonicalCrossEpochFixtureRunsWithoutChangingSourceBytes() throws Exception {
+        String fixture=Files.readString(Path.of(
+            "src/test/resources/actor-sync-v1/cross-epoch-delta-reject.ores"));
+        assertEquals("""
+                false
+                false
+                5
+                true
+                true
+                7
+                5
+                """,run(fixture));
+    }
+
+    @Test
     void crossEpochDeltaRequiresSnapshotBeforeReplicaCanAdvance() throws Exception {
         assertEquals("""
                 false
