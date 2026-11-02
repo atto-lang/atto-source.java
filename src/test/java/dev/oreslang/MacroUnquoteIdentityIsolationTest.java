@@ -150,4 +150,45 @@ final class MacroUnquoteIdentityIsolationTest {
         assertFalse(MacroSyntaxProvenance.lookup(firstOutput).isEmpty());
         assertFalse(MacroSyntaxProvenance.lookup(secondOutput).isEmpty());
     }
+
+    @Test
+    void checkedClassAndStructuralFieldMetadataFollowCopiedReceiver() {
+        Ast.Program program = parse("holder[slot]");
+        Ast.IndexExpr original = assertInstanceOf(
+                Ast.IndexExpr.class, input(program).expression());
+        Ast.Expr originalReceiver = original.receiver();
+        Ast.CheckedClassView.record(originalReceiver, "Container");
+        Ast.CheckedStructuralFieldDomain.record(
+                originalReceiver, java.util.Set.of("items"));
+
+        Ast.Program expanded = MacroExpander.expand(program);
+        Ast.IndexExpr emitted = assertInstanceOf(
+                Ast.IndexExpr.class,
+                assertInstanceOf(Ast.BinaryExpr.class, expandedValue(expanded)).left());
+
+        assertNotSame(originalReceiver, emitted.receiver());
+        assertEquals("Container", Ast.CheckedClassView.lookup(emitted.receiver()));
+        assertEquals(java.util.Set.of("items"),
+                Ast.CheckedStructuralFieldDomain.lookup(emitted.receiver()));
+        assertEquals("Container", Ast.CheckedClassView.lookup(originalReceiver));
+        assertEquals(java.util.Set.of("items"),
+                Ast.CheckedStructuralFieldDomain.lookup(originalReceiver));
+    }
+
+    @Test
+    void checkedOptionDepthFollowsCopiedCallIdentity() {
+        Ast.Program program = parse("compute(2)");
+        Ast.CallExpr original = assertInstanceOf(
+                Ast.CallExpr.class, input(program).expression());
+        Ast.CheckedOptionDepth.record(original, 2);
+
+        Ast.Program expanded = MacroExpander.expand(program);
+        Ast.CallExpr emitted = assertInstanceOf(
+                Ast.CallExpr.class,
+                assertInstanceOf(Ast.BinaryExpr.class, expandedValue(expanded)).left());
+
+        assertNotSame(original, emitted);
+        assertEquals(2, Ast.CheckedOptionDepth.require(emitted));
+        assertEquals(2, Ast.CheckedOptionDepth.require(original));
+    }
 }
