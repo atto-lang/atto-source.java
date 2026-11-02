@@ -48,7 +48,7 @@ History-appending commands require a canonical ASCII command ID and duplicate ID
 
 ## Canonical manifest
 
-`DurableExecutionManifest.analyze(program)` performs durable member analysis and returns immutable canonical UTF-8 JSON bytes plus a SHA-256 digest. The v1 format sorts activity/workflow declarations and operation signatures, preserves workflow command order, binds command IDs and canonical argument payloads, and marks each declaration version. Query entries intentionally omit a history ID.
+`DurableExecutionManifest.analyze(program)` performs durable member analysis and returns immutable canonical UTF-8 JSON bytes plus a SHA-256 digest. The v1 format sorts activity/workflow declarations and operation signatures, binds declaration visibility and complete method signature/effect-shape flags (including parameter names/types/mutability/structural mode, visibility, static/abstract/async/suspends/structural and generic slots), preserves workflow command order, binds command IDs and canonical argument payloads, and marks each declaration version. Query entries intentionally omit a history ID.
 
 The current state schema is explicitly empty. Adding persistent state requires a versioned serializable schema and ownership proof; the manifest must not infer state from ordinary class fields. Unknown or non-canonical command expression nodes are rejected.
 
@@ -59,6 +59,7 @@ The analyzer and manifest are compiler metadata, not a runtime:
 - `TreeShaker` rejects durable declarations until command/state lowering can preserve replay-visible order.
 - `CapabilityChecker` rejects until activity external capabilities and workflow replay-safe effects have a closed admission model.
 - `IncrementalCompiler` rejects the declarations before ABI hashing until the versioned durable manifest is integrated into public ABI and dependency invalidation.
+- `OresCompiler` executable analysis, linked analysis, diagnostic analysis, protected-scalar MIR and dependent build/isolate entry points reject unlowered durable declarations after semantic checking. The lower-level `TypeChecker.checkTypes()` API may be used to inspect member semantics, but it does not grant executable admission.
 - No activity dispatcher, durable history store, deterministic interpreter, worker activation/fencing, persistent timer service, cancellation protocol, idempotency receipt store or crash recovery exists in this phase.
 - A coroutine suspension is not a durable checkpoint. No physical exactly-once effect guarantee is implied.
 
