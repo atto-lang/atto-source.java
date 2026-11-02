@@ -44,7 +44,7 @@ end
 - `SignalCommand`, `QueryCommand`, and `UpdateCommand`: message endpoints. Queries are read-only and do not receive history command IDs.
 - `ChildWorkflowCommand`, `ContinueAsNewCommand`, and `CompensationCommand`.
 
-History-appending commands require a canonical ASCII command ID and duplicate IDs are rejected within a workflow. The semantic analyzer resolves activity operation targets by exact member name/arity, checks child-workflow targets, and verifies signal/query/update endpoint names. Argument expressions are constrained to a deterministic canonical serialization subset by manifest encoding. Source grammar for emitting these nodes and expression-context binding remain future work; current AST producers can construct them directly.
+History-appending commands require a canonical ASCII command ID and duplicate IDs are rejected within a workflow. The semantic analyzer resolves fully-qualified/local activity and child-workflow targets and rejects ambiguous unqualified names; it binds activity operations and message endpoints by exact member name/arity. Command payload expressions are re-homed into checker-only synthetic methods with the exact `run` parameters and target operation parameter types, then pass the ordinary type and ownership checker. These synthetic methods are never retained in the program. `TimerCommand.delay` is currently an integer millisecond value. Query signatures must exactly match their read-only endpoint method. The manifest canonicalizes payload AST and keeps query endpoint descriptors separate from the history command list. Source grammar for emitting these nodes remains future work; current AST producers can construct them directly.
 
 ## Canonical manifest
 
