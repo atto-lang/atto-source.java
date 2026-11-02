@@ -108,4 +108,72 @@ final class AttoSourceAdmissionTest {
                 out, new ByteArrayOutputStream());
         assertEquals("42", out.toString(StandardCharsets.UTF_8));
     }
+    @Test
+    void attoPublicClassConstructorAndMutableReceiverLinkAcrossFiles() throws Exception {
+        Path library = temp.resolve("column.atto");
+        Path entry = temp.resolve("main-column.atto");
+        Files.writeString(library, """
+                pub define class Column as
+                  pub let int value;
+                  pub constructor(int initial) {
+                    self.value = initial;
+                  }
+                  pub fnc advance(mut self)(int delta): int {
+                    self.value = self.value + delta;
+                    return self.value;
+                  }
+                end
+                """);
+        Files.writeString(entry, """
+                import class Column from "./column.atto";
+                pub fnc main(): void {
+                  let Column column = new Column(40);
+                  stdio.stdout.write(column.advance(2));
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void attoOwnedIntegerArrayAndOptionCompileThroughGuestPipeline() throws Exception {
+        // A narrow slice of the cache's actual source semantics, without
+        // transferring the private full cache source into this repository.
+        Path library = temp.resolve("tiny-column.atto");
+        Path entry = temp.resolve("main-tiny-column.atto");
+        Files.writeString(library, """
+                pub define class TinyColumn as
+                  let mut Array<int> slots = new Array<int>();
+                  pub fnc add(mut self)(int value): void {
+                    self.slots.add(value);
+                    return;
+                  }
+                  pub peek(): Option<int> {
+                    if self.slots.size() == 0; then
+                      return None;
+                    fi
+                    return Some(self.slots.get(0));
+                  }
+                end
+                """);
+        Files.writeString(entry, """
+                import class TinyColumn from "./tiny-column.atto";
+                pub fnc main(): void {
+                  let TinyColumn column = new TinyColumn();
+                  column.add(42);
+                  stdio.stdout.write(column.peek().unwrap());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
 }

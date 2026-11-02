@@ -19,3 +19,11 @@ This is source admission only: it is not proof of the LRU cache's `critical fnc`
 - A malformed UTF-8 **transitive** `.atto` import fails through the bounded reader, even when the entrypoint itself is valid. This disallows source-admission bypass by dependencies.
 
 These tests are committed but **not executed** while GitHub jobs report `steps=null`.
+## Cache-semantic guest admission probes
+
+Two additional **real linked-guest JUnit candidates** exercise source constructs used by the LRU library, while keeping the private library tree in its own repository:
+
+1. `attoPublicClassConstructorAndMutableReceiverLinkAcrossFiles` imports a public `.atto` class, initializes a constructor-owned field, mutates it via `fnc advance(mut self)(...)` and must emit `42`.
+2. `attoOwnedIntegerArrayAndOptionCompileThroughGuestPipeline` uses an owned `Array<int>` column, `add/get/size`, `Option<int>`, `Some/None`, and `unwrap` in a second `.atto` class import. It must emit `42`.
+
+The test names are proposals until actual stepful Maven/Graal execution; they do not establish current compatibility or eliminate the broader seven-fixture LRU gate.
