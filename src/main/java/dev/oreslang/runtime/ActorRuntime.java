@@ -8082,17 +8082,15 @@ public final class ActorRuntime implements AutoCloseable {
             // Finalize only after source scheduler physical quiescence and
             // exactly-once lexical release. A leaked owner is a quarantine
             // incident, not permission to reclaim an actor heap.
-            if (criticalGate != null) {
-                if (!criticalGate.quiescent()) {
-                    sourceStopCleanupAborted = true;
-                    recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
-                            "actor critical ticket or waiter outlived source cleanup; quarantine actor state"));
-                    lifecycleLock.notifyAll();
-                    return;
-                }
-                // The gate is idle: retirement has no Future subscribers to
-                // invoke while the lifecycle monitor is held.
-                criticalGate.retire();
+            if (criticalGate != null && !criticalGate.retireIfQuiescent()) {
+                // Check and retire are one atomic gate-metadata operation.
+                // An externally retained host reference cannot acquire a
+                // ticket in the gap between an idle check and STOP fencing.
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor critical ticket or waiter outlived source cleanup; quarantine actor state"));
+                lifecycleLock.notifyAll();
+                return;
             }
             finalized = true;
             sourceScheduler = null;
