@@ -6835,6 +6835,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof java.math.BigDecimal
                     || value instanceof java.util.UUID
                     || value instanceof dev.oreslang.runtime.OresSymbol
+                    || value instanceof OptionUnwrapError
                     || value instanceof Complex
                     || value instanceof ActorRuntime.ActorId
                     || value instanceof ActorRuntime.ActorRef<?>) {
