@@ -60,3 +60,29 @@ canonical typed expansion plan.
 
 **This proposal intentionally does NOT add an allowlist row, edit the
 carrier contracts, claim approval, or transfer any private Java source.**
+
+## Rebase preservation matrix (review required; no bulk file overwrite)
+
+| Compiler path | Must preserve from current `main` | Must preserve from macro PR #2049 |
+| --- | --- | --- |
+| `OresCompiler.java` | `compileProtectedScalarI64` and new `ProtectedScalarMirV1` admission | `MacroSourceUnitIdentity.attach`, bounded finite AOT generic/HIR entrypoints |
+| `Lexer.java` / `Token.java` | newer lexical and template/string handling; keyword/token parity | canonical `macro` token and `name!(...)` syntax |
+| `OresEvalRootNode.java` | newer HTTP egress, `Utf8StringAbi` and native runtime hooks | typed macro erasure and no runtime expansion/fallback |
+| `Ast.java` / `Parser.java` | current parser/AST semantics for native scalar and template features | `MacroDecl`, typed macro invocation nodes, compile-time AST hygiene/provenance |
+| `TypeChecker.java` / `LinkedProgramRunner.java` | current type/ownership/runtime contracts | phase ordering: expand before semantic checks, enforce no runtime `Syntax<T>` |
+
+The seven exact overlapping source paths require **3-way semantic** review against
+merge base `f40b9c3a3b5b4691eb4f4a5d5d0558a112f237aa`. A clean textual
+merge alone is insufficient if type AST or native lowering semantics change.
+Do not add `compileProtectedScalarI64` to the older macro branch without
+also bringing its corresponding implementation and AST dependencies.
+
+Validation must include at least:
+- Existing protected scalar MIR and native transport/UTF-8 tests from main;
+- Macro parser, typed AST identities, incremental ABI cache, template budget,
+  hygiene, ownership, capability leakage and unquote repetition regressions;
+- End-to-end JVM/JUnit and program-specific guest Native Image (not interpreter
+  Native Image) proof on exact reconciled head.
+
+The existing source branch is left unchanged until this merge can be compiled
+under an admitted source-local runner or separately approved private carrier.
