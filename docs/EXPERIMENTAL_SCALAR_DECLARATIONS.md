@@ -1,13 +1,13 @@
 # Experimental executable `define state container` and `define virtual actor` (i64 slice)
 
-**Status:** JVM VM-only + restricted source compiler. This is **not** the standard `Parser.parse`/typed HIR/MIR path, not source-module linking, and not supported by LLVM, Wasm, Forge, or .NET. It does not imply general guest language or AOT parity.
+**Status:** JVM VM-only and opt-in restricted **production AST → typed i64 MIR** admission (`ProtectedScalarMirV1`). It uses the normal `Parser.parse` declarations, but **does not run the general `TypeChecker`/`OwnershipChecker` or normal backend code generation**, and is not available on LLVM, Wasm, Forge, or .NET. No general guest language, actor runtime, or AOT parity is claimed.
 
 ## Supported syntax
 
-- One `define state container Name as ... end` **or** one `define virtual actor Name as ... end` per source unit; optional `pub` immediately after `define`.
+- One `define state container Name as ... end` **or** one `define virtual actor Name as ... end` per source unit; `define pub` and `pub define` are parsed.
 - Exactly one owned `state { let int field: signed_i64; }` scalar field.
 - Exactly one single-`int`-parameter method with a checked addition guarded by `handle_state(critical-write |s| -> ...)`. A state-container method returns `int`; a virtual actor method returns `void`.
-- No other statements, imports, nesting, declarations, unsafe references, async work, or trait inheritance are admitted. All token sequences must be consumed; unsupported guest syntax fails closed with `SCALAR_DECLARATION_UNSUPPORTED`.
+- No other statements, imports, nesting, declarations, unsafe references, async work, or trait inheritance are admitted. All token sequences must be consumed; unsupported guest syntax fails closed at parsing or with `PROTECTED_MIR_UNSUPPORTED`.
 - The method field, parameter and critical guard variables must match exactly. Adds use `Math.addExact`, so overflow raises `ArithmeticException` without changing the scalar state.
 - Virtual actors are local and ephemeral, keyed by normalized logical string identity; their serial mailbox admission is bounded. Each message is a signed i64. A failure notifies an injected callback and explicitly settles accepted tickets; this is not yet the real actor supervisor priority CONTROL dispatcher.
 
@@ -25,11 +25,11 @@ java -cp <classes> dev.oreslang.compiler.ScalarDeclarationI64Cli \
 # processed=2
 ```
 
-The standalone CLI prints the final scalar for the state container and admitted/completed message count for the virtual actor. It does not print or persist virtual actor internal state. Source budget is 8 KiB / 256 tokens and CLI accepts 1–64 i64 arguments.
+The standalone CLI prints the final scalar for the state container and admitted/completed message count for the virtual actor. It does not print or persist virtual actor internal state. Source budget is 8 KiB; the opt-in MIR requires one method containing at most 96 tokens, and the CLI accepts 1–64 i64 arguments.
 
 ## Execution boundaries
 
-- `ScalarDeclarationI64Compiler` uses the production Java `Lexer` to parse a **separate experimental grammar**; it never skips unknown guest statements.
+- `ProtectedScalarMirV1` reads the **production `Parser` AST** and type-checks one i64 state field and a single fully consumed guarded addition body, producing `ACQUIRE_WRITE`, `LOAD_STATE_I64`, `CHECKED_ADD_I64`, `STORE_STATE_I64`, `RELEASE_WRITE`, and return instructions. Its JVM implementation uses the checked atomic `ScalarStateContainer.tryAddChecked`, which releases its write lease on all exits. The old `ScalarDeclarationI64Compiler` remains a compatibility-only experimental component.
 - `ScalarStateContainer` stores only one native Java `long`, so there are no nested object aliases. The `StateContainerAccessGate` enforces compatible read leases and exclusive write leases; shutdown revokes authority before any new mutation.
 - `LocalVirtualActorI64` executes one mailbox turn at a time when the embedding runtime explicitly calls `run_one`. It requires two-phase activation publication, logical identity fencing and explicit completion disposition. No separate carrier pool is spawned.
 - Handler failures emit a notice through an injected host callback; if notice publication fails, the accepted work remains unsettled and shutdown refuses to forget it. These are provisional local control semantics, not validated supervisor CONTROL priority.
@@ -37,6 +37,6 @@ The standalone CLI prints the final scalar for the state container and admitted/
 
 ## Tests and promotion gate
 
-- `ScalarDeclarationI64CompilerTest` and `ExecutableVirtualActorStateContainerTest` cover source execution, checked scalar state, key reactivation, failures and fail-closed negative cases.
-- Exact-blob private-runner receipts exercise the executable VM classes and the lexer-backed source compiler under JDK 21; these are narrow proof only.
-- Before general language promotion: add first-class AST/HIR/MIR declaration nodes, type checker/borrow-checker guarded heap access, actor scheduling and priority CONTROL integration, a source-module callable binder, and executable conformance evidence on Java, LLVM, Wasm, Forge and .NET. The existing compiler `Parser.parse` admission rejection must remain in place until those gates pass.
+- `ProtectedDeclarationAstAdmissionTest`, `ProtectedScalarMirV1Test`, `ScalarDeclarationI64CompilerTest`, and `ExecutableVirtualActorStateContainerTest` cover normal AST structure, restricted MIR, checked scalar state, key reactivation, failures and fail-closed negative cases.
+- Exact-blob private-runner receipts exercise the production AST, typed scalar MIR, guarded VM classes, and both `.atto` CLI examples under JDK 21; these remain narrow proofs, not a complete project Maven/JUnit or AOT run.
+- Before general language promotion: lower arbitrary guarded method AST into typed HIR/MIR, prove nested heap ownership/borrow lifetimes, integrate production actor scheduling and priority CONTROL, add source-module callable binding and execute the same conformance cases on Java, LLVM, Wasm, Forge, and .NET. The **general TypeChecker rejection remains active** until those proofs and backends exist.
