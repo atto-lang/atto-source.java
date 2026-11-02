@@ -27,13 +27,15 @@ command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 # empty suites; we additionally inspect the exact suite reports below.
 suites=(
   dev.oreslang.SourceActorPubSubExecutionTest
+  dev.oreslang.ChannelCallableTransportTest
+  dev.oreslang.ChannelDataOnlyRuntimeAdmissionTest
   dev.oreslang.runtime.ActorPubSubV1ContractTest
   dev.oreslang.runtime.ActorPubSubConcurrencyTest
   dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest
   dev.oreslang.runtime.SourceActorPubSubTest
 )
 # Maven's selection is explicit, while reports are checked by full class name.
-selection="SourceActorPubSubExecutionTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
+selection="SourceActorPubSubExecutionTest,ChannelCallableTransportTest,ChannelDataOnlyRuntimeAdmissionTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
 
