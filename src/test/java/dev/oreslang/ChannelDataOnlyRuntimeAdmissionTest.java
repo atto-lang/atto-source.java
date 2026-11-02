@@ -212,6 +212,21 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
     }
 
     @Test
+    void rejectsHostileCollectionSizesBeforeAnyValueReadsOrAllocation() {
+        java.util.concurrent.atomic.AtomicInteger reads =
+                new java.util.concurrent.atomic.AtomicInteger();
+        List<Object> forged = new java.util.AbstractList<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public Object get(int index) {
+                reads.incrementAndGet();
+                return 1L;
+            }
+        };
+        reject(forged);
+        assertEquals(0, reads.get(), "size budget must fail before any indexed reads");
+    }
+
+    @Test
     void rejectsNullAsNotAnOption() {
         reject(null);
     }
