@@ -6804,12 +6804,15 @@ public final class OresEvalRootNode extends RootNode {
          */
         private static void requireDataOnlyChannelPayload(Object value) {
             requireDataOnlyChannelPayload(
-                    value, new IdentityHashMap<>(), 0);
+                    value, new IdentityHashMap<>(), new int[] {0}, 0);
         }
 
         private static void requireDataOnlyChannelPayload(
-                Object value, IdentityHashMap<Object, Boolean> visiting, int depth) {
-            if (depth > 128 || visiting.size() > 65536) {
+                Object value, IdentityHashMap<Object, Boolean> visiting,
+                int[] nodes, int depth) {
+            // The active-path size is not a total node bound: a flat list of
+            // millions of scalars would previously bypass that accounting.
+            if (depth > 128 || ++nodes[0] > 65536) {
                 throw new IllegalArgumentException(
                         "channel payload exceeds safe data graph limits");
             }
@@ -6848,34 +6851,34 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 if (value instanceof OptionValue option) {
                     if (option.present()) {
-                        requireDataOnlyChannelPayload(option.value(), visiting, depth + 1);
+                        requireDataOnlyChannelPayload(option.value(), visiting, nodes, depth + 1);
                     }
                 } else if (value instanceof ResultValue result) {
-                    requireDataOnlyChannelPayload(result.value(), visiting, depth + 1);
+                    requireDataOnlyChannelPayload(result.value(), visiting, nodes, depth + 1);
                 } else if (value instanceof ReadonlyRecordValue record) {
-                    requireDataOnlyChannelPayload(record.fields, visiting, depth + 1);
+                    requireDataOnlyChannelPayload(record.fields, visiting, nodes, depth + 1);
                 } else if (value instanceof OresObject object) {
                     for (Object field : object.fields.values()) {
-                        requireDataOnlyChannelPayload(field, visiting, depth + 1);
+                        requireDataOnlyChannelPayload(field, visiting, nodes, depth + 1);
                     }
                 } else if (value instanceof List<?> list) {
                     for (Object field : list) {
-                        requireDataOnlyChannelPayload(field, visiting, depth + 1);
+                        requireDataOnlyChannelPayload(field, visiting, nodes, depth + 1);
                     }
                 } else if (value instanceof Set<?> set) {
                     for (Object field : set) {
-                        requireDataOnlyChannelPayload(field, visiting, depth + 1);
+                        requireDataOnlyChannelPayload(field, visiting, nodes, depth + 1);
                     }
                 } else if (value instanceof Map<?, ?> map) {
                     for (Map.Entry<?, ?> entry : map.entrySet()) {
-                        requireDataOnlyChannelPayload(entry.getKey(), visiting, depth + 1);
-                        requireDataOnlyChannelPayload(entry.getValue(), visiting, depth + 1);
+                        requireDataOnlyChannelPayload(entry.getKey(), visiting, nodes, depth + 1);
+                        requireDataOnlyChannelPayload(entry.getValue(), visiting, nodes, depth + 1);
                     }
                 } else if (value.getClass().isArray()) {
                     int length = java.lang.reflect.Array.getLength(value);
                     for (int i = 0; i < length; i++) {
                         requireDataOnlyChannelPayload(
-                                java.lang.reflect.Array.get(value, i), visiting, depth + 1);
+                                java.lang.reflect.Array.get(value, i), visiting, nodes, depth + 1);
                     }
                 } else {
                     throw new IllegalArgumentException(
