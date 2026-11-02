@@ -454,6 +454,30 @@ public final class ChannelRuntime {
             return cases;
         }
 
+        /**
+         * Guest dynamic selects must detach each write payload before arming.
+         * Reusing the same AtomicLong fairness cursor preserves the existing
+         * priority/fairness sequence across immutable snapshots.
+         * The source interpreter supplies a fail-closed MessageData detacher.
+         */
+        @SuppressWarnings("unchecked")
+        public SelectSet snapshotWritePayloads(
+                java.util.function.Function<Object, Object> detach) {
+            Objects.requireNonNull(detach, "write payload detacher");
+            ArrayList<SelectCase> snapshot = new ArrayList<>(cases.size());
+            for (SelectCase candidate : cases) {
+                if (candidate instanceof WriteCase<?> write) {
+                    Object detached = Objects.requireNonNull(detach.apply(write.value()),
+                            "channel write snapshot cannot be null");
+                    snapshot.add(new WriteCase<>(
+                            (Channel<Object>) write.channel(), detached));
+                } else {
+                    snapshot.add(candidate);
+                }
+            }
+            return new SelectSet(snapshot, fairCursor);
+        }
+
         public OresFuture<SelectResult> selectAsync() {
             return selectAsync(SelectPolicy.FAIR);
         }
