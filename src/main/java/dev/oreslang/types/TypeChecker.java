@@ -199,13 +199,17 @@ public final class TypeChecker {
     }
 
     /** Validate typing independently of the ownership epoch and AST identity. */
-    public static synchronized void requireCriticalTypeProof(Ast.Program program) {
+    public static synchronized long requireCriticalTypeProof(Ast.Program program) {
         expungeCriticalTypeProofs();
         Long proof = CRITICAL_TYPE_PROOFS.get(new CriticalTypeProofKey(program, false));
         if (proof == null || proof <= 0) {
             throw new IllegalStateException(
                     "critical execution requires successfully type-checked exact Program");
         }
+        // The numeric generation is not itself an admission capability.
+        // The AST permit must match it so successful subsequent retyping
+        // cannot resurrect permissions from an earlier ownership pass.
+        return proof;
     }
 
     public static Ast.Program check(Ast.Program program) {
