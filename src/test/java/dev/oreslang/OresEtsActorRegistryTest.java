@@ -387,14 +387,21 @@ final class OresEtsActorRegistryTest {
                     executorField.get(null);
             var taskField = OresEtsActorRegistry.class.getDeclaredField("reaperTask");
             taskField.setAccessible(true);
+            var countField = OresEtsActorRegistry.class.getDeclaredField("ACTIVE_HOST_REGISTRIES");
+            countField.setAccessible(true);
+            var active = (java.util.concurrent.atomic.AtomicInteger) countField.get(null);
+            int baseline = active.get();
             for (int i = 0; i < 48; i++) {
                 var registry = new OresEtsActorRegistry(runtime, 1);
                 var task = (java.util.concurrent.ScheduledFuture<?>) taskField.get(registry);
                 try {
+                    assertEquals(baseline + 1, active.get());
                     assertEquals(0, registry.liveTableCount());
                 } finally {
                     registry.close();
                 }
+                registry.close(); // idempotent, must not double-refund quota
+                assertEquals(baseline, active.get());
                 assertTrue(task.isCancelled());
                 assertFalse(executor.getQueue().contains(task),
                         "closed registry must not leave a scheduled task in the shared queue");
