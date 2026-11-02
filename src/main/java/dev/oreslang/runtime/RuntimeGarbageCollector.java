@@ -323,7 +323,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             int maxEntriesToInspect) {
         int before = requestedDomain == null
                 ? tracked.size()
-                : trackedByDomain.getOrDefault(requestedDomain, Set.of()).size();
+                : domainSize(requestedDomain);
         int inspected = 0;
         int cleanedCount = 0;
         int cleanupFailures = 0;
@@ -474,7 +474,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
 
         int after = requestedDomain == null
                 ? tracked.size()
-                : trackedByDomain.getOrDefault(requestedDomain, Set.of()).size();
+                : domainSize(requestedDomain);
         return new CollectionReport(
                 requestedDomain == null ? "process" : "actor",
                 collections.incrementAndGet(),
@@ -492,6 +492,13 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
      * A deletion removes the entry from its bucket immediately, so no stale
      * serial cursor or uncleared queue node can pin completed actor resources.
      */
+    private int domainSize(Object domain) {
+        synchronized (lifecycleLock) {
+            LinkedHashSet<TrackedCleanup> entries = trackedByDomain.get(domain);
+            return entries == null ? 0 : entries.size();
+        }
+    }
+
     private TrackedCleanup nextDomainEntry(Object domain) {
         synchronized (lifecycleLock) {
             LinkedHashSet<TrackedCleanup> entries = trackedByDomain.get(domain);
