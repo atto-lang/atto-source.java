@@ -4,8 +4,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -75,7 +75,17 @@ public final class OresEtsActorRegistry implements AutoCloseable {
     private final int maxTables;
     private final Object admissionLock = new Object();
     private final Map<TableId<?, ?>, Entry> entries = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService reaper;
+    /**
+     * One supervisor-owned daemon reaper across all host registries. Never
+     * create a carrier or background thread per table/registry. Cancellation
+     * removes periodic tasks immediately, avoiding an unbounded cancelled
+     * task queue when registries are repeatedly created and retired.
+     */
+    private static final ScheduledThreadPoolExecutor HOST_REAPER =
+            new ScheduledThreadPoolExecutor(1,
+                    Thread.ofPlatform().daemon(true).name("ores-ets-host-reaper").factory());
+    static { HOST_REAPER.setRemoveOnCancelPolicy(true); }
+    private final ScheduledFuture<?> reaperTask;
     private final AtomicBoolean closed = new AtomicBoolean();
 
     public OresEtsActorRegistry(ActorRuntime runtime, int maxTables) {
@@ -85,11 +95,11 @@ public final class OresEtsActorRegistry implements AutoCloseable {
             throw new IllegalArgumentException("maxTables must be 1..4096");
         }
         this.maxTables = maxTables;
-        // One bounded supervisor cleanup lane per registry. A completion
-        // callback must NEVER park an actor carrier or clear a CHM inline.
-        reaper = Executors.newSingleThreadScheduledExecutor(
-                Thread.ofPlatform().daemon(true).name("ores-ets-reaper").factory());
-        reaper.scheduleWithFixedDelay(this::safeReap, 100, 100, TimeUnit.MILLISECONDS);
+        // One shared cleanup carrier for all trusted host registries.
+        // Actor completion callbacks only mark a table retired and never
+        // synchronously call CHM.clear or wait for this daemon thread.
+        reaperTask = HOST_REAPER.scheduleWithFixedDelay(
+                this::safeReap, 100, 100, TimeUnit.MILLISECONDS);
     }
 
     private static void requireHost() {
@@ -291,7 +301,7 @@ public final class OresEtsActorRegistry implements AutoCloseable {
     public void close() {
         requireHost();
         if (!closed.compareAndSet(false, true)) return;
-        reaper.shutdown();
+        reaperTask.cancel(false);
         synchronized (admissionLock) {
             reapLocked();
         }
