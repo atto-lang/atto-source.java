@@ -58,7 +58,7 @@ Host-only, no external libraries (Java 21):
 mkdir -p /tmp/atto-live-mcp-classes
 javac --release 21 -d /tmp/atto-live-mcp-classes \
   src/main/java/dev/oreslang/runtime/devtools/LiveMcpServer.java \
-  tools/live-mcp-smoke/Smoke.java \\
+  tools/live-mcp-smoke/Smoke.java \
   tools/live-mcp-smoke/DiscoverySmoke.java
 java -cp /tmp/atto-live-mcp-classes dev.oreslang.runtime.devtools.Smoke
 java -cp /tmp/atto-live-mcp-classes dev.oreslang.runtime.devtools.DiscoverySmoke
