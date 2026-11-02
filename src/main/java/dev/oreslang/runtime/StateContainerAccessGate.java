@@ -57,6 +57,17 @@ public final class StateContainerAccessGate implements AutoCloseable {
         synchronized (monitor) { return closed; }
     }
 
+    /**
+     * Reclamation is safe only after shutdown AND all existing readers/writer
+     * have physically released their grants. An owner must also establish
+     * that no separate raw references or in-flight guest turns remain.
+     */
+    public boolean leasesQuiescentAfterClose() {
+        synchronized (monitor) {
+            return closed && writer == null && readers == 0;
+        }
+    }
+
     public final class Lease implements AutoCloseable {
         private final Mode mode;
         private final long version;
