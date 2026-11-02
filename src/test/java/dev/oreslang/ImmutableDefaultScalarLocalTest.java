@@ -69,6 +69,29 @@ final class ImmutableDefaultScalarLocalTest {
         }) rejected(body);
     }
 
+    @Test void readonlyRuntimeInitializerFromHelperIsNotACopyOfConstSyntax()
+            throws Exception {
+        String source = """
+                fnc increment(int p): int { return p + 1; }
+                pub fnc main(): void {
+                    int computed = increment(41);
+                    stdio.println(computed);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        var program = Source.newBuilder(OresLanguage.ID, source,
+                "readonly-runtime-helper.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertDoesNotThrow(() -> context.eval(program));
+        }
+        assertEquals("42" + System.lineSeparator(),
+                output.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void actualGraalGuestRunsImmutableDefaultBindings() throws Exception {
         // Unlike check-only assertions, each case evaluates Oreslang guest
         // source through the real Truffle language, capturing actual output.
