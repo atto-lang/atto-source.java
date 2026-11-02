@@ -109,9 +109,12 @@ The source compiler now admits only `critical { ... }` within a
    incarnation after resumption, and releases the ticket on lexical completion
    or authenticated cancellation cleanup.
 
-The candidate native Oreslang guest source is
-`examples/critical-actor-checked-v1.ores`; it must emit `42` under the
-`CriticalActorGuestExecutionTest` JVM/Graal test.
+The candidate native Oreslang guest sources are
+`examples/critical-actor-checked-v1.ores` (expected `42`) and
+`examples/critical-actor-early-return-v1.ores` (expected `returned`, followed
+by actor STOP/physical cleanup), exercised by the
+`CriticalActorGuestExecutionTest` JVM/Graal test. Shared parity copies are
+recorded in the common-source v1 contract and match both Java guest bodies.
 
 **Not admitted:** non-actor/free-function critical, critical declaration
 modifiers, `try critical`, direct actor-state field mutation and any
