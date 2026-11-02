@@ -3,7 +3,7 @@
 Status: **CANDIDATE ONLY — no authorization to transfer private source**.
 Owner: `ores-truffle-oreslang/oreslang-source.java`.
 Target compiler PR: #2049, reviewed candidate head
-`d2d0ba9b4ddb14167e6e7bbdd6fd3904419fa2b7`.
+`c97fd5e093059ffcc56ac4fa50b4c1d74fe1c9cc`.
 
 ## Candidate destination (must be independently approved)
 
@@ -48,8 +48,8 @@ Target compiler PR: #2049, reviewed candidate head
 
 ## Current exact candidate snapshot (2026-11-02 20:05 UTC)
 
-- PR #2049 exact head: `de6fbd8eaa2aac11f6059b0da9b2abc2682961b0`.
-- Source root tree: `812c9b9610dd7a99eadfac58c5ad864a3022b629`.
+- PR #2049 exact head: `c97fd5e093059ffcc56ac4fa50b4c1d74fe1c9cc`.
+- Source root tree: `7138e283c1daa49f94741a767041a251aea01cf0`.
 - New source change closes the identified unquote AST-identity alias: ordinary name/scalar literal leaves are cloned with both `Ast.copyCheckedMetadata()` and `MacroSyntaxProvenance.copyOrigins()`; composite and compiler-internal syntax now fail closed pending an exhaustive copier.
 - Three JUnit regressions were added in `MacroUnquoteIdentityIsolationTest`; none has executed yet. The exact updated head again triggered private source-org workflows with `steps=null` (fast-ci run 41516500420; ci run 41516500427; Native Oreslang CLI run 41516500570; Rust-only run 41516500415). Source-org private Actions admission issue #963 remains open.
 - Source-free carrier run [41395135081](https://github.com/scintilla-run/scintilla-e2e/actions/runs/41395135081) completed eight hosted workflow steps and reports 73/73 Node contract assertions passed. This is carrier/contract evidence only, not private Java-source, JUnit, or guest-AOT evidence.
@@ -69,7 +69,7 @@ No private Java source was checked out or mirrored. Source `main` was last direc
 
 ## Fresh seven-file semantic reconciliation notes (2026-11-02)
 
-These observations compare the current source `main` blobs with macro PR #2049 head `d2d0ba9b4ddb14167e6e7bbdd6fd3904419fa2b7`. They are deliberately not a textual merge:
+These observations compare the current source `main` blobs with macro PR #2049 head `c97fd5e093059ffcc56ac4fa50b4c1d74fe1c9cc`. They are deliberately not a textual merge:
 
 | File | Current-main behavior to retain | Macro-branch behavior to retain / reconciliation rule |
 | --- | --- | --- |
@@ -122,3 +122,20 @@ Validation must include at least:
 
 The existing source branch is left unchanged until this merge can be compiled
 under an admitted source-local runner or separately approved private carrier.
+
+
+## Exact-head follow-up: bounded composite unquote copier (2026-11-02 20:22 UTC)
+
+Java macro PR #2049 has progressed to `c97fd5e093059ffcc56ac4fa50b4c1d74fe1c9cc`, root tree `7138e283c1daa49f94741a767041a251aea01cf0`.
+
+The source fix now performs a bounded recursive clone of a narrow expression allowlist for caller-supplied `Syntax<Expr>`: ordinary identifiers, immutable scalar literals, unary/binary/assignment/conditional expressions, spreads, member/index access, calls, runtime calls, object construction, await, lists, tuples and non-explicit-struct objects. It checks maximum nodes/depth, rejects internal/authority-bearing identifier metadata and unsupported expression types, and copies both central checker metadata and prior macro provenance for every fresh node. No alias-by-reference fallback remains.
+
+`MacroUnquoteIdentityIsolationTest` now contains four cases:
+- deep-copy composite binary syntax; assert fresh root/child identities and preserved prior provenance at both levels;
+- scalar identity/provenance copy;
+- unsupported syntax rejection with no aliasing;
+- identity/provenance isolation across independent expansions.
+
+All four are authored and **NOT EXECUTED**. The exact head again hit source-org runner admission failures: Rust-only `41518243860` job `125527240142`; fast-ci `41518243965` job `125527240798`; Native CLI `41518243942` job `125527240862`; CI `41518243905` jobs `125527242689`, `125527243037`, `125527243232`, `125527243245`, `125527243327`. All jobs report `steps=null`.
+
+The alternate private Scintilla carrier has successfully executed source-free Node 73/73, JDK25 Maven/JUnit 3/3, and GraalVM 25 Native Image compile+execute. No Java compiler source was checked out there. Keep export blocked and both PRs draft until main branch protection and exact independent authorization are satisfied, then execute the actual candidate source at the pinned tree.
