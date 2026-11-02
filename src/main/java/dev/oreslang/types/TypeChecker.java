@@ -4892,7 +4892,12 @@ public final class TypeChecker {
                     "HttpResponseDraft", "HttpClientResponse", "HttpClientBody",
                     "NetworkCodec", "ActorMessageCodec", "Pointer",
                     "Stream", "Observable" -> { return true; }
-            case "ActorRef" -> { return false; }
+            case "ActorRef" -> {
+                // The exception is for a verified typed actor address, not
+                // an opaque nominal value that happens to be named ActorRef.
+                actorClassForRef(named);
+                return false;
+            }
             default -> { }
         }
         for (Type argument : named.arguments()) {
