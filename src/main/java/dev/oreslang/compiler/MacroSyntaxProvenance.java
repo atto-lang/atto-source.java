@@ -140,6 +140,25 @@ public final class MacroSyntaxProvenance {
     }
 
     /**
+     * Preserve prior compiler-issued provenance when a supported syntax leaf
+     * is copied to a fresh AST identity. Composite copying is intentionally
+     * handled by the expander's bounded admission, not by this metadata helper.
+     */
+    public static synchronized void copyOrigins(Ast.Expr source, Ast.Expr target) {
+        java.util.Objects.requireNonNull(source, "source syntax expression");
+        java.util.Objects.requireNonNull(target, "copied syntax expression");
+        if (source == target) {
+            throw new IllegalArgumentException("syntax provenance copy requires a fresh AST identity");
+        }
+        expunge();
+        List<Origin> origins = ORIGINS.get(new IdentityKey(source, null));
+        if (origins == null || origins.isEmpty()) return;
+        for (Origin origin : origins) {
+            record(target, origin);
+        }
+    }
+
+    /**
      * Attach one successful expansion origin to the complete emitted subtree.
      * Nested expansion origins are preserved and the outer origin is appended.
      * The class monitor is held for the full traversal so concurrent diagnostic
