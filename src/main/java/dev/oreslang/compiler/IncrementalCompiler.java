@@ -158,7 +158,11 @@ public final class IncrementalCompiler {
         LinkedHashMap<String, Ast.ClassDecl> linked = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
-            if (imported.kind() != Ast.ImportKind.CLASS || imported.wildcard()) continue;
+            if (imported.wildcard()
+                    || (imported.kind() != Ast.ImportKind.CLASS
+                            && imported.kind() != Ast.ImportKind.MODULE)) {
+                continue;
+            }
             String sourceId = ImportGraph.resolveImportUnitId(
                     unitId, imported, parsed.keySet(), importResolutions);
             if (sourceId == null) continue; // external resolution remains opaque
@@ -166,6 +170,42 @@ public final class IncrementalCompiler {
             if (source == null) {
                 throw new IllegalArgumentException("missing linked class source '" + sourceId + "'");
             }
+
+            if (imported.kind() == Ast.ImportKind.MODULE) {
+                for (String sourceModuleName : imported.names()) {
+                    String localModuleName = ImportRules.localName(imported, sourceModuleName);
+                    Ast.ModuleDecl selected = source.modules().stream()
+                            .filter(module -> module.name().equals(sourceModuleName))
+                            .findFirst()
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "missing linked module '" + sourceModuleName
+                                            + "' in source unit '" + sourceId + "'"));
+                    LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
+                    for (Ast.Decl companion : selected.declarations()) {
+                        if (companion instanceof Ast.TypeAliasDecl alias
+                                && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate type alias in linked module: " + alias.name());
+                        }
+                    }
+                    Map<String, Ast.TypeAliasDecl> classAliases = Map.copyOf(moduleAliases);
+                    for (Ast.Decl declaration : selected.declarations()) {
+                        if (!(declaration instanceof Ast.ClassDecl klass)
+                                || klass.visibility() != Ast.Visibility.PUBLIC
+                                || klass.actorKind() != Ast.ActorKind.NONE) {
+                            continue;
+                        }
+                        String qualifiedName = localModuleName + "." + klass.name();
+                        if (linked.putIfAbsent(qualifiedName, klass) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate linked public class namespace '" + qualifiedName + "'");
+                        }
+                        aliases.put(qualifiedName, classAliases);
+                    }
+                }
+                continue;
+            }
+
             for (String name : imported.names()) {
                 Ast.ClassDecl resolved = null;
                 Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
@@ -173,7 +213,8 @@ public final class IncrementalCompiler {
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.ClassDecl klass
                                 && klass.name().equals(name)
-                                && klass.visibility() == Ast.Visibility.PUBLIC) {
+                                && klass.visibility() == Ast.Visibility.PUBLIC
+                                && klass.actorKind() == Ast.ActorKind.NONE) {
                             if (resolved != null) {
                                 throw new IllegalArgumentException(
                                         "ambiguous linked public class '" + name + "'");
@@ -191,12 +232,13 @@ public final class IncrementalCompiler {
                         }
                     }
                 }
-                if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
+                String localName = ImportRules.localName(imported, name);
+                if (resolved == null || linked.putIfAbsent(localName, resolved) != null) {
                     throw new IllegalArgumentException(
                             "missing or duplicate public linked class '" + name
                                     + "' in source unit '" + unitId + "'");
                 }
-                aliases.put(name, classAliases);
+                aliases.put(localName, classAliases);
             }
         }
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
