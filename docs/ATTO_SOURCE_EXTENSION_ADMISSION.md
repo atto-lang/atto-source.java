@@ -35,3 +35,15 @@ The Java linked-unit loader now rejects a symbolic-link **leaf file** for a `.at
 ## CI transfer hold
 
 The Java source repository `main` branch reports `protected=false` and status-check enforcement `off`. The source repository remains private. A source-free GraalVM JDK25 carrier test passed in private `usa-acc/usa-acc-e2e`, but security issue #962 has no independently approved destination policy and branch-protection evidence. **Do not mirror private compiler source or treat the carrier canary as authorization.**
+
+## Common-reader Atto source-path hardening (2026-11-02)
+
+The common `BoundedSourceReader` now performs Atto-only, component-by-component symlink rejection before opening an entry or dependency, including intermediate directory aliases. An `NOFOLLOW_LINKS` open also closes the leaf-link window. This applies equally to direct CLI `--check` / `--build-analysis` reads and to linked imports; legacy `.ores` and `.java` source semantics are unchanged.
+
+Three JUnit regressions were added: symlinked parent entrypoint, symlinked imported directory, and direct CLI `--check` denial. A JDK 21 isolated compilation of the reader logic passed 7/7 checks (normal input; symlinked file and parent; invalid UTF-8; NUL; >16 MiB; legacy `.ores` behavior). **This is a source-reader isolation check, not the Maven project suite, a native compiler receipt, or guest execution.**
+
+### Known remaining boundary
+
+Checking ancestor path components before opening a file is *not an atomic resolution guarantee*: an adversary with write permission to parent directories can race directory changes after the check. The leaf open uses `NOFOLLOW_LINKS`, but race-proof ancestor admission still requires an approved secure directory-relative source-root walker (for example a provider supporting `SecureDirectoryStream`) and a fallback policy. Legitimate system-level symlink aliases may also require callers to use their canonical physical path. Keep the security review gate open rather than claiming full race-free traversal.
+
+At exact PR head `2897d19750b6bfffc865b7db9a6ca669a0512af6`, Java Actions `fast-ci` run 41490485954, synthetic CI runner smoke 41490486044, and project manifest run 41490486334 each have a failed job with zero recorded steps. These are **runner-admission failures**, not a JUnit/parser/compiler verdict. Do not bypass private source-transfer holds to use a different organization's Actions minutes.
