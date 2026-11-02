@@ -74,7 +74,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
     private final Function<VirtualActorActivationRegistry.Identity, Turn> factory;
     private final Consumer<Notice> control;
     private final Map<VirtualActorActivationRegistry.Identity, Slot> slots = new HashMap<>();
-    private boolean closed;
+    private volatile boolean closed;
 
     public LocalVirtualActorI64(String domain, String declaration,
                                int maxIdentities, int mailboxCapacity,
