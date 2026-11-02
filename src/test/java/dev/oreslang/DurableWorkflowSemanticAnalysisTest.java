@@ -264,4 +264,94 @@ final class DurableWorkflowSemanticAnalysisTest {
                 .getMessage().contains("WORKFLOW_ACTIVITY_TARGET_AMBIGUOUS"));
     }
 
+
+    @Test
+    void activityOperationAnnotationsAndPrivateOperationsFailClosed() {
+        Ast.Program source = parseValidPair();
+        Ast.ModuleDecl module = source.modules().getFirst();
+        Ast.ActivityDecl old = activity(source);
+        Ast.MethodDecl charge = old.body().methods().stream()
+                .filter(method -> method.name().equals("charge")).findFirst().orElseThrow();
+
+        Ast.MethodDecl annotatedCharge = copyMethod(
+                charge, charge.visibility(), List.of(new Ast.Annotation("Retry", List.of())));
+        Ast.ActivityDecl annotatedActivity = replaceActivityMethod(old, annotatedCharge);
+        Ast.Program annotatedProgram = replaceActivity(source, annotatedActivity);
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> DurableDeclarationAnalyzer.analyze(annotatedProgram)).getMessage()
+                .contains("ACTIVITY_OPERATION_ANNOTATIONS_UNSUPPORTED"));
+
+        Ast.MethodDecl privateCharge = copyMethod(
+                charge, Ast.Visibility.PRIVATE, charge.annotations());
+        Ast.ActivityDecl privateActivity = replaceActivityMethod(old, privateCharge);
+        Ast.Program privateProgram = replaceActivity(source, privateActivity);
+        Ast.WorkflowDecl workflow = workflow(privateProgram);
+        Ast.WorkflowDecl step = new Ast.WorkflowDecl(workflow.body(), workflow.annotations(), List.of(
+                new Ast.ActivityStepCommand("charge-1", "PaymentProvider", "charge",
+                        List.of(new Ast.LiteralExpr(10L)))));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> DurableDeclarationAnalyzer.analyze(replaceWorkflow(privateProgram, step)))
+                .getMessage().contains("WORKFLOW_ACTIVITY_OPERATION_VISIBILITY"));
+    }
+
+    @Test
+    void readOnlyWorkflowEndpointsMustBePublicInstanceMethods() {
+        Ast.Program source = parseValidPair();
+        Ast.WorkflowDecl old = workflow(source);
+        Ast.MethodDecl status = old.body().methods().stream()
+                .filter(method -> method.name().equals("status")).findFirst().orElseThrow();
+        Ast.MethodDecl privateStatus = copyMethod(
+                status, Ast.Visibility.PRIVATE, status.annotations());
+        List<Ast.MethodDecl> methods = old.body().methods().stream()
+                .map(method -> method.name().equals("status") ? privateStatus : method)
+                .toList();
+        Ast.ClassDecl body = copyClassWithMethods(old.body(), methods);
+        Ast.WorkflowDecl query = new Ast.WorkflowDecl(body, old.annotations(), List.of(
+                new Ast.QueryCommand("status",
+                        List.of(new Ast.Param(Ast.TypeRef.simple("int"), "order_id")),
+                        Ast.TypeRef.simple("int"))));
+
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> DurableDeclarationAnalyzer.analyze(replaceWorkflow(source, query)))
+                .getMessage().contains("WORKFLOW_QUERY_ENDPOINT_VISIBILITY"));
+    }
+
+    private static Ast.MethodDecl copyMethod(
+            Ast.MethodDecl original, Ast.Visibility visibility, List<Ast.Annotation> annotations) {
+        return new Ast.MethodDecl(
+                original.name(), visibility, original.isStatic(), original.isAbstract(),
+                original.async(), original.suspends(), original.structural(),
+                original.explicitReceiverType(), original.genericParameters(),
+                original.parameters(), original.returnType(), annotations,
+                original.body(), original.effects());
+    }
+
+    private static Ast.ClassDecl copyClassWithMethods(
+            Ast.ClassDecl original, List<Ast.MethodDecl> methods) {
+        return new Ast.ClassDecl(
+                original.name(), original.visibility(), original.isAbstract(),
+                original.actorKind(), original.genericParameters(), original.parents(),
+                original.interfaces(), original.fields(), original.constructor(),
+                methods, original.actorConcurrency());
+    }
+
+    private static Ast.ActivityDecl replaceActivityMethod(
+            Ast.ActivityDecl original, Ast.MethodDecl replacement) {
+        List<Ast.MethodDecl> methods = original.body().methods().stream()
+                .map(method -> method.name().equals(replacement.name()) ? replacement : method)
+                .toList();
+        return new Ast.ActivityDecl(
+                copyClassWithMethods(original.body(), methods), original.annotations());
+    }
+
+    private static Ast.Program replaceActivity(
+            Ast.Program original, Ast.ActivityDecl replacement) {
+        Ast.ModuleDecl module = original.modules().getFirst();
+        List<Ast.Decl> declarations = module.declarations().stream()
+                .map(declaration -> declaration instanceof Ast.ActivityDecl ? replacement : declaration)
+                .toList();
+        return new Ast.Program(original.namespace(), original.imports(), List.of(
+                new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations)));
+    }
+
 }
