@@ -477,4 +477,96 @@ final class RuntimeGarbageCollectorTest {
         }
     }
 
+
+    @Test
+    void actorExitUsesBoundedQuantumAndLaterMaintenanceReclaimsReachableOwners() throws Exception {
+        AtomicInteger cleanups = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 96; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    gc.track(owner, cleanups::incrementAndGet);
+                }
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(32, cleanups.get(), "actor exit must not synchronously scan all hooks");
+            var later = gc.collectPeriodic();
+            assertEquals(64, later.cleaned());
+            assertEquals(96, cleanups.get());
+            Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
+    void deferredRetirementIsFairAcrossActorsWithLiveOwners() throws Exception {
+        AtomicInteger firstCleanups = new AtomicInteger();
+        AtomicInteger secondCleanups = new AtomicInteger();
+        ArrayList<Object> firstOwners = new ArrayList<>();
+        ArrayList<Object> secondOwners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var first = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 320; i++) {
+                    Object owner = new Object();
+                    firstOwners.add(owner);
+                    gc.track(owner, firstCleanups::incrementAndGet);
+                }
+                context.self().stop();
+            });
+            var second = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 320; i++) {
+                    Object owner = new Object();
+                    secondOwners.add(owner);
+                    gc.track(owner, secondCleanups::incrementAndGet);
+                }
+                context.self().stop();
+            });
+            first.send("stop");
+            second.send("stop");
+            assertTrue(first.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(second.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(32, firstCleanups.get());
+            assertEquals(32, secondCleanups.get());
+            var report = gc.collectPeriodic();
+            assertEquals(256, report.inspected());
+            assertTrue(firstCleanups.get() > 32, "first retired actor must get maintenance");
+            assertTrue(secondCleanups.get() > 32, "second retired actor must not starve");
+            Reference.reachabilityFence(firstOwners);
+            Reference.reachabilityFence(secondOwners);
+        }
+    }
+
+    @Test
+    void poisonedRetiredDomainDoesNotLoopForeverDuringProcessGc() throws Exception {
+        AtomicInteger attempts = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(
+                () -> {}, Duration.ofHours(1), Duration.ofSeconds(1), 8, 8, 8);
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                Object owner = new Object();
+                owners.add(owner);
+                gc.track(owner, () -> {
+                    attempts.incrementAndGet();
+                    throw new IllegalStateException("poisoned cleanup");
+                });
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            int before = attempts.get();
+            var report = gc.collectProcess();
+            assertTrue(report.inspected() <= 8, "process GC has a hard registry-sized retry bound");
+            assertTrue(attempts.get() > before, "poisoned retired cleanup remains retryable");
+            Reference.reachabilityFence(owners);
+        }
+    }
 }
