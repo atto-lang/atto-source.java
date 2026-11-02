@@ -64,10 +64,9 @@ public final class CriticalSectionGate {
             Objects.requireNonNull(scheduler, "trusted scheduler");
             CompletableFuture<Ticket> dispatched = new CompletableFuture<>();
             ready.whenComplete((granted, failure) -> {
-                if (failure != null) {
-                    dispatched.completeExceptionally(failure);
-                    return;
-                }
+                // Deliver cancellation and retirement failures through the
+                // trusted scheduler as well. Exceptional completions may
+                // otherwise run client callbacks directly on the CONTROL lane.
                 // Reject inline/same-carrier executors: they would execute
                 // guest callbacks on the CONTROL/release lane. An executor
                 // which queues work and later drains on the same thread is
@@ -78,10 +77,14 @@ public final class CriticalSectionGate {
                     scheduler.execute(() -> {
                         if (Thread.currentThread() == submissionThread
                                 && insideSubmission.get()) {
-                            cancel();
+                            if (granted != null) cancel();
                             dispatched.completeExceptionally(
                                     new java.util.concurrent.RejectedExecutionException(
                                             "critical scheduler must enqueue, not execute inline"));
+                            return;
+                        }
+                        if (failure != null) {
+                            dispatched.completeExceptionally(failure);
                             return;
                         }
                         CancellationException cancellation = null;

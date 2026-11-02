@@ -169,6 +169,29 @@ public final class CriticalSectionGateStandaloneTest {
             inlineGate.retire();
             check(inlineGate.quiescent(),"inline scheduling left live permit");
 
+            // Cancelled admission is also routed to a control-lane task:
+            // an exceptional completion must not invoke guest observers on
+            // the thread which cancelled or retired a waiter.
+            CriticalSectionGate cancelledGate = new CriticalSectionGate(84,2);
+            var cancelledOwner = cancelledGate.enter(new Object(),84);
+            var pending = cancelledGate.enter(new Object(),84);
+            java.util.ArrayDeque<Runnable> cancelledLane = new java.util.ArrayDeque<>();
+            var cancelledStage = pending.whenReadyOn(cancelledLane::addLast);
+            check(pending.cancel(), "queued cancellation did not succeed");
+            check(cancelledLane.size() == 1, "cancelled continuation not enqueued");
+            check(!cancelledStage.toCompletableFuture().isDone(),
+                    "cancelled continuation completed inline on cancel lane");
+            cancelledLane.removeFirst().run();
+            try {
+                cancelledStage.toCompletableFuture().join();
+                throw new AssertionError("cancellation did not fail scheduler stage");
+            } catch (CancellationException | java.util.concurrent.CompletionException expected) {
+                check(true, "cancelled scheduler notification");
+            }
+            cancelledOwner.execute(() -> {});
+            cancelledGate.retire();
+            check(cancelledGate.quiescent(),"cancelled scheduler delivery leaked lease");
+
             CriticalSectionGate rejectGate = new CriticalSectionGate(82,2);
             var rejectOwner = rejectGate.enter(new Object(),82);
             var rejected = rejectGate.enter(new Object(),82);
