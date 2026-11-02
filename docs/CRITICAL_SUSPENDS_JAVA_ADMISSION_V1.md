@@ -142,6 +142,30 @@ pushed, but neither compilation nor actual runtime results are established.
 Do not mark this as a portable feature or merge without exact-head
 stepful Java guest evidence, then LLVM/.NET/Wasm/Cranelift parity.
 
+## Exact-Program typing provenance and partial-publication hold (2026-11-02)
+
+The restricted actor-only critical candidate now requires a **successful
+independent TypeChecker proof** in addition to the ownership epoch and exact
+critical AST / Program identity. The typing ledger uses weak identity keys,
+not value-based Program equality: a parsed clone never inherits admission.
+Failed/restarted/superseded type checks invalidate the older proof; the
+ledger publishes a success token only after the complete type-analysis
+diagnostic result is constructed. Linked-metadata type checking follows
+the same rule.
+
+A public direct ownership check can inspect an untyped AST, but if it sees
+critical nodes it now refuses to publish the shared Task ownership epoch
+before an exact-Program typing proof exists. Critical permission publication
+and runtime use enforce typing again, so an earlier ownership epoch cannot
+resurrect execution after a later failed type recheck. This guards raw AST
+and stale identity/epoch confusion, but it does not prove all host interop,
+tenant isolation, or dynamic actor scheduling paths safe.
+
+Four new authored regression cases cover untyped ownership-only admission,
+equivalent untyped ASTs, ordinary typing failures, and failed linked-metadata
+rechecks after an earlier successful admission. These tests have **not** run
+in stepful exact-head CI; critical source remains a draft feature.
+
 ## Adversarial gate handoff and CI-mirror policy (2026-11-01 follow-up)
 
 Fixed an additional actor-retirement race in `CriticalGate.release(ticket)`:
