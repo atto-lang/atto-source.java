@@ -10,6 +10,8 @@ on:
       - 'src/main/java/dev/oreslang/runtime/CriticalGate.java'
       - 'src/test/java/dev/oreslang/Critical*Test.java'
       - 'src/test/java/dev/oreslang/runtime/CriticalGateTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorCriticalGateIdentityTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - '.github/workflows/critical-suspends-java-admission.yml'
   workflow_dispatch:
 
@@ -42,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=java \
-            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest \
+            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest,ActorCriticalGateIdentityTest \
             test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
