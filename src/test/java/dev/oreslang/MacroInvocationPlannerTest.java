@@ -1447,6 +1447,27 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void repeatedUnquoteOfUnprovenIdentifierFailsBeforeTypeAndOwnershipChecking() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro duplicate(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote([unquote(value), unquote(value)]);
+                        }
+                        fnc answer() -> List<int> {
+                            let int input = 21;
+                            return duplicate!(syntax expr input);
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("repeated unquote"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("duplicate effects or ownership transfers"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
     void identifierFreeTypedQuoteTemplateSplicesSyntaxParameters() {
         Ast.Program checked = assertDoesNotThrow(
                 () -> OresCompiler.parseAndTypeCheck("""
