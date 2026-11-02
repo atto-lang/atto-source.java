@@ -56,3 +56,32 @@ Shared target API and 24-source manifest:
 
 Current GitHub workflow jobs have reported `steps=null`, which is a
 runner admission failure, not a JUnit or compiler validation receipt.
+
+## Actor-cell gate hardening (follow-up)
+
+The actor-owned runtime now lazily mints one `CriticalGate` for each **ActorCell**
+incarnation, not one gate per shared AST or carrier thread. The runtime-only
+`ActorRuntime.currentActorCriticalGate()` method requires the exact
+authenticated current actor identity and refuses admission after STOP. A
+replacement actor receives an independent gate.
+
+The staged `SourceTask` critical path now checks the actor runtime, actor ID,
+and exact current actor gate again *after* its awaited ticket becomes ready.
+An old ticket cannot authorize a replacement actor or arbitrary resumed
+carrier. This is separate from the still-closed source execution gate.
+
+Actor finalization calls `CriticalGate.retireIfQuiescent()` under the actor
+lifecycle monitor **after** existing physical source-task quiescence gates.
+The retirement operation atomically requires no owner/queued ticket/pending
+admission and marks the gate retired under its own metadata mutex. If a
+ticket survives, actor finalization is quarantined rather than declaring the
+actor heap safely reclaimable. A host reference to the old gate cannot
+sneak in after a separate idle check.
+
+New JUnit cases cover identity across messages, distinct actors with the same
+behavior source, reincarnation/old-ticket fencing, retirement races and
+already-granted ownership winning over late cancellation.
+
+**Evidence remains unverified**: GitHub Actions jobs have reported zero
+executed steps. Source guest execution is still held closed pending exact-AST
+checked ownership/effect admission and non-suspending-body native proofs.
