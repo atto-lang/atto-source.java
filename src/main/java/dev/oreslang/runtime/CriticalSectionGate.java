@@ -34,6 +34,7 @@ public final class CriticalSectionGate {
         private final CompletableFuture<Ticket> ready = new CompletableFuture<>();
         private State state;
         private boolean cancellationRequested;
+        private CancellationException terminalCancellation;
 
         private Ticket(Object continuation, State state) {
             this.continuation = continuation;
@@ -64,9 +65,10 @@ public final class CriticalSectionGate {
                     successor = transfer();
                 }
                 state = State.ENDED;
+                terminalCancellation = new CancellationException("critical admission cancelled");
                 live.remove(continuation);
             }
-            if (changed) ready.completeExceptionally(new CancellationException("critical admission cancelled"));
+            if (changed) ready.completeExceptionally(terminalCancellation);
             publish(successor);
             return true;
         }
@@ -79,7 +81,12 @@ public final class CriticalSectionGate {
         public <R> R execute(Supplier<R> body) {
             Objects.requireNonNull(body, "body");
             synchronized (CriticalSectionGate.this) {
-                if (retired || owner != this || state != State.GRANTED)
+                // A granted stage may already have completed before retirement
+                // or cancellation. Delivery of that stage is NOT permission to
+                // execute after the ticket has been revoked.
+                if (terminalCancellation != null) throw terminalCancellation;
+                if (retired) throw new CancellationException("critical gate retired before body entry");
+                if (owner != this || state != State.GRANTED)
                     throw new IllegalStateException("critical body requires live admitted ticket");
                 state = State.RUNNING;
             }
@@ -199,12 +206,14 @@ public final class CriticalSectionGate {
             while (!waiters.isEmpty()) {
                 Ticket pending = waiters.removeFirst();
                 pending.state = State.ENDED;
+                pending.terminalCancellation = new CancellationException("critical gate retired");
                 live.remove(pending.continuation);
                 rejected.add(pending);
             }
             if (owner != null && owner.state == State.GRANTED) {
                 Ticket granted = owner;
                 granted.state = State.ENDED;
+                granted.terminalCancellation = new CancellationException("critical gate retired");
                 live.remove(granted.continuation);
                 owner = null;
                 rejected.add(granted);
@@ -213,7 +222,7 @@ public final class CriticalSectionGate {
             }
         }
         for (Ticket item : rejected)
-            item.ready.completeExceptionally(new CancellationException("critical gate retired"));
+            item.ready.completeExceptionally(item.terminalCancellation);
     }
 
     public synchronized int queued() { return waiters.size(); }

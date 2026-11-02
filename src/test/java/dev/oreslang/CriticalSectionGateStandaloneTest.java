@@ -51,9 +51,24 @@ public final class CriticalSectionGateStandaloneTest {
             var active = gate.enter(new Object(),17);
             gate.retire();
             check(gate.quiescent(),"idle retire quiescent");
-            expect(IllegalStateException.class, () -> active.execute(() -> {}));
+            expect(CancellationException.class, () -> active.execute(() -> {}));
             expect(java.util.concurrent.RejectedExecutionException.class, () -> gate.enter(new Object(),17));
             check(!active.cancel(),"cancelled by retirement");
+        }
+        // A completed grant stage is an observation, not a capability to
+        // execute after cancellation or generation retirement.
+        for (int round = 0; round < 300; round++) {
+            CriticalSectionGate gate = new CriticalSectionGate(50,2);
+            var granted = gate.enter(new Object(),50);
+            check(granted.whenReady().toCompletableFuture().join() == granted,
+                    "granted stage completed");
+            check(granted.cancel(), "cancel already-granted owner");
+            expect(CancellationException.class, () -> granted.execute(() -> {}));
+            check(gate.queued() == 0, "cancelled grant retained a waiter");
+            var old = gate.enter(new Object(),50);
+            gate.retire();
+            expect(CancellationException.class, () -> old.execute(() -> {}));
+            check(gate.quiescent(), "pre-entry retirement did not quiesce");
         }
         for (int round = 0; round < 300; round++) {
             CriticalSectionGate gate = new CriticalSectionGate(200,4);
