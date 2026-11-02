@@ -3,7 +3,7 @@
 Status: **CANDIDATE ONLY — no authorization to transfer private source**.
 Owner: `ores-truffle-oreslang/oreslang-source.java`.
 Target compiler PR: #2049, reviewed candidate head
-`de6fbd8eaa2aac11f6059b0da9b2abc2682961b0`.
+`d2d0ba9b4ddb14167e6e7bbdd6fd3904419fa2b7`.
 
 ## Candidate destination (must be independently approved)
 
@@ -49,9 +49,9 @@ Target compiler PR: #2049, reviewed candidate head
 ## Current exact candidate snapshot (2026-11-02 20:05 UTC)
 
 - PR #2049 exact head: `de6fbd8eaa2aac11f6059b0da9b2abc2682961b0`.
-- Source root tree: `fa800a1109511fc4daac860bdc1481fd2b539a26`.
-- New source change closes the identified unquote AST-identity alias: ordinary name/scalar literal leaves are cloned with provenance copied to the new identity; composite and compiler-internal syntax now fail closed pending an exhaustive metadata-preserving copier.
-- Three JUnit regressions were added in `MacroUnquoteIdentityIsolationTest`; none has executed yet. Source-org private Actions admission issue #963 remains open.
+- Source root tree: `812c9b9610dd7a99eadfac58c5ad864a3022b629`.
+- New source change closes the identified unquote AST-identity alias: ordinary name/scalar literal leaves are cloned with both `Ast.copyCheckedMetadata()` and `MacroSyntaxProvenance.copyOrigins()`; composite and compiler-internal syntax now fail closed pending an exhaustive copier.
+- Three JUnit regressions were added in `MacroUnquoteIdentityIsolationTest`; none has executed yet. The exact updated head again triggered private source-org workflows with `steps=null` (fast-ci run 41516500420; ci run 41516500427; Native Oreslang CLI run 41516500570; Rust-only run 41516500415). Source-org private Actions admission issue #963 remains open.
 - Source-free carrier run [41395135081](https://github.com/scintilla-run/scintilla-e2e/actions/runs/41395135081) completed eight hosted workflow steps and reports 73/73 Node contract assertions passed. This is carrier/contract evidence only, not private Java-source, JUnit, or guest-AOT evidence.
 - No source transfer is authorized: source `main` was last observed `protected=false`, the approved-destination file has no authorization row, and independent approval remains outstanding.
 
