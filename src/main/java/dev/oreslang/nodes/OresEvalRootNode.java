@@ -6816,6 +6816,33 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private static void requireTrustedChannelContainer(Object value) {
+            // A host-provided custom List/Map/Set may execute arbitrary code
+            // through size(), entrySet(), iterator(), hashCode() and equals().
+            // Guest source containers are ordinary JDK value containers;
+            // fail closed for user subclasses, dynamic proxies and comparator
+            // collections rather than executing unknown host methods.
+            Class<?> type = value.getClass();
+            if (type == java.util.ArrayList.class
+                    || type == java.util.LinkedList.class
+                    || type == java.util.HashMap.class
+                    || type == java.util.LinkedHashMap.class
+                    || type == java.util.HashSet.class
+                    || type == java.util.LinkedHashSet.class) {
+                return;
+            }
+            String name = type.getName();
+            if (name.startsWith("java.util.ImmutableCollections$")
+                    || name.startsWith("java.util.Collections$Empty")
+                    || name.startsWith("java.util.Collections$Singleton")
+                    || name.equals("java.util.Arrays$ArrayList")) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    "channel payload is not a trusted data-only container: "
+                            + name);
+        }
+
         private static Object snapshotChannelMessageData(Object value) {
             return snapshotChannelMessageData(
                     value, new IdentityHashMap<>(), new int[] {0}, 0);
@@ -6909,6 +6936,7 @@ public final class OresEvalRootNode extends RootNode {
                     return new OresObject(object.owner, object.klass, copy);
                 }
                 if (value instanceof List<?> list) {
+                    requireTrustedChannelContainer(list);
                     requireChannelGraphBudget(list.size(), nodes);
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) {
@@ -6918,6 +6946,7 @@ public final class OresEvalRootNode extends RootNode {
                     return copy;
                 }
                 if (value instanceof Set<?> set) {
+                    requireTrustedChannelContainer(set);
                     requireChannelGraphBudget(set.size(), nodes);
                     LinkedHashSet<Object> copy = new LinkedHashSet<>();
                     for (Object item : set) {
@@ -6931,6 +6960,7 @@ public final class OresEvalRootNode extends RootNode {
                     return copy;
                 }
                 if (value instanceof Map<?, ?> map) {
+                    requireTrustedChannelContainer(map);
                     requireChannelGraphBudget((long) map.size() * 2L, nodes);
                     LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<?, ?> field : map.entrySet()) {
