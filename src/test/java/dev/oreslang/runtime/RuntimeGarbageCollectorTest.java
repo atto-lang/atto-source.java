@@ -642,4 +642,46 @@ final class RuntimeGarbageCollectorTest {
             Reference.reachabilityFence(owners);
         }
     }
+
+    @Test
+    void fatalCleanupDoesNotDropDeferredDomainMaintenanceTicket() throws Exception {
+        AtomicInteger fatalAttempts = new AtomicInteger();
+        AtomicInteger successful = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 64; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    if (i == 40) {
+                        gc.track(owner, () -> {
+                            if (fatalAttempts.incrementAndGet() == 1) {
+                                throw new InternalError("test-only fatal cleanup");
+                            }
+                            successful.incrementAndGet();
+                        });
+                    } else {
+                        gc.track(owner, successful::incrementAndGet);
+                    }
+                }
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(32, successful.get());
+            assertThrows(InternalError.class, gc::collectPeriodic);
+            assertTrue(fatalAttempts.get() >= 1);
+            for (int i = 0; i < 3 && successful.get() != 64; i++) {
+                gc.collectPeriodic();
+            }
+            assertEquals(64, successful.get(),
+                    "fatal hook must not lose the retired actor's only maintenance ticket");
+            var ticketsField = RuntimeGarbageCollector.class.getDeclaredField("retiredDomainQueue");
+            ticketsField.setAccessible(true);
+            assertTrue(((java.util.Set<?>) ticketsField.get(gc)).isEmpty());
+            Reference.reachabilityFence(owners);
+        }
+    }
 }
