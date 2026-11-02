@@ -38,8 +38,13 @@ final class LiveMcpServerTest {
     }
 
     private static String request(String method, String params) {
+        String contents = params.substring(1, params.length() - 1);
+        String metadata = "\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\","
+                + "\"io.modelcontextprotocol/clientCapabilities\":{},"
+                + "\"io.modelcontextprotocol/clientInfo\":{\"name\":\"atto-test\",\"version\":\"1\"}}";
         return "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\""
-                + method + "\",\"params\":" + params + "}";
+                + method + "\",\"params\":{" + contents
+                + (contents.isBlank() ? "" : ",") + metadata + "}}";
     }
 
     @Test
@@ -59,6 +64,9 @@ final class LiveMcpServerTest {
                     request("tools/list", "{}"), LiveMcpServer.PROTOCOL_VERSION, null);
             assertEquals(200, tools.statusCode());
             assertTrue(tools.body().contains("atto.runtime_info"));
+            assertTrue(tools.body().contains("atto.list_actors"));
+            assertTrue(tools.body().contains("atto.inspect_actor"));
+            assertTrue(tools.body().contains("\"resultType\":\"complete\""));
             assertFalse(tools.body().contains("hotload_commit"));
             assertFalse(tools.body().contains("atto.snapshot_actor"));
 
@@ -75,6 +83,22 @@ final class LiveMcpServerTest {
                     LiveMcpServer.PROTOCOL_VERSION, null);
             assertEquals(200, after.statusCode());
             assertTrue(after.body().contains("\\\"actor_count\\\":1"), after.body());
+            var listRequest = request("tools/call",
+                    "{\"name\":\"atto.list_actors\",\"arguments\":{\"limit\":8}}");
+            HttpRequest listHttp = HttpRequest.newBuilder(
+                    URI.create("http://127.0.0.1:" + port + "/mcp"))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream")
+                    .header("Mcp-Protocol-Version", LiveMcpServer.PROTOCOL_VERSION)
+                    .header("Mcp-Method", "tools/call")
+                    .header("Mcp-Name", "atto.list_actors")
+                    .header("Authorization", "Bearer " + TOKEN)
+                    .POST(HttpRequest.BodyPublishers.ofString(listRequest)).build();
+            var actorList = client.send(listHttp, HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, actorList.statusCode(), actorList.body());
+            assertTrue(actorList.body().contains(actor.id().value().toString()), actorList.body());
+            assertTrue(actorList.body().contains("WEAKLY_CONSISTENT"));
+            assertFalse(actorList.body().contains("codeActorState"));
             actor.stop();
         }
     }
