@@ -160,6 +160,18 @@ public final class TypeChecker {
                             "checked exceptional effect on function '" + fn.name()
                                     + "' is parsed but not yet enabled for type checking");
                 }
+                if (declaration instanceof Ast.ActivityDecl activity) {
+                    throw new IllegalArgumentException(
+                            "ACTIVITY_EXECUTION_UNSUPPORTED: '" + activity.name()
+                                    + "' is parsed as a class-shaped activity declaration but requires "
+                                    + "typed external-effect admission, dispatch, retry, idempotency and durable result recording");
+                }
+                if (declaration instanceof Ast.WorkflowDecl workflow) {
+                    throw new IllegalArgumentException(
+                            "WORKFLOW_EXECUTION_UNSUPPORTED: '" + workflow.name()
+                                    + "' is parsed as a class-shaped workflow declaration but requires "
+                                    + "deterministic replay, durable history, timers, signals and recovery lowering");
+                }
                 if (declaration instanceof Ast.StateContainerDecl state) {
                     throw new IllegalArgumentException(
                             "STATE_CONTAINER_MIR_UNSUPPORTED: '" + state.name()
