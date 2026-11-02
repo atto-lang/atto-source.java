@@ -11,6 +11,8 @@ on:
       - 'src/test/java/dev/oreslang/Critical*Test.java'
       - 'src/test/java/dev/oreslang/runtime/CriticalGateTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorCriticalGateIdentityTest.java'
+      - 'src/test/java/dev/oreslang/CriticalActorGuestExecutionTest.java'
+      - 'examples/critical-actor-checked-v1.ores'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - '.github/workflows/critical-suspends-java-admission.yml'
   workflow_dispatch:
@@ -40,15 +42,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Compile and run critical AST/effects/gate unit tests
+      - name: Compile critical AST/effects/gate tests and native .ores Graal guest fixture
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=java \
-            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest,ActorCriticalGateIdentityTest \
+            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest \
             test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
       - name: Mark evidence scope
         run: |
           echo "Source parser, conservative effects and host-ticket tests only."
-          echo "This is NOT scheduler-backed critical guest execution or cross-backend parity."
+          echo "Graal actor-critical guest fixture was included; cross-backend parity remains unverified."
