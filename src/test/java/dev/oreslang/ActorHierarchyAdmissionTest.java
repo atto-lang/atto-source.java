@@ -200,6 +200,42 @@ final class ActorHierarchyAdmissionTest {
     }
 
     @Test
+    void actorRefCannotCallOrdinaryPublicActorMethodsDirectly() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor A1 as
+                          pub ping(): void { return; }
+                          receive(ActorMail<int> mail): void { self.end(); return; }
+                        end
+                        pub async routine main(): void {
+                          val worker = spawn A1();
+                          await worker.get_ready();
+                          worker.ping();
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("unknown ActorRef callable member 'ping'"),
+                error.getMessage());
+    }
+
+    @Test
+    void actorRefCannotInvokeRuntimeOwnedReceiveHook() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor A1 as
+                          receive(ActorMail<int> mail): void { self.end(); return; }
+                        end
+                        pub async routine main(): void {
+                          val worker = spawn A1();
+                          worker.receive(41);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("unknown ActorRef callable member 'receive'"),
+                error.getMessage());
+    }
+
+    @Test
     void runtimeReservedSendCannotBeImplementedAsUserMethod() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
