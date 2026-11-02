@@ -18,7 +18,10 @@ public final class Smoke {
             HttpClient client = HttpClient.newBuilder()
                     .connectTimeout(Duration.ofSeconds(3)).build();
             String json = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
-                    + "\"params\":{\"name\":\"atto.runtime_info\",\"arguments\":{}}}";
+                    + "\"params\":{\"name\":\"atto.runtime_info\",\"arguments\":{},"
+                    + "\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\","
+                    + "\"io.modelcontextprotocol/clientCapabilities\":{},"
+                    + "\"io.modelcontextprotocol/clientInfo\":{\"name\":\"smoke\",\"version\":\"1\"}}}}";
             URI uri = URI.create("http://127.0.0.1:" + server.port() + "/mcp");
             HttpRequest.Builder request = HttpRequest.newBuilder(uri)
                     .timeout(Duration.ofSeconds(3))
