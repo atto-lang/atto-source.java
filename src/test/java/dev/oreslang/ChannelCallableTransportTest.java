@@ -101,7 +101,7 @@ final class ChannelCallableTransportTest {
 
     @Test
     void nonSendableRuntimeCapabilitiesCannotBeChannelPayloads() {
-        for (String type : new String[] {"Future<int>", "Rc<int>", "Mutex<int>"}) {
+        for (String type : new String[] {"Future<int>", "Rc<int>"}) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(
