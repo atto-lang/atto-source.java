@@ -29,6 +29,7 @@ jobs:
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
           test "$(git hash-object stdlib/actor_sync.ores)" = "7f5f8bf970a73fa055e353082692a200aad4cdcd"
           test "$(git hash-object src/test/resources/actor-sync-v1/cursor-progression.ores)" = "a454e7107ab62bbaa38cca44627c794b3bf0d4c2"
+          test "$(git hash-object src/test/resources/actor-sync-v1/cross-epoch-delta-reject.ores)" = "e39f18be8835d3adc23aae6fd2b8f9dac5a6a59e"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: '25.3'
