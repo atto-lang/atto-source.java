@@ -96,6 +96,16 @@ public final class AnnotationExpander {
     private static Ast.ModuleDecl expandModule(Ast.ModuleDecl module) {
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
         for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.ActivityDecl activity) {
+                throw new IllegalArgumentException(
+                        "ACTIVITY_ANNOTATION_EXPANSION_UNSUPPORTED: '" + activity.name()
+                                + "' has declaration metadata but no durable annotation contract");
+            }
+            if (declaration instanceof Ast.WorkflowDecl workflow) {
+                throw new IllegalArgumentException(
+                        "WORKFLOW_ANNOTATION_EXPANSION_UNSUPPORTED: '" + workflow.name()
+                                + "' has declaration metadata but no durable annotation contract");
+            }
             if (declaration instanceof Ast.ClassDecl klass) {
                 declarations.add(expandClass(klass));
             } else {
