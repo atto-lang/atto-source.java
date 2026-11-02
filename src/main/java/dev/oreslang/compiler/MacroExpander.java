@@ -338,17 +338,34 @@ public final class MacroExpander {
                 throw new IllegalStateException(
                         "validated unquote references unknown syntax parameter '" + name.name() + "'");
             }
-            // Every emitted AST occurrence must get a distinct identity:
-            // compiler side tables and provenance use exact AST identity.
-            // This still clones single-use names, but repeated splicing is
-            // allowed only for closed literals, never unproven bindings.
-            if (bound instanceof Ast.NameExpr callerName) {
-                return new Ast.NameExpr(callerName.name());
+            // Spliced syntax must never alias caller-owned nodes: provenance and
+            // semantic side tables are keyed by exact AST identity. Until an
+            // exhaustive bounded copier exists for composite expressions and all
+            // compiler-issued identity metadata, admit only ordinary names and
+            // immutable scalar literals. Unknown/composite nodes fail closed.
+            if (bound instanceof Ast.NameExpr callerName
+                    && !callerName.name().startsWith("$")) {
+                Ast.NameExpr copy = new Ast.NameExpr(callerName.name());
+                MacroSyntaxProvenance.copyOrigins(callerName, copy);
+                return copy;
             }
             if (bound instanceof Ast.LiteralExpr literal) {
-                return new Ast.LiteralExpr(literal.value());
+                Object value = literal.value();
+                if (!(value instanceof Long || value instanceof Double
+                        || value instanceof String || value instanceof Boolean
+                        || value instanceof dev.oreslang.runtime.OresSymbol)) {
+                    throw new IllegalArgumentException(
+                            "unquote literal is not an admitted immutable scalar; "
+                                    + "composite syntax copying is not implemented");
+                }
+                Ast.LiteralExpr copy = new Ast.LiteralExpr(value);
+                MacroSyntaxProvenance.copyOrigins(literal, copy);
+                return copy;
             }
-            return bound;
+            throw new IllegalArgumentException(
+                    "unquote of composite or compiler-internal syntax is denied until "
+                            + "bounded identity-preserving AST copying is implemented; "
+                            + "runtime fallback is forbidden");
         }
         if (expression instanceof Ast.LiteralExpr literal) {
             // Each template instantiation owns its own AST identity. Reusing the
