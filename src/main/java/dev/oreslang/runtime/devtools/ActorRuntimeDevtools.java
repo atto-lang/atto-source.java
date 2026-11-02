@@ -1,6 +1,7 @@
 package dev.oreslang.runtime.devtools;
 
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.AsyncRuntime;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
@@ -17,6 +18,12 @@ public final class ActorRuntimeDevtools {
 
     public static LiveMcpServer start(ActorRuntime runtime, String hostToken, int port)
             throws IOException {
+        return start(runtime, null, hostToken, port);
+    }
+
+    /** AsyncRuntime is optional; task discovery is omitted without attachment. */
+    public static LiveMcpServer start(ActorRuntime runtime, AsyncRuntime tasks,
+            String hostToken, int port) throws IOException {
         Objects.requireNonNull(runtime, "runtime");
         if (ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
@@ -36,6 +43,18 @@ public final class ActorRuntimeDevtools {
             }
 
             @Override public boolean hasActorDiscovery() { return true; }
+
+            @Override public boolean hasTaskDiscovery() { return tasks != null; }
+
+            @Override public Map<String, Object> listTasks(int limit) {
+                if (tasks == null) throw new UnsupportedOperationException("Task runtime not attached");
+                List<Map<String, Object>> pending = tasks.devtoolsListTasks(limit).stream()
+                        .map(info -> Map.<String, Object>of(
+                                "task_id", info.taskId(), "lifecycle", info.lifecycle()))
+                        .toList();
+                return Map.of("tasks", pending, "consistency", "WEAKLY_CONSISTENT",
+                        "truncated", pending.size() == limit);
+            }
 
             @Override public Map<String, Object> listActors(int limit) {
                 List<Map<String, Object>> actors = runtime.devtoolsListActors(limit).stream()
