@@ -1,0 +1,9 @@
+define class Payload as
+  val int code;
+end
+
+pub async routine main(): void {
+  val group = actor.group("typed");
+  val topic = group.topic<Payload>("nominal-authority", "latest", 1);
+  return;
+}
