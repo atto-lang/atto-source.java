@@ -217,8 +217,11 @@ final class OresEtsActorRegistryTest {
                 assertEquals(0, registry.reap(), "must retain physical storage while pinned");
                 assertSame(entry, entries.get(id));
                 assertEquals(1, registry.liveTableCount(), "a pinned retired table still occupies quota");
-                assertThrows(IllegalStateException.class, () -> pin.invoke(entry),
+                var denied = assertThrows(
+                        java.lang.reflect.InvocationTargetException.class,
+                        () -> pin.invoke(entry),
                         "retired tables must reject new admission");
+                assertInstanceOf(IllegalStateException.class, denied.getCause());
             } finally {
                 assertEquals(Boolean.TRUE, unpin.invoke(entry));
             }
