@@ -146,6 +146,25 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
+    void nominalTypesRequireOwnerFreeMessageDataRepresentation() {
+        for (String payload : new String[] {
+                "Envelope", "Option<Envelope>", "List<Envelope>",
+                "Result<int, Envelope>"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                    define class Envelope as
+                      val int code;
+                    end
+                    fnc bad(Channel<""" + payload + """> values): void { return; }
+                    """)));
+            assertTrue(error.getMessage().contains("requires MessageData"),
+                    () -> "nominal message must reject owner-bearing type "
+                            + payload + ": " + error.getMessage());
+        }
+    }
+
+    @Test
     void actorRefCapabilityExceptionRequiresAConcreteActorTarget() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
