@@ -1395,13 +1395,18 @@ public final class OwnershipChecker {
             Scope taskScope = deferredSelectArmScope(captured);
             int savedLoopDepth = loopDepth;
             boolean savedDiscard = discardingSelectReturn;
+            boolean savedActorCritical = insideSuspendingActorMethod;
             loopDepth = 0;
             discardingSelectReturn = false;
+            // A detached Task is not a continuation of the actor mailbox
+            // handler and cannot borrow its actor-owned gate authority.
+            insideSuspendingActorMethod = false;
             try {
                 checkBlock(task.body(), taskScope, Ast.TypeRef.inferred());
             } finally {
                 loopDepth = savedLoopDepth;
                 discardingSelectReturn = savedDiscard;
+                insideSuspendingActorMethod = savedActorCritical;
                 taskScope.close();
             }
             LinkedHashMap<String, Ast.TaskCaptureTransfer> admitted =
@@ -2908,9 +2913,14 @@ public final class OwnershipChecker {
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
+        boolean previousActorCritical = insideSuspendingActorMethod;
         Ast.ClassDecl previousInitializingClass = initializingClass;
         loopDepth = 0;
         discardingSelectReturn = false;
+        // A closure can escape into a different Task/actor turn. It never
+        // inherits critical admission just because it was defined inside an
+        // actor's suspending method.
+        insideSuspendingActorMethod = false;
         // Closures may execute after the class constructor returns; their
         // bodies cannot write fixed slots through the ctor-only exception.
         initializingClass = null;
@@ -2930,6 +2940,7 @@ public final class OwnershipChecker {
         } finally {
             loopDepth = previousLoopDepth;
             discardingSelectReturn = previousDiscard;
+            insideSuspendingActorMethod = previousActorCritical;
             initializingClass = previousInitializingClass;
             closure.close();
         }
