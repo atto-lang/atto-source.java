@@ -1159,6 +1159,7 @@ public final class Parser {
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
+        rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
@@ -2648,6 +2649,7 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
+            rejectConstTypeDeclaration(kind);
             boolean mutableReferent = parseReferentMutability(kind);
             if (looksLikeTypedForOfBinding()) {
                 requireForOfBindingKind(kind);
@@ -2808,6 +2810,7 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
+            rejectConstTypeDeclaration(kind);
             boolean mutableReferent = parseReferentMutability(kind);
             Ast.TypeRef type = null;
             String name;
