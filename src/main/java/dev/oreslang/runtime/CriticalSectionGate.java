@@ -36,6 +36,7 @@ public final class CriticalSectionGate {
         private final CompletableFuture<Ticket> ready = new CompletableFuture<>();
         private State state;
         private boolean cancellationRequested;
+        private boolean schedulerDeliveryRegistered;
         private CancellationException terminalCancellation;
 
         private Ticket(Object continuation, State state) {
@@ -62,6 +63,14 @@ public final class CriticalSectionGate {
          */
         public CompletionStage<Ticket> whenReadyOn(Executor scheduler) {
             Objects.requireNonNull(scheduler, "trusted scheduler");
+            // A second scheduler subscription could resume one logical turn
+            // twice. Physical execute() currently prevents duplicate body entry,
+            // but dispatch itself must also have exactly one owner.
+            synchronized (CriticalSectionGate.this) {
+                if (schedulerDeliveryRegistered)
+                    throw new IllegalStateException("critical ticket already scheduled");
+                schedulerDeliveryRegistered = true;
+            }
             CompletableFuture<Ticket> dispatched = new CompletableFuture<>();
             ready.whenComplete((granted, failure) -> {
                 // Deliver cancellation and retirement failures through the

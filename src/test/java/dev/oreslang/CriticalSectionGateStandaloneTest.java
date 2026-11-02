@@ -130,6 +130,21 @@ public final class CriticalSectionGateStandaloneTest {
             gate.retire();
             check(gate.quiescent(),"cancel-vs-execute race did not reclaim lease");
         }
+        // Exactly one scheduler is permitted to own delivery of a logical
+        // continuation, even if registration races on separate carriers.
+        for (int round = 0; round < 300; round++) {
+            CriticalSectionGate gate = new CriticalSectionGate(91,2);
+            var ticket = gate.enter(new Object(),91);
+            java.util.ArrayDeque<Runnable> queue = new java.util.ArrayDeque<>();
+            var granted = ticket.whenReadyOn(queue::addLast);
+            expect(IllegalStateException.class, () -> ticket.whenReadyOn(queue::addLast));
+            check(queue.size()==1, "duplicate subscription queued extra continuation");
+            queue.removeFirst().run();
+            check(granted.toCompletableFuture().join()==ticket, "single scheduler lost ticket");
+            ticket.execute(() -> {});
+            gate.retire();
+            check(gate.quiescent(), "duplicate registration leaked lease");
+        }
         // A scheduler-owned executor, not the releasing carrier, must run
         // guest continuation callbacks. Rejected dispatch revokes its permit.
         for (int round = 0; round < 300; round++) {
