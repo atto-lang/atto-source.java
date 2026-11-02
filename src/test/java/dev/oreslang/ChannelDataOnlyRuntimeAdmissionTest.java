@@ -11,6 +11,7 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -21,12 +22,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 final class ChannelDataOnlyRuntimeAdmissionTest {
     private static final Method ADMIT;
+    private static final Method SNAPSHOT;
 
     static {
         try {
             Class<?> evaluator = Class.forName("dev.oreslang.nodes.OresEvalRootNode$Evaluator");
             ADMIT = evaluator.getDeclaredMethod("requireDataOnlyChannelPayload", Object.class);
             ADMIT.setAccessible(true);
+            SNAPSHOT = evaluator.getDeclaredMethod("snapshotChannelMessageData", Object.class);
+            SNAPSHOT.setAccessible(true);
         } catch (ReflectiveOperationException error) {
             throw new ExceptionInInitializerError(error);
         }
@@ -35,6 +39,14 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
     private static void admit(Object value) throws Throwable {
         try {
             ADMIT.invoke(null, new Object[] {value});
+        } catch (InvocationTargetException error) {
+            throw error.getCause();
+        }
+    }
+
+    private static Object snapshot(Object value) throws Throwable {
+        try {
+            return SNAPSHOT.invoke(null, new Object[] {value});
         } catch (InvocationTargetException error) {
             throw error.getCause();
         }
@@ -52,6 +64,42 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
         assertDoesNotThrow(() -> admit(OresSymbol.process("ready")));
         assertDoesNotThrow(() -> admit(Map.of("values", List.of(1L, 2L, 3L))));
         assertDoesNotThrow(() -> admit(new byte[] {1, 2, 3}));
+    }
+
+    @Test
+    void snapshotsNestedListsAndMapsBeforeProducerMutates() throws Throwable {
+        ArrayList<Object> originalItems = new ArrayList<>();
+        originalItems.add("before");
+        Map<String, Object> original = new LinkedHashMap<>();
+        original.put("items", originalItems);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> detached = (Map<String, Object>) snapshot(original);
+        originalItems.add("after");
+        original.put("another", "later");
+
+        assertTrue(detached != original);
+        assertEquals(1, detached.size());
+        assertEquals(List.of("before"), detached.get("items"));
+        assertTrue(detached.get("items") != originalItems);
+        assertTrue(((List<?>) detached.get("items")).size() == 1);
+    }
+
+    @Test
+    void snapshotsArraysRatherThanRetainingProducerArrayStorage() throws Throwable {
+        byte[] source = new byte[] {1, 2, 3};
+        Object detached = snapshot(source);
+        source[0] = 9;
+        assertEquals(List.of((byte) 1, (byte) 2, (byte) 3), detached);
+    }
+
+    @Test
+    void failedSnapshotDoesNotPublishACyclicOrCallableGraph() {
+        ArrayList<Object> producer = new ArrayList<>();
+        producer.add((Runnable) () -> {});
+        reject(producer);
+        producer.clear();
+        producer.add(producer);
+        reject(producer);
     }
 
     @Test
