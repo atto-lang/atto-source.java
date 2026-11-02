@@ -7,11 +7,14 @@ on:
     paths:
       - 'contracts/v1/actor-pubsub*'
       - 'contracts/v1/fixtures/actor-pubsub*'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/ChannelCallableTransportTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorEventBus.java'
       - 'src/main/java/dev/oreslang/runtime/SourceActorPubSub.java'
       - 'src/test/java/dev/oreslang/*PubSub*'
       - 'src/test/java/dev/oreslang/runtime/*PubSub*'
       - 'scripts/verify-actor-pubsub-v1.sh'
+      - 'scripts/verify-raw-worktree.py'
       - '.github/workflows/actor-pubsub-v1-exact-head.yml'
 
 permissions:

@@ -14,14 +14,15 @@ if [[ "$actual" != "$ORESLANG_PUBSUB_EXPECTED_SHA" ]]; then
   echo "Wrong checkout: expected=$ORESLANG_PUBSUB_EXPECTED_SHA actual=$actual" >&2
   exit 2
 fi
-if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-  echo "Refusing to certify a dirty checkout" >&2
-  git status --short >&2
-  exit 2
-fi
+# Git status/diff may invoke a configured clean filter before test admission.
+# Check the index tree and physical raw bytes instead, with no filter execution.
+command -v python3 >/dev/null || { echo "Python 3 unavailable" >&2; exit 2; }
+python3 scripts/verify-raw-worktree.py --self-test
+python3 scripts/verify-raw-worktree.py .
 
 command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 
+# Must execute the Channel<T> recursive Sendable/callable negatives,
 # Must execute the guest-positive fixtures and all guest compile negatives,
 # including direct/nested callable topic payloads, not only host facade tests. Surefire's -Dtest does not permit matching
 # empty suites; we additionally inspect the exact suite reports below.
