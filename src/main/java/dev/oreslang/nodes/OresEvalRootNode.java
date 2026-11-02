@@ -962,8 +962,8 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ClassDecl checked = findClass(checkedClassName);
             Evaluator checkedOwner = this;
             if (checked == null) {
-                Object imported = importedValue(checkedClassName);
-                if (imported instanceof ClassFacade facade) {
+                ClassFacade facade = importedConstructibleClass(checkedClassName);
+                if (facade != null) {
                     checkedOwner = facade.owner();
                     checked = facade.klass();
                 }
@@ -5698,8 +5698,8 @@ public final class OresEvalRootNode extends RootNode {
             Evaluator owner = this;
             boolean externalConstruction = false;
             if (klass == null) {
-                Object imported = importedValue(created.type().name());
-                if (imported instanceof ClassFacade externalClass) {
+                ClassFacade externalClass = importedConstructibleClass(created.type().name());
+                if (externalClass != null) {
                     owner = externalClass.owner();
                     klass = externalClass.klass();
                     externalConstruction = true;
@@ -7582,8 +7582,8 @@ public final class OresEvalRootNode extends RootNode {
                 Evaluator owner = this;
                 boolean externalConstruction = false;
                 if (klass == null) {
-                    Object imported = importedValue(created.type().name());
-                    if (imported instanceof ClassFacade externalClass) {
+                    ClassFacade externalClass = importedConstructibleClass(created.type().name());
+                    if (externalClass != null) {
                         owner = externalClass.owner();
                         klass = externalClass.klass();
                         externalConstruction = true;
@@ -8916,6 +8916,42 @@ public final class OresEvalRootNode extends RootNode {
             @Override public Object call(List<Object> arguments) {
                 return receiver.owner.invoke(receiver.owner.prepareBoundMethodInvocation(receiver, methodName, arguments, accessClass));
             }
+        }
+
+        /**
+         * Resolve a checked class import by its exact binding, or an explicitly
+         * imported module's public class. A dotted constructor type is NOT a
+         * local class name and must never fall through to an unrelated class
+         * in the current unit or another imported module.
+         *
+         * Qualified resolution deliberately permits one imported module
+         * boundary only: this does not invent new nested namespace aliases,
+         * turn type-only imports into runtime values, or bypass visibility.
+         */
+        private ClassFacade importedConstructibleClass(String name) {
+            Object direct = importedValue(name);
+            if (direct instanceof ClassFacade klass) return klass;
+
+            int separator = name.indexOf('.');
+            if (separator <= 0 || separator != name.lastIndexOf('.')
+                    || separator == name.length() - 1) {
+                return null;
+            }
+            String binding = name.substring(0, separator);
+            String className = name.substring(separator + 1);
+            Object namespace = importedValue(binding);
+            Object exported;
+            if (namespace instanceof ModuleFacade module) {
+                // moduleMember enforces public export visibility by declaration
+                // identity inside the owning (already linked) code unit.
+                exported = module.owner().moduleMember(module.module(), className);
+            } else if (namespace instanceof ImportedNamespace star
+                    && star.kind() == Ast.ImportKind.ALL) {
+                exported = star.owner().exportValue(Ast.ImportKind.ALL, className);
+            } else {
+                return null;
+            }
+            return exported instanceof ClassFacade klass ? klass : null;
         }
 
         private Object importedValue(String name) {

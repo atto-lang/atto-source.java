@@ -28,7 +28,7 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-      - name: Execute two real .atto linked class guest cases
+      - name: Execute five real .atto linked class guest cases
         shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -37,7 +37,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           echo "JAVA_ATTO_IMPORTED_CLASS_HEAD=$EXPECTED_HEAD"
           mvn -B -ntp -Dtest=AttoImportedModuleClassGuestTest -DfailIfNoTests=true test
-          echo "JAVA_ATTO_IMPORTED_CLASS_GUEST_PASS head=$EXPECTED_HEAD cases=2"
+          echo "JAVA_ATTO_IMPORTED_CLASS_GUEST_PASS head=$EXPECTED_HEAD cases=5"
       - name: Preserve JUnit evidence on failure or success
         if: always()
         uses: actions/upload-artifact@v4

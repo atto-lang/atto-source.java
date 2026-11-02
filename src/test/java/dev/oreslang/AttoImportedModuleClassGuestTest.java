@@ -80,4 +80,75 @@ final class AttoImportedModuleClassGuestTest {
                 """);
         assertEquals("9", run(entry));
     }
+
+    @Test
+    void qualifiedConstructorCannotBindToUnrelatedLocalHomonym() throws Exception {
+        Files.writeString(temp.resolve("transport_contract.atto"), """
+                define module transport_contract as
+                  pub define class Request as
+                    pub val int value;
+                    pub constructor(int value) { self.value = value; }
+                  end
+                end
+                """);
+        Path entry = temp.resolve("homonym.atto");
+        Files.writeString(entry, """
+                import module transport_contract from "./transport_contract.atto";
+                define class Request as
+                  pub val int value;
+                  constructor(int value) { self.value = 999; }
+                end
+                pub fnc main(): void {
+                  val transport_contract.Request request = new transport_contract.Request(42);
+                  stdio.stdout.write(request.value);
+                  return;
+                }
+                """);
+        assertEquals("42", run(entry));
+    }
+
+    @Test
+    void privateClassInImportedModuleIsNotConstructible() throws Exception {
+        Files.writeString(temp.resolve("transport_contract.atto"), """
+                define module transport_contract as
+                  define class Hidden as
+                    constructor() { return; }
+                  end
+                end
+                """);
+        Path entry = temp.resolve("private.atto");
+        Files.writeString(entry, """
+                import module transport_contract from "./transport_contract.atto";
+                pub fnc main(): void {
+                  val hidden = new transport_contract.Hidden();
+                  return;
+                }
+                """);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                RuntimeException.class, () -> run(entry));
+    }
+
+    @Test
+    void unknownModuleAliasNeverResolvesLocalClass() throws Exception {
+        Files.writeString(temp.resolve("transport_contract.atto"), """
+                define module transport_contract as
+                  pub define class Request as
+                    pub val int value;
+                  end
+                end
+                """);
+        Path entry = temp.resolve("unknown-owner.atto");
+        Files.writeString(entry, """
+                import module transport_contract from "./transport_contract.atto";
+                define class Request as
+                  val int value;
+                end
+                pub fnc main(): void {
+                  val request = new unrelated.Request(9);
+                  return;
+                }
+                """);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                RuntimeException.class, () -> run(entry));
+    }
 }
