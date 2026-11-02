@@ -8,4 +8,8 @@ final class AotReflectionTableV1Test {
     void compilerOwnedMetadataIsDeterministicBoundedAndPrivateFieldFree() throws Exception {
         AotReflectionTableV1Smoke.main(new String[0]);
     }
+    @Test
+    void descriptorTableRefusesOversizedPayloadBeforeAllocation() {
+        AotReflectionLimitProbe.main(new String[0]);
+    }
 }
