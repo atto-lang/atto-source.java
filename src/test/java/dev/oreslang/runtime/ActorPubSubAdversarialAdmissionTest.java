@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.CountDownLatch;
@@ -396,6 +397,55 @@ final class ActorPubSubAdversarialAdmissionTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0L, runtime.sharedMemoryBytes(),
                     "repeated revocation/rejoin must not retain abandoned payloads");
+        }
+    }
+
+    @Test
+    void subscriptionQuotaBoundsChannelFanoutAndCloseReturnsCredit()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            List<ActorEventBus.Topic<String>> topics = new ArrayList<>();
+            for (int i = 0; i <= 64; i++) {
+                topics.add(group.events().topic(
+                        "quota-" + i, ActorEventBus.DeliveryPolicy.RELIABLE, 1));
+            }
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            join.join();
+                            int limit = Math.min(64, Math.max(1,
+                                    ActorRuntime.currentActorPolicy().maxMailboxMessages()));
+                            List<ActorEventBus.Subscription<String>> subscriptions =
+                                    new ArrayList<>();
+                            for (int i = 0; i < limit; i++) {
+                                subscriptions.add(topics.get(i).subscribe());
+                            }
+                            assertSame(subscriptions.get(0), topics.get(0).subscribe(),
+                                    "duplicate subscribe must not consume quota");
+                            IllegalStateException exhausted = assertThrows(
+                                    IllegalStateException.class,
+                                    () -> topics.get(limit).subscribe());
+                            assertTrue(exhausted.getMessage().contains(
+                                    "subscription limit exceeded"));
+                            subscriptions.get(0).close();
+                            assertDoesNotThrow(() -> topics.get(limit).subscribe(),
+                                    "closing an edge must return one subscription credit");
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            done.countDown();
+                        }
+                    });
+            actor.send("test");
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes());
         }
     }
 
