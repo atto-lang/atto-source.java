@@ -1453,8 +1453,8 @@ final class MacroInvocationPlannerTest {
                         define macro twice(Syntax<Expr> value) -> Syntax<Expr> {
                             return quote(unquote(value) + unquote(value));
                         }
-                        fnc answer(int input) -> int {
-                            return twice!(syntax expr input);
+                        fnc answer() -> int {
+                            return twice!(syntax expr 21);
                         }
                         """));
 
@@ -1466,10 +1466,10 @@ final class MacroInvocationPlannerTest {
         Ast.BinaryExpr expanded = assertInstanceOf(
                 Ast.BinaryExpr.class, returned.value());
         assertEquals("+", expanded.operator());
-        assertEquals("input",
-                assertInstanceOf(Ast.NameExpr.class, expanded.left()).name());
-        assertEquals("input",
-                assertInstanceOf(Ast.NameExpr.class, expanded.right()).name());
+        assertEquals(21L,
+                assertInstanceOf(Ast.LiteralExpr.class, expanded.left()).value());
+        assertEquals(21L,
+                assertInstanceOf(Ast.LiteralExpr.class, expanded.right()).value());
         assertNotSame(expanded.left(), expanded.right(),
                 "duplicated unquote occurrences must not alias one AST identity");
 
