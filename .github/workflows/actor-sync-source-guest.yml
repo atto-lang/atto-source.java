@@ -27,7 +27,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
-          test "$(git hash-object stdlib/actor_sync.ores)" = "48c85c40b53d33a4a420cf4bb77e00fe3df3bb94"
+          test "$(git hash-object stdlib/actor_sync.ores)" = "7f5f8bf970a73fa055e353082692a200aad4cdcd"
           test "$(git hash-object src/test/resources/actor-sync-v1/cursor-progression.ores)" = "a454e7107ab62bbaa38cca44627c794b3bf0d4c2"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
