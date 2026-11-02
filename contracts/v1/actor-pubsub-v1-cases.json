@@ -66,6 +66,12 @@
       "fixture": "contracts/v1/fixtures/actor-pubsub-reject-synchronized-topic.ores",
       "expect": "compile-reject",
       "diagnostic_contains": "requires MessageData"
+    },
+    {
+      "id": "nominal-evaluator-owner-topic-rejected",
+      "fixture": "contracts/v1/fixtures/actor-pubsub-reject-nominal-topic.ores",
+      "expect": "compile-reject",
+      "diagnostic_contains": "requires MessageData"
     }
   ]
 }
