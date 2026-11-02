@@ -150,6 +150,25 @@ public final class CriticalSectionGateStandaloneTest {
             gate.retire();
             check(gate.quiescent(),"scheduler handoff leaked owner");
 
+            // Inline executors violate scheduler/carrier isolation. Fail
+            // closed and reclaim the granted permit instead of running guest
+            // observers inside the completing control-lane callback.
+            CriticalSectionGate inlineGate = new CriticalSectionGate(83,1);
+            var inlineTicket = inlineGate.enter(new Object(),83);
+            var inlineStage = inlineTicket.whenReadyOn(Runnable::run);
+            try {
+                inlineStage.toCompletableFuture().join();
+                throw new AssertionError("inline scheduler unexpectedly accepted");
+            } catch (java.util.concurrent.CompletionException expected) {
+                check(expected.getCause() instanceof java.util.concurrent.RejectedExecutionException,
+                        "inline scheduler did not fail closed");
+            }
+            var recovered = inlineGate.tryEnter(new Object(),83);
+            check(recovered.isPresent(),"inline scheduler failure leaked admission");
+            recovered.orElseThrow().execute(() -> {});
+            inlineGate.retire();
+            check(inlineGate.quiescent(),"inline scheduling left live permit");
+
             CriticalSectionGate rejectGate = new CriticalSectionGate(82,2);
             var rejectOwner = rejectGate.enter(new Object(),82);
             var rejected = rejectGate.enter(new Object(),82);

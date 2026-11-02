@@ -10,6 +10,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Supplier;
 
@@ -67,8 +68,22 @@ public final class CriticalSectionGate {
                     dispatched.completeExceptionally(failure);
                     return;
                 }
+                // Reject inline/same-carrier executors: they would execute
+                // guest callbacks on the CONTROL/release lane. An executor
+                // which queues work and later drains on the same thread is
+                // valid because execute() has already returned.
+                Thread submissionThread = Thread.currentThread();
+                AtomicBoolean insideSubmission = new AtomicBoolean(true);
                 try {
                     scheduler.execute(() -> {
+                        if (Thread.currentThread() == submissionThread
+                                && insideSubmission.get()) {
+                            cancel();
+                            dispatched.completeExceptionally(
+                                    new java.util.concurrent.RejectedExecutionException(
+                                            "critical scheduler must enqueue, not execute inline"));
+                            return;
+                        }
                         CancellationException cancellation = null;
                         synchronized (CriticalSectionGate.this) {
                             if (terminalCancellation != null) {
@@ -84,9 +99,11 @@ public final class CriticalSectionGate {
                             dispatched.complete(granted);
                         }
                     });
-                } catch (RuntimeException rejection) {
+                } catch (RuntimeException | Error rejection) {
                     cancel();
                     dispatched.completeExceptionally(rejection);
+                } finally {
+                    insideSubmission.set(false);
                 }
             });
             return dispatched.minimalCompletionStage();
