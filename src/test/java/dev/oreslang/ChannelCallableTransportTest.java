@@ -152,12 +152,12 @@ final class ChannelCallableTransportTest {
                 "Result<int, Envelope>"
         }) {
             IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                    define class Envelope as
-                      val int code;
-                    end
-                    fnc bad(Channel<""" + payload + """> values): void { return; }
-                    """)));
+                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                            "define class Envelope as\n"
+                                    + "  val int code;\n"
+                                    + "end\n"
+                                    + "fnc bad(Channel<" + payload
+                                    + "> values): void { return; }")));
             assertTrue(error.getMessage().contains("requires MessageData"),
                     () -> "nominal message must reject owner-bearing type "
                             + payload + ": " + error.getMessage());
