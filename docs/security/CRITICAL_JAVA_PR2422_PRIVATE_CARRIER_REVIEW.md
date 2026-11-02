@@ -65,7 +65,8 @@ A second, independently isolated **source-free** workflow was added on a
 temporary branch of the private candidate carrier, without any Git checkout:
 
 - Repository: `gha-indie-worker/gha-indie-worker-docs` ID `1351003564`.
-- Branch: `ci/critical-java21-source-free-canary-20261102`.
+- Branch: `ci/critical-java21-source-free-canary-20261102`;
+  review-only [carrier draft PR #42](https://github.com/gha-indie-worker/gha-indie-worker-docs/pull/42), with independent `@ORESoftware` review requested but not approved.
 - Commit: `6e8a1419b5517aa47d88eedbc8b49018560c128d`;
   root tree `fcea5555c27d384d992f293d874f018fbcc7e48f`.
 - Workflow: `.github/workflows/critical-java21-source-free-canary.yml`,
