@@ -22,18 +22,27 @@ import static org.junit.jupiter.api.Assertions.*;
 final class CriticalActorGuestExecutionTest {
     @Test void actorCriticalGuestReturnsExpectedValueAndReleasesBeforeStop()
             throws Exception {
-        String source = Files.readString(Path.of("examples/critical-actor-checked-v1.ores"));
+        assertEquals("42", runGuest("critical-actor-checked-v1.ores"));
+    }
+
+    @Test void earlyReturnInsideCriticalReleasesGuardBeforeActorStop()
+            throws Exception {
+        assertEquals("returned", runGuest("critical-actor-early-return-v1.ores"));
+    }
+
+    private static String runGuest(String file) throws Exception {
+        String source = Files.readString(Path.of("examples", file));
         OresCompiler.parseAndTypeCheck(source);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
                 .out(output)
                 .build()) {
-            context.eval(Source.newBuilder(OresLanguage.ID, source, "critical-actor-checked-v1.ores")
+            context.eval(Source.newBuilder(OresLanguage.ID, source, file)
                     .mimeType(OresLanguage.MIME_TYPE)
                     .build());
         }
-        assertEquals("42", output.toString(StandardCharsets.UTF_8));
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     @Test void unverifiedFreeFunctionCriticalSourceDoesNotExecute() {
