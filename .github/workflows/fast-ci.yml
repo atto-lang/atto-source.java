@@ -82,7 +82,7 @@ jobs:
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v3-20261101.ores" | tee /tmp/ores-portable-scalar-v3-fast.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-fast.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-fast-jit.out
-          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-fast-jit.out stdlib 40
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-fast-jit.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.ores" | tee /tmp/ores-runner-matrix-fast-jit.out
           grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-fast-jit.out
           test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-fast-jit.out)" -eq 1
