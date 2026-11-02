@@ -2486,12 +2486,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
-         * This authority hook intentionally has no issuer yet. A future typed
-         * ownership pass must bind a proof to the exact checked AST and
-         * program epoch; do not turn this into a process property/CLI flag.
+         * Require the exact typed+ownership checked Program, AST identity
+         * and current check epoch. No raw/host-constructed AST can mint a
+         * ticket merely by spelling a critical statement. Actor incarnation,
+         * cancellation and gate ownership are rechecked at runtime.
          */
         private boolean criticalGuestLoweringAdmitted(Ast.CriticalStmt critical) {
-            return false;
+            Ast.CheckedCriticalBlocks.require(program, critical, taskAdmissionEpoch);
+            return true;
         }
 
         /**
