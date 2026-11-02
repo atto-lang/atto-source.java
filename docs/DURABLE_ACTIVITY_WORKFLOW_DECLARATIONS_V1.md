@@ -50,7 +50,10 @@ The Java parser produces dedicated `Ast.ActivityDecl` and `Ast.WorkflowDecl` nod
 wrapping a class-shaped member body. The general TypeChecker rejects them with
 explicit `ACTIVITY_EXECUTION_UNSUPPORTED` / `WORKFLOW_EXECUTION_UNSUPPORTED`
 diagnostics until activity effect checking, workflow replay, persistence, timer
-recovery, dispatch, idempotency and versioned-manifest lowering exist.
+recovery, dispatch, idempotency and versioned-manifest lowering exist. Direct
+`AnnotationExpander`, `TreeShaker`, `CapabilityChecker` and incremental ABI/build
+entry points also fail closed; none may silently skip these declarations, treat
+them as ordinary classes, or assign them an unversioned class ABI.
 
 ## Next compiler/runtime work
 
