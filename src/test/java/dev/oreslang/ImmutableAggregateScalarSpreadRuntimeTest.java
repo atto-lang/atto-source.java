@@ -23,7 +23,7 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source program = assertDoesNotThrow(() ->
-                Source.newBuilder(OresLanguage.ID, source, "aggregate-scalar-spread.ores")
+                Source.newBuilder(OresLanguage.ID, source, "aggregate-scalar-spread.atto")
                         .mimeType(OresLanguage.MIME_TYPE)
                         .build());
         assertDoesNotThrow(() -> {
@@ -93,6 +93,20 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
             assertTrue(failure.toString().contains("type and ownership admission"),
                     "type-only AST must not inherit a fabricated ownership proof");
         }
+    }
+
+    @Test
+    void canonicalAttoAggregateScalarSpreadExecutesAsGuestSource() {
+        // The canonical new source extension is .atto, while legacy .ores
+        // fixtures remain supported during the language rename.
+        assertEquals("42\\n", execute("""
+                pub fnc main(): void {
+                    const a = infer struct{x: 20};
+                    const b = infer struct{...a, y: 22};
+                    stdio.println(b.x + b.y);
+                    return;
+                }
+                """));
     }
 
     @Test
