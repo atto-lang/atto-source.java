@@ -95,20 +95,7 @@ final class CriticalSuspensionAdmissionV1Test {
     }
 
     @Test void namedTryCriticalExecutesSuccessAndBusyFallbackInGuest() throws Exception {
-        String source = """
-                pub fnc main(): void {
-                  let int count = 1;
-                  val gate = Mutex.new(0);
-                  try critical gate { count = count + 10; }
-                  else { count = count + 100; }
-                  val held = gate.lock();
-                  try critical gate { count = count + 1000; }
-                  else { count = count + 20; }
-                  held.release();
-                  stdio.stdout.write(count);
-                  return;
-                }
-                """;
+        String source = fixture("positive-try-critical-named-mutex.ores");
         assertDoesNotThrow(() -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         try (org.graalvm.polyglot.Context context =
@@ -119,6 +106,26 @@ final class CriticalSuspensionAdmissionV1Test {
                     .mimeType(OresLanguage.MIME_TYPE).build());
         }
         assertTrue(out.toString().contains("31"), out::toString);
+    }
+
+    private static String fixture(String name) throws Exception {
+        try (java.io.InputStream stream = CriticalSuspensionAdmissionV1Test.class
+                .getResourceAsStream("/critical-v1/" + name)) {
+            if (stream == null) throw new IllegalStateException("missing critical fixture: " + name);
+            return new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test void portableNegativeGuestFixturesRemainFailClosed() throws Exception {
+        for (String name : new String[] {
+            "negative-queued-critical-unlowered.ores",
+            "negative-try-critical-call-effect.ores",
+            "negative-try-critical-shared-gate.ores"
+        }) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(fixture(name)));
+            assertTrue(failure.getMessage().contains("E_CRITICAL_"), failure.getMessage());
+        }
     }
 
     @Test void immediateCriticalCannotAccessUntrustedGateOrAsyncCaller() {

@@ -1,0 +1,12 @@
+pub fnc main(): void {
+  let int count = 1;
+  val gate = Mutex.new(0);
+  try critical gate { count = count + 10; }
+  else { count = count + 100; }
+  val held = gate.lock();
+  try critical gate { count = count + 1000; }
+  else { count = count + 20; }
+  held.release();
+  stdio.stdout.write(count);
+  return;
+}

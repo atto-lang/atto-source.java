@@ -1,0 +1,6 @@
+pub fnc main(): void {
+  let int count = 0;
+  val gate = SharedMutex.new(0);
+  try critical gate { count = count + 1; } else { count = count + 2; }
+  return;
+}

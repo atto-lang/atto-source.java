@@ -1,0 +1,6 @@
+fnc mutate(): void { return; }
+pub fnc main(): void {
+  val gate = Mutex.new(0);
+  try critical gate { mutate(); } else { return; }
+  return;
+}
