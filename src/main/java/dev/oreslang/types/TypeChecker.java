@@ -1944,15 +1944,20 @@ public final class TypeChecker {
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.CriticalStmt critical) {
-            // Entering the gate may suspend; only suspends callables may do so.
-            // Prove the protected body cannot itself suspend or call unknown
-            // effectful targets BEFORE attempting any source lowering.
+            // Admission is limited to suspending actor methods; a free
+            // function has no protected resource identity, and a plain
+            // synchronous callable cannot queue on an actor-owned gate.
             CriticalEffectPreflight.verify(critical.body());
             if (!currentMaySuspend)
                 throw new IllegalArgumentException(
                         "critical block may suspend on entry; enclosing callable must be suspends");
-            throw new IllegalArgumentException(
-                    "critical block awaits scheduler-owned gate admission and lexical unwind lowering");
+            if (currentActorKind == Ast.ActorKind.NONE || currentGenerator)
+                throw new IllegalArgumentException(
+                        "critical block requires a suspending actor method with actor-owned gate");
+            // Perform the ordinary type pass on the body. Syntactic effect
+            // preflight alone cannot authorize unchecked field/return types.
+            checkBlock(critical.body(), env, generics, expectedReturn, self);
+            return;
         }
         if (stmt instanceof Ast.TryCriticalStmt attempted) {
             CriticalEffectPreflight.verify(attempted.body());
@@ -10079,6 +10084,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.CriticalStmt critical && definitelyReturns(critical.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
@@ -10107,6 +10113,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
+            if (stmt instanceof Ast.CriticalStmt critical && containsBreakForCurrentLoop(critical.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope
                     && containsBreakForCurrentLoop(scope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
