@@ -123,9 +123,17 @@ public final class OresEtsTable<K, V> implements AutoCloseable {
     }
 
     private void exit() {
-        long before = lifecycle.getAndDecrement();
-        if ((before & ACTIVE_MASK) == 0) throw new AssertionError("unbalanced ETS operation");
-        if (before == CLOSED + 1) retireContents();
+        for (;;) {
+            long before = lifecycle.get();
+            long active = before & ACTIVE_MASK;
+            // A failed double-exit must never flip CLOSED back to open.
+            if (active == 0) throw new AssertionError("unbalanced ETS operation");
+            long after = (before & CLOSED) | (active - 1);
+            if (lifecycle.compareAndSet(before, after)) {
+                if (before == CLOSED + 1) retireContents();
+                return;
+            }
+        }
     }
 
     /** Snapshot of an immutable value, not a borrowed mutable reference. */
