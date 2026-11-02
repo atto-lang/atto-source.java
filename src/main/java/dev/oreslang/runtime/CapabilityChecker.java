@@ -311,6 +311,12 @@ public final class CapabilityChecker {
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.BlockStmt s) checkStatements(s.body(), policy);
+            else if (stmt instanceof Ast.CriticalStmt s) {
+                // The busy fallback is ordinary guest code and must pass
+                // exactly the same capability audit as the protected body.
+                checkStatements(s.body(), policy);
+                checkStatements(s.elseBody(), policy);
+            }
             else if (stmt instanceof Ast.TaskScopeStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.LoopStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.IfStmt s) {

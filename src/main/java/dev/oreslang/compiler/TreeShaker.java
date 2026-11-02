@@ -708,6 +708,17 @@ public final class TreeShaker {
                 return List.of(new Ast.TaskScopeStmt(
                         rewriteStatements(scope.body(), module, new LinkedHashMap<>(locals))));
             }
+            if (statement instanceof Ast.CriticalStmt critical) {
+                // Never flatten, remove, or reorder the effect/ownership gate.
+                // Both branches receive separate lexical local environments.
+                Ast.CriticalStmt preserved = new Ast.CriticalStmt(
+                        critical.tryOnly(),
+                        critical.gateName(),
+                        rewriteStatements(critical.body(), module, new LinkedHashMap<>(locals)),
+                        rewriteStatements(critical.elseBody(), module, new LinkedHashMap<>(locals)));
+                dev.oreslang.types.CriticalBodyPreflight.verify(preserved);
+                return List.of(preserved);
+            }
             if (statement instanceof Ast.BreakStmt || statement instanceof Ast.ContinueStmt) {
                 return List.of(statement);
             }
@@ -1254,6 +1265,13 @@ public final class TreeShaker {
                     scanStatements(module, block.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.TaskScopeStmt scope) {
                     scanStatements(module, scope.body(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.CriticalStmt critical) {
+                    // Preserve all symbols and dynamic capability references
+                    // from the fallback; it is not guaranteed unreachable.
+                    if (critical.gateName() != null)
+                        scanExpression(module, new Ast.NameExpr(critical.gateName()), locals);
+                    scanStatements(module, critical.body(), new LinkedHashSet<>(locals));
+                    scanStatements(module, critical.elseBody(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.LoopStmt loop) {
                     scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.DoWhileStmt loop) {

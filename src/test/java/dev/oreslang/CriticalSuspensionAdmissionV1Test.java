@@ -128,6 +128,23 @@ final class CriticalSuspensionAdmissionV1Test {
         }
     }
 
+    @Test void buildOptimizerPreservesImmediateCriticalAdmissionAndFallback() throws Exception {
+        var result = dev.oreslang.compiler.OresCompiler.compileForBuild(
+                fixture("positive-try-critical-named-mutex.ores"),
+                dev.oreslang.compiler.BuildOptions.executable());
+        var main = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof dev.oreslang.ast.Ast.FunctionDecl fn
+                        && fn.name().equals("main"))
+                .map(decl -> (dev.oreslang.ast.Ast.FunctionDecl) decl)
+                .findFirst().orElseThrow();
+        long criticalCount = main.body().stream()
+                .filter(stmt -> stmt instanceof dev.oreslang.ast.Ast.CriticalStmt)
+                .count();
+        assertEquals(2L, criticalCount,
+                "tree-shaking must not erase or flatten protected operations");
+    }
+
     @Test void immediateCriticalCannotAccessUntrustedGateOrAsyncCaller() {
         for (String source : new String[] {
             "pub fnc main(): void { let int n = 0;"
