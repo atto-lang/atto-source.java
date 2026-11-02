@@ -162,7 +162,7 @@ public final class Parser {
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 if (check(ACTIVITY) || check(WORKFLOW)) {
-                    rootDeclarations.add(parseDurableClassDeclaration(modifiers, true));
+                    rootDeclarations.add(parseDurableClassDeclaration(annotations, modifiers, true));
                     continue;
                 }
                 if (isProtectedDeclarationHead()) {
@@ -392,7 +392,7 @@ public final class Parser {
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             if (check(ACTIVITY) || check(WORKFLOW)) {
-                return parseDurableClassDeclaration(modifiers, false);
+                return parseDurableClassDeclaration(annotations, modifiers, false);
             }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
@@ -598,7 +598,8 @@ public final class Parser {
     }
 
     /** Parse `define activity X as ... end` or `define workflow X as ... end`. */
-    private Ast.Decl parseDurableClassDeclaration(Modifiers modifiers, boolean filePrivateScope) {
+    private Ast.Decl parseDurableClassDeclaration(
+            List<Ast.Annotation> annotations, Modifiers modifiers, boolean filePrivateScope) {
         Token kind = advance();
         if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
@@ -607,7 +608,9 @@ public final class Parser {
                     + "put execution semantics on their members");
         }
         Ast.ClassDecl body = parseClass(modifiers.visibility, false, filePrivateScope);
-        return kind.type() == ACTIVITY ? new Ast.ActivityDecl(body) : new Ast.WorkflowDecl(body);
+        return kind.type() == ACTIVITY
+                ? new Ast.ActivityDecl(body, annotations)
+                : new Ast.WorkflowDecl(body, annotations);
     }
     private Ast.ClassDecl parseClass(
             Ast.Visibility visibility,
