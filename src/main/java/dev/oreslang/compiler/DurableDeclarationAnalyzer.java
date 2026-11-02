@@ -227,9 +227,8 @@ public final class DurableDeclarationAnalyzer {
             List<Ast.Param> parameters,
             Ast.TypeRef returnType,
             String name) {
-        List<Ast.TypeRef> actual = endpoint.parameters().stream().map(Ast.Param::type).toList();
-        List<Ast.TypeRef> declared = parameters.stream().map(Ast.Param::type).toList();
-        if (!actual.equals(declared) || !java.util.Objects.equals(endpoint.returnType(), returnType)) {
+        if (!endpoint.parameters().equals(parameters)
+                || !java.util.Objects.equals(endpoint.returnType(), returnType)) {
             throw new IllegalArgumentException(
                     "WORKFLOW_QUERY_SIGNATURE_MISMATCH: query endpoint '" + name
                             + "' does not match its method parameter/return signature");
