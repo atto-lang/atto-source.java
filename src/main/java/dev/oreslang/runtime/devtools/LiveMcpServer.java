@@ -275,10 +275,16 @@ public final class LiveMcpServer implements AutoCloseable {
                     return;
                 }
             }
+            Map<String, Object> completed = new LinkedHashMap<>();
+            if (result instanceof Map<?, ?> fields) {
+                for (var entry : fields.entrySet()) {
+                    completed.put((String) entry.getKey(), entry.getValue());
+                }
+            }
+            completed.put("_meta", Map.of("io.modelcontextprotocol/serverInfo",
+                    Map.of("name", "attolang-live-devtools", "version", "0.1.0")));
             send(exchange, 200, Json.write(Map.of("jsonrpc", "2.0",
-                    "id", id, "result", result,
-                    "_meta", Map.of("io.modelcontextprotocol/serverInfo",
-                            Map.of("name", "attolang-live-devtools", "version", "0.1.0")))));
+                    "id", id, "result", completed)));
         } catch (RuntimeException failure) {
             // Never reflect Java exception names, actor state or stack traces over MCP.
             send(exchange, 500, error(null, -32603, "Internal error"));
