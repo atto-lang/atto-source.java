@@ -615,14 +615,33 @@ public final class ActorEventBus implements AutoCloseable {
 
     private OresFuture<List<Void>> combineReliableWrites(
             List<OresFuture<Void>> writes) {
-        OresFuture<List<Void>> combined = OresFutures.<Void>all(writes);
-        combined.whenCompleteRuntime((ignored, failure) -> {
-            if (failure == null) return;
+        /*
+         * These write Futures are private children owned by this publication,
+         * not borrowed inputs. Cancelling the publication therefore revokes
+         * every still-pending channel admission. Already-committed writes are
+         * not retracted: cancellation is an admission fence, not a recall of
+         * events a subscriber can already observe.
+         *
+         * Do not use OresFutures.all() as the returned Future directly:
+         * general combinators intentionally do NOT cancel borrowed children.
+         */
+        OresFuture<List<Void>> observed = OresFutures.<Void>all(writes);
+        OresFuture<List<Void>> owned = new OresFuture<>(() -> {
             for (OresFuture<Void> write : writes) {
                 if (!write.isDone()) write.cancel(false);
             }
         });
-        return combined;
+        observed.whenCompleteRuntime((values, failure) -> {
+            if (owned.isDone()) return;
+            if (failure == null) {
+                owned.completeFromRuntime(values);
+            } else if (observed.isCancelled()) {
+                owned.cancel(false);
+            } else {
+                owned.failFromRuntime(OresFuture.unwrap(failure));
+            }
+        });
+        return owned;
     }
 
     private TopicState requireTopic(String name) {
