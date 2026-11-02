@@ -1,0 +1,8 @@
+define class Payload as
+  val int code;
+end
+
+pub routine main(): void {
+  val Channel<Payload> values = Channel.new<Payload>(1);
+  return;
+}
