@@ -13,6 +13,11 @@ for this candidate. This packet cannot be used as an authorization token.
   Its corresponding complete Git root-tree:
   `36907b2812976e79510af38f79e00f6cf14b3719`.
   **Re-pinning and exact-head security review are mandatory after any head move.**
+- New source PR head after a documentation-only safety correction on 2026-11-02:
+  `6154046b6e38167226aed3c841f732089773c5ce`, complete root Git tree
+  `57f7f10f601422bfabddb59b45862eae05dfbe3e`.
+  The prior head above is historical; **only this latest pin can be reviewed for a future exact-head plan**, and any subsequent source change again invalidates it.
+  Neither pin has stepful compiler/guest CI evidence.
 - Private candidate carrier: `gha-indie-worker/gha-indie-worker-docs`,
   numeric repository ID **1351003564**. Source-free capacity branch
   `ci/critical-source-free-runner-canary-20261101`, commit
