@@ -1,0 +1,21 @@
+// Native Oreslang guest fixture: return from inside critical must release
+// the actor-owned ticket before STOP can physically finalize the actor.
+define actor CriticalReturnWorker as
+  suspends receive(ActorMail<String> mail): void {
+    self.send("returned");
+    critical {
+      return;
+    }
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn CriticalReturnWorker();
+  await worker.get_ready();
+  worker.send("go");
+  val output = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(output.value);
+  worker.stop();
+  await worker.get_done();
+  return;
+}
