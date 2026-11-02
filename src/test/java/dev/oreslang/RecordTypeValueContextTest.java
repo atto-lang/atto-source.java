@@ -140,4 +140,74 @@ final class RecordTypeValueContextTest {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
     }
+
+    @Test
+    void nameFirstAndTypeFirstStructCaptureShareTheSameCheckedSyntax() {
+        String source = """
+                fnc type_first(): float {
+                    const Point initial = infer<Point> struct{x: 1.0, y: 2.0};
+                    const replacement: Point = infer struct{y: 4.0, x: 3.0};
+                    return replacement.x;
+                }
+
+                fnc name_first(): float {
+                    const initial: Point = infer<Point> struct{x: 1.0, y: 2.0};
+                    const Point replacement = infer struct{x: 3.0, y: 4.0};
+                    return replacement.y;
+                }
+                """;
+        List<Ast.Decl> declarations = declarations(source);
+        Ast.FunctionDecl nameFirst = (Ast.FunctionDecl) declarations.get(1);
+        Ast.BindingStmt initial = (Ast.BindingStmt) nameFirst.body().getFirst();
+        assertEquals("initial", initial.name());
+        assertEquals("Point", initial.declaredType().name());
+        assertEquals("Point", initial.inferredTypeName(),
+                "infer<T> must capture the same name in name-first declarations");
+        Ast.ObjectExpr initializer = assertInstanceOf(Ast.ObjectExpr.class, initial.initializer());
+        assertEquals(Ast.ObjectKind.INFERRED_STRUCT, initializer.kind());
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void nameFirstShortStructInferenceCreatesOnlyALexicalType() {
+        String source = """
+                fnc make(): float {
+                    const first: Point = infer struct{x: 1.0, y: 2.0};
+                    const second: Point = infer struct{y: 4.0, x: 3.0};
+                    return second.y;
+                }
+                """;
+        Ast.FunctionDecl function = (Ast.FunctionDecl) declarations(source).getFirst();
+        Ast.BindingStmt first = (Ast.BindingStmt) function.body().getFirst();
+        assertEquals("Point", first.declaredType().name());
+        assertNull(first.inferredTypeName(),
+                "short inference must be proved by the checker, not forged by the parser");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void nameFirstCaptureRejectsMismatchedTypeAndCrossKindErasure() {
+        String mismatch = """
+                fnc bad(): void {
+                    const value: Other = infer<Point> struct{x: 1};
+                    return;
+                }
+                """;
+        IllegalArgumentException parseError = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(mismatch));
+        assertTrue(parseError.getMessage().contains("binding type must match infer<T> exactly"),
+                parseError.getMessage());
+
+        String crossKind = """
+                fnc bad(): void {
+                    const value: Row = infer<Row> record{x: 1};
+                    const structValue: Row = infer struct{x: 1};
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(crossKind),
+                "a structural record alias must not authorize concrete struct values");
+    }
+
 }
