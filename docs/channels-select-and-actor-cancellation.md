@@ -143,10 +143,15 @@ or non-MessageData payload admissible.
 
 The Java reference interpreter now takes a recursively verified, bounded
 **detached snapshot at source-visible write/select registration**, rather than
-retaining the producer's mutable collection/nominal object by reference. The
-snapshot preserves guest record, struct and nominal value tags. A separate
-host-only regression suite checks post-send producer mutation, cyclic graphs,
-actor-instance rejection and oversized data before allocation.
+retaining the producer's mutable collection/nominal object by reference.
+Static select preserves channel-before-value eager evaluation. Dynamic select
+also resnapshots host-supplied WriteCase and SelectSet descriptors without
+resetting the reusable FAIR cursor, so a host descriptor cannot bypass the
+source SelectCase.write check. The snapshot preserves guest record, struct and
+nominal value tags. Graph size is bounded before allocation, and no actor
+instance may pass as a nominal object. Host-only regression suites cover
+post-send producer mutation, dynamic case admission, cyclic graphs, and
+oversized data.
 
 The compiler/runtime equality of this policy is currently **under review**.
 This Java interpreter snapshot is not a proof of simultaneous hostile-host
