@@ -114,7 +114,7 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
         ctor.setAccessible(true);
         ArrayList<Object> nested = new ArrayList<>(List.of(1L));
         dev.oreslang.ast.Ast.ClassDecl nominalClass = new dev.oreslang.ast.Ast.ClassDecl(
-                "TransportedData", false, List.of(), List.of(), List.of(), List.of());
+                "TransportedData", false, List.of(), List.of(), List.of());
         Object nominal = ctor.newInstance(
                 null, nominalClass, new LinkedHashMap<>(Map.of("nested", nested)));
         Object detached = snapshot(nominal);
