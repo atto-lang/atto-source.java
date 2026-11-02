@@ -175,26 +175,40 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
-    public final class Admission implements AutoCloseable {
+    /** An accepted turn must have an explicit observed disposition. */
+    public enum Disposition { PROCESSED, FAILED_CONTROL_NOTIFIED, CANCELLED_NOTIFIED }
+
+    public final class Admission {
         private final Slot slot;
         private final long incarnation;
-        private boolean finished;
+        private Disposition disposition;
 
         private Admission(Slot slot, long incarnation) {
             this.slot = slot;
             this.incarnation = incarnation;
         }
         public long incarnation() { return incarnation; }
-        public void finish() {
+
+        /**
+         * Called only after the handler completed or after an independently
+         * recorded failure/cancellation notice. This method does NOT send
+         * notices itself and cannot attest a backend's CONTROL transport.
+         * No bare close()/drop path exists to hide accepted work.
+         */
+        public void settle(Disposition result) {
+            Objects.requireNonNull(result, "result");
             synchronized (monitor) {
-                if (finished) return;
-                finished = true;
+                if (disposition != null) {
+                    if (disposition != result)
+                        throw new IllegalStateException("contradictory admission disposition");
+                    return;
+                }
                 if (slot.outstanding < 1)
                     throw new IllegalStateException("virtual actor admission accounting corrupted");
+                disposition = result;
                 slot.outstanding--;
             }
         }
-        @Override public void close() { finish(); }
     }
 
     /** Null means bounded backpressure; an inactive/stale capability fails closed. */
