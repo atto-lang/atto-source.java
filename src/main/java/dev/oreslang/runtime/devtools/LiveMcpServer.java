@@ -115,9 +115,10 @@ public final class LiveMcpServer implements AutoCloseable {
                 send(exchange, 405, "{\"error\":\"POST required\"}");
                 return;
             }
-            if (!PROTOCOL_VERSION.equals(exchange.getRequestHeaders()
-                    .getFirst("Mcp-Protocol-Version"))) {
-                send(exchange, 400, "{\"error\":\"unsupported MCP protocol version\"}");
+            List<String> versionHeaders = exchange.getRequestHeaders()
+                    .get("Mcp-Protocol-Version");
+            if (versionHeaders == null || versionHeaders.size() != 1) {
+                send(exchange, 400, error(null, -32600, "MCP protocol version header required"));
                 return;
             }
             String accept = exchange.getRequestHeaders().getFirst("Accept");
@@ -160,10 +161,26 @@ public final class LiveMcpServer implements AutoCloseable {
             Object params = msg.get("params");
             if (!(params instanceof Map<?, ?> parameters)
                     || !(parameters.get("_meta") instanceof Map<?, ?> metadata)
-                    || !PROTOCOL_VERSION.equals(
-                            metadata.get("io.modelcontextprotocol/protocolVersion"))
+                    || !(metadata.get("io.modelcontextprotocol/protocolVersion") instanceof String)
                     || !(metadata.get("io.modelcontextprotocol/clientCapabilities") instanceof Map<?, ?>)) {
                 send(exchange, 400, error(id, -32602, "Missing or invalid MCP request metadata"));
+                return;
+            }
+            Object requestedVersion = metadata.get("io.modelcontextprotocol/protocolVersion");
+            if (!PROTOCOL_VERSION.equals(requestedVersion)) {
+                Map<String, Object> versionError = new LinkedHashMap<>();
+                versionError.put("jsonrpc", "2.0");
+                versionError.put("id", id);
+                versionError.put("error", Map.of(
+                        "code", -32022,
+                        "message", "Unsupported protocol version",
+                        "data", Map.of("supported", List.of(PROTOCOL_VERSION),
+                                "requested", String.valueOf(requestedVersion))));
+                send(exchange, 400, Json.write(versionError));
+                return;
+            }
+            if (!PROTOCOL_VERSION.equals(versionHeaders.getFirst())) {
+                send(exchange, 400, error(id, -32020, "MCP protocol version header mismatch"));
                 return;
             }
             Object clientInfo = metadata.get("io.modelcontextprotocol/clientInfo");
