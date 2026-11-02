@@ -1,0 +1,27 @@
+# Source-free, credential-free runner admission control: no private source read or checkout.
+name: critical-sourcefree-runner-admission-20261102
+on:
+  push:
+    branches:
+      - feat/critical-suspends-admission-v1-20261101
+permissions: {}
+jobs:
+  runner-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Check allocated runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_OS}" = "Linux"
+          test -n "${GITHUB_RUN_ID}"
+          test -n "${GITHUB_RUN_ATTEMPT}"
+          test -n "${RUNNER_NAME}"
+          printf 'SOURCE_FREE_RUNNER_ADMITTED=1\n'
+      - name: Verify second executed step
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_JOB}" = "runner-admission"
+          printf 'SOURCE_FREE_TWO_STEPS_EXECUTED=1\n'
