@@ -5693,23 +5693,59 @@ public final class OresEvalRootNode extends RootNode {
                         "Java host constructor " + hostClass.className());
                 return instantiateHost(hostClass, args);
             }
-            Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass != null) requireLexicalClassAccess(env, klass);
-            Evaluator owner = this;
-            boolean externalConstruction = false;
-            if (klass == null) {
-                Object imported = importedValue(created.type().name());
-                if (imported instanceof ClassFacade externalClass) {
-                    owner = externalClass.owner();
-                    klass = externalClass.klass();
-                    externalConstruction = true;
+            return instantiateConstructedClass(created.type().name(), args, env);
+        }
+
+        /**
+         * Resolve a constructor through either a direct class import or a
+         * compiler-visible module namespace. TypeChecker already records the
+         * qualified nominal name (module.Class); runtime construction must use
+         * the same namespace path rather than treating that string as a local
+         * class/import binding.
+         */
+        private Object instantiateConstructedClass(
+                String className,
+                List<Object> args,
+                Env env) {
+            Ast.ClassDecl local = findClass(className);
+            if (local != null) {
+                requireLexicalClassAccess(env, local);
+                return instantiate(local, args, false);
+            }
+
+            Object directImport = importedValue(className);
+            if (directImport instanceof ClassFacade importedClass) {
+                return importedClass.owner().instantiate(
+                        importedClass.klass(), args, true);
+            }
+
+            int separator = className.lastIndexOf('.');
+            if (separator > 0 && separator < className.length() - 1) {
+                String namespaceName = className.substring(0, separator);
+                String memberName = className.substring(separator + 1);
+
+                // Respect a lexical binding first, then a named/wildcard import,
+                // then a module declared in this source unit. This mirrors
+                // ordinary namespace member evaluation and preserves shadowing.
+                Object namespace = env == null ? Env.MISSING : env.lookup(namespaceName);
+                if (namespace == Env.MISSING) namespace = importedValue(namespaceName);
+                if (namespace == Env.MISSING) {
+                    Ast.ModuleDecl module = modules.get(namespaceName);
+                    if (module != null) {
+                        requireLexicalNamespaceAccess(env, namespaceName, "module");
+                        namespace = new ModuleFacade(this, module);
+                    }
+                }
+                if (namespace != Env.MISSING) {
+                    Object exported = member(namespace, memberName, env);
+                    if (exported instanceof ClassFacade importedClass) {
+                        return importedClass.owner().instantiate(
+                                importedClass.klass(), args, true);
+                    }
                 }
             }
-            if (klass == null) {
-                throw new IllegalArgumentException(
-                        "unknown class " + created.type().name());
-            }
-            return owner.instantiate(klass, args, externalConstruction);
+
+            throw new IllegalArgumentException("unknown class " + className);
         }
 
         private Object callFunctionRaw(Ast.FunctionDecl fn, List<Object> args) {
@@ -7578,20 +7614,8 @@ public final class OresEvalRootNode extends RootNode {
                     return instantiateHost(hostClass, args);
                 }
 
-                Ast.ClassDecl klass = findClass(created.type().name());
-                Evaluator owner = this;
-                boolean externalConstruction = false;
-                if (klass == null) {
-                    Object imported = importedValue(created.type().name());
-                    if (imported instanceof ClassFacade externalClass) {
-                        owner = externalClass.owner();
-                        klass = externalClass.klass();
-                        externalConstruction = true;
-                    }
-                }
-                if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
-                return owner.instantiate(klass, args, externalConstruction);
+                return instantiateConstructedClass(created.type().name(), args, env);
             }
             if (expr instanceof Ast.TaskExpr task) {
                 if (task.domain() == Ast.ExecutionDomain.GPU) {
