@@ -6643,10 +6643,12 @@ public final class OresEvalRootNode extends RootNode {
                     case READ -> cases.add(ChannelRuntime.read(
                             requireChannel(eval(arm.channel(), env), "readch select case")));
                     case WRITE -> {
+                        // Preserve eager left-to-right evaluation: channel
+                        // expression before the value to be detached.
+                        ChannelRuntime.Channel<Object> selectedChannel =
+                                requireChannel(eval(arm.channel(), env), "writech select case");
                         Object detached = snapshotChannelMessageData(eval(arm.value(), env));
-                        cases.add(ChannelRuntime.write(
-                                requireChannel(eval(arm.channel(), env), "writech select case"),
-                                detached));
+                        cases.add(ChannelRuntime.write(selectedChannel, detached));
                     }
                     case AWAIT -> {
                         Object future = eval(arm.channel(), env);
