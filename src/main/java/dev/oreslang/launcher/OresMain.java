@@ -217,7 +217,8 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
-        String directOresSource = filename.endsWith(".ores") ? readBoundedOresSource(path) : null;
+        boolean nativeAttoSource = filename.endsWith(".atto") || filename.endsWith(".ores");
+        String directOresSource = nativeAttoSource ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
             formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
@@ -248,8 +249,8 @@ public final class OresMain {
         }
 
         if (buildAnalysis) {
-            if (!filename.endsWith(".ores")) {
-                throw new UsageException("--build-analysis currently requires a .ores source file");
+            if (!nativeAttoSource) {
+                throw new UsageException("--build-analysis currently requires a .atto or .ores source file");
             }
             String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
