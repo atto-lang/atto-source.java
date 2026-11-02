@@ -6807,6 +6807,15 @@ public final class OresEvalRootNode extends RootNode {
             snapshotChannelMessageData(value);
         }
 
+        private static void requireChannelGraphBudget(long additional, int[] nodes) {
+            // Check capacity before allocation: host collections may advertise
+            // sizes far larger than the allowed channel graph budget.
+            if (additional < 0 || additional > 65536L - nodes[0]) {
+                throw new IllegalArgumentException(
+                        "channel payload exceeds safe data graph limits");
+            }
+        }
+
         private static Object snapshotChannelMessageData(Object value) {
             return snapshotChannelMessageData(
                     value, new IdentityHashMap<>(), new int[] {0}, 0);
@@ -6868,6 +6877,7 @@ public final class OresEvalRootNode extends RootNode {
                                             result.value(), visiting, nodes, depth + 1));
                 }
                 if (value instanceof ReadonlyRecordValue record) {
+                    requireChannelGraphBudget(record.size(), nodes);
                     LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> field : record.entrySet()) {
                         copy.put(field.getKey(), snapshotChannelMessageData(
@@ -6876,6 +6886,7 @@ public final class OresEvalRootNode extends RootNode {
                     return new ReadonlyRecordValue(copy);
                 }
                 if (value instanceof MutableStructValue struct) {
+                    requireChannelGraphBudget(struct.size(), nodes);
                     LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> field : struct.entrySet()) {
                         copy.put(field.getKey(), snapshotChannelMessageData(
@@ -6889,6 +6900,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "channel payload cannot contain an actor instance or untyped nominal object");
                     }
+                    requireChannelGraphBudget(object.fields.size(), nodes);
                     LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> field : object.fields.entrySet()) {
                         copy.put(field.getKey(), snapshotChannelMessageData(
@@ -6897,6 +6909,7 @@ public final class OresEvalRootNode extends RootNode {
                     return new OresObject(object.owner, object.klass, copy);
                 }
                 if (value instanceof List<?> list) {
+                    requireChannelGraphBudget(list.size(), nodes);
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) {
                         copy.add(snapshotChannelMessageData(
@@ -6905,6 +6918,7 @@ public final class OresEvalRootNode extends RootNode {
                     return copy;
                 }
                 if (value instanceof Set<?> set) {
+                    requireChannelGraphBudget(set.size(), nodes);
                     LinkedHashSet<Object> copy = new LinkedHashSet<>();
                     for (Object item : set) {
                         Object detached = snapshotChannelMessageData(
@@ -6917,6 +6931,7 @@ public final class OresEvalRootNode extends RootNode {
                     return copy;
                 }
                 if (value instanceof Map<?, ?> map) {
+                    requireChannelGraphBudget((long) map.size() * 2L, nodes);
                     LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<?, ?> field : map.entrySet()) {
                         Object key = snapshotChannelMessageData(
@@ -6933,6 +6948,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (value.getClass().isArray()) {
                     int length = java.lang.reflect.Array.getLength(value);
+                    requireChannelGraphBudget(length, nodes);
                     ArrayList<Object> copy = new ArrayList<>(length);
                     for (int i = 0; i < length; i++) {
                         copy.add(snapshotChannelMessageData(
