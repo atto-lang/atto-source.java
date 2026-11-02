@@ -81,3 +81,29 @@ dependencies are available:
 
 Those additions should preserve the existing `TestCase` / `RunSummary`
 semantics and machine event contract.
+
+## Additional native regression suites (draft, guest execution unverified)
+
+The proposed v2 branch adds three new source-owned test groups:
+
+| Guest file | Authored cases | Purpose |
+| --- | ---: | --- |
+| `examples/native-testing-regressions-40.ores` | 40 PASS cases | Predicate and typed equality/inequality behavior, positive and rejected outcomes, exact failure detail, floating tolerance, nonempty/empty properties and result fields. |
+| `examples/native-testing-runner-matrix.ores` | 12 accounting scenarios | Empty/skip/filter cases, mixed pass/fail, exact hierarchical filtering, fail-fast counts and nested names. Runs nested suites in human mode so they do not forge machine receipts. |
+| `examples/native-testing-negative-{empty,skipped,filtered,failed}.ores` | 4 deliberately failing programs | `require_success` must reject vacuous, all-skipped/all-filtered and failed suites. The JVM CI gate requires **both** an exact guest-emitted summary and a nonzero process exit, preventing an ordinary compiler failure from satisfying the negative case. |
+
+The positive 40-case guest must produce exactly
+`ORES_TEST|SUMMARY|total=40|passed=40|failed=0|skipped=0|filtered=0`
+with 40 unique `PASS` receipts and one summary; runner matrix must print
+`ORES_TEST_RUNNER_MATRIX_OK|cases=12` only after all its checks pass.
+JVM, native AOT and native hybrid workflows invoke the positive suites;
+JVM additionally verifies the four intentional failures. The 40-case machine
+receipts are checked against the exact, ordered
+`tests/native-testing-regressions-40.expected-ids.txt` file, rather than
+only checking summary counts. Fast CI invokes the
+positive suites too. The other backends remain unverified.
+
+**Counts describe authored fixtures, not executed/green tests.** GitHub
+Actions jobs with zero recorded steps establish only runner-admission
+failure, and host/static source checks never substitute for a real compiler
+executing the Oreslang guest. Keep draft until actual exact-head jobs run.
