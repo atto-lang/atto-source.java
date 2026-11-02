@@ -260,7 +260,8 @@ public final class OresProjectConfig {
         // Explicit foreign-source paths must never pass through this resolver.
         // Preserve existing .ores and Java interop while admitting canonical .atto.
         if (lowerFilename.endsWith(".atto") || lowerFilename.endsWith(".ores") || lowerFilename.endsWith(".java")) {
-            return Files.isRegularFile(normalized) ? Optional.of(normalized) : Optional.empty();
+            return (Files.isRegularFile(normalized) || Files.isSymbolicLink(normalized))
+                    ? Optional.of(normalized) : Optional.empty();
         }
         if (filename.contains(".")) return Optional.empty();
 
@@ -268,7 +269,11 @@ public final class OresProjectConfig {
         // An explicitly suffixed import can still select the legacy file.
         for (String extension : List.of(".atto", ".ores", ".java")) {
             Path source = Path.of(normalized.toString() + extension);
-            if (Files.isRegularFile(source)) return Optional.of(source);
+            // A dangling .atto symlink is still the canonical directory entry.
+            // Select it so the bounded no-follow reader rejects it; never fall
+            // through to a shadowing legacy .ores sibling.
+            if (Files.isRegularFile(source) || Files.isSymbolicLink(source))
+                return Optional.of(source);
         }
         return Optional.empty();
     }
